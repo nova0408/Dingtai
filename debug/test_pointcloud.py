@@ -2,9 +2,17 @@ from __future__ import annotations
 
 import traceback
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import numpy as np
 import open3d as o3d
+
+if TYPE_CHECKING:
+    # 强制让 Pylance 认为 o3d.visualization.Visualizer
+    # 就是那个具体的 C++ 绑定类
+    from open3d.cpu.pybind.visualization import Visualizer
+
+    o3d.visualization.Visualizer = Visualizer
 
 from pyorbbecsdk import (
     AlignFilter,
@@ -48,7 +56,7 @@ class OrbbecOpen3DPreview:
         self.align_filter: AlignFilter | None = None
         self.point_cloud_filter = PointCloudFilter()
 
-        self.vis: o3d.visualization.Visualizer | None = None
+        self.vis: open3d.cpu.pybind.visualization.Visualizer = None
         self.pcd = o3d.geometry.PointCloud()
         self.axis = o3d.geometry.TriangleMesh.create_coordinate_frame(
             size=self.options.coordinate_frame_size,
@@ -129,6 +137,10 @@ class OrbbecOpen3DPreview:
         self.vis.add_geometry(self.axis)
         self.vis.add_geometry(self.pcd)
         self._pcd_added = True
+        view_control = self.vis.get_view_control()
+        view_control.set_lookat([0.0, 0.0, 0.0])
+        view_control.set_front([0.0, 0.0, -1.0])
+        view_control.set_up([0.0, -1.0, 0.0])
 
         render_option = self.vis.get_render_option()
         if render_option is not None:
