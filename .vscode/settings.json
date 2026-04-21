@@ -1,7 +1,10 @@
 {
-    "python.analysis.extraPaths": [
-        "./typings"
-    ],
-    "python.analysis.stubPath": "./typings",
-    "python.analysis.typeCheckingMode": "basic"
+    "python.analysis.stubPath": "",
+    "python.analysis.typeCheckingMode": "standard",
+    "python.analysis.generateWithTypeAnnotation": false,
+    "python.analysis.includeAliasesFromUserFiles": true,
+    "python.analysis.inlayHints.callArgumentNames": "partial",
+    "python.analysis.inlayHints.functionReturnTypes": true,
+    "python.analysis.typeEvaluation.deprecateTypingAliases": true,
+    "python.analysis.typeEvaluation.disableBytesTypePromotions": true
 }
