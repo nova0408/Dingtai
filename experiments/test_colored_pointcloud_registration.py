@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import sys
-from pathlib import Path
 from collections import deque
+from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -13,7 +13,6 @@ from dataclasses import dataclass
 import numpy as np
 import open3d as o3d
 from loguru import logger
-
 from pyorbbecsdk import (
     AlignFilter,
     Config,
@@ -27,6 +26,7 @@ from pyorbbecsdk import (
     Pipeline,
     PointCloudFilter,
 )
+
 from src.utils.Datas.Kinematics.SE3 import SE3_string
 
 
@@ -352,7 +352,7 @@ def fine_register_multiscale_robust_icp(
         )
         transform = last_result.transformation
         logger.debug(
-            f"鲁棒ICP level={level} vox={vox:.2f} corr={corr:.2f} iters={iters} "
+            f"鲁棒 ICP level={level} vox={vox:.2f} corr={corr:.2f} iters={iters} "
             f"fitness={last_result.fitness:.4f} rmse={last_result.inlier_rmse:.4f}"
         )
     if last_result is None:

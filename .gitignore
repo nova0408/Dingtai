@@ -7,6 +7,8 @@
 .vscode/*
 log/*
 Logs/*
+*.pcd
+*.ply
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
