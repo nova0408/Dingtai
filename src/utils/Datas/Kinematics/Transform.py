@@ -118,15 +118,15 @@ class Transform(MatrixSerializable, MatrixConstructible):
             if zyx:
                 rz, ry, rx = q.as_zyx(degrees=True)
                 return f"x={t.x:.2f}, y={t.y:.2f}, z={t.z:.2f}, rz={rz:.1f}, ry={ry:.1f}, rx={rx:.1f}"
-            return f"x={t.x:.2f}, y={t.y:.2f}, z={t.z:.2f}, q1={q.q1:.4f}, q2={q.q2:.4f}, q3={q.q3:.4f}, q4={q.q4:.4f}"
+            return f"x={t.x:.2f}, y={t.y:.2f}, z={t.z:.2f}, q1={q.w:.4f}, q2={q.x:.4f}, q3={q.y:.4f}, q4={q.z:.4f}"
         if with_bracket:
-            return f"[{t.x:.4f},{t.y:.4f},{t.z:.4f}],[{q.q1:.6f},{q.q2:.6f},{q.q3:.6f},{q.q4:.6f}]"
+            return f"[{t.x:.4f},{t.y:.4f},{t.z:.4f}],[{q.w:.6f},{q.x:.6f},{q.y:.6f},{q.z:.6f}]"
 
         if zyx:
             rz, ry, rx = q.as_zyx(degrees=True)
             return f"{t.x:.4f}, {t.y:.4f}, {t.z:.4f}, {rz:.4f}, {ry:.4f}, {rx:.4f}"
 
-        return f"{t.x:.4f}, {t.y:.4f}, {t.z:.4f}, {q.q1:.6f}, {q.q2:.6f}, {q.q3:.6f}, {q.q4:.6f}"
+        return f"{t.x:.4f}, {t.y:.4f}, {t.z:.4f}, {q.w:.6f}, {q.x:.6f}, {q.y:.6f}, {q.z:.6f}"
 
     # endregion
 

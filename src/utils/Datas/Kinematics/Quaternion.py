@@ -35,18 +35,18 @@ class EulerSequence(Enum):
 class Quaternion(Sequence[float], MatrixSerializable, MatrixConstructible):
     """四元数表示，内部顺序遵循 `[w, x, y, z]`。"""
 
-    q1: float  # w (实部)
-    q2: float  # x (虚部)
-    q3: float  # y (虚部)
-    q4: float  # z (虚部)
+    w: float  # w (实部)
+    x: float  # x (虚部)
+    y: float  # y (虚部)
+    z: float  # z (虚部)
 
     # region 序列协议与基础方法
     def __iter__(self) -> Iterator[float]:
-        """允许解包：`q1, q2, q3, q4 = quaternion`。"""
-        yield self.q1
-        yield self.q2
-        yield self.q3
-        yield self.q4
+        """允许解包：`w, x, y, z = quaternion`。"""
+        yield self.w
+        yield self.x
+        yield self.y
+        yield self.z
 
     @overload
     def __getitem__(self, index: int) -> float: ...
@@ -55,39 +55,51 @@ class Quaternion(Sequence[float], MatrixSerializable, MatrixConstructible):
     def __getitem__(self, index: slice) -> Sequence[float]: ...
 
     def __getitem__(self, index: int | slice) -> Any:
-        return (self.q1, self.q2, self.q3, self.q4)[index]
+        return (self.w, self.x, self.y, self.z)[index]
 
     def __len__(self) -> int:
         return 4
 
     def __array__(self, dtype=None) -> NDArray:
         """返回 `numpy` 一维数组表示。"""
-        return np.array([self.q1, self.q2, self.q3, self.q4], dtype=dtype)
+        return np.array([self.w, self.x, self.y, self.z], dtype=dtype)
 
     def __hash__(self) -> int:
         """哈希（考虑浮点精度）"""
         values = (
-            round(self.q1, 8),
-            round(self.q2, 8),
-            round(self.q3, 8),
-            round(self.q4, 8),
+            round(self.w, 8),
+            round(self.x, 8),
+            round(self.y, 8),
+            round(self.z, 8),
         )
         return hash(tuple(values))
 
-    def to_list(self) -> list[float]:
+    def to_list(self, scalar_first: bool = True) -> list[float]:
         """返回 ABB 格式列表 [w, x, y, z]"""
-        return [self.q1, self.q2, self.q3, self.q4]
+        if scalar_first:
+            return [self.w, self.x, self.y, self.z]
+        else:
+            return [self.x, self.y, self.z, self.w]
 
-    def to_tuple(self) -> tuple[float, float, float, float]:
-        return (self.q1, self.q2, self.q3, self.q4)
+    def to_tuple(self, scalar_first: bool = True) -> tuple[float, float, float, float]:
+        if scalar_first:
+            return (self.w, self.x, self.y, self.z)
+        else:
+            return (self.x, self.y, self.z, self.w)
 
-    def as_array(self) -> NDArray:
+    def as_array(self, scalar_first: bool = True) -> NDArray:
         """返回 4x1 列向量"""
-        return np.array([[self.q1], [self.q2], [self.q3], [self.q4]], dtype=np.float64)
+        if scalar_first:
+            return np.array([[self.w], [self.x], [self.y], [self.z]], dtype=np.float64)
+        else:
+            return np.array([[self.x], [self.y], [self.z], [self.w]], dtype=np.float64)
 
-    def as_row_array(self) -> NDArray:
+    def as_row_array(self, scalar_first: bool = True) -> NDArray:
         """返回一维数组表示。"""
-        return np.array([self.q1, self.q2, self.q3, self.q4], dtype=np.float64)
+        if scalar_first:
+            return np.array([self.w, self.x, self.y, self.z], dtype=np.float64)
+        else:
+            return np.array([self.x, self.y, self.z, self.w], dtype=np.float64)
 
     # endregion
 
@@ -114,6 +126,17 @@ class Quaternion(Sequence[float], MatrixSerializable, MatrixConstructible):
         angles = [Degree(z).value, Degree(y).value, Degree(x).value]
         # Scipy as_quat(scalar_first=True) 返回 [w, x, y, z]
         q = R.from_euler("ZYX", angles, degrees=True).as_quat(scalar_first=True)
+        return cls(*q)
+
+    @classmethod
+    def from_rpy(cls, z: Degree | float | int, y: Degree | float | int, x: Degree | float | int) -> Self:
+        """
+        从 RPY 欧拉角构造 (外旋)。
+        与 ABB RAPID 程序中 EulerRPY 的旋转定义保持严格一致。
+        """
+        angles = [Degree(z).value, Degree(y).value, Degree(x).value]
+        # Scipy as_quat(scalar_first=True) 返回 [w, x, y, z]
+        q = R.from_euler("RPY", angles, degrees=True).as_quat(scalar_first=True)
         return cls(*q)
 
     @classmethod
@@ -156,9 +179,7 @@ class Quaternion(Sequence[float], MatrixSerializable, MatrixConstructible):
         half_angle = angle_rad / 2.0
         sin_half = math.sin(half_angle)
 
-        return cls(
-            q1=math.cos(half_angle), q2=axis_unit[0] * sin_half, q3=axis_unit[1] * sin_half, q4=axis_unit[2] * sin_half
-        )
+        return cls(math.cos(half_angle), axis_unit[0] * sin_half, axis_unit[1] * sin_half, axis_unit[2] * sin_half)
 
     @classmethod
     def from_vector2vector(cls, from_vec: Vector, to_vec: Vector) -> Self:
@@ -198,14 +219,14 @@ class Quaternion(Sequence[float], MatrixSerializable, MatrixConstructible):
 
     def normalized(self) -> Self:
         """返回单位化的四元数 (保证旋转有效性)"""
-        norm = math.sqrt(self.q1**2 + self.q2**2 + self.q3**2 + self.q4**2)
+        norm = math.sqrt(self.w**2 + self.x**2 + self.y**2 + self.z**2)
         if norm < 1e-12:
-            return replace(self, q1=1.0, q2=0.0, q3=0.0, q4=0.0)
-        return replace(self, q1=self.q1 / norm, q2=self.q2 / norm, q3=self.q3 / norm, q4=self.q4 / norm)
+            return replace(self, w=1.0, x=0.0, y=0.0, z=0.0)
+        return replace(self, w=self.w / norm, x=self.x / norm, y=self.y / norm, z=self.z / norm)
 
     def inverse(self) -> Self:
         """返回共轭四元数 (对于单位四元数即为逆旋转)"""
-        return replace(self, q2=-self.q2, q3=-self.q3, q4=-self.q4)
+        return replace(self, x=-self.x, y=-self.y, z=-self.z)
 
     def __mul__(self, other: Quaternion) -> Self:
         """四元数乘法：self * other (复合旋转)"""
@@ -215,10 +236,10 @@ class Quaternion(Sequence[float], MatrixSerializable, MatrixConstructible):
         w2, x2, y2, z2 = other.to_tuple()
 
         return self.__class__(
-            q1=w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2,
-            q2=w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2,
-            q3=w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2,
-            q4=w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2,
+            w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2,
+            w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2,
+            w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2,
+            w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2,
         ).normalized()
 
     def as_SE3(self) -> NDArray:
@@ -241,10 +262,10 @@ class Quaternion(Sequence[float], MatrixSerializable, MatrixConstructible):
 
     # region 显示与复制
     def __str__(self) -> str:
-        return f"{self.q1:.6f},{self.q2:.6f},{self.q3:.6f},{self.q4:.6f}"
+        return f"{self.w:.6f},{self.x:.6f},{self.y:.6f},{self.z:.6f}"
 
     def __repr__(self) -> str:
-        return f"Quaternion(w={self.q1}, x={self.q2}, y={self.q3}, z={self.q4})"
+        return f"Quaternion(w={self.w}, x={self.x}, y={self.y}, z={self.z})"
 
     def copy(self) -> Self:
         return replace(self)
