@@ -395,10 +395,10 @@ def main() -> int:
 
     try:
         _collect_and_log_all_info(port="COM5", baudrate=460800, timeout_s=2.0, debug_enabled=True)
-        logger.success("\nIMU760 全项读取完成。")
+        logger.success("IMU760 全项读取完成。")
         return 0
     except Exception as exc:
-        logger.warning(f"\nIMU760 全项读取失败：{exc}")
+        logger.warning(f"IMU760 全项读取失败：{exc}")
         return 1
 
 

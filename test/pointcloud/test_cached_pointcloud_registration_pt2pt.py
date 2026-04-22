@@ -437,8 +437,8 @@ def main() -> None:
     if not pcd_2_path.exists():
         raise FileNotFoundError(f"未找到点云文件：{pcd_2_path}")
 
-    pcd_1 = o3d.io.read_point_cloud(str(pcd_1_path))
-    pcd_2 = o3d.io.read_point_cloud(str(pcd_2_path))
+    pcd_1 = o3d.io.read_point_cloud(pcd_1_path)
+    pcd_2 = o3d.io.read_point_cloud(pcd_2_path)
     logger.info(f"PCD1 点数={len(pcd_1.points)} | 文件={pcd_1_path}")
     logger.info(f"PCD2 点数={len(pcd_2.points)} | 文件={pcd_2_path}")
     if len(pcd_1.points) == 0 or len(pcd_2.points) == 0:
