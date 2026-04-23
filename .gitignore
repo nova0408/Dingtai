@@ -10,6 +10,9 @@ Logs/*
 *.pcd
 *.ply
 *.csv
+*.png
+*.jpg
+*.bmp
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
