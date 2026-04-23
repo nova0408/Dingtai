@@ -429,13 +429,13 @@ def main() -> None:
     save_point_cloud(pcd_1, pcd_1_path)
     save_point_cloud(pcd_2, pcd_2_path)
 
-    coarse = coarse_register(pcd_2, pcd_1, min_scale_mm=10.0, max_scale_mm=80.0)
-    fine = fine_register_multiscale_robust_icp(pcd_2, pcd_1, coarse.transformation)
+    # coarse = coarse_register(pcd_2, pcd_1, min_scale_mm=10.0, max_scale_mm=80.0)
+    # fine = fine_register_multiscale_robust_icp(pcd_2, pcd_1, coarse.transformation)
 
-    logger.success(f"粗配准 T(PCD2->PCD1): {SE3_string(coarse.transformation)}")
-    logger.success(f"精配准 T(PCD2->PCD1): {SE3_string(fine.transformation)}")
+    # logger.success(f"粗配准 T(PCD2->PCD1): {SE3_string(coarse.transformation)}")
+    # logger.success(f"精配准 T(PCD2->PCD1): {SE3_string(fine.transformation)}")
 
-    visualize_registration_before_after(pcd_2, pcd_1, fine.transformation)
+    # visualize_registration_before_after(pcd_2, pcd_1, fine.transformation)
 
 
 if __name__ == "__main__":

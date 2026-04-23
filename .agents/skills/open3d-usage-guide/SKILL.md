@@ -28,6 +28,12 @@ if len(pcd.points) == 0:
     raise RuntimeError("点云为空")
 ```
 
+## 最小写入模板（PCD）
+```python
+path = Path("experiments/pcd2.pcd")
+o3d.io.write_point_cloud(path, pcd)
+```
+
 ## 最小可视化模板（O3DVisualizer）
 ```python
 import numpy as np

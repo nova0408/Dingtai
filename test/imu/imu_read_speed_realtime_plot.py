@@ -129,7 +129,7 @@ def run_realtime_monitor(
     reconnect_interval_s: float = 1.0,
     mag_norm_abs_tol: float = 0.15,
     mag_jump_tol: float = 0.08,
-    hotplug_csv: str = "test/imu/imu_hotplug_changes.csv",
+    hotplug_csv: str = "imu_hotplug_changes.csv",
     plug_stable_frames: int = 10,
     plug_settle_frames: int = 5,
 ) -> None:
@@ -465,9 +465,7 @@ def main() -> int:
     parser.add_argument("--reconnect-interval", type=float, default=1.0, help="断开后重连间隔 (秒)")
     parser.add_argument("--mag-norm-abs-tol", type=float, default=0.15, help="|m|-1 告警阈值")
     parser.add_argument("--mag-jump-tol", type=float, default=0.08, help="归一化磁场相邻采样突变阈值")
-    parser.add_argument(
-        "--hotplug-csv", type=str, default="test/imu/imu_hotplug_changes.csv", help="插拔变化统计 CSV 输出路径"
-    )
+    parser.add_argument("--hotplug-csv", type=str, default="imu_hotplug_changes.csv", help="插拔变化统计 CSV 输出路径")
     parser.add_argument("--plug-stable-frames", type=int, default=10, help="插拔前后用于均值统计的稳定帧数")
     parser.add_argument("--plug-settle-frames", type=int, default=5, help="重连后先丢弃的帧数")
     args = parser.parse_args()
