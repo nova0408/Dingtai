@@ -25,6 +25,11 @@ powershell -File .agents/tools/utf8_replace.ps1 -Path <relative-path> -Pattern '
 ```powershell
 Select-String -Path <target-path> -SimpleMatch '`r`n'
 ```
+4. 对会被 `powershell -File` 直接执行的脚本，优先保存为 `UTF-8 with BOM`，避免 5.1 把 UTF-8 无 BOM 按 ANSI 解释。
+5. 在脚本参数默认值中避免硬编码中文路径字面量；优先用 `$PSScriptRoot` 组合相对路径（如 `Join-Path $PSScriptRoot 'GeoTransformer'`），从根源规避路径乱码目录被创建。
+6. 涉及特殊字符路径（中文、重音、组合字符）时，写路径前先做 Unicode 归一化（Form C），并优先使用 `-LiteralPath` 参数，避免被通配符或编码差异误解析。
+7. 下载/解压脚本可显式设置：
+`[Console]::InputEncoding/OutputEncoding` 与 `$OutputEncoding` 为 UTF-8，降低日志与参数传递乱码风险。
 
 ## 常见故障
 - `pwsh` 不存在：继续使用 `powershell` 执行，不阻塞编辑。

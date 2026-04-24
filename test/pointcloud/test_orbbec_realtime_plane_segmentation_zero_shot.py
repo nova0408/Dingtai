@@ -7,33 +7,19 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+import cv2
 import numpy as np
 import open3d as o3d
+import torch  # pip3 install torch torchvision --index-url https://download.pytorch.org/whl/cu126
 from loguru import logger
-
-try:
-    import cv2
-except Exception as exc:  # pragma: no cover
-    raise RuntimeError("需要安装 opencv-python 才能运行该脚本。") from exc
-
-try:
-    import torch
-    from PIL import Image
-    from transformers import (
-        AutoModelForZeroShotObjectDetection,
-        AutoProcessor,
-        SamModel,
-        SamProcessor,
-    )
-except Exception:  # pragma: no cover
-    torch = None
-    Image = None
-    AutoProcessor = None
-    AutoModelForZeroShotObjectDetection = None
-    SamModel = None
-    SamProcessor = None
-
+from PIL import Image
 from pyorbbecsdk import OBFormat
+from transformers import (
+    AutoModelForZeroShotObjectDetection,
+    AutoProcessor,
+    SamModel,
+    SamProcessor,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
@@ -61,15 +47,20 @@ DEFAULT_MAX_TARGETS = 2  # 最多保留目标数量（料盘场景通常为 2）
 DEFAULT_USE_SAM = True  # 是否启用 SAM 精细分割
 DEFAULT_BOX_THRESHOLD = 0.16  # GroundingDINO 框阈值（召回优先）
 DEFAULT_TEXT_THRESHOLD = 0.08  # GroundingDINO 文本阈值（召回优先）
-DEFAULT_MIN_TARGET_CONF = 0.40  # 目标最小置信度阈值（过滤低分干扰目标）
+DEFAULT_MIN_TARGET_CONF = 0.35  # 目标最小置信度阈值（稳定优先，避免边缘分数频繁丢检）
 DEFAULT_TOPK_OBJECTS = 4  # 每帧最多保留目标数
 DEFAULT_SAM_MAX_BOXES = 2  # 每帧最多进入 SAM 的候选框数量
 DEFAULT_MIN_MASK_PIXELS = 300  # 2D 掩码最小像素面积
 DEFAULT_MASK_IOU_SUPPRESS = 0.65  # 掩码抑制阈值（避免重复目标）
 DEFAULT_DETECT_MAX_SIDE = 512  # 2D 检测最长边缩放尺寸，越小越快
 DEFAULT_DETECT_INTERVAL = 4  # 每 N 帧做一次检测，其余帧复用最近结果
+DEFAULT_ENABLE_ADAPTIVE_INTERVAL = True  # 是否启用自适应检测频率（稳态提速、失稳增密）
+DEFAULT_ADAPTIVE_INTERVAL_MAX = 6  # 自适应检测频率上限（越大越省算力）
+DEFAULT_ADAPTIVE_CONF_HIGH = 0.43  # 高置信阈值：高于该值倾向拉长检测间隔
+DEFAULT_ADAPTIVE_CONF_LOW = 0.33  # 低置信阈值：低于该值倾向缩短检测间隔
 DEFAULT_DEBUG_LOG_EVERY_DETECT = 5  # 每 N 次检测打印一次详细候选日志
-DEFAULT_CACHE_HOLD_DETECT_ROUNDS = 3  # 连续空检测时保留历史结果的检测轮数
+DEFAULT_CACHE_HOLD_DETECT_ROUNDS = 5  # 连续空检测时保留历史结果的检测轮数（抗抖动）
+DEFAULT_COMBINE_PROMPTS_FORWARD = False  # True=单次合并前向(更快), False=逐关键词前向(更准)
 
 DEFAULT_TIMEOUT_MS = 120  # 等待帧超时，单位 ms
 DEFAULT_CAPTURE_FPS = 30  # 请求采集帧率，单位 fps
@@ -119,6 +110,7 @@ class ZeroShotObjectPartitionDetector:
         min_target_conf: float,
         topk_objects: int,
         sam_max_boxes: int,
+        combine_prompts_forward: bool,
         min_mask_pixels: int,
         mask_iou_suppress: float,
         detect_max_side: int,
@@ -143,6 +135,7 @@ class ZeroShotObjectPartitionDetector:
         self.min_target_conf = float(np.clip(min_target_conf, 0.0, 1.0))
         self.topk_objects = int(max(1, topk_objects))
         self.sam_max_boxes = int(max(1, sam_max_boxes))
+        self.combine_prompts_forward = bool(combine_prompts_forward)
         self.min_mask_pixels = int(max(20, min_mask_pixels))
         self.mask_iou_suppress = float(np.clip(mask_iou_suppress, 0.1, 0.95))
         self.detect_max_side = int(max(128, detect_max_side))
@@ -186,13 +179,30 @@ class ZeroShotObjectPartitionDetector:
         det_bgr, inv_scale = _resize_for_detection(frame_bgr=frame_bgr, detect_max_side=self.detect_max_side)
         det_rgb = cv2.cvtColor(det_bgr, cv2.COLOR_BGR2RGB)
         pil_det = Image.fromarray(det_rgb)
-        box_items = self._grounding_detect_topk(
-            pil_img=pil_det,
-            prompt_text=self.combined_prompt,
-            topk=self.topk_objects,
-        )
+        box_items: list[tuple[np.ndarray, float, str]] = []
+        if self.combine_prompts_forward:
+            box_items = self._grounding_detect_topk(
+                pil_img=pil_det,
+                prompt_text=self.combined_prompt,
+                topk=self.topk_objects,
+            )
+            box_items = [(b, s, _merge_label_text(raw_label=lb, prompt_term="")) for b, s, lb in box_items]
+        else:
+            # 稳定优先：逐关键词识别，但每词限制候选数量，控制推理开销。
+            per_prompt_topk = int(max(1, min(self.topk_objects, max(2, self.max_targets))))
+            for term in self.prompt_terms:
+                term_items = self._grounding_detect_topk(
+                    pil_img=pil_det,
+                    prompt_text=term,
+                    topk=per_prompt_topk,
+                )
+                for box_det, score, label_text in term_items:
+                    box_items.append((box_det, float(score), _merge_label_text(raw_label=label_text, prompt_term=term)))
         if len(box_items) == 0:
             return []
+        box_items.sort(key=lambda x: x[1], reverse=True)
+        if len(box_items) > self.topk_objects * 3:
+            box_items = box_items[: self.topk_objects * 3]
         if self.detect_count % DEFAULT_DEBUG_LOG_EVERY_DETECT == 1:
             preview = " | ".join(
                 [f"label={str(lbl)}:{float(sc):.2f}" for _, sc, lbl in box_items[: min(8, len(box_items))]]
@@ -202,8 +212,7 @@ class ZeroShotObjectPartitionDetector:
         candidates: list[tuple[np.ndarray, float, str, np.ndarray, int]] = []
         full_pil = None
         filtered_items: list[tuple[np.ndarray, float, str]] = []
-        for box_det, score, label_text in box_items:
-            merged_label = _merge_label_text(raw_label=label_text, prompt_term="")
+        for box_det, score, merged_label in box_items:
             if float(score) < self.min_target_conf:
                 continue
             is_target = self._is_target_label(merged_label)
@@ -382,7 +391,12 @@ def main(
     mask_iou_suppress: float = DEFAULT_MASK_IOU_SUPPRESS,
     detect_max_side: int = DEFAULT_DETECT_MAX_SIDE,
     detect_interval: int = DEFAULT_DETECT_INTERVAL,
+    enable_adaptive_interval: bool = DEFAULT_ENABLE_ADAPTIVE_INTERVAL,
+    adaptive_interval_max: int = DEFAULT_ADAPTIVE_INTERVAL_MAX,
+    adaptive_conf_high: float = DEFAULT_ADAPTIVE_CONF_HIGH,
+    adaptive_conf_low: float = DEFAULT_ADAPTIVE_CONF_LOW,
     cache_hold_detect_rounds: int = DEFAULT_CACHE_HOLD_DETECT_ROUNDS,
+    combine_prompts_forward: bool = DEFAULT_COMBINE_PROMPTS_FORWARD,
     timeout_ms: int = DEFAULT_TIMEOUT_MS,
     capture_fps: int = DEFAULT_CAPTURE_FPS,
     min_object_points: int = DEFAULT_MIN_OBJECT_POINTS,
@@ -403,6 +417,7 @@ def main(
         min_target_conf=min_target_conf,
         topk_objects=topk_objects,
         sam_max_boxes=sam_max_boxes,
+        combine_prompts_forward=combine_prompts_forward,
         min_mask_pixels=min_mask_pixels,
         mask_iou_suppress=mask_iou_suppress,
         detect_max_side=detect_max_side,
@@ -425,7 +440,10 @@ def main(
             f"max_targets {max_targets}, use_sam {use_sam}, box_threshold {box_threshold:.2f}, text_threshold {text_threshold:.2f}, "
             f"min_target_conf {min_target_conf:.2f}, sam_max_boxes {sam_max_boxes}, "
             f"detect_max_side {detect_max_side}, detect_interval {detect_interval}, "
-            f"cache_hold_detect_rounds {cache_hold_detect_rounds}, topk_objects {topk_objects}"
+            f"enable_adaptive_interval {enable_adaptive_interval}, adaptive_interval_max {adaptive_interval_max}, "
+            f"adaptive_conf_high {adaptive_conf_high:.2f}, adaptive_conf_low {adaptive_conf_low:.2f}, "
+            f"cache_hold_detect_rounds {cache_hold_detect_rounds}, topk_objects {topk_objects}, "
+            f"combine_prompts_forward {combine_prompts_forward}"
         )
 
         _run_loop(
@@ -438,6 +456,10 @@ def main(
             img_w=img_w,
             img_h=img_h,
             detect_interval=max(1, int(detect_interval)),
+            enable_adaptive_interval=bool(enable_adaptive_interval),
+            adaptive_interval_max=max(1, int(adaptive_interval_max)),
+            adaptive_conf_high=float(np.clip(adaptive_conf_high, 0.0, 1.0)),
+            adaptive_conf_low=float(np.clip(adaptive_conf_low, 0.0, 1.0)),
             cache_hold_detect_rounds=max(0, int(cache_hold_detect_rounds)),
             min_object_points=max(1, int(min_object_points)),
             alpha=float(np.clip(alpha, 0.0, 1.0)),
@@ -458,6 +480,10 @@ def _run_loop(
     img_w: int,
     img_h: int,
     detect_interval: int,
+    enable_adaptive_interval: bool,
+    adaptive_interval_max: int,
+    adaptive_conf_high: float,
+    adaptive_conf_low: float,
     cache_hold_detect_rounds: int,
     min_object_points: int,
     alpha: float,
@@ -487,6 +513,11 @@ def _run_loop(
     frame_idx = 0
     cached_dets: list[Detection2D] = []
     consecutive_empty_detect_rounds = 0
+    current_detect_interval = max(1, int(detect_interval))
+    adaptive_interval_cap = max(current_detect_interval, int(adaptive_interval_max))
+    detect_countdown = 0
+    if adaptive_conf_low > adaptive_conf_high:
+        adaptive_conf_low = adaptive_conf_high
     try:
         while True:
             if stop["flag"]:
@@ -511,17 +542,26 @@ def _run_loop(
                 else rgb_img
             )
 
-            if frame_idx % detect_interval == 1:
+            if detect_countdown <= 0:
                 dets_new = detector.detect(base_2d)
                 if len(dets_new) > 0:
                     cached_dets = dets_new
                     consecutive_empty_detect_rounds = 0
+                    if enable_adaptive_interval:
+                        best_conf = max([float(d.confidence_2d) for d in dets_new])
+                        if best_conf >= adaptive_conf_high:
+                            current_detect_interval = min(adaptive_interval_cap, current_detect_interval + 1)
+                        elif best_conf <= adaptive_conf_low:
+                            current_detect_interval = max(1, current_detect_interval - 1)
                 else:
                     consecutive_empty_detect_rounds += 1
+                    if enable_adaptive_interval:
+                        current_detect_interval = max(1, current_detect_interval - 1)
                     if consecutive_empty_detect_rounds > cache_hold_detect_rounds:
                         cached_dets = []
                 dets = cached_dets
-                if frame_idx % (detect_interval * DEFAULT_DEBUG_LOG_EVERY_DETECT) == 1:
+                detect_countdown = max(0, current_detect_interval - 1)
+                if frame_idx % (max(1, detect_interval) * DEFAULT_DEBUG_LOG_EVERY_DETECT) == 1:
                     if len(dets) > 0:
                         mapping: list[str] = []
                         for d in dets:
@@ -529,11 +569,14 @@ def _run_loop(
                             mapping.append(
                                 f"O{d.det_id}/BGR{bgr}/label={d.label_text}/conf={d.confidence_2d:.2f}/area={d.area_pixels}"
                             )
-                        logger.info(f"颜色 - 关键词映射：{' | '.join(mapping)}")
+                        logger.info(
+                            f"颜色 - 关键词映射：{' | '.join(mapping)} | detect_interval_now={current_detect_interval}"
+                        )
                     else:
-                        logger.info("颜色 - 关键词映射：当前无有效目标")
+                        logger.info(f"颜色 - 关键词映射：当前无有效目标 | detect_interval_now={current_detect_interval}")
             else:
                 dets = cached_dets
+                detect_countdown -= 1
 
             labels = np.full((xyz.shape[0],), -1, dtype=np.int32)
             show_dets: list[Detection2D] = []
@@ -916,9 +959,16 @@ def _parse_cli() -> tuple[
     float,
     int,
     int,
+    int,
     float,
     int,
     int,
+    int,
+    bool,
+    int,
+    float,
+    float,
+    bool,
     int,
     int,
     int,
@@ -963,10 +1013,40 @@ def _parse_cli() -> tuple[
     parser.add_argument("--detect-max-side", type=int, default=DEFAULT_DETECT_MAX_SIDE, help="检测缩放最长边")
     parser.add_argument("--detect-interval", type=int, default=DEFAULT_DETECT_INTERVAL, help="每 N 帧检测一次")
     parser.add_argument(
+        "--enable-adaptive-interval",
+        action=argparse.BooleanOptionalAction,
+        default=DEFAULT_ENABLE_ADAPTIVE_INTERVAL,
+        help="是否启用自适应检测频率",
+    )
+    parser.add_argument(
+        "--adaptive-interval-max",
+        type=int,
+        default=DEFAULT_ADAPTIVE_INTERVAL_MAX,
+        help="自适应检测频率上限（仅在启用自适应时生效）",
+    )
+    parser.add_argument(
+        "--adaptive-conf-high",
+        type=float,
+        default=DEFAULT_ADAPTIVE_CONF_HIGH,
+        help="高置信阈值（高于该阈值时可增大检测间隔）",
+    )
+    parser.add_argument(
+        "--adaptive-conf-low",
+        type=float,
+        default=DEFAULT_ADAPTIVE_CONF_LOW,
+        help="低置信阈值（低于该阈值时减小检测间隔）",
+    )
+    parser.add_argument(
         "--cache-hold-detect-rounds",
         type=int,
         default=DEFAULT_CACHE_HOLD_DETECT_ROUNDS,
         help="连续空检测时保留历史结果的检测轮数",
+    )
+    parser.add_argument(
+        "--combine-prompts-forward",
+        action=argparse.BooleanOptionalAction,
+        default=DEFAULT_COMBINE_PROMPTS_FORWARD,
+        help="是否将多个提示词合并为单次前向（更快但可能降稳）",
     )
 
     parser.add_argument("--timeout-ms", type=int, default=DEFAULT_TIMEOUT_MS, help="wait_for_frames 超时（ms）")
@@ -994,7 +1074,12 @@ def _parse_cli() -> tuple[
         float(args.mask_iou_suppress),
         int(args.detect_max_side),
         int(args.detect_interval),
+        bool(args.enable_adaptive_interval),
+        int(args.adaptive_interval_max),
+        float(args.adaptive_conf_high),
+        float(args.adaptive_conf_low),
         int(args.cache_hold_detect_rounds),
+        bool(args.combine_prompts_forward),
         int(args.timeout_ms),
         int(args.capture_fps),
         int(args.min_object_points),
@@ -1027,7 +1112,12 @@ if __name__ == "__main__":
                 iou_sup_arg,
                 detect_side_arg,
                 detect_interval_arg,
+                enable_adaptive_interval_arg,
+                adaptive_interval_max_arg,
+                adaptive_conf_high_arg,
+                adaptive_conf_low_arg,
                 cache_hold_rounds_arg,
+                combine_prompts_forward_arg,
                 timeout_arg,
                 fps_arg,
                 min_obj_pts_arg,
@@ -1052,7 +1142,12 @@ if __name__ == "__main__":
                 mask_iou_suppress=iou_sup_arg,
                 detect_max_side=detect_side_arg,
                 detect_interval=detect_interval_arg,
+                enable_adaptive_interval=enable_adaptive_interval_arg,
+                adaptive_interval_max=adaptive_interval_max_arg,
+                adaptive_conf_high=adaptive_conf_high_arg,
+                adaptive_conf_low=adaptive_conf_low_arg,
                 cache_hold_detect_rounds=cache_hold_rounds_arg,
+                combine_prompts_forward=combine_prompts_forward_arg,
                 timeout_ms=timeout_arg,
                 capture_fps=fps_arg,
                 min_object_points=min_obj_pts_arg,
