@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import math
 import re
-from dataclasses import dataclass, field, replace
-from typing import Any, Self, Sequence, final, overload
+from dataclasses import dataclass
+from typing import Self, final, overload
 
 import numpy as np
 

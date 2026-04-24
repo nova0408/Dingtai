@@ -7,12 +7,12 @@ from typing import TYPE_CHECKING, Any, Self, overload
 import numpy as np
 from numpy.typing import NDArray
 
-from .GeometricTolerances import LINEAR_TOLERANCES
+from .geometric_tolerances import LINEAR_TOLERANCES
 
 if TYPE_CHECKING:
-    from .Kinematics.Transform import Transform
-    from .Kinematics.TransformProtocol import MatrixSerializable
-    from .Vector import Vector
+    from .kinematics.transform import Transform
+    from .kinematics.transform_protocol import MatrixSerializable
+    from .vector import Vector
 
 
 @dataclass(frozen=True, slots=True)

@@ -14,7 +14,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.utils.Datas.Kinematics.SE3 import SE3_string
+from src.utils.datas.kinematics.se3 import SE3_string
 
 
 def _preprocess_for_feature(

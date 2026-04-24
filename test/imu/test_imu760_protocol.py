@@ -23,7 +23,7 @@ from src.imu.imu760 import (
     decode_output_payload,
 )
 from src.imu.ttl import TTLSerialConfig, TTLSerialTransport
-from src.utils.Datas import Degree, Quaternion
+from src.utils.datas import Degree, Quaternion
 
 
 class FakeTransport:

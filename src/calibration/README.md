@@ -17,14 +17,14 @@
 
 接口输入支持：
 
-- `src.utils.Datas.Transform`（推荐）
+- `src.utils.datas.Transform`（推荐）
 - `np.ndarray` 形状 `4x4` 的 SE(3) 矩阵
 
 ## 2. 快速调用示例
 
 ```python
 from src.calibration import calibrate_hand_eye_from_pose_sequences
-from src.utils.Datas import Transform
+from src.utils.datas import Transform
 
 # 两组同步位姿（长度必须一致）
 group_a: list[Transform] = [...]
@@ -124,4 +124,5 @@ b_x,b_y,b_z,b_qw,b_qx,b_qy,b_qz
 - 当前模块不做时间同步，请在上游完成时间对齐。
 - 当前模块不自动做离群点鲁棒优化，如需抗异常值可在上游先过滤。
 - 未接真实硬件前，只能声明软件级验证通过，不能声明硬件行为已验证。
+
 

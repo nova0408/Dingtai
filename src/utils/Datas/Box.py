@@ -7,7 +7,7 @@ from typing import Self, overload
 import numpy as np
 from numpy.typing import NDArray
 
-from .Point import Point
+from .point import Point
 
 
 @dataclass(frozen=True)

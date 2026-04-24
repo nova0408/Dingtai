@@ -6,9 +6,9 @@ from typing import TYPE_CHECKING, Self
 
 import numpy as np
 
-from ..Point import Point
-from ..Vector import Vector
-from .Transform import Transform
+from ..point import Point
+from ..vector import Vector
+from .transform import Transform
 
 
 @dataclass(frozen=True, slots=True)

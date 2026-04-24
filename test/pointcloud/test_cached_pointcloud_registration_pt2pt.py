@@ -15,7 +15,7 @@ from loguru import logger
 from scipy.optimize import linear_sum_assignment
 from scipy.spatial import cKDTree
 
-from src.utils.Datas.Kinematics.SE3 import SE3_string
+from src.utils.datas.kinematics.se3 import SE3_string
 
 
 def _preprocess_for_feature(

@@ -7,9 +7,9 @@ from typing import Self, final, overload
 import numpy as np
 from loguru import logger
 
-from .Quaternion import Quaternion
-from .TransformProtocol import MatrixConstructible, MatrixSerializable
-from .Translation import Translation
+from .quaternion import Quaternion
+from .transform_protocol import MatrixConstructible, MatrixSerializable
+from .translation import Translation
 
 
 @final

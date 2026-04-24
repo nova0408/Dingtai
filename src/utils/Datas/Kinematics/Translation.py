@@ -7,7 +7,7 @@ from typing import Any, Self, final, overload
 
 import numpy as np
 
-from .TransformProtocol import MatrixSerializable
+from .transform_protocol import MatrixSerializable
 
 
 @final

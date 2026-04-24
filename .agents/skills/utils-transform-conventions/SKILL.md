@@ -1,15 +1,15 @@
 ---
 name: utils-transform-conventions
-description: 项目中基本数学单位优先使用 `src.utils.Datas` 自定义数据类型。涉及 Degree/Point/Vector/Transform/Quaternion/Translation/Axis/SE(3) 变换/矩阵序列化与构造时，优先遵循本技能。
+description: 项目中基本数学单位优先使用 `src.utils.datas` 自定义数据类型。涉及 Degree/Point/Vector/Transform/Quaternion/Translation/Axis/SE(3) 变换/矩阵序列化与构造时，优先遵循本技能。
 ---
 
 # Utils Transform Conventions
 
-## 目标（基于 `src/utils/Datas` 全量扫描）
+## 目标（基于 `src/utils/datas` 全量扫描）
 
 让以下两类内容与项目当前实现保持一致：
 
-1. `src.utils` / `src.utils.Datas` 的导入边界
+1. `src.utils` / `src.utils.datas` 的导入边界
 2. 刚体变换协议（`as_SE3` / `from_SE3` / `from_SO3`）与矩阵形状约定
 
 ## 适用场景
@@ -26,13 +26,13 @@ description: 项目中基本数学单位优先使用 `src.utils.Datas` 自定义
 
 ### 1) 导入边界
 
-- 几何/运动学数据类型：从 `src.utils.Datas` 导入。
+- 几何/运动学数据类型：从 `src.utils.datas` 导入。
 - `src.utils` 只用于通用工具（`HighPrecisionTimer`、`check_dict`、`check_config`、`SE3_2_xyzr`、`SE3_string`），不用于导出运动学类型。
 
 推荐：
 
 ```python
-from src.utils.Datas import (
+from src.utils.datas import (
     Degree, Radian, Point, Vector, Box,
     Transform, Quaternion, Translation, Axis,
     ANGULAR_TOLERANCES, ARC_TOLERANCES, LINEAR_TOLERANCES,
@@ -47,16 +47,16 @@ from src.utils import Transform  # src.utils 当前并未暴露 Transform
 
 ### 2) 协议类型导入
 
-优先从 `src.utils.Datas` 直接导入协议：
+优先从 `src.utils.datas` 直接导入协议：
 
 ```python
-from src.utils.Datas import MatrixSerializable, MatrixConstructible, HomogeneousTransformProtocol
+from src.utils.datas import MatrixSerializable, MatrixConstructible, HomogeneousTransformProtocol
 ```
 
 在当前主干中，若你必须绕过聚合导入（例如排查导入链问题），请使用真实文件路径：
 
 ```python
-from src.utils.Datas.Kinematics.TransformProtocol import (
+from src.utils.datas.kinematics.transform_protocol import (
     MatrixSerializable, MatrixConstructible, HomogeneousTransformProtocol
 )
 ```
@@ -139,13 +139,9 @@ from src.utils.Datas.Kinematics.TransformProtocol import (
 
 ## 当前代码状态提示（避免误用）
 
-截至 2026-04-17 全量扫描结果：
-
-1. `Vector.py / Transform.py / Translation.py / Quaternion.py` 仍有 `from .HomogeneousTransformProtocol import ...` 的历史路径引用。
-2. 实际协议文件为 `src/utils/Datas/Kinematics/TransformProtocol.py`。
-3. 因上述不一致，`import src.utils.Datas` 当前可能抛 `ModuleNotFoundError`。
-
-建议：在修复导入链之前，优先按“真实路径”导入协议定义，并避免新增对历史路径的依赖。
+1. 本仓库统一使用小写路径：`src.utils.datas`、`src.utils.datas.kinematics`。
+2. 协议定义文件为 `src/utils/datas/kinematics/transform_protocol.py`。
+3. 新代码不要再引入历史大小写路径（如 `Datas`、`Kinematics`、`TransformProtocol.py`）。
 
 ## 修改代码时的执行清单
 ## 文本编辑安全补充
@@ -153,7 +149,7 @@ from src.utils.Datas.Kinematics.TransformProtocol import (
 - 使用 PowerShell 做批量替换时，必须同时遵循 `windows-powershell-utf8-safe-edit`。
 - 禁止把 `` `r`n `` 当作普通文本写回文件；替换后需做字面量污染检查。
 
-1. 先判断是否应从 `src.utils.Datas` 导入（而不是 `src.utils`）。
+1. 先判断是否应从 `src.utils.datas` 导入（而不是 `src.utils`）。
 2. 新代码统一调用 `as_SE3/from_SE3`；若输入为 `3x3` 旋转矩阵，显式使用 `from_SO3`。
 3. 涉及矩阵传递时，明确 `3x3` / `4x4` 语义，避免点与向量混用导致平移污染。
 4. 不随意改变现有公共方法名；若新增能力，优先沿 `SE3/SO3` 协议扩展。
@@ -161,7 +157,7 @@ from src.utils.Datas.Kinematics.TransformProtocol import (
 ## 最小示例
 
 ```python
-from src.utils.Datas import Transform, Translation, Quaternion, Point, Vector
+from src.utils.datas import Transform, Translation, Quaternion, Point, Vector
 
 base = Transform(Translation(10, 0, 0), Quaternion.Identity())
 step = Transform(Translation(0, 5, 0), Quaternion.from_zyx(0, 0, 90))
@@ -177,3 +173,4 @@ v = Vector(1, 0, 0).transformed(T)  # 不受平移影响
 - 任何文件修改前都必须做快照。
 - 快照必须存放在仓库根目录 `.archive` 下并保留目录结构。
 - 若通过 PowerShell 做批量替换，必须同时遵循 `windows-powershell-utf8-safe-edit`。
+

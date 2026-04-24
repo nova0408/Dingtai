@@ -6,8 +6,8 @@ from typing import Literal
 import numpy as np
 from numpy.typing import NDArray
 
-from src.utils.Datas import Quaternion, Transform, Translation
-from src.utils.Datas.Kinematics.TransformProtocol import MatrixSerializable
+from src.utils.datas import Quaternion, Transform, Translation
+from src.utils.datas.kinematics.transform_protocol import MatrixSerializable
 
 PoseLike = MatrixSerializable | NDArray[np.floating]
 PairMode = Literal["adjacent", "all"]
@@ -275,4 +275,3 @@ def generate_synthetic_motion_pairs(
 
     x_true_transform = Transform.from_SE3(x_true)
     return a_motions, b_motions, x_true_transform
-

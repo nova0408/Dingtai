@@ -8,7 +8,7 @@ from time import monotonic
 
 from loguru import logger
 
-from src.utils.Datas import Degree, Quaternion
+from src.utils.datas import Degree, Quaternion
 
 from .ttl import TTLSerialTransport
 

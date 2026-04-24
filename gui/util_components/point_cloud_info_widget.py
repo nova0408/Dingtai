@@ -1,7 +1,7 @@
 from PySide6.QtCore import QModelIndex, Signal, Slot
 from PySide6.QtWidgets import QWidget
 
-from src.utils.Datas import Transform
+from src.utils.datas import Transform
 
 from .casia_tree import INodeInfoDisplay, PointCloudNode
 from .PointCloudInfoWidget_ui import Ui_PointCloudInfoWidget

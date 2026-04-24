@@ -1,4 +1,4 @@
-from .Datas.Kinematics.SE3 import SE3_2_xyzr, SE3_string
+from .datas.kinematics.se3 import SE3_2_xyzr, SE3_string
 from .Timer import HighPrecisionTimer
 
 __all__ = [

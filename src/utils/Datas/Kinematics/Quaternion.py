@@ -10,9 +10,9 @@ import numpy as np
 from numpy.typing import NDArray
 from scipy.spatial.transform import Rotation as R
 
-from ..Degree import Degree
-from ..Vector import Vector
-from .TransformProtocol import MatrixConstructible, MatrixSerializable
+from ..degree import Degree
+from ..vector import Vector
+from .transform_protocol import MatrixConstructible, MatrixSerializable
 
 
 class EulerSequence(Enum):

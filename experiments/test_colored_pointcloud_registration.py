@@ -27,7 +27,7 @@ from pyorbbecsdk import (
     PointCloudFilter,
 )
 
-from src.utils.Datas.Kinematics.SE3 import SE3_string
+from src.utils.datas.kinematics.se3 import SE3_string
 
 
 @dataclass(frozen=True)

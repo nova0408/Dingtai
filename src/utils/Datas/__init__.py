@@ -1,7 +1,8 @@
-from .Box import Box
-from .Degree import Degree
-from .GeometricTolerances import ANGULAR_TOLERANCES, ARC_TOLERANCES, LINEAR_TOLERANCES
-from .Kinematics import (
+from .box import Box
+from .color import Color
+from .degree import Degree
+from .geometric_tolerances import ANGULAR_TOLERANCES, ARC_TOLERANCES, LINEAR_TOLERANCES
+from .kinematics import (
     ArraySerializable,
     Axis,
     EulerSequence,
@@ -13,14 +14,15 @@ from .Kinematics import (
     Transform,
     Translation,
 )
-from .Point import Point
-from .Radian import Radian
-from .Vector import Vector
+from .point import Point
+from .radian import Radian
+from .vector import Vector
 
 __all__ = [
     "Degree",
     "EulerSequence",
     "Quaternion",
+    "Color",
     "Vector",
     "Translation",
     "Transform",

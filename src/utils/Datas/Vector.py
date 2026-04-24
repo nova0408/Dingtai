@@ -8,13 +8,13 @@ from typing import TYPE_CHECKING, Any, final, overload
 import numpy as np
 from numpy.typing import NDArray
 
-from .GeometricTolerances import LINEAR_TOLERANCES
-from .Kinematics.TransformProtocol import MatrixSerializable
+from .geometric_tolerances import LINEAR_TOLERANCES
+from .kinematics.transform_protocol import MatrixSerializable
 
 if TYPE_CHECKING:
-    from .Kinematics.Quaternion import Quaternion
-    from .Kinematics.Transform import Transform
-    from .Point import Point
+    from .kinematics.quaternion import Quaternion
+    from .kinematics.transform import Transform
+    from .point import Point
 
 
 @final

@@ -17,7 +17,7 @@ from experiments.practical_color_coarse_registration import (
     TeaserLikeParams,
     teaser_like_color_coarse_registration,
 )
-from src.utils.Datas.Kinematics.SE3 import SE3_string
+from src.utils.datas.kinematics.se3 import SE3_string
 
 DEFAULT_SRC = PROJECT_ROOT / "experiments" / "pcd2.pcd"
 DEFAULT_TGT = PROJECT_ROOT / "experiments" / "pcd1.pcd"
