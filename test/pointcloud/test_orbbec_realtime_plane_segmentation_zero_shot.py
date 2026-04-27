@@ -50,6 +50,8 @@ DEFAULT_TEXT_THRESHOLD = 0.08  # GroundingDINO 文本阈值（召回优先）
 DEFAULT_MIN_TARGET_CONF = 0.35  # 目标最小置信度阈值（稳定优先，避免边缘分数频繁丢检）
 DEFAULT_TOPK_OBJECTS = 4  # 每帧最多保留目标数
 DEFAULT_SAM_MAX_BOXES = 2  # 每帧最多进入 SAM 的候选框数量
+DEFAULT_SAM_PRIMARY_ONLY = True  # True 时仅主目标默认走 SAM，其余目标走轻量掩码
+DEFAULT_SAM_SECONDARY_CONF_THRESHOLD = 0.55  # 次目标置信度达到该阈值时也走 SAM（平衡精度与速度）
 DEFAULT_MIN_MASK_PIXELS = 300  # 2D 掩码最小像素面积
 DEFAULT_MASK_IOU_SUPPRESS = 0.65  # 掩码抑制阈值（避免重复目标）
 DEFAULT_DETECT_MAX_SIDE = 512  # 2D 检测最长边缩放尺寸，越小越快
@@ -71,10 +73,11 @@ DEFAULT_MIN_OBJECT_POINTS = 60  # 3D 显示最小点数
 DEFAULT_ALPHA = 0.42  # 2D/3D叠加半透明权重
 DEFAULT_WINDOW_WIDTH = 1440  # 3D 窗口宽度
 DEFAULT_WINDOW_HEIGHT = 900  # 3D 窗口高度
+DEFAULT_MIN_2D_WINDOW_LONG_SIDE = 800  # 2D 预览窗口最小长边，单位 像素
 DEFAULT_POINT_SIZE = 1.5  # 3D 点大小
 DEFAULT_BACKGROUND_COLOR = np.asarray([0.02, 0.02, 0.02], dtype=np.float64)  # 3D 背景色
 DEFAULT_BASE_COLOR = np.asarray([0.22, 0.22, 0.22], dtype=np.float64)  # 基础点云颜色
-DEFAULT_2D_WINDOW_NAME = "Orbbec object partition detector"  # 2D 窗口名
+DEFAULT_2D_WINDOW_NAME = "Orbbec object partition detector"  # 2D 窗口名（ASCII，避免 cv2 中文标题兼容问题）
 # endregion
 
 
@@ -110,6 +113,8 @@ class ZeroShotObjectPartitionDetector:
         min_target_conf: float,
         topk_objects: int,
         sam_max_boxes: int,
+        sam_primary_only: bool,
+        sam_secondary_conf_threshold: float,
         combine_prompts_forward: bool,
         min_mask_pixels: int,
         mask_iou_suppress: float,
@@ -135,6 +140,8 @@ class ZeroShotObjectPartitionDetector:
         self.min_target_conf = float(np.clip(min_target_conf, 0.0, 1.0))
         self.topk_objects = int(max(1, topk_objects))
         self.sam_max_boxes = int(max(1, sam_max_boxes))
+        self.sam_primary_only = bool(sam_primary_only)
+        self.sam_secondary_conf_threshold = float(np.clip(sam_secondary_conf_threshold, 0.0, 1.0))
         self.combine_prompts_forward = bool(combine_prompts_forward)
         self.min_mask_pixels = int(max(20, min_mask_pixels))
         self.mask_iou_suppress = float(np.clip(mask_iou_suppress, 0.1, 0.95))
@@ -164,6 +171,7 @@ class ZeroShotObjectPartitionDetector:
             logger.info("跳过 SAM：使用检测框掩码（更快）")
 
         logger.info(f"零训练划分检测器就绪：device {self.device}")
+        logger.success("零训练划分检测器初始化成功")
 
     def _resolve_device(self, device: str) -> torch.device:
         d = str(device).strip().lower()
@@ -228,9 +236,15 @@ class ZeroShotObjectPartitionDetector:
             filtered_items = filtered_items[: self.sam_max_boxes]
             full_pil = Image.fromarray(cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB))
 
-        for box_det, score, merged_label in filtered_items:
+        for idx, (box_det, score, merged_label) in enumerate(filtered_items):
             box_full = _scale_box_xyxy(box_xyxy=box_det, scale=inv_scale, w=w, h=h)
+            use_sam_for_this = False
             if self.use_sam:
+                if not self.sam_primary_only:
+                    use_sam_for_this = True
+                else:
+                    use_sam_for_this = idx == 0 or float(score) >= self.sam_secondary_conf_threshold
+            if use_sam_for_this:
                 mask = self._sam_segment_box(pil_img=full_pil, box_xyxy=box_full, out_h=h, out_w=w)
                 if mask is None:
                     continue
@@ -387,6 +401,8 @@ def main(
     min_target_conf: float = DEFAULT_MIN_TARGET_CONF,
     topk_objects: int = DEFAULT_TOPK_OBJECTS,
     sam_max_boxes: int = DEFAULT_SAM_MAX_BOXES,
+    sam_primary_only: bool = DEFAULT_SAM_PRIMARY_ONLY,
+    sam_secondary_conf_threshold: float = DEFAULT_SAM_SECONDARY_CONF_THRESHOLD,
     min_mask_pixels: int = DEFAULT_MIN_MASK_PIXELS,
     mask_iou_suppress: float = DEFAULT_MASK_IOU_SUPPRESS,
     detect_max_side: int = DEFAULT_DETECT_MAX_SIDE,
@@ -417,6 +433,8 @@ def main(
         min_target_conf=min_target_conf,
         topk_objects=topk_objects,
         sam_max_boxes=sam_max_boxes,
+        sam_primary_only=sam_primary_only,
+        sam_secondary_conf_threshold=sam_secondary_conf_threshold,
         combine_prompts_forward=combine_prompts_forward,
         min_mask_pixels=min_mask_pixels,
         mask_iou_suppress=mask_iou_suppress,
@@ -439,6 +457,7 @@ def main(
             f"参数：prompt {prompt}, target_keywords {target_keywords}, strict_target_filter {strict_target_filter}, "
             f"max_targets {max_targets}, use_sam {use_sam}, box_threshold {box_threshold:.2f}, text_threshold {text_threshold:.2f}, "
             f"min_target_conf {min_target_conf:.2f}, sam_max_boxes {sam_max_boxes}, "
+            f"sam_primary_only {sam_primary_only}, sam_secondary_conf_threshold {sam_secondary_conf_threshold:.2f}, "
             f"detect_max_side {detect_max_side}, detect_interval {detect_interval}, "
             f"enable_adaptive_interval {enable_adaptive_interval}, adaptive_interval_max {adaptive_interval_max}, "
             f"adaptive_conf_high {adaptive_conf_high:.2f}, adaptive_conf_low {adaptive_conf_low:.2f}, "
@@ -499,7 +518,14 @@ def _run_loop(
     axis = o3d.geometry.TriangleMesh.create_coordinate_frame(size=200.0, origin=[0.0, 0.0, 0.0])
     vis.add_geometry(axis)
     vis.add_geometry(base_pcd)
+    _apply_reference_camera_view(vis=vis)
     cv2.namedWindow(DEFAULT_2D_WINDOW_NAME, cv2.WINDOW_NORMAL)
+    win_w, win_h = _compute_preview_window_size(
+        src_w=img_w,
+        src_h=img_h,
+        min_long_side=DEFAULT_MIN_2D_WINDOW_LONG_SIDE,
+    )
+    cv2.resizeWindow(DEFAULT_2D_WINDOW_NAME, win_w, win_h)
 
     stop = {"flag": False}
 
@@ -624,6 +650,29 @@ def _tensor_dict_to_device(batch: dict, device: torch.device) -> dict:
         else:
             out[k] = v
     return out
+
+
+def _apply_reference_camera_view(vis: o3d.visualization.VisualizerWithKeyCallback) -> None:
+    # 与 experiments/test_colored_pointcloud_registration.py 保持一致。
+    view = vis.get_view_control()
+    if view is None:
+        return
+    view.set_lookat([0.0, 0.0, 0.0])
+    view.set_front([0.0, 0.0, -1.0])
+    view.set_up([0.0, -1.0, 0.0])
+
+
+def _compute_preview_window_size(src_w: int, src_h: int, min_long_side: int) -> tuple[int, int]:
+    w = max(1, int(src_w))
+    h = max(1, int(src_h))
+    min_ls = max(1, int(min_long_side))
+    long_side = max(w, h)
+    if long_side >= min_ls:
+        return w, h
+    scale = float(min_ls) / float(long_side)
+    out_w = max(1, int(round(w * scale)))
+    out_h = max(1, int(round(h * scale)))
+    return out_w, out_h
 
 
 def _apply_download_proxy(proxy_url: str) -> None:
@@ -959,6 +1008,8 @@ def _parse_cli() -> tuple[
     float,
     int,
     int,
+    bool,
+    float,
     int,
     float,
     int,
@@ -1007,6 +1058,18 @@ def _parse_cli() -> tuple[
     parser.add_argument("--topk-objects", type=int, default=DEFAULT_TOPK_OBJECTS, help="每帧最多保留目标数")
     parser.add_argument(
         "--sam-max-boxes", type=int, default=DEFAULT_SAM_MAX_BOXES, help="每帧最多进入 SAM 的候选框数量"
+    )
+    parser.add_argument(
+        "--sam-primary-only",
+        action=argparse.BooleanOptionalAction,
+        default=DEFAULT_SAM_PRIMARY_ONLY,
+        help="是否仅主目标默认走 SAM（次目标走轻量掩码）",
+    )
+    parser.add_argument(
+        "--sam-secondary-conf-threshold",
+        type=float,
+        default=DEFAULT_SAM_SECONDARY_CONF_THRESHOLD,
+        help="次目标达到该置信度时也走 SAM",
     )
     parser.add_argument("--min-mask-pixels", type=int, default=DEFAULT_MIN_MASK_PIXELS, help="掩码最小像素面积")
     parser.add_argument("--mask-iou-suppress", type=float, default=DEFAULT_MASK_IOU_SUPPRESS, help="掩码抑制 IoU 阈值")
@@ -1070,6 +1133,8 @@ def _parse_cli() -> tuple[
         float(args.min_target_conf),
         int(args.topk_objects),
         int(args.sam_max_boxes),
+        bool(args.sam_primary_only),
+        float(args.sam_secondary_conf_threshold),
         int(args.min_mask_pixels),
         float(args.mask_iou_suppress),
         int(args.detect_max_side),
@@ -1108,6 +1173,8 @@ if __name__ == "__main__":
                 min_target_conf_arg,
                 topk_arg,
                 sam_max_boxes_arg,
+                sam_primary_only_arg,
+                sam_secondary_conf_threshold_arg,
                 min_mask_arg,
                 iou_sup_arg,
                 detect_side_arg,
@@ -1138,6 +1205,8 @@ if __name__ == "__main__":
                 min_target_conf=min_target_conf_arg,
                 topk_objects=topk_arg,
                 sam_max_boxes=sam_max_boxes_arg,
+                sam_primary_only=sam_primary_only_arg,
+                sam_secondary_conf_threshold=sam_secondary_conf_threshold_arg,
                 min_mask_pixels=min_mask_arg,
                 mask_iou_suppress=iou_sup_arg,
                 detect_max_side=detect_side_arg,
