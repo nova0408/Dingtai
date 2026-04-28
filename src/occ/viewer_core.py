@@ -208,8 +208,7 @@ class OCCViewer(Display3d):
         self.Context.InitSelected()
         self.selected_AISs = []
         while self.Context.MoreSelected():
-            if self.Context.HasSelectedShape():
-                self.selected_AISs.append(self.Context.SelectedShape())
+            self.selected_AISs.append(self.Context.SelectedInteractive())
             self.Context.NextSelected()
         for callback in self._select_callbacks:
             callback(self.selected_AISs, xmin, ymin, xmax, ymax)
@@ -218,7 +217,7 @@ class OCCViewer(Display3d):
         self.Context.Select(True)
         self.Context.InitSelected()
         self.selected_AISs = []
-        if self.Context.MoreSelected() and self.Context.HasSelectedShape():
+        if self.Context.MoreSelected():
             self.selected_AISs.append(self.Context.SelectedInteractive())
         for callback in self._select_callbacks:
             callback(self.selected_AISs, x, y)
@@ -228,8 +227,7 @@ class OCCViewer(Display3d):
         self.Context.InitSelected()
         self.selected_AISs = []
         while self.Context.MoreSelected():
-            if self.Context.HasSelectedShape():
-                self.selected_AISs.append(self.Context.SelectedShape())
+            self.selected_AISs.append(self.Context.SelectedInteractive())
             self.Context.NextSelected()
         self.Context.UpdateSelected(True)
         for callback in self._select_callbacks:

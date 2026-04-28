@@ -76,6 +76,7 @@ class qtViewer3dWidget(qtBaseViewerWidget):
 
         self._qApp = QApplication.instance()
         self._key_map: dict[int, Callable] = {}
+        self._custom_key_map: dict[int, Callable] = {}
         self._current_cursor = "arrow"
         self._available_cursors: dict[str, QtGui.QCursor] = {}
 
@@ -102,6 +103,7 @@ class qtViewer3dWidget(qtBaseViewerWidget):
             ord("S"): self.viewer3d.SetModeShaded,
             ord("W"): self.viewer3d.SetModeWireFrame,
         }
+        self._key_map.update(self._custom_key_map)
 
         self.create_cursors()
         self.viewer3d.set_selection_color(1, RGB_to_Quantity_Color(self._selection_color))
@@ -129,6 +131,18 @@ class qtViewer3dWidget(qtBaseViewerWidget):
         code = event.key()
         if event.modifiers() == Qt.KeyboardModifier.NoModifier and code in self._key_map:
             self._key_map[code]()
+
+    def register_key_action(self, key: int, callback: Callable) -> None:
+        if not callable(callback):
+            raise TypeError("callback must be callable")
+        self._custom_key_map[key] = callback
+        self._key_map[key] = callback
+
+    def unregister_key_action(self, key: int) -> None:
+        if key in self._custom_key_map:
+            del self._custom_key_map[key]
+        if key in self._key_map:
+            del self._key_map[key]
 
     def focusInEvent(self, event):
         super().focusInEvent(event)
@@ -217,15 +231,13 @@ class qtViewer3dWidget(qtBaseViewerWidget):
                 self.viewer3d.select_area(svx, svy, evx, evy)
                 self._select_area = False
                 self.update()
-                if self.viewer3d.selected_AISs:
-                    self.signal_AISs_selected.emit(self.viewer3d.selected_AISs)
+                self.signal_AISs_selected.emit(self.viewer3d.selected_AISs)
             else:
                 if event.modifiers() == Qt.KeyboardModifier.ControlModifier and self.enable_multiply_select:
                     self.viewer3d.shift_select(view_x, view_y)
                 else:
                     self.viewer3d.select(view_x, view_y)
-                if self.viewer3d.selected_AISs:
-                    self.signal_AISs_selected.emit(self.viewer3d.selected_AISs)
+                self.signal_AISs_selected.emit(self.viewer3d.selected_AISs)
 
         elif event.button() == Qt.MouseButton.RightButton:
             if self._zoom_area and self._draw_box_logical:
