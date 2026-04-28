@@ -2,15 +2,17 @@
 from __future__ import annotations
 
 # region 导入
+from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import IntEnum
 from time import monotonic
 
 from loguru import logger
+from serial.tools import list_ports
 
 from src.utils.datas import Degree, Quaternion
 
-from .ttl import TTLSerialTransport
+from .ttl import TTLSerialConfig, TTLSerialTransport
 
 # endregion
 
@@ -128,7 +130,9 @@ class IMU760QuaternionData:
     q3: float
     q4: float
 
-    def as_quat(self, index_map: tuple[int, int, int, int] = (0, 1, 2, 3)) -> Quaternion:
+    def as_quat(
+        self, index_map: tuple[int, int, int, int] = (0, 1, 2, 3)
+    ) -> Quaternion:
         """转换为项目 Quaternion 类型。
 
         Parameters
@@ -144,7 +148,12 @@ class IMU760QuaternionData:
         """
 
         values = (self.q1, self.q2, self.q3, self.q4)
-        w, x, y, z = (values[index_map[0]], values[index_map[1]], values[index_map[2]], values[index_map[3]])
+        w, x, y, z = (
+            values[index_map[0]],
+            values[index_map[1]],
+            values[index_map[2]],
+            values[index_map[3]],
+        )
         return Quaternion(w=w, x=x, y=y, z=z)
 
 
@@ -314,6 +323,10 @@ def decode_output_payload(message: bytes) -> tuple[IMU760DecodedData, ...]:
 class IMU760:
     """IMU760 高层通信封装。"""
 
+    DEFAULT_BAUDRATE = 460_800
+    DEFAULT_TIMEOUT_S = 0.05
+    DEFAULT_PORT_PROBE_TIMEOUT_S = 0.8
+
     BAUDRATE_CODE_MAP: dict[int, int] = {
         9600: 0x01,
         38400: 0x02,
@@ -348,7 +361,9 @@ class IMU760:
     OUTPUT_MASK_QUATERNION = 1 << 3
     _VALID_DATA_CLASS_VALUES = {int(v) for v in IMU760DataClass}
 
-    def __init__(self, transport: TTLSerialTransport, debug_enabled: bool = False) -> None:
+    def __init__(
+        self, transport: TTLSerialTransport, debug_enabled: bool = False
+    ) -> None:
         """创建 IMU760 通信对象。
 
         Parameters
@@ -361,6 +376,156 @@ class IMU760:
         self._transport = transport
         self._debug_enabled = debug_enabled
         self._rx_buffer = bytearray()
+
+    @classmethod
+    def create_with_auto_port(
+        cls,
+        port: str | None = None,
+        baudrate: int = DEFAULT_BAUDRATE,
+        timeout_s: float = DEFAULT_TIMEOUT_S,
+        write_timeout_s: float | None = None,
+        probe_timeout_s: float = DEFAULT_PORT_PROBE_TIMEOUT_S,
+        debug_enabled: bool = False,
+        require_euler: bool = False,
+    ) -> "IMU760":
+        """创建 IMU760；未指定串口时自动探测。
+
+        Parameters
+        ----------
+        port : str | None, default=None
+            手动指定串口；为 `None` 时扫描当前 COM 口。
+        baudrate : int, default=460800
+            串口波特率。
+        timeout_s : float, default=0.05
+            串口读超时，单位秒。
+        write_timeout_s : float | None, default=None
+            串口写超时，单位秒；`None` 时复用 `timeout_s`。
+        probe_timeout_s : float, default=0.8
+            自动探测单个串口的最长等待时间，单位秒。
+        debug_enabled : bool, default=False
+            是否开启 TX/RX 调试日志。
+        require_euler : bool, default=False
+            `True` 时仅把能读到欧拉角字段的端口视为 IMU760。
+
+        Returns
+        -------
+        IMU760
+            已绑定串口传输对象的 IMU760 实例。
+        """
+        resolved_port = port or cls.detect_port(
+            baudrate=baudrate,
+            timeout_s=timeout_s,
+            probe_timeout_s=probe_timeout_s,
+            require_euler=require_euler,
+        )
+        if port:
+            logger.info("IMU760 串口使用手动指定值：{}", port)
+        config = TTLSerialConfig(
+            port=resolved_port,
+            baudrate=baudrate,
+            timeout_s=timeout_s,
+            write_timeout_s=timeout_s if write_timeout_s is None else write_timeout_s,
+        )
+        return cls(transport=TTLSerialTransport(config), debug_enabled=debug_enabled)
+
+    @classmethod
+    def detect_port(
+        cls,
+        baudrate: int = DEFAULT_BAUDRATE,
+        timeout_s: float = DEFAULT_TIMEOUT_S,
+        probe_timeout_s: float = DEFAULT_PORT_PROBE_TIMEOUT_S,
+        candidate_ports: Sequence[str] | None = None,
+        require_euler: bool = False,
+    ) -> str:
+        """自动探测 IMU760 所在串口。
+
+        该方法通过被动读取合法 IMU760 输出帧确认设备，不会写入设备配置。
+        若当前设备没有持续输出，探测会失败，此时应手动传入串口号。
+        """
+        candidates = (
+            list(candidate_ports)
+            if candidate_ports is not None
+            else [item.device for item in list_ports.comports()]
+        )
+        if not candidates:
+            raise RuntimeError("未发现任何可用 COM 口，无法自动探测 IMU760。")
+
+        logger.info(
+            "开始自动探测 IMU760 串口，候选数量={} 个：{}",
+            len(candidates),
+            ", ".join(candidates),
+        )
+        matched_ports: list[str] = []
+        for candidate in candidates:
+            if cls._is_output_port(
+                port=candidate,
+                baudrate=baudrate,
+                timeout_s=timeout_s,
+                probe_timeout_s=probe_timeout_s,
+                require_euler=require_euler,
+            ):
+                matched_ports.append(candidate)
+
+        if len(matched_ports) == 1:
+            logger.success("自动探测到 IMU760 串口：{}", matched_ports[0])
+            return matched_ports[0]
+        if len(matched_ports) > 1:
+            raise RuntimeError(
+                "自动探测到多个疑似 IMU760 串口："
+                f"{', '.join(matched_ports)}。请手动指定串口。"
+            )
+
+        raise RuntimeError(
+            "未能自动探测到 IMU760 串口。"
+            f" 已扫描：{', '.join(candidates)}。"
+            " 请确认 IMU760 正在持续输出，或手动指定串口。"
+        )
+
+    @classmethod
+    def _is_output_port(
+        cls,
+        port: str,
+        baudrate: int,
+        timeout_s: float,
+        probe_timeout_s: float,
+        require_euler: bool,
+    ) -> bool:
+        """检查串口是否能读到合法 IMU760 输出帧。"""
+        config = TTLSerialConfig(
+            port=port,
+            baudrate=baudrate,
+            timeout_s=timeout_s,
+            write_timeout_s=timeout_s,
+        )
+        try:
+            imu = cls(transport=TTLSerialTransport(config), debug_enabled=False)
+        except Exception as exc:
+            logger.info("跳过串口 {}：打开失败，原因={}", port, exc)
+            return False
+
+        try:
+            imu.clear_input_buffer()
+            deadline = monotonic() + max(0.1, probe_timeout_s)
+            while monotonic() < deadline:
+                try:
+                    payload = imu.read_output_payload(timeout_s=max(0.02, timeout_s))
+                except TimeoutError:
+                    continue
+                has_euler = any(isinstance(item, IMU760EulerAngles) for item in payload)
+                if has_euler:
+                    return True
+                if payload and not require_euler:
+                    logger.info(
+                        "串口 {} 读到 IMU760 合法帧，但当前未包含欧拉角输出。", port
+                    )
+                    return True
+        except Exception as exc:
+            logger.info("串口 {} 探测失败，原因={}", port, exc)
+            return False
+        finally:
+            imu.close()
+
+        return False
 
     @property
     def transport(self) -> TTLSerialTransport:
@@ -437,7 +602,9 @@ class IMU760:
             checksum_2=frame[-1],
         )
 
-    def read_output_payload(self, timeout_s: float = 0.2) -> tuple[IMU760DecodedData, ...]:
+    def read_output_payload(
+        self, timeout_s: float = 0.2
+    ) -> tuple[IMU760DecodedData, ...]:
         """读取并解码输出 payload。
 
         Parameters
@@ -453,7 +620,9 @@ class IMU760:
         frame = self.read_output_frame(timeout_s=timeout_s)
         return decode_output_payload(frame.payload)
 
-    def query(self, data_class: int, query_data: bytes = b"", timeout_s: float = 0.2) -> IMU760CommandFrame:
+    def query(
+        self, data_class: int, query_data: bytes = b"", timeout_s: float = 0.2
+    ) -> IMU760CommandFrame:
         """发送查询指令并等待返回。
 
         Parameters
@@ -481,7 +650,9 @@ class IMU760:
             raise RuntimeError("查询失败")
         return response
 
-    def write_ram(self, data_class: int, data: bytes, timeout_s: float = 0.2) -> IMU760CommandFrame | None:
+    def write_ram(
+        self, data_class: int, data: bytes, timeout_s: float = 0.2
+    ) -> IMU760CommandFrame | None:
         """写入 RAM 配置。
 
         Parameters
@@ -506,7 +677,9 @@ class IMU760:
             timeout_s=timeout_s,
         )
 
-    def write_flash(self, data_class: int, data: bytes, timeout_s: float = 0.2) -> IMU760CommandFrame | None:
+    def write_flash(
+        self, data_class: int, data: bytes, timeout_s: float = 0.2
+    ) -> IMU760CommandFrame | None:
         """写入 Flash 配置。
 
         Parameters
@@ -559,7 +732,9 @@ class IMU760:
         IMU760CommandFrame | None
             若等待返回，返回解析后的命令帧；否则返回 `None`。
         """
-        frame = self.build_command_frame(data_class=data_class, operator=int(operator), data=data)
+        frame = self.build_command_frame(
+            data_class=data_class, operator=int(operator), data=data
+        )
         if self._debug_enabled:
             logger.debug("IMU760 TX: {}", frame.hex(" ").upper())
         self._transport.write(frame)
@@ -615,7 +790,9 @@ class IMU760:
                 return hz
         raise ValueError(f"未知输出频率编码：0x{rate_code:02X}")
 
-    def set_baudrate(self, baudrate: int, save_to_flash: bool = False, timeout_s: float = 0.2) -> None:
+    def set_baudrate(
+        self, baudrate: int, save_to_flash: bool = False, timeout_s: float = 0.2
+    ) -> None:
         """设置串口波特率。
 
         Parameters
@@ -751,7 +928,11 @@ class IMU760:
             raise ValueError(f"数据长度超出 13bit 上限：{len(data)}")
 
         op_and_len = (len(data) << 3) | operator
-        body = bytes([data_class]) + op_and_len.to_bytes(2, byteorder="little", signed=False) + data
+        body = (
+            bytes([data_class])
+            + op_and_len.to_bytes(2, byteorder="little", signed=False)
+            + data
+        )
         ck1, ck2 = imu760_checksum(body)
         return FRAME_HEADER + body + bytes([ck1, ck2])
 
@@ -860,7 +1041,9 @@ class IMU760:
 
                 if len(self._rx_buffer) >= cmd_total_len:
                     cmd_frame = bytes(self._rx_buffer[:cmd_total_len])
-                    cmd_ck1, cmd_ck2 = imu760_checksum(cmd_frame[2 : 5 + cmd_data_length])
+                    cmd_ck1, cmd_ck2 = imu760_checksum(
+                        cmd_frame[2 : 5 + cmd_data_length]
+                    )
                     cmd_data_class = cmd_frame[2]
                     cmd_operator = _read_u16_le(cmd_frame[3:5]) & 0x07
                     if (
@@ -882,7 +1065,9 @@ class IMU760:
                 if out_frame[-2] == out_ck1 and out_frame[-1] == out_ck2:
                     del self._rx_buffer[:out_total_len]
                     if self._debug_enabled:
-                        logger.debug("IMU760 RX(SKIP-OUTPUT): {}", out_frame.hex(" ").upper())
+                        logger.debug(
+                            "IMU760 RX(SKIP-OUTPUT): {}", out_frame.hex(" ").upper()
+                        )
                     continue
 
                 del self._rx_buffer[:2]

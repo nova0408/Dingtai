@@ -7,6 +7,7 @@ from .orbbec_models import (
     CameraParamPatch,
     DistortionPatch,
     IntrinsicPatch,
+    OrbbecImuSample,
     SensorFrustumConfig,
     SessionOptions,
 )
@@ -28,6 +29,7 @@ __all__ = [
     "Gemini305",
     "IntrinsicPatch",
     "OrbbecSession",
+    "OrbbecImuSample",
     "SensorFrustumConfig",
     "SessionOptions",
     "apply_camera_param_patch",

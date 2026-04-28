@@ -13,6 +13,7 @@ from pyorbbecsdk import (
     OBCameraParam,
     OBError,
     OBFormat,
+    OBFrameType,
     OBFrameAggregateOutputMode,
     OBLogLevel,
     OBSensorType,
@@ -21,7 +22,7 @@ from pyorbbecsdk import (
     PointCloudFilter,
 )
 
-from .orbbec_models import SensorFrustumConfig, SessionOptions
+from .orbbec_models import OrbbecImuSample, SensorFrustumConfig, SessionOptions
 from .orbbec_pointcloud_utils import (
     filter_points_in_sensor_frustum,
     filter_valid_points,
@@ -52,6 +53,8 @@ class OrbbecSession:
         self.config: Config | None = None
 
         self.has_color_sensor = False
+        self.has_accel_sensor = False
+        self.has_gyro_sensor = False
         self.align_filter: AlignFilter | None = None
         self._depth_stream_fps: float = 0.0
         self._started = False
@@ -146,6 +149,48 @@ class OrbbecSession:
         timeout = self.options.timeout_ms if timeout_ms is None else timeout_ms
         return self.pipeline.wait_for_frames(timeout)
 
+    def get_imu_sample_from_frames(self, frames: "FrameSet") -> OrbbecImuSample:
+        """
+        从当前帧集合提取 Orbbec IMU 数据。
+
+        Parameters
+        ----------
+        frames : FrameSet
+            `wait_for_frames()` 返回的 SDK 帧集合。
+
+        Returns
+        -------
+        OrbbecImuSample
+            加速度与陀螺仪结构化数据。设备不支持或当前帧缺失时，对应字段为 `None`。
+        """
+        accel_frame = None
+        gyro_frame = None
+
+        if self.has_accel_sensor:
+            try:
+                frame = frames.get_frame(OBFrameType.ACCEL_FRAME)
+                if frame is not None:
+                    accel_frame = frame.as_accel_frame()
+            except Exception:
+                accel_frame = None
+
+        if self.has_gyro_sensor:
+            try:
+                frame = frames.get_frame(OBFrameType.GYRO_FRAME)
+                if frame is not None:
+                    gyro_frame = frame.as_gyro_frame()
+            except Exception:
+                gyro_frame = None
+
+        return OrbbecImuSample(
+            accel_mps2=_vector_from_imu_frame(accel_frame),
+            gyro_rad_s=_vector_from_imu_frame(gyro_frame),
+            accel_temperature_c=_temperature_from_imu_frame(accel_frame),
+            gyro_temperature_c=_temperature_from_imu_frame(gyro_frame),
+            accel_timestamp_us=_timestamp_us_from_frame(accel_frame),
+            gyro_timestamp_us=_timestamp_us_from_frame(gyro_frame),
+        )
+
     def get_camera_param(self) -> OBCameraParam:
         """
         读取当前管线相机参数。
@@ -159,7 +204,9 @@ class OrbbecSession:
             raise RuntimeError("会话尚未初始化。请先调用 start()。")
         return self.pipeline.get_camera_param()
 
-    def create_point_cloud_filter(self, camera_param: OBCameraParam | None = None) -> PointCloudFilter:
+    def create_point_cloud_filter(
+        self, camera_param: OBCameraParam | None = None
+    ) -> PointCloudFilter:
         """
         创建点云过滤器并可选写入相机参数。
 
@@ -192,12 +239,26 @@ class OrbbecSession:
         """解析本次调用的视锥参数（调用参数优先，实例默认次之）。"""
         cfg = self.sensor_frustum
         return SensorFrustumConfig(
-            min_depth_mm=cfg.min_depth_mm if min_depth_mm is None else float(min_depth_mm),
-            max_depth_mm=cfg.max_depth_mm if frustum_max_depth_mm is None else float(frustum_max_depth_mm),
-            near_width_mm=cfg.near_width_mm if near_width_mm is None else float(near_width_mm),
-            near_height_mm=cfg.near_height_mm if near_height_mm is None else float(near_height_mm),
-            far_width_mm=cfg.far_width_mm if far_width_mm is None else float(far_width_mm),
-            far_height_mm=cfg.far_height_mm if far_height_mm is None else float(far_height_mm),
+            min_depth_mm=(
+                cfg.min_depth_mm if min_depth_mm is None else float(min_depth_mm)
+            ),
+            max_depth_mm=(
+                cfg.max_depth_mm
+                if frustum_max_depth_mm is None
+                else float(frustum_max_depth_mm)
+            ),
+            near_width_mm=(
+                cfg.near_width_mm if near_width_mm is None else float(near_width_mm)
+            ),
+            near_height_mm=(
+                cfg.near_height_mm if near_height_mm is None else float(near_height_mm)
+            ),
+            far_width_mm=(
+                cfg.far_width_mm if far_width_mm is None else float(far_width_mm)
+            ),
+            far_height_mm=(
+                cfg.far_height_mm if far_height_mm is None else float(far_height_mm)
+            ),
         )
 
     def filter_points_for_sensor(
@@ -239,9 +300,13 @@ class OrbbecSession:
             far_height_mm=far_height_mm,
         )
 
-        effective_depth_limit = frustum_cfg.max_depth_mm if max_depth_mm is None else float(max_depth_mm)
+        effective_depth_limit = (
+            frustum_cfg.max_depth_mm if max_depth_mm is None else float(max_depth_mm)
+        )
         normalized = normalize_points(points)
-        valid_points, _ = filter_valid_points(normalized, max_depth_mm=effective_depth_limit)
+        valid_points, _ = filter_valid_points(
+            normalized, max_depth_mm=effective_depth_limit
+        )
         if len(valid_points) == 0:
             return valid_points
 
@@ -317,13 +382,19 @@ class OrbbecSession:
         fps = self._depth_stream_fps if self._depth_stream_fps > 0 else 30.0
         return max(1, int(round(fps * fusion_interval_s)))
 
-    def capture_fused_points_by_interval(self, fusion_interval_s: float = 1.0) -> np.ndarray:
+    def capture_fused_points_by_interval(
+        self, fusion_interval_s: float = 1.0
+    ) -> np.ndarray:
         """在指定时间窗口内采样并融合多帧点云。"""
         if not self._started:
             raise RuntimeError("Session must be started before capturing fused points.")
-        target_frames = self.estimate_fusion_frame_count(fusion_interval_s=fusion_interval_s)
+        target_frames = self.estimate_fusion_frame_count(
+            fusion_interval_s=fusion_interval_s
+        )
 
-        point_filter = self.create_point_cloud_filter(camera_param=self.get_camera_param())
+        point_filter = self.create_point_cloud_filter(
+            camera_param=self.get_camera_param()
+        )
         fused_parts: list[np.ndarray] = []
         sampled = 0
         deadline = time.monotonic() + max(fusion_interval_s * 3.0, 1.0)
@@ -354,7 +425,9 @@ class OrbbecSession:
         fused = np.concatenate(fused_parts, axis=0)
         return voxel_downsample_points_numpy(fused, voxel_size_mm=1.0)
 
-    def prepare_frame_for_point_cloud(self, frames: "FrameSet") -> tuple["FrameSet", bool]:
+    def prepare_frame_for_point_cloud(
+        self, frames: "FrameSet"
+    ) -> tuple["FrameSet", bool]:
         """将帧集合转换为可用于点云计算的输入。"""
         color_frame = frames.get_color_frame()
         use_color = self.has_color_sensor and color_frame is not None
@@ -381,7 +454,9 @@ class OrbbecSession:
             raise RuntimeError("会话运行对象未初始化。请先调用 start()。")
         depth_profile_list = None
         try:
-            depth_profile_list = self.pipeline.get_stream_profile_list(OBSensorType.DEPTH_SENSOR)
+            depth_profile_list = self.pipeline.get_stream_profile_list(
+                OBSensorType.DEPTH_SENSOR
+            )
         except OBError as exc:
             self._raise_device_runtime_error(
                 stage="get_stream_profile_list(DEPTH_SENSOR)",
@@ -389,7 +464,10 @@ class OrbbecSession:
                 extra_hint="未检测到可用深度设备，或设备枚举失败。",
             )
         if depth_profile_list is None:
-            raise RuntimeError("未获取到深度流 profile。请检查相机是否通过 USB 正常连接，" "并确认未被其他程序占用。")
+            raise RuntimeError(
+                "未获取到深度流 profile。请检查相机是否通过 USB 正常连接，"
+                "并确认未被其他程序占用。"
+            )
         depth_profile = _select_profile_with_preferred_fps(
             profile_list=depth_profile_list,
             preferred_fps=self.options.preferred_capture_fps,
@@ -399,8 +477,12 @@ class OrbbecSession:
         self._depth_stream_fps = _safe_profile_fps(depth_profile, fallback=30.0)
 
         self.has_color_sensor = False
+        self.has_accel_sensor = False
+        self.has_gyro_sensor = False
         try:
-            color_profile_list = self.pipeline.get_stream_profile_list(OBSensorType.COLOR_SENSOR)
+            color_profile_list = self.pipeline.get_stream_profile_list(
+                OBSensorType.COLOR_SENSOR
+            )
             if color_profile_list is not None:
                 color_profile = _select_profile_with_preferred_fps(
                     profile_list=color_profile_list,
@@ -409,12 +491,51 @@ class OrbbecSession:
                 )
                 self.config.enable_stream(color_profile)
                 if self.options.require_full_frame_when_color:
-                    self.config.set_frame_aggregate_output_mode(OBFrameAggregateOutputMode.FULL_FRAME_REQUIRE)
+                    self.config.set_frame_aggregate_output_mode(
+                        OBFrameAggregateOutputMode.FULL_FRAME_REQUIRE
+                    )
                 self.has_color_sensor = True
         except OBError:
             self.has_color_sensor = False
 
-    def _raise_device_runtime_error(self, stage: str, exc: Exception, extra_hint: str) -> None:
+        if self.options.enable_imu:
+            self._configure_imu_streams()
+
+    def _configure_imu_streams(self) -> None:
+        """按设备支持情况启用 Orbbec 内置 IMU 流。"""
+        if self.pipeline is None or self.config is None:
+            raise RuntimeError("会话运行对象未初始化。请先调用 start()。")
+
+        device = self.pipeline.get_device()
+        try:
+            device.get_sensor(OBSensorType.ACCEL_SENSOR)
+            self.config.enable_accel_stream()
+            self.has_accel_sensor = True
+        except Exception:
+            self.has_accel_sensor = False
+
+        try:
+            device.get_sensor(OBSensorType.GYRO_SENSOR)
+            self.config.enable_gyro_stream()
+            self.has_gyro_sensor = True
+        except Exception:
+            self.has_gyro_sensor = False
+
+        if not (self.has_accel_sensor or self.has_gyro_sensor):
+            raise RuntimeError(
+                "当前 Orbbec 设备未检测到可用 ACCEL/GYRO IMU 传感器。"
+                " 若设备型号确认支持 IMU，请先运行 pyorbbecsdk/examples/imu.py "
+                "确认 SDK 与固件侧是否能枚举 ACCEL/GYRO_SENSOR。"
+            )
+
+        if self.options.require_full_frame_when_imu:
+            self.config.set_frame_aggregate_output_mode(
+                OBFrameAggregateOutputMode.FULL_FRAME_REQUIRE
+            )
+
+    def _raise_device_runtime_error(
+        self, stage: str, exc: Exception, extra_hint: str
+    ) -> None:
         """
         将 SDK 设备异常统一包装为可读的运行时错误。
 
@@ -432,7 +553,9 @@ class OrbbecSession:
         RuntimeError
             统一错误类型，便于上层脚本输出清晰提示。
         """
-        message = f"Orbbec 会话初始化失败（阶段：{stage}）。{extra_hint} " f"原始错误：{exc}"
+        message = (
+            f"Orbbec 会话初始化失败（阶段：{stage}）。{extra_hint} " f"原始错误：{exc}"
+        )
         raise RuntimeError(message) from exc
 
     def _init_runtime_objects(self) -> None:
@@ -444,7 +567,11 @@ class OrbbecSession:
         当 pyorbbecsdk 在无设备时原生崩溃，主进程无法直接捕获。
         先在子进程探测 Pipeline() 构造，可把“直接退出”转成可读错误。
         """
-        if self.pipeline is not None and self.config is not None and self.context is not None:
+        if (
+            self.pipeline is not None
+            and self.config is not None
+            and self.context is not None
+        ):
             return
 
         self._probe_pipeline_ctor_in_subprocess()
@@ -513,7 +640,42 @@ def _safe_profile_fps(profile, fallback: float) -> float:
         return float(fallback)
 
 
-def _select_profile_with_preferred_fps(profile_list, preferred_fps: int | None, preferred_format: OBFormat):
+def _vector_from_imu_frame(frame) -> tuple[float, float, float] | None:
+    """从 Orbbec IMU 帧中读取三轴数据。"""
+    if frame is None:
+        return None
+    try:
+        return (float(frame.get_x()), float(frame.get_y()), float(frame.get_z()))
+    except Exception:
+        return None
+
+
+def _temperature_from_imu_frame(frame) -> float | None:
+    """从 Orbbec IMU 帧中读取温度。"""
+    if frame is None:
+        return None
+    try:
+        return float(frame.get_temperature())
+    except Exception:
+        return None
+
+
+def _timestamp_us_from_frame(frame) -> int | None:
+    """从 SDK 帧中读取微秒时间戳。"""
+    if frame is None:
+        return None
+    try:
+        return int(frame.get_timestamp_us())
+    except Exception:
+        try:
+            return int(frame.get_timestamp()) * 1000
+        except Exception:
+            return None
+
+
+def _select_profile_with_preferred_fps(
+    profile_list, preferred_fps: int | None, preferred_format: OBFormat
+):
     """按“格式优先 + 帧率优先”策略选择流 profile。"""
     default_profile = profile_list.get_default_video_stream_profile()
     if preferred_fps is None:
@@ -530,7 +692,10 @@ def _select_profile_with_preferred_fps(profile_list, preferred_fps: int | None, 
         return default_profile
 
     for profile in candidates:
-        if int(profile.get_fps()) == int(preferred_fps) and profile.get_format() == preferred_format:
+        if (
+            int(profile.get_fps()) == int(preferred_fps)
+            and profile.get_format() == preferred_format
+        ):
             return profile
 
     for profile in candidates:

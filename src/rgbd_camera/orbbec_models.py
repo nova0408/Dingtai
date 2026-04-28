@@ -23,6 +23,25 @@ class SessionOptions:
     enable_frame_sync: bool = True
     require_full_frame_when_color: bool = True
     preferred_capture_fps: int | None = None
+    enable_imu: bool = False
+    require_full_frame_when_imu: bool = True
+
+
+@dataclass(frozen=True)
+class OrbbecImuSample:
+    """Orbbec IMU 单次采样数据。"""
+
+    accel_mps2: tuple[float, float, float] | None = None
+    gyro_rad_s: tuple[float, float, float] | None = None
+    accel_temperature_c: float | None = None
+    gyro_temperature_c: float | None = None
+    accel_timestamp_us: int | None = None
+    gyro_timestamp_us: int | None = None
+
+    @property
+    def has_any_data(self) -> bool:
+        """是否包含至少一种 IMU 数据。"""
+        return self.accel_mps2 is not None or self.gyro_rad_s is not None
 
 
 @dataclass(frozen=True)
