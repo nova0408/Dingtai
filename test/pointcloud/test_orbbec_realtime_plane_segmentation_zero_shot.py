@@ -26,7 +26,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.rgbd_camera import (
-    OrbbecSession,
+    Gemini305,
     SessionOptions,
     filter_valid_points,
     normalize_points,
@@ -36,6 +36,8 @@ from src.rgbd_camera import (
 # region 默认参数（优先在这里直接改）
 DEFAULT_GD_MODEL_ID = "IDEA-Research/grounding-dino-base"  # GroundingDINO 模型 ID（HuggingFace）
 DEFAULT_SAM_MODEL_ID = "facebook/sam-vit-base"  # SAM 模型 ID（HuggingFace）
+DEFAULT_HF_CACHE_DIR = str(PROJECT_ROOT / ".cache" / "huggingface")  # HuggingFace 本地缓存目录
+DEFAULT_HF_LOCAL_FILES_ONLY = True  # True=仅使用本地缓存，不走网络检查
 DEFAULT_DEVICE = "cuda:0"  # 推理设备，建议 GPU：cuda:0
 DEFAULT_PROXY_URL = "http://127.0.0.1:4444"  # 模型下载代理地址，留空则不注入
 # autocorrect:false
@@ -101,6 +103,8 @@ class ZeroShotObjectPartitionDetector:
         self,
         gd_model_id: str,
         sam_model_id: str,
+        hf_cache_dir: str,
+        hf_local_files_only: bool,
         device: str,
         proxy_url: str,
         prompt: str,
@@ -148,11 +152,25 @@ class ZeroShotObjectPartitionDetector:
         self.detect_max_side = int(max(128, detect_max_side))
         self.detect_count = 0
 
+        self.hf_cache_dir = _prepare_hf_cache_dir(hf_cache_dir)
+        self.hf_local_files_only = bool(hf_local_files_only)
         _apply_download_proxy(str(proxy_url).strip())
 
         logger.info(f"加载 GroundingDINO：{gd_model_id}")
-        self.gd_processor = AutoProcessor.from_pretrained(gd_model_id)
-        self.gd_model = AutoModelForZeroShotObjectDetection.from_pretrained(gd_model_id).to(self.device)
+        self.gd_processor = _load_pretrained_with_project_cache(
+            loader=AutoProcessor.from_pretrained,
+            model_id=gd_model_id,
+            cache_dir=self.hf_cache_dir,
+            local_files_only=self.hf_local_files_only,
+            role="grounding_dino_processor",
+        )
+        self.gd_model = _load_pretrained_with_project_cache(
+            loader=AutoModelForZeroShotObjectDetection.from_pretrained,
+            model_id=gd_model_id,
+            cache_dir=self.hf_cache_dir,
+            local_files_only=self.hf_local_files_only,
+            role="grounding_dino_model",
+        ).to(self.device)
         self.gd_model.eval()
         self._use_cuda = str(self.device).startswith("cuda")
         if self._use_cuda:
@@ -164,13 +182,28 @@ class ZeroShotObjectPartitionDetector:
         self.sam_model = None
         if self.use_sam:
             logger.info(f"加载 SAM：{sam_model_id}")
-            self.sam_processor = SamProcessor.from_pretrained(sam_model_id)
-            self.sam_model = SamModel.from_pretrained(sam_model_id).to(self.device)
+            self.sam_processor = _load_pretrained_with_project_cache(
+                loader=SamProcessor.from_pretrained,
+                model_id=sam_model_id,
+                cache_dir=self.hf_cache_dir,
+                local_files_only=self.hf_local_files_only,
+                role="sam_processor",
+            )
+            self.sam_model = _load_pretrained_with_project_cache(
+                loader=SamModel.from_pretrained,
+                model_id=sam_model_id,
+                cache_dir=self.hf_cache_dir,
+                local_files_only=self.hf_local_files_only,
+                role="sam_model",
+            ).to(self.device)
             self.sam_model.eval()
         else:
             logger.info("跳过 SAM：使用检测框掩码（更快）")
 
-        logger.info(f"零训练划分检测器就绪：device {self.device}")
+        logger.info(
+            f"零训练划分检测器就绪：device {self.device}, hf_cache_dir {self.hf_cache_dir}, "
+            f"hf_local_files_only {self.hf_local_files_only}"
+        )
         logger.success("零训练划分检测器初始化成功")
 
     def _resolve_device(self, device: str) -> torch.device:
@@ -389,6 +422,8 @@ class ZeroShotObjectPartitionDetector:
 def main(
     gd_model_id: str = DEFAULT_GD_MODEL_ID,
     sam_model_id: str = DEFAULT_SAM_MODEL_ID,
+    hf_cache_dir: str = DEFAULT_HF_CACHE_DIR,
+    hf_local_files_only: bool = DEFAULT_HF_LOCAL_FILES_ONLY,
     device: str = DEFAULT_DEVICE,
     proxy_url: str = DEFAULT_PROXY_URL,
     prompt: str = DEFAULT_PROMPT,
@@ -421,6 +456,8 @@ def main(
     detector = ZeroShotObjectPartitionDetector(
         gd_model_id=gd_model_id,
         sam_model_id=sam_model_id,
+        hf_cache_dir=hf_cache_dir,
+        hf_local_files_only=hf_local_files_only,
         device=device,
         proxy_url=proxy_url,
         prompt=prompt,
@@ -442,7 +479,7 @@ def main(
     )
 
     options = SessionOptions(timeout_ms=int(timeout_ms), preferred_capture_fps=max(1, int(capture_fps)))
-    with OrbbecSession(options=options) as session:
+    with Gemini305(options=options) as session:
         cam = session.get_camera_param()
         ci = cam.rgb_intrinsic if session.has_color_sensor else cam.depth_intrinsic
         img_w = int(max(32, ci.width))
@@ -454,7 +491,8 @@ def main(
 
         logger.info("启动零训练物体划分（不强制红绿类别）")
         logger.info(
-            f"参数：prompt {prompt}, target_keywords {target_keywords}, strict_target_filter {strict_target_filter}, "
+            f"参数：hf_cache_dir {hf_cache_dir}, hf_local_files_only {hf_local_files_only}, "
+            f"prompt {prompt}, target_keywords {target_keywords}, strict_target_filter {strict_target_filter}, "
             f"max_targets {max_targets}, use_sam {use_sam}, box_threshold {box_threshold:.2f}, text_threshold {text_threshold:.2f}, "
             f"min_target_conf {min_target_conf:.2f}, sam_max_boxes {sam_max_boxes}, "
             f"sam_primary_only {sam_primary_only}, sam_secondary_conf_threshold {sam_secondary_conf_threshold:.2f}, "
@@ -490,7 +528,7 @@ def main(
 
 # region 实时循环
 def _run_loop(
-    session: OrbbecSession,
+    session: Gemini305,
     detector: ZeroShotObjectPartitionDetector,
     fx: float,
     fy: float,
@@ -686,6 +724,55 @@ def _apply_download_proxy(proxy_url: str) -> None:
     logger.info(f"已注入下载代理：{px}")
 
 
+def _prepare_hf_cache_dir(cache_dir: str) -> str:
+    path = Path(str(cache_dir).strip()) if len(str(cache_dir).strip()) > 0 else Path(DEFAULT_HF_CACHE_DIR)
+    path.mkdir(parents=True, exist_ok=True)
+    cache_str = str(path)
+    os.environ["HF_HOME"] = cache_str
+    os.environ["TRANSFORMERS_CACHE"] = str(path / "transformers")
+    os.environ["HUGGINGFACE_HUB_CACHE"] = str(path / "hub")
+    return cache_str
+
+
+def _safe_model_id(model_id: str) -> str:
+    return str(model_id).replace("\\", "__").replace("/", "__").replace(":", "__")
+
+
+def _project_model_store_dir(cache_dir: str, role: str, model_id: str) -> Path:
+    return Path(cache_dir) / "project_store" / str(role).strip() / _safe_model_id(model_id)
+
+
+def _load_pretrained_with_project_cache(loader, model_id: str, cache_dir: str, local_files_only: bool, role: str):
+    store_dir = _project_model_store_dir(cache_dir=cache_dir, role=role, model_id=model_id)
+    if store_dir.exists():
+        return loader(str(store_dir), local_files_only=True)
+
+    try:
+        obj = loader(
+            model_id,
+            cache_dir=cache_dir,
+            local_files_only=local_files_only,
+        )
+    except Exception as exc:
+        if not local_files_only:
+            raise
+        logger.warning(f"{role} 项目缓存未命中，尝试从全局 HuggingFace 缓存迁移：{model_id}")
+        try:
+            obj = loader(model_id, local_files_only=True)
+        except Exception as inner_exc:
+            raise RuntimeError(
+                f"{role} 本地缓存不可用（项目缓存与全局缓存均未命中）。若首次下载，请加参数 --no-hf-local-files-only 后重试。"
+            ) from inner_exc
+    try:
+        store_dir.mkdir(parents=True, exist_ok=True)
+        if hasattr(obj, "save_pretrained"):
+            obj.save_pretrained(str(store_dir))
+            logger.info(f"{role} 已写入项目缓存：{store_dir}")
+    except Exception as save_exc:
+        logger.warning(f"{role} 写入项目缓存失败：{save_exc}")
+    return obj
+
+
 def _parse_keywords(text: str) -> list[str]:
     raw = str(text).replace("，", ",").split(",")
     out: list[str] = []
@@ -795,7 +882,7 @@ def _mask_iou(mask_a: np.ndarray, mask_b: np.ndarray) -> float:
 
 
 def _capture_preview_with_color_once(
-    session: OrbbecSession, point_filter
+    session: Gemini305, point_filter
 ) -> tuple[np.ndarray | None, np.ndarray | None]:
     frames = session.wait_for_frames()
     if frames is None:
@@ -997,6 +1084,8 @@ def _parse_cli() -> tuple[
     str,
     str,
     str,
+    bool,
+    str,
     str,
     str,
     str,
@@ -1028,6 +1117,13 @@ def _parse_cli() -> tuple[
     parser = argparse.ArgumentParser(description="零训练物体划分（GroundingDINO + 可选 SAM + 3D 投影可视化）")
     parser.add_argument("--gd-model-id", type=str, default=DEFAULT_GD_MODEL_ID, help="GroundingDINO 模型 ID")
     parser.add_argument("--sam-model-id", type=str, default=DEFAULT_SAM_MODEL_ID, help="SAM 模型 ID")
+    parser.add_argument("--hf-cache-dir", type=str, default=DEFAULT_HF_CACHE_DIR, help="HuggingFace 本地缓存目录")
+    parser.add_argument(
+        "--hf-local-files-only",
+        action=argparse.BooleanOptionalAction,
+        default=DEFAULT_HF_LOCAL_FILES_ONLY,
+        help="是否仅使用本地缓存模型（首次下载请关闭）",
+    )
     parser.add_argument("--device", type=str, default=DEFAULT_DEVICE, help="推理设备，示例 cuda:0 / cpu")
     parser.add_argument("--proxy-url", type=str, default=DEFAULT_PROXY_URL, help="模型下载代理地址，留空表示不注入")
     parser.add_argument(
@@ -1121,6 +1217,8 @@ def _parse_cli() -> tuple[
     return (
         str(args.gd_model_id),
         str(args.sam_model_id),
+        str(args.hf_cache_dir),
+        bool(args.hf_local_files_only),
         str(args.device),
         str(args.proxy_url),
         str(args.prompt),
@@ -1161,6 +1259,8 @@ if __name__ == "__main__":
             (
                 gd_model_id_arg,
                 sam_model_id_arg,
+                hf_cache_dir_arg,
+                hf_local_files_only_arg,
                 device_arg,
                 proxy_url_arg,
                 prompt_arg,
@@ -1193,6 +1293,8 @@ if __name__ == "__main__":
             main(
                 gd_model_id=gd_model_id_arg,
                 sam_model_id=sam_model_id_arg,
+                hf_cache_dir=hf_cache_dir_arg,
+                hf_local_files_only=hf_local_files_only_arg,
                 device=device_arg,
                 proxy_url=proxy_url_arg,
                 prompt=prompt_arg,
@@ -1229,3 +1331,4 @@ if __name__ == "__main__":
     except Exception as exc:
         logger.warning(f"程序异常退出：{exc}")
         raise
+

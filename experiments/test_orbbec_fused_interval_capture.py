@@ -13,7 +13,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.rgbd_camera import (
-    OrbbecSession,
+    Gemini305,
     SessionOptions,
     filter_valid_points,
     normalize_points,
@@ -54,7 +54,7 @@ def main(
         preferred_capture_fps=max(1, int(capture_fps)),
     )
 
-    with OrbbecSession(options=session_options) as session:
+    with Gemini305(options=session_options) as session:
         estimated_frames = session.estimate_fusion_frame_count(fusion_interval_s=fusion_interval_s)
         logger.info(
             f"预览模式已启动：采样时长 {fusion_interval_s:.2f} 秒，目标采样帧数 {estimated_frames} 帧，"
@@ -73,7 +73,7 @@ def main(
 
 
 # region 交互预览
-def _preview_and_capture(session: OrbbecSession, fusion_interval_s: float, output_paths: list[Path]) -> None:
+def _preview_and_capture(session: Gemini305, fusion_interval_s: float, output_paths: list[Path]) -> None:
     capture_requested = {"flag": False}
     capture_index = 0
 
@@ -148,7 +148,7 @@ def _preview_and_capture(session: OrbbecSession, fusion_interval_s: float, outpu
 
 
 # region 点云工具
-def _capture_preview_points_once(session: OrbbecSession, point_filter) -> np.ndarray | None:
+def _capture_preview_points_once(session: Gemini305, point_filter) -> np.ndarray | None:
     frames = session.wait_for_frames()
     if frames is None:
         return None
@@ -257,3 +257,4 @@ if __name__ == "__main__":
     except Exception as exc:
         logger.warning(f"程序异常退出：{exc}")
         raise
+

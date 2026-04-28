@@ -17,7 +17,7 @@ from src.rgbd_camera import (
     CameraParamPatch,
     DistortionPatch,
     IntrinsicPatch,
-    OrbbecSession,
+    Gemini305,
     SessionOptions,
     apply_camera_param_patch,
     camera_param_summary,
@@ -128,7 +128,7 @@ def main(
         PresetEvaluator(name=name, patch=patch) for name, patch in CAMERA_PARAM_PRESETS.items()
     ]
 
-    with OrbbecSession(options=session_options) as session:
+    with Gemini305(options=session_options) as session:
         base_camera_param = session.get_camera_param()
         for idx, evaluator in enumerate(evaluators, start=1):
             evaluator.last_valid_points = None
@@ -339,3 +339,4 @@ if __name__ == "__main__":
         save_ply=save_arg,
         output_dir=output_dir_arg,
     )
+

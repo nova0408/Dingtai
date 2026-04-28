@@ -19,7 +19,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.rgbd_camera import OrbbecSession, SessionOptions
+from src.rgbd_camera import Gemini305, SessionOptions
 
 
 # region 默认参数（优先在这里直接改）
@@ -59,7 +59,7 @@ def main(
         preferred_capture_fps=max(1, int(capture_fps)),
     )
 
-    with OrbbecSession(options=options) as session:
+    with Gemini305(options=options) as session:
         logger.info(
             f"图像采样开始：输出目录 {output_dir}，请求帧率 {capture_fps} fps，深度可视化上限 {max_depth_mm:.1f} mm"
         )
@@ -278,3 +278,4 @@ if __name__ == "__main__":
     except Exception as exc:
         logger.warning(f"程序异常退出：{exc}")
         raise
+

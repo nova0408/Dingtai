@@ -28,7 +28,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.rgbd_camera import (
-    OrbbecSession,
+    Gemini305,
     SessionOptions,
 )
 
@@ -145,11 +145,11 @@ def main(
         preferred_capture_fps=max(1, int(capture_fps)),
     )
 
-    logger.info("正在构造 OrbbecSession ...")
-    session = OrbbecSession(options=options)
-    logger.info("OrbbecSession 构造完成，正在启动流 ...")
+    logger.info("正在构造 Gemini305 ...")
+    session = Gemini305(options=options)
+    logger.info("Gemini305 构造完成，正在启动流 ...")
     session.start()
-    logger.success("OrbbecSession 启动完成")
+    logger.success("Gemini305 启动完成")
 
     writer: AsyncFrameWriter | None = AsyncFrameWriter(output_dir=run_dir, queue_size=queue_size)
     writer.start()
@@ -254,7 +254,7 @@ def main(
         try:
             session.stop()
         except Exception as exc:
-            logger.warning(f"停止 OrbbecSession 时出现异常：{exc}")
+            logger.warning(f"停止 Gemini305 时出现异常：{exc}")
         if writer is not None:
             logger.info("等待异步写盘队列清空...")
             saved_count, failed_count = writer.stop()
@@ -269,7 +269,7 @@ def main(
 
 # region 点云与图像工具
 def _compute_frame_points(
-    session: OrbbecSession,
+    session: Gemini305,
     frames,
     point_filter,
     max_depth_mm: float,
@@ -546,3 +546,4 @@ if __name__ == "__main__":
     except Exception as exc:
         logger.warning(f"程序异常退出：{exc}")
         raise
+
