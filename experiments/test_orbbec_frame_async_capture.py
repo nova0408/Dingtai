@@ -16,6 +16,11 @@ try:
 except Exception as exc:  # pragma: no cover
     raise RuntimeError("需要安装 opencv-python 才能运行图像采样脚本。") from exc
 
+try:
+    import open3d as o3d
+except Exception:  # pragma: no cover
+    o3d = None
+
 from pyorbbecsdk import OBFormat
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -25,9 +30,6 @@ if str(PROJECT_ROOT) not in sys.path:
 from src.rgbd_camera import (
     OrbbecSession,
     SessionOptions,
-    filter_valid_points,
-    normalize_points,
-    set_point_cloud_filter_format,
 )
 
 # region 默认参数（优先在这里直接改）
@@ -39,6 +41,12 @@ DEFAULT_QUEUE_SIZE = 512  # 异步写盘队列上限，单位 帧
 DEFAULT_WINDOW_NAME = "Orbbec image frame sampler"  # 预览窗口名（ASCII）
 DEFAULT_WINDOW_WIDTH = 1400  # 预览窗口宽度，单位 像素
 DEFAULT_WINDOW_HEIGHT = 900  # 预览窗口高度，单位 像素
+DEFAULT_ENABLE_3D_PREVIEW = True  # 是否开启 3D 点云预览
+DEFAULT_3D_WINDOW_NAME = "Orbbec point cloud preview"  # 3D 预览窗口名（ASCII）
+DEFAULT_3D_WINDOW_WIDTH = 1280  # 3D 预览窗口宽度，单位 像素
+DEFAULT_3D_WINDOW_HEIGHT = 720  # 3D 预览窗口高度，单位 像素
+DEFAULT_3D_POINT_SIZE = 1.5  # 3D 预览点大小
+DEFAULT_3D_MAX_POINTS = 160_000  # 3D 预览最大点数（超出会等步长下采样）
 # endregion
 
 
@@ -124,6 +132,7 @@ def main(
     capture_fps: int = DEFAULT_CAPTURE_FPS,
     max_depth_mm: float = DEFAULT_MAX_DEPTH_MM,
     queue_size: int = DEFAULT_QUEUE_SIZE,
+    preview_3d: bool = DEFAULT_ENABLE_3D_PREVIEW,
 ) -> None:
     if max_depth_mm <= 0:
         raise ValueError("max_depth_mm must be > 0")
@@ -149,9 +158,14 @@ def main(
     try:
         logger.info(f"实时预览已启动：输出目录 {run_dir}")
         logger.info("按键说明：空格 开始连续逐帧保存；Q 或 ESC 退出。")
+        logger.info(f"3D 预览：{'开启' if preview_3d else '关闭'}")
 
+        vis3d = None
+        pcd3d = None
         cv2.namedWindow(DEFAULT_WINDOW_NAME, cv2.WINDOW_NORMAL)
         cv2.resizeWindow(DEFAULT_WINDOW_NAME, DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT)
+        vis3d, pcd3d = _create_3d_preview_if_needed(enable_3d=preview_3d)
+        vis3d_alive = vis3d is not None and pcd3d is not None
 
         point_filter = session.create_point_cloud_filter(camera_param=session.get_camera_param())
         capture_started = False
@@ -196,7 +210,6 @@ def main(
                     points = _compute_frame_points(
                         session=session,
                         frames=frames,
-                        depth_scale=float(depth_frame.get_depth_scale()),
                         point_filter=point_filter,
                         max_depth_mm=max_depth_mm,
                     )
@@ -214,6 +227,18 @@ def main(
                         dropped_frames += 1
                         logger.warning(f"写盘队列已满：frame {frame_index} 被丢弃，累计丢弃 {dropped_frames} 帧")
                     frame_index += 1
+                else:
+                    points = _compute_frame_points(
+                        session=session,
+                        frames=frames,
+                        point_filter=point_filter,
+                        max_depth_mm=max_depth_mm,
+                    )
+
+                if vis3d_alive:
+                    _update_3d_preview(pcd=pcd3d, vis=vis3d, points=points)
+                    vis3d_alive = bool(vis3d.poll_events())
+                    vis3d.update_renderer()
 
                 frames_seen += 1
                 if frames_seen % 120 == 0:
@@ -224,6 +249,7 @@ def main(
                     break
         finally:
             _safe_destroy_window(DEFAULT_WINDOW_NAME)
+            _destroy_3d_preview(vis3d)
     finally:
         try:
             session.stop()
@@ -245,26 +271,15 @@ def main(
 def _compute_frame_points(
     session: OrbbecSession,
     frames,
-    depth_scale: float,
     point_filter,
     max_depth_mm: float,
 ) -> np.ndarray:
-    point_frames, use_color = session.prepare_frame_for_point_cloud(frames)
-    set_point_cloud_filter_format(
-        point_filter,
-        depth_scale=float(depth_scale),
-        use_color=use_color,
+    return session.calculate_points_from_frames(
+        frames=frames,
+        point_filter=point_filter,
+        max_depth_mm=max_depth_mm,
+        apply_sensor_frustum=True,
     )
-    cloud_frame = point_filter.process(point_frames)
-    if cloud_frame is None:
-        return np.empty((0, 3), dtype=np.float32)
-
-    raw_points = np.asarray(point_filter.calculate(cloud_frame), dtype=np.float32)
-    normalized = normalize_points(raw_points)
-    valid_points, _ = filter_valid_points(normalized, max_depth_mm=max_depth_mm)
-    if len(valid_points) == 0:
-        return np.empty((0, normalized.shape[1] if normalized.ndim == 2 else 3), dtype=np.float32)
-    return np.ascontiguousarray(valid_points, dtype=np.float32)
 
 
 def _write_pcd_ascii(path: Path, points: np.ndarray) -> None:
@@ -310,6 +325,83 @@ def _write_pcd_ascii(path: Path, points: np.ndarray) -> None:
                 f"{xyz[i, 0]:.6f} {xyz[i, 1]:.6f} {xyz[i, 2]:.6f} "
                 f"{int(rgb[i, 0])} {int(rgb[i, 1])} {int(rgb[i, 2])}\n"
             )
+
+
+def _create_3d_preview_if_needed(
+    enable_3d: bool,
+) -> tuple["o3d.visualization.VisualizerWithKeyCallback | None", "o3d.geometry.PointCloud | None"]:
+    if not enable_3d:
+        return None, None
+    if o3d is None:
+        logger.warning("当前环境缺少 open3d，跳过 3D 点云预览。")
+        return None, None
+
+    vis = o3d.visualization.VisualizerWithKeyCallback()
+    vis.create_window(
+        window_name=DEFAULT_3D_WINDOW_NAME,
+        width=DEFAULT_3D_WINDOW_WIDTH,
+        height=DEFAULT_3D_WINDOW_HEIGHT,
+    )
+    render_opt = vis.get_render_option()
+    if render_opt is not None:
+        render_opt.point_size = DEFAULT_3D_POINT_SIZE
+        render_opt.background_color = np.asarray([0.0, 0.0, 0.0], dtype=np.float64)
+
+    pcd = o3d.geometry.PointCloud()
+    axis = o3d.geometry.TriangleMesh.create_coordinate_frame(size=200.0, origin=[0.0, 0.0, 0.0])
+    vis.add_geometry(axis)
+    vis.add_geometry(pcd)
+
+    # 按技能要求固定视角
+    view = vis.get_view_control()
+    view.set_lookat([0.0, 0.0, 0.0])
+    view.set_front([0.0, 0.0, -1.0])
+    view.set_up([0.0, -1.0, 0.0])
+    return vis, pcd
+
+
+def _update_3d_preview(
+    pcd,
+    vis,
+    points: np.ndarray,
+) -> None:
+    points = np.asarray(points, dtype=np.float32)
+    if points.ndim != 2 or points.shape[0] == 0:
+        pcd.points = o3d.utility.Vector3dVector(np.empty((0, 3), dtype=np.float64))
+        pcd.colors = o3d.utility.Vector3dVector(np.empty((0, 3), dtype=np.float64))
+        vis.update_geometry(pcd)
+        return
+
+    points = _downsample_for_3d_preview(points, max_points=DEFAULT_3D_MAX_POINTS)
+    xyz = np.ascontiguousarray(points[:, :3], dtype=np.float64)
+    pcd.points = o3d.utility.Vector3dVector(xyz)
+
+    if points.shape[1] >= 6:
+        rgb = np.ascontiguousarray(points[:, 3:6], dtype=np.float32)
+        if rgb.size > 0 and float(np.max(rgb)) > 1.0:
+            rgb = rgb / 255.0
+        rgb = np.clip(rgb, 0.0, 1.0).astype(np.float64)
+    else:
+        rgb = np.full((points.shape[0], 3), 0.85, dtype=np.float64)
+
+    pcd.colors = o3d.utility.Vector3dVector(rgb)
+    vis.update_geometry(pcd)
+
+
+def _downsample_for_3d_preview(points: np.ndarray, max_points: int) -> np.ndarray:
+    if len(points) <= max_points:
+        return points
+    step = max(1, len(points) // max_points)
+    return points[::step]
+
+
+def _destroy_3d_preview(vis) -> None:
+    if vis is None:
+        return
+    try:
+        vis.destroy_window()
+    except Exception:
+        return
 
 
 def _decode_color_frame_bgr(color_frame) -> np.ndarray | None:
@@ -409,13 +501,19 @@ def _safe_destroy_window(window_name: str) -> None:
 
 
 # region CLI（仅用于覆盖默认参数）
-def _parse_cli(argv: list[str] | None = None) -> tuple[Path, int, int, float, int]:
+def _parse_cli(argv: list[str] | None = None) -> tuple[Path, int, int, float, int, bool]:
     parser = argparse.ArgumentParser(description="Orbbec 空格触发连续逐帧异步保存（pcd/rgb/depth-gray）")
     parser.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT, help="输出根目录（其下会创建 yymmdd）")
     parser.add_argument("--timeout-ms", type=int, default=DEFAULT_TIMEOUT_MS, help="wait_for_frames 超时时间（ms）")
     parser.add_argument("--capture-fps", type=int, default=DEFAULT_CAPTURE_FPS, help="期望采样帧率（fps）")
     parser.add_argument("--max-depth-mm", type=float, default=DEFAULT_MAX_DEPTH_MM, help="深度灰度映射上限（mm）")
     parser.add_argument("--queue-size", type=int, default=DEFAULT_QUEUE_SIZE, help="异步写盘队列上限（帧）")
+    parser.add_argument(
+        "--preview-3d",
+        action=argparse.BooleanOptionalAction,
+        default=DEFAULT_ENABLE_3D_PREVIEW,
+        help="是否开启 Open3D 3D 点云预览",
+    )
     args, unknown = parser.parse_known_args(argv)
     if unknown:
         logger.warning(f"检测到未识别参数，已忽略：{unknown}")
@@ -425,6 +523,7 @@ def _parse_cli(argv: list[str] | None = None) -> tuple[Path, int, int, float, in
         int(args.capture_fps),
         float(args.max_depth_mm),
         int(args.queue_size),
+        bool(args.preview_3d),
     )
 
 
@@ -433,13 +532,14 @@ def _parse_cli(argv: list[str] | None = None) -> tuple[Path, int, int, float, in
 
 if __name__ == "__main__":
     try:
-        out_root_arg, timeout_arg, fps_arg, depth_arg, queue_arg = _parse_cli(sys.argv[1:])
+        out_root_arg, timeout_arg, fps_arg, depth_arg, queue_arg, preview3d_arg = _parse_cli(sys.argv[1:])
         main(
             output_root=out_root_arg,
             timeout_ms=timeout_arg,
             capture_fps=fps_arg,
             max_depth_mm=depth_arg,
             queue_size=queue_arg,
+            preview_3d=preview3d_arg,
         )
     except KeyboardInterrupt:
         logger.warning("用户中断，程序退出")

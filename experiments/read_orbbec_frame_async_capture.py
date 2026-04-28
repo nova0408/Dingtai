@@ -3,6 +3,7 @@ from __future__ import annotations
 """Orbbec 异步采集结果读取脚本（配套 test_orbbec_frame_async_capture.py）。"""
 
 import argparse
+import concurrent.futures
 import re
 import shutil
 import sys
@@ -17,6 +18,10 @@ try:
     import cv2
 except Exception:  # pragma: no cover
     cv2 = None
+try:
+    import open3d as o3d
+except Exception:  # pragma: no cover
+    o3d = None
 
 
 # region 默认参数（优先在这里直接改）
@@ -24,7 +29,7 @@ except Exception:  # pragma: no cover
 # =======================默认输入目录=====================================
 
 DEFAULT_INPUT_DIR = Path(".") / Path(
-    "260427"
+    "260428"
 )  # 填入 Path 格式的输入目录，类似于 DEFAULT_INPUT_DIR=Path(".") / Path("260427")
 
 # =======================默认输入目录=====================================
@@ -36,6 +41,12 @@ DEFAULT_SELECTED_RUN_PREFIX = "pick_"  # 每次运行的另存目录前缀
 DEFAULT_WINDOW_NAME = "Orbbec frame reader"  # 预览窗口名（ASCII）
 DEFAULT_WINDOW_WIDTH = 1400  # 预览窗口宽度，单位 像素
 DEFAULT_WINDOW_HEIGHT = 900  # 预览窗口高度，单位 像素
+DEFAULT_ENABLE_3D_PREVIEW = True  # 是否开启 3D 点云预览
+DEFAULT_3D_WINDOW_NAME = "Orbbec point cloud reader"  # 3D 预览窗口名（ASCII）
+DEFAULT_3D_WINDOW_WIDTH = 1280  # 3D 预览窗口宽度，单位 像素
+DEFAULT_3D_WINDOW_HEIGHT = 720  # 3D 预览窗口高度，单位 像素
+DEFAULT_3D_POINT_SIZE = 1.5  # 3D 预览点大小
+DEFAULT_3D_MAX_POINTS = 80_000  # 3D 预览最大点数（默认降低以提升流畅性）
 # endregion
 
 # region 用法说明（单列）
@@ -58,6 +69,8 @@ USAGE_GUIDE = """
 2. P：上一帧
 3. S：另存当前帧（复制 rgb/depth/pcd）
 4. Q / ESC：退出
+5. 3D 点云窗口视角固定：
+   lookat=[0,0,0], front=[0,0,-1], up=[0,-1,0]
 
 [另存目录]
 1. 输入目录下自动创建：_selected_frames/
@@ -79,6 +92,14 @@ class FrameRecord:
     rgb_path: Path
     depth_path: Path
     pcd_path: Path
+
+
+@dataclass(frozen=True)
+class PreviewFrameData:
+    rgb: np.ndarray
+    depth: np.ndarray
+    xyz: np.ndarray
+    rgb_pts: np.ndarray | None
 
 
 class FrameDataReader:
@@ -196,6 +217,7 @@ def main(
     input_dir: Path = DEFAULT_INPUT_DIR,
     preview: bool = DEFAULT_PREVIEW,
     max_frames: int = DEFAULT_MAX_FRAMES,
+    preview_3d: bool = DEFAULT_ENABLE_3D_PREVIEW,
 ) -> None:
     input_dir = Path(input_dir)
     if not input_dir.exists():
@@ -206,6 +228,7 @@ def main(
     logger.info("文件命名格式：frame_{frame_index}_{type}_{ss}")
     logger.info("type=rgb/depth/pcd, depth 为灰度 png, pcd 为 ASCII 点云")
     logger.info("预览操作：Space/N 下一帧，P 上一帧，S 另存当前帧，Q/ESC 退出")
+    logger.info(f"3D 预览：{'开启' if preview_3d else '关闭'}")
 
     records = FrameDataReader.collect_records(input_dir=input_dir, max_frames=max_frames)
 
@@ -219,7 +242,7 @@ def main(
     if preview:
         selected_run_dir = FrameDataReader.create_unique_selected_run_dir(input_dir=input_dir)
         logger.success(f"本次预览另存目录：{selected_run_dir}")
-        _run_preview(records=records, selected_run_dir=selected_run_dir)
+        _run_preview(records=records, selected_run_dir=selected_run_dir, preview_3d=preview_3d)
     else:
         _read_without_preview(records=records)
 
@@ -359,55 +382,125 @@ def _read_without_preview(records: list[FrameRecord]) -> None:
 
 
 # region 预览读取
-def _run_preview(records: list[FrameRecord], selected_run_dir: Path) -> None:
+def _run_preview(records: list[FrameRecord], selected_run_dir: Path, preview_3d: bool) -> None:
     _require_cv2_for_image_io()
     logger.info("预览已开启：Space/N 下一帧，P 上一帧，S 另存当前帧，Q/ESC 退出")
     logger.info(f"另存目标目录：{selected_run_dir}")
 
     cv2.namedWindow(DEFAULT_WINDOW_NAME, cv2.WINDOW_NORMAL)
     cv2.resizeWindow(DEFAULT_WINDOW_NAME, DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT)
+    vis3d, pcd3d = _create_3d_preview_if_needed(enable_3d=preview_3d)
 
     idx = 0
     saved_keys: set[tuple[int, str]] = set()
-    try:
-        while True:
+    cache: dict[int, PreviewFrameData] = {}
+    pending: dict[int, concurrent.futures.Future[PreviewFrameData]] = {}
+    failed: set[int] = set()
+    last_3d_rendered_idx = -1
+
+    def _ensure_prefetch(target_idx: int, pool: concurrent.futures.ThreadPoolExecutor) -> None:
+        if target_idx < 0 or target_idx >= len(records):
+            return
+        if target_idx in cache or target_idx in pending or target_idx in failed:
+            return
+        pending[target_idx] = pool.submit(_load_preview_frame_data, records[target_idx])
+
+    def _collect_prefetch_done() -> None:
+        done_ids: list[int] = []
+        for pending_idx, fut in pending.items():
+            if not fut.done():
+                continue
+            done_ids.append(pending_idx)
+            try:
+                cache[pending_idx] = fut.result()
+            except Exception as exc:
+                failed.add(pending_idx)
+                logger.warning(f"帧解码失败：index={pending_idx}，异常={exc}")
+        for done_idx in done_ids:
+            pending.pop(done_idx, None)
+
+    def _handle_key(key: int) -> bool:
+        nonlocal idx
+        if key in (27, ord("q"), ord("Q")):
+            logger.warning("收到退出指令，结束预览")
+            return True
+        if key in (32, ord("n"), ord("N")):
+            idx = min(len(records) - 1, idx + 1)
+            return False
+        if key in (ord("p"), ord("P")):
+            idx = max(0, idx - 1)
+            return False
+        if key in (ord("s"), ord("S")):
             rec = records[idx]
-            rgb = FrameDataReader.read_rgb(rec)
-            depth = FrameDataReader.read_depth(rec)
-
-            panel = _compose_preview_panel(
-                rgb=rgb,
-                depth_gray=depth,
-                frame_index=rec.frame_index,
-                second_tag=rec.second_tag,
-                cursor_text=f"{idx + 1}/{len(records)}",
+            rec_key = (rec.frame_index, rec.second_tag)
+            if rec_key in saved_keys:
+                logger.warning(f"当前帧已另存过：frame={rec.frame_index}, ss={rec.second_tag}")
+                return False
+            copied_files = FrameDataReader.save_frame_assets(record=rec, output_dir=selected_run_dir)
+            saved_keys.add(rec_key)
+            logger.success(
+                f"另存完成：frame={rec.frame_index}, ss={rec.second_tag}, "
+                f"文件数 {len(copied_files)}，目录 {selected_run_dir}"
             )
+            return False
+        return False
 
-            cv2.imshow(DEFAULT_WINDOW_NAME, panel)
-            key = cv2.waitKey(0) & 0xFF
-            if key in (27, ord("q"), ord("Q")):
-                logger.warning("收到退出指令，结束预览")
-                break
-            if key in (32, ord("n"), ord("N")):
-                idx = min(len(records) - 1, idx + 1)
-                continue
-            if key in (ord("p"), ord("P")):
-                idx = max(0, idx - 1)
-                continue
-            if key in (ord("s"), ord("S")):
-                rec_key = (rec.frame_index, rec.second_tag)
-                if rec_key in saved_keys:
-                    logger.warning(f"当前帧已另存过：frame={rec.frame_index}, ss={rec.second_tag}")
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2, thread_name_prefix="reader_prefetch") as pool:
+            _ensure_prefetch(idx, pool)
+            _ensure_prefetch(idx + 1, pool)
+            while True:
+                _collect_prefetch_done()
+
+                rec = records[idx]
+                frame_data = cache.get(idx)
+                if frame_data is None:
+                    panel = _compose_loading_panel(
+                        frame_index=rec.frame_index,
+                        second_tag=rec.second_tag,
+                        cursor_text=f"{idx + 1}/{len(records)}",
+                    )
+                    cv2.imshow(DEFAULT_WINDOW_NAME, panel)
+                    if vis3d is not None:
+                        vis3d.poll_events()
+                        vis3d.update_renderer()
+                    key = cv2.waitKey(1) & 0xFF
+                    should_exit = _handle_key(key)
+                    if should_exit:
+                        break
+                    _ensure_prefetch(idx, pool)
+                    _ensure_prefetch(idx + 1, pool)
+                    _ensure_prefetch(idx - 1, pool)
+                    _trim_preview_cache(cache=cache, current_idx=idx)
+                    time.sleep(0.003)
                     continue
-                copied_files = FrameDataReader.save_frame_assets(record=rec, output_dir=selected_run_dir)
-                saved_keys.add(rec_key)
-                logger.success(
-                    f"另存完成：frame={rec.frame_index}, ss={rec.second_tag}, "
-                    f"文件数 {len(copied_files)}，目录 {selected_run_dir}"
+
+                panel = _compose_preview_panel(
+                    rgb=frame_data.rgb,
+                    depth_gray=frame_data.depth,
+                    frame_index=rec.frame_index,
+                    second_tag=rec.second_tag,
+                    cursor_text=f"{idx + 1}/{len(records)}",
                 )
-                continue
+                if idx != last_3d_rendered_idx:
+                    _update_3d_preview(vis=vis3d, pcd=pcd3d, xyz=frame_data.xyz, rgb=frame_data.rgb_pts)
+                    last_3d_rendered_idx = idx
+                elif vis3d is not None:
+                    vis3d.poll_events()
+                    vis3d.update_renderer()
+                cv2.imshow(DEFAULT_WINDOW_NAME, panel)
+                key = cv2.waitKey(1) & 0xFF
+                should_exit = _handle_key(key)
+                if should_exit:
+                    break
+                _ensure_prefetch(idx, pool)
+                _ensure_prefetch(idx + 1, pool)
+                _ensure_prefetch(idx - 1, pool)
+                _trim_preview_cache(cache=cache, current_idx=idx)
+                time.sleep(0.003)
     finally:
         _safe_destroy_window(DEFAULT_WINDOW_NAME)
+        _destroy_3d_preview(vis3d)
 
 
 def _compose_preview_panel(
@@ -443,11 +536,125 @@ def _compose_preview_panel(
     return canvas
 
 
+def _compose_loading_panel(frame_index: int, second_tag: str, cursor_text: str) -> np.ndarray:
+    canvas = np.zeros((DEFAULT_WINDOW_HEIGHT, DEFAULT_WINDOW_WIDTH, 3), dtype=np.uint8)
+    cv2.putText(canvas, "Loading frame ...", (30, 60), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 255, 255), 2, cv2.LINE_AA)
+    info = f"frame={frame_index}, ss={second_tag}, {cursor_text}"
+    cv2.putText(canvas, info, (30, 110), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (200, 200, 200), 2, cv2.LINE_AA)
+    cv2.putText(
+        canvas,
+        "Keys: [S] Save current frame | [Space/N] Next | [P] Prev | [Q/ESC] Quit",
+        (30, 150),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.7,
+        (0, 255, 255),
+        2,
+        cv2.LINE_AA,
+    )
+    return canvas
+
+
+def _load_preview_frame_data(record: FrameRecord) -> PreviewFrameData:
+    rgb = FrameDataReader.read_rgb(record)
+    depth = FrameDataReader.read_depth(record)
+    xyz, rgb_pts = FrameDataReader.read_pcd(record)
+    return PreviewFrameData(rgb=rgb, depth=depth, xyz=xyz, rgb_pts=rgb_pts)
+
+
+def _trim_preview_cache(cache: dict[int, PreviewFrameData], current_idx: int, keep_radius: int = 1) -> None:
+    remove_keys = [k for k in cache.keys() if abs(k - current_idx) > keep_radius]
+    for k in remove_keys:
+        cache.pop(k, None)
+
+
 def _safe_destroy_window(window_name: str) -> None:
     try:
         visible = cv2.getWindowProperty(window_name, cv2.WND_PROP_VISIBLE)
         if visible >= 0:
             cv2.destroyWindow(window_name)
+    except Exception:
+        return
+
+
+def _create_3d_preview_if_needed(enable_3d: bool):
+    if not enable_3d:
+        return None, None
+    if o3d is None:
+        logger.warning("当前环境缺少 open3d，跳过 3D 点云预览。")
+        return None, None
+
+    vis = o3d.visualization.VisualizerWithKeyCallback()
+    vis.create_window(
+        window_name=DEFAULT_3D_WINDOW_NAME,
+        width=DEFAULT_3D_WINDOW_WIDTH,
+        height=DEFAULT_3D_WINDOW_HEIGHT,
+    )
+    render_opt = vis.get_render_option()
+    if render_opt is not None:
+        render_opt.point_size = DEFAULT_3D_POINT_SIZE
+        render_opt.background_color = np.asarray([0.0, 0.0, 0.0], dtype=np.float64)
+
+    pcd = o3d.geometry.PointCloud()
+    axis = o3d.geometry.TriangleMesh.create_coordinate_frame(size=200.0, origin=[0.0, 0.0, 0.0])
+    vis.add_geometry(axis)
+    vis.add_geometry(pcd)
+
+    # skill 约束视角
+    view = vis.get_view_control()
+    view.set_lookat([0.0, 0.0, 0.0])
+    view.set_front([0.0, 0.0, -1.0])
+    view.set_up([0.0, -1.0, 0.0])
+    return vis, pcd
+
+
+def _update_3d_preview(vis, pcd, xyz: np.ndarray, rgb: np.ndarray | None) -> None:
+    if vis is None or pcd is None:
+        return
+
+    xyz = np.asarray(xyz, dtype=np.float32)
+    if xyz.ndim != 2 or xyz.shape[0] == 0:
+        pcd.points = o3d.utility.Vector3dVector(np.empty((0, 3), dtype=np.float64))
+        pcd.colors = o3d.utility.Vector3dVector(np.empty((0, 3), dtype=np.float64))
+        vis.update_geometry(pcd)
+        vis.poll_events()
+        vis.update_renderer()
+        return
+
+    xyz, rgb = _downsample_preview_points(xyz=xyz, rgb=rgb, max_points=DEFAULT_3D_MAX_POINTS)
+    pcd.points = o3d.utility.Vector3dVector(np.asarray(xyz, dtype=np.float64))
+
+    if rgb is not None:
+        rgb_f = np.asarray(rgb, dtype=np.float32)
+        if rgb_f.size > 0 and float(np.max(rgb_f)) > 1.0:
+            rgb_f = rgb_f / 255.0
+        rgb_f = np.clip(rgb_f, 0.0, 1.0).astype(np.float64)
+    else:
+        rgb_f = np.full((xyz.shape[0], 3), 0.85, dtype=np.float64)
+
+    pcd.colors = o3d.utility.Vector3dVector(rgb_f)
+    vis.update_geometry(pcd)
+    vis.poll_events()
+    vis.update_renderer()
+
+
+def _downsample_preview_points(
+    xyz: np.ndarray,
+    rgb: np.ndarray | None,
+    max_points: int,
+) -> tuple[np.ndarray, np.ndarray | None]:
+    if xyz.shape[0] <= max_points:
+        return xyz, rgb
+    step = max(1, xyz.shape[0] // max_points)
+    if rgb is None:
+        return xyz[::step], None
+    return xyz[::step], np.asarray(rgb)[::step]
+
+
+def _destroy_3d_preview(vis) -> None:
+    if vis is None:
+        return
+    try:
+        vis.destroy_window()
     except Exception:
         return
 
@@ -478,7 +685,7 @@ def _print_quick_summary(records: list[FrameRecord]) -> None:
 
 
 # region CLI（仅用于覆盖默认参数）
-def _parse_cli(argv: list[str] | None = None) -> tuple[Path, bool, int]:
+def _parse_cli(argv: list[str] | None = None) -> tuple[Path, bool, int, bool]:
     parser = argparse.ArgumentParser(
         description=(
             "读取 Orbbec 异步采集结果（frame_{index}_{type}_{ss}），"
@@ -492,11 +699,17 @@ def _parse_cli(argv: list[str] | None = None) -> tuple[Path, bool, int]:
         default=DEFAULT_PREVIEW,
         help="是否开启预览窗口",
     )
+    parser.add_argument(
+        "--preview-3d",
+        action=argparse.BooleanOptionalAction,
+        default=DEFAULT_ENABLE_3D_PREVIEW,
+        help="是否开启 Open3D 3D 点云预览",
+    )
     parser.add_argument("--max-frames", type=int, default=DEFAULT_MAX_FRAMES, help="最多读取帧数，0 表示全部")
     args, unknown = parser.parse_known_args(argv)
     if unknown:
         logger.warning(f"检测到未识别参数，已忽略：{unknown}")
-    return Path(args.input_dir), bool(args.preview), int(args.max_frames)
+    return Path(args.input_dir), bool(args.preview), int(args.max_frames), bool(args.preview_3d)
 
 
 def _log_usage_guide() -> None:
@@ -509,8 +722,8 @@ def _log_usage_guide() -> None:
 
 if __name__ == "__main__":
     try:
-        in_dir_arg, preview_arg, max_frames_arg = _parse_cli(sys.argv[1:])
-        main(input_dir=in_dir_arg, preview=preview_arg, max_frames=max_frames_arg)
+        in_dir_arg, preview_arg, max_frames_arg, preview3d_arg = _parse_cli(sys.argv[1:])
+        main(input_dir=in_dir_arg, preview=preview_arg, max_frames=max_frames_arg, preview_3d=preview3d_arg)
     except KeyboardInterrupt:
         logger.warning("用户中断，程序退出")
     except Exception as exc:
