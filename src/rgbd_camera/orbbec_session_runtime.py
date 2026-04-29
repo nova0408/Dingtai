@@ -10,7 +10,9 @@ from pyorbbecsdk import (
     AlignFilter,
     Config,
     Context,
+    OBCameraIntrinsic,
     OBCameraParam,
+    OBExtrinsic,
     OBError,
     OBFormat,
     OBFrameType,
@@ -22,7 +24,15 @@ from pyorbbecsdk import (
     PointCloudFilter,
 )
 
-from .orbbec_models import OrbbecImuSample, SensorFrustumConfig, SessionOptions
+from src.utils.datas import Transform
+
+from .orbbec_models import (
+    CameraExtrinsics,
+    CameraIntrinsics,
+    OrbbecImuSample,
+    SensorFrustumConfig,
+    SessionOptions,
+)
 from .orbbec_pointcloud_utils import (
     filter_points_in_sensor_frustum,
     filter_valid_points,
@@ -36,13 +46,43 @@ if TYPE_CHECKING:
 
 
 class OrbbecSession:
-    """Orbbec 通用会话，负责采集流、对齐和点云计算。"""
+    """Orbbec 通用会话，负责采集流、相机参数、对齐和点云计算。
+
+    该类是 pyorbbecsdk 与项目应用层之间的硬件适配边界。它负责启动/停止 SDK 管线、
+    读取帧、管理彩色对齐、生成点云，并把 SDK 原生相机内外参转换为项目 dataclass。
+
+    设计思想：
+    - SDK 原生对象只在 `rgbd_camera` 层出现，点云算法和测试脚本通过结构化数据读取内外参。
+    - 会话对象显式持有 Pipeline/Config/Context 等运行资源，避免在算法层隐式触发硬件访问。
+    - 相机内参、外参读取方法返回不可变 dataclass，便于跨线程传递给实时计算队列。
+
+    生命周期：
+    - 构造函数不创建 SDK Pipeline，避免无设备时 native 崩溃。
+    - `start()` 创建并启动 SDK 运行对象，`stop()` 释放运行态资源。
+    - 可用作上下文管理器，进入时启动，退出时停止。
+
+    继承关系：
+    - 不继承业务基类。具体设备型号通过子类覆盖默认视锥参数。
+    """
 
     def __init__(
         self,
         options: SessionOptions | None = None,
         sensor_frustum: SensorFrustumConfig | None = None,
     ) -> None:
+        """初始化 Orbbec 会话配置。
+
+        Parameters
+        ----------
+        options:
+            会话运行参数。为 None 时使用 `SessionOptions()` 默认值。
+        sensor_frustum:
+            应用层点云裁切视锥。为 None 时使用当前会话类的默认视锥。
+
+        Notes
+        -----
+        该方法只保存配置和初始化 Python 层字段，不构造 pyorbbecsdk `Pipeline`。
+        """
         self.options = options or SessionOptions()
         self.sensor_frustum = sensor_frustum or self.get_default_sensor_frustum()
 
@@ -72,10 +112,24 @@ class OrbbecSession:
         return SensorFrustumConfig()
 
     def __enter__(self) -> "OrbbecSession":
+        """进入上下文并启动相机会话。
+
+        Returns
+        -------
+        session:
+            已调用 `start()` 的当前会话对象。
+        """
         self.start()
         return self
 
     def __exit__(self, exc_type, exc, tb) -> None:
+        """退出上下文并停止相机会话。
+
+        Parameters
+        ----------
+        exc_type, exc, tb:
+            Python 上下文管理协议传入的异常信息。该方法不吞掉异常，只负责释放会话资源。
+        """
         self.stop()
 
     def start(self) -> None:
@@ -203,6 +257,66 @@ class OrbbecSession:
         if self.pipeline is None:
             raise RuntimeError("会话尚未初始化。请先调用 start()。")
         return self.pipeline.get_camera_param()
+
+    def get_depth_intrinsics(self) -> CameraIntrinsics:
+        """读取深度流相机内参。
+
+        Returns
+        -------
+        intrinsics:
+            深度流针孔内参。`width/height/fx/fy/cx/cy` 均来自 SDK 当前管线参数。
+        """
+        return _camera_intrinsics_from_sdk(
+            sdk_intrinsic=self.get_camera_param().depth_intrinsic,
+            stream_name="depth",
+        )
+
+    def get_color_intrinsics(self) -> CameraIntrinsics:
+        """读取彩色流相机内参。
+
+        Returns
+        -------
+        intrinsics:
+            彩色流针孔内参。`width/height/fx/fy/cx/cy` 均来自 SDK 当前管线参数。
+
+        Raises
+        ------
+        RuntimeError
+            当前会话未启用彩色传感器时抛出。
+        """
+        if not self.has_color_sensor:
+            raise RuntimeError("当前 Orbbec 会话未启用彩色传感器，无法读取 color intrinsics。")
+        return _camera_intrinsics_from_sdk(
+            sdk_intrinsic=self.get_camera_param().rgb_intrinsic,
+            stream_name="color",
+        )
+
+    def get_projection_intrinsics(self) -> CameraIntrinsics:
+        """读取当前点云到 2D 预览所使用的投影内参。
+
+        Returns
+        -------
+        intrinsics:
+            若会话启用彩色流，则返回彩色内参；否则返回深度内参。该选择与当前点云管线
+            `prepare_frame_for_point_cloud()` 的彩色对齐策略保持一致。
+        """
+        if self.has_color_sensor:
+            return self.get_color_intrinsics()
+        return self.get_depth_intrinsics()
+
+    def get_depth_to_color_extrinsics(self) -> CameraExtrinsics:
+        """读取深度坐标系到彩色坐标系的外参。
+
+        Returns
+        -------
+        extrinsics:
+            源流为 `depth`、目标流为 `color` 的 SE(3) 外参，平移单位 mm。
+        """
+        return _camera_extrinsics_from_sdk(
+            sdk_extrinsic=self.get_camera_param().transform,
+            source_stream="depth",
+            target_stream="color",
+        )
 
     def create_point_cloud_filter(
         self, camera_param: OBCameraParam | None = None
@@ -630,6 +744,70 @@ class Gemini305(OrbbecSession):
             far_width_mm=839.0,
             far_height_mm=637.0,
         )
+
+
+def _camera_intrinsics_from_sdk(
+    sdk_intrinsic: OBCameraIntrinsic,
+    stream_name: str,
+) -> CameraIntrinsics:
+    """把 SDK 原生内参转换为项目数据结构。
+
+    Parameters
+    ----------
+    sdk_intrinsic:
+        pyorbbecsdk 原生 `OBCameraIntrinsic` 对象，包含 `width/height/fx/fy/cx/cy`。
+    stream_name:
+        图像流名称，例如 `depth`、`color` 或 `projection`。
+
+    Returns
+    -------
+    intrinsics:
+        项目统一 `CameraIntrinsics` 对象。宽高单位为 像素，焦距和主点单位为 像素。
+    """
+    return CameraIntrinsics(
+        stream_name=str(stream_name),
+        width=int(sdk_intrinsic.width),
+        height=int(sdk_intrinsic.height),
+        fx=float(sdk_intrinsic.fx),
+        fy=float(sdk_intrinsic.fy),
+        cx=float(sdk_intrinsic.cx),
+        cy=float(sdk_intrinsic.cy),
+    )
+
+
+def _camera_extrinsics_from_sdk(
+    sdk_extrinsic: OBExtrinsic,
+    source_stream: str,
+    target_stream: str,
+) -> CameraExtrinsics:
+    """把 SDK 原生外参转换为项目数据结构。
+
+    Parameters
+    ----------
+    sdk_extrinsic:
+        pyorbbecsdk 原生 `OBExtrinsic` 对象。`rot` 为 3x3 旋转，`transform` 为 3 维平移。
+    source_stream:
+        源图像流名称，例如 `depth`。
+    target_stream:
+        目标图像流名称，例如 `color`。
+
+    Returns
+    -------
+    extrinsics:
+        项目统一 `CameraExtrinsics` 对象。内部 `Transform` 的平移单位沿用 SDK，项目内按 mm 处理。
+
+    Notes
+    -----
+    `se3` 的形状为 `(4, 4)`，左上角来自 SDK `rot`，最后一列前三项来自 SDK `transform`。
+    """
+    se3 = np.eye(4, dtype=np.float64)
+    se3[:3, :3] = np.asarray(sdk_extrinsic.rot, dtype=np.float64).reshape(3, 3)
+    se3[:3, 3] = np.asarray(sdk_extrinsic.transform, dtype=np.float64).reshape(3)
+    return CameraExtrinsics(
+        source_stream=str(source_stream),
+        target_stream=str(target_stream),
+        transform=Transform.from_SE3(se3),
+    )
 
 
 def _safe_profile_fps(profile, fallback: float) -> float:

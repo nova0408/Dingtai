@@ -1,0 +1,4 @@
+interface:
+  display_name: "Dingtai Src Python Style"
+  short_description: "规范 Dingtai src Python 注释、结构与职责边界"
+  default_prompt: "创建或修改 Dingtai 项目 src/ 下 Python 代码时，使用本技能补齐中文 NumPy 风格 docstring、数据结构字段说明、class 设计说明、region 分区和最小验证。"

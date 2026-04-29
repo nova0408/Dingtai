@@ -5,6 +5,8 @@ from .orbbec_camera_param_utils import (
 )
 from .orbbec_models import (
     CameraParamPatch,
+    CameraExtrinsics,
+    CameraIntrinsics,
     DistortionPatch,
     IntrinsicPatch,
     OrbbecImuSample,
@@ -25,6 +27,8 @@ from .orbbec_session_runtime import (
 
 __all__ = [
     "CameraParamPatch",
+    "CameraExtrinsics",
+    "CameraIntrinsics",
     "DistortionPatch",
     "Gemini305",
     "IntrinsicPatch",
