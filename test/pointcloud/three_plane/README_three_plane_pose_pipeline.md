@@ -1,8 +1,13 @@
-# Orbbec 三平面位姿优化管线说明
+# Orbbec 三平面位姿测试方案说明
 
 ## 目标
 
-本文档记录 `test/pointcloud/test_orbbec_three_plane_pose_optimized_pipeline.py` 对应的完整方案。该方案用于 Orbbec Gemini 305 实时点云中检测三个结构平面，并以三平面交点为原点计算测试坐标系，同时排除料盘区域对平面拟合的干扰。
+本文档记录 Orbbec Gemini 305 三平面位姿测试方案，覆盖当前优化脚本和参考脚本：
+
+- 当前优化脚本：`test/pointcloud/test_orbbec_three_plane_pose_optimized_pipeline.py`
+- 参考脚本：`test/pointcloud/test_orbbec_realtime_three_plane_pose_frame.py`
+
+方案目标是在 Orbbec Gemini 305 实时点云中检测三个结构平面，并以三平面交点为原点计算测试坐标系，同时排除料盘区域对平面拟合的干扰。测试重点是观察当相机视角转动后，计算出的测试坐标系是否仍稳定落在同一空间位置。
 
 当前实现把可复用能力沉淀到 `src`：
 
@@ -13,9 +18,46 @@
 - `src/pointcloud/three_plane_types.py`：三平面配置、结果结构和位姿稳定器。
 - `test/pointcloud/test_orbbec_three_plane_pose_optimized_pipeline.py`：实时采集、线程调度、Open3D/CV2 预览和日志。
 
+## 脚本关系
+
+### 参考脚本
+
+`test_orbbec_realtime_three_plane_pose_frame.py` 是较早的验证脚本，包含完整实验逻辑：
+
+- 三平面检测。
+- 料盘 zero-shot 排除。
+- 2D 平面区域绘制。
+- 3D 平面 patch 和坐标系绘制。
+- 参考坐标系锁定和相对 delta 日志。
+- 较多实验参数和本地辅助函数。
+
+该脚本适合作为行为参考，尤其是 2D 料盘区域绘制、三平面可视化和日志格式。但它把较多算法、可视化和测试辅助逻辑放在同一文件中，长期维护成本较高。
+
+### 当前优化脚本
+
+`test_orbbec_three_plane_pose_optimized_pipeline.py` 是当前推荐使用的性能优化测试入口。它把可复用算法迁移到 `src`，测试脚本只负责实时采集、队列调度、预览和日志。
+
+当前脚本继承参考脚本的核心行为：
+
+- 仍然使用三平面交点作为测试坐标系原点。
+- 仍然用底面法线确定 Z 方向。
+- 仍然输出当前 XYZ/RPY 和相对参考 delta。
+- 仍然在 2D 和 3D 中预览检测结果。
+- 料盘绘制按实际 mask 区域显示，默认启用 SAM，避免只画检测框。
+
+当前脚本做出的结构调整：
+
+- 三平面算法进入 `src/pointcloud/three_plane_pose.py`。
+- 三平面结果结构进入 `src/pointcloud/three_plane_types.py`。
+- 料盘识别进入 `src/pointcloud/tray_detection.py`。
+- 相机内参/外参封装进入 `src/rgbd_camera/orbbec_models.py`。
+- 实时脚本只保留测试管线和预览职责。
+
+如果后续需要修改算法，应优先修改 `src`；如果只是改窗口、颜色、日志或临时测试策略，应修改当前测试脚本。
+
 ## 运行方式
 
-直接运行：
+推荐直接运行当前优化脚本：
 
 ```powershell
 C:\Users\ICO\anaconda3\envs\DingTai\python.exe test\pointcloud\test_orbbec_three_plane_pose_optimized_pipeline.py
@@ -38,6 +80,42 @@ C:\Users\ICO\anaconda3\envs\DingTai\python.exe test\pointcloud\test_orbbec_three
 - `--pose-smooth-frames`：位姿稳定窗口，只使用最近实际完成计算的帧，最大 15。
 - `--compute-min-interval-s`：提交计算任务的最小间隔，单位秒。
 
+参考脚本仍可用于对照行为：
+
+```powershell
+C:\Users\ICO\anaconda3\envs\DingTai\python.exe test\pointcloud\test_orbbec_realtime_three_plane_pose_frame.py
+```
+
+建议只在需要对比旧行为、排查预览差异或确认迁移结果时运行参考脚本。
+
+## 算法思路
+
+三平面位姿估计基于一个明确的几何假设：目标场景中存在一个底面和两个倾斜侧面，三者可通过局部点云拟合为三个平面。三个平面的交点作为测试坐标系原点，底面法线提供 Z 轴方向，X 轴由固定参考方向投影到底面切平面内得到。
+
+核心设计点：
+
+- 坐标系必须有固定参考方向，避免平面法线符号翻转导致预览坐标系跳变。
+- Z 轴先由底面法线确定，再按 `frame_z_hint` 修正正负方向。
+- X 轴默认使用 `frame_x_hint` 投影到底面切平面内，而不是完全依赖两个侧面法线叉乘。
+- `Axis` 负责生成右手坐标系，避免手工拼接旋转矩阵。
+- `CoordinateFramePose` 只保存 `Axis`、RPY 和残差；`Transform`、原点数组和旋转矩阵都从 `Axis` 派生。
+- 位姿平滑只使用最近实际完成计算的帧，最多 15 帧，不缓存被丢弃的相机帧。
+
+料盘排除的核心思路：
+
+- 先在 2D 彩色图或投影图上识别料盘区域。
+- 将 3D 点云投影到图像坐标。
+- 位于料盘 mask 内的点标记为排除点。
+- 三平面拟合阶段不使用这些点，避免料盘被误识别为结构平面。
+
+性能优化的核心思路：
+
+- 预览和计算分线程。
+- 计算队列最大长度为 1。
+- 上一帧计算未完成时，新帧直接丢弃。
+- 结果队列保留最新结果，避免旧结果阻塞预览。
+- 3D 预览点云做点数上限控制。
+
 ## 数据流
 
 主流程如下：
@@ -52,6 +130,68 @@ C:\Users\ICO\anaconda3\envs\DingTai\python.exe test\pointcloud\test_orbbec_three
 8. 预览线程消费最新结果，更新 2D overlay、3D 平面点云、坐标系和日志。
 
 计算队列是单元素模式：如果上一帧计算尚未完成，当前帧直接丢弃，不进入计算队列。这样可以避免积压旧帧，保持预览和计算结果尽量接近实时状态。
+
+## 管线过程
+
+当前优化脚本的管线可以分为四层。
+
+### 1. 相机层
+
+入口在 `Gemini305`：
+
+1. 启动 Orbbec Pipeline。
+2. 选择深度流和彩色流 profile。
+3. 启用彩色对齐。
+4. 读取 SDK 原生 `OBCameraParam`。
+5. 通过 `get_projection_intrinsics()` 输出 `CameraIntrinsics`。
+6. 创建 `PointCloudFilter`。
+
+相机层输出：
+
+- 当前帧集合。
+- 裁切后的点云 `(N, 3)` 或 `(N, 6)`，单位 mm。
+- 用于 2D 投影的 `CameraIntrinsics`。
+
+### 2. 预览与调度层
+
+入口在 `_run_pipeline()`：
+
+1. 主线程持续等待相机帧。
+2. 调用 `_capture_filtered_points()` 得到裁切点云。
+3. 更新 Open3D 原始点云。
+4. 若计算线程空闲且达到最小提交间隔，则把当前帧打包为 `CaptureJob`。
+5. 若计算线程繁忙或队列非空，则丢弃当前帧。
+6. 消费 `PipelineResult`，刷新 2D/3D 结果。
+
+### 3. 计算层
+
+入口在 `_run_compute_job()`：
+
+1. 从 `CaptureJob.points` 提取 `xyz` 和 `rgb`。
+2. 使用 `project_points_to_image(xyz, job.intrinsics)` 得到 `uv` 和 `valid_proj`。
+3. 构造 2D 基底图：优先使用彩色帧，否则用点云颜色栅格化。
+4. 执行 `TrayPointExcluder.exclude_points()`。
+5. 执行 `estimate_three_plane_pose()`。
+6. 绘制 2D overlay。
+7. 返回 `PipelineResult`。
+
+### 4. 可视化层
+
+2D 可视化：
+
+- 使用 `TrayDetection.mask` 做半透明红色区域叠加。
+- 从实际 mask 提取轮廓。
+- 显示料盘置信度和排除点数。
+- 显示平面分配点数、当前 XYZ/RPY。
+
+3D 可视化：
+
+- 原始裁切点云。
+- 三平面标签点云。
+- 当前坐标系 frame。
+- 当前原点 marker。
+
+预览颜色由测试脚本定义，不写入 `PlanePatch` 或算法层。
 
 ## 相机内参和外参
 
