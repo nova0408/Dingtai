@@ -17,6 +17,7 @@ from .kinematics import (
 from .point import Point
 from .radian import Radian
 from .vector import Vector
+from .angle import AngleType
 
 __all__ = [
     "Degree",
@@ -38,4 +39,5 @@ __all__ = [
     "HomogeneousTransformProtocol",
     "ListSerializable",
     "ArraySerializable",
+    "AngleType",
 ]
