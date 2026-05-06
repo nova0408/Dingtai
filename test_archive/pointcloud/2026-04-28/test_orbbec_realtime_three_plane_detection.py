@@ -20,7 +20,6 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from src.rgbd_camera import Gemini305, SessionOptions, set_point_cloud_filter_format
 
-
 # region 默认参数（优先在这里直接改）
 DEFAULT_TIMEOUT_MS = 120  # 等待相机帧超时，单位 ms
 DEFAULT_CAPTURE_FPS = 30  # 请求采集帧率，单位 fps
@@ -114,7 +113,7 @@ def main(
     if cfg.bottom_axis not in {"x", "y", "z"}:
         raise ValueError("bottom_axis must be one of: x, y, z")
 
-    options = SessionOptions(timeout_ms=int(timeout_ms), preferred_capture_fps=max(1, int(capture_fps)))
+    options = SessionOptions(timeout=int(timeout_ms), preferred_capture_fps=max(1, int(capture_fps)))
     with Gemini305(options=options) as session:
         cam = session.get_camera_param()
         ci = cam.rgb_intrinsic if session.has_color_sensor else cam.depth_intrinsic
@@ -867,13 +866,23 @@ def _parse_cli() -> tuple[int, int, float, int, int, float, int, int, str, float
     parser = argparse.ArgumentParser(description="Orbbec Gemini 305 实时三平面检测测试脚本")
     parser.add_argument("--timeout-ms", type=int, default=DEFAULT_TIMEOUT_MS, help="wait_for_frames timeout in ms")
     parser.add_argument("--capture-fps", type=int, default=DEFAULT_CAPTURE_FPS, help="preferred capture fps")
-    parser.add_argument("--max-depth-mm", type=float, default=DEFAULT_MAX_DEPTH_MM, help="max depth for sensor filtering")
+    parser.add_argument(
+        "--max-depth-mm", type=float, default=DEFAULT_MAX_DEPTH_MM, help="max depth for sensor filtering"
+    )
     parser.add_argument("--max-preview-points", type=int, default=DEFAULT_MAX_PREVIEW_POINTS, help="max preview points")
-    parser.add_argument("--max-ransac-points", type=int, default=DEFAULT_MAX_RANSAC_POINTS, help="max sampled points for RANSAC")
-    parser.add_argument("--plane-distance-mm", type=float, default=DEFAULT_PLANE_DISTANCE_MM, help="RANSAC plane distance threshold")
-    parser.add_argument("--plane-min-points", type=int, default=DEFAULT_PLANE_MIN_POINTS, help="minimum points per plane")
+    parser.add_argument(
+        "--max-ransac-points", type=int, default=DEFAULT_MAX_RANSAC_POINTS, help="max sampled points for RANSAC"
+    )
+    parser.add_argument(
+        "--plane-distance-mm", type=float, default=DEFAULT_PLANE_DISTANCE_MM, help="RANSAC plane distance threshold"
+    )
+    parser.add_argument(
+        "--plane-min-points", type=int, default=DEFAULT_PLANE_MIN_POINTS, help="minimum points per plane"
+    )
     parser.add_argument("--ransac-iterations", type=int, default=DEFAULT_RANSAC_ITERATIONS, help="RANSAC iterations")
-    parser.add_argument("--bottom-axis", choices=["x", "y", "z"], default=DEFAULT_BOTTOM_AXIS, help="bottom plane reference normal axis")
+    parser.add_argument(
+        "--bottom-axis", choices=["x", "y", "z"], default=DEFAULT_BOTTOM_AXIS, help="bottom plane reference normal axis"
+    )
     parser.add_argument("--alpha", type=float, default=DEFAULT_ALPHA, help="overlay alpha")
     args = parser.parse_args()
     return (

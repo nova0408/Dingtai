@@ -234,7 +234,7 @@ def main(
     if cfg.bottom_axis not in {"x", "y", "z"}:
         raise ValueError("bottom_axis must be one of: x, y, z")
 
-    options = SessionOptions(timeout_ms=int(timeout_ms), preferred_capture_fps=max(1, int(capture_fps)))
+    options = SessionOptions(timeout=int(timeout_ms), preferred_capture_fps=max(1, int(capture_fps)))
     with Gemini305(options=options) as session:
         cam = session.get_camera_param()
         ci = cam.rgb_intrinsic if session.has_color_sensor else cam.depth_intrinsic

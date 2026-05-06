@@ -478,7 +478,7 @@ def main(
         detect_max_side=detect_max_side,
     )
 
-    options = SessionOptions(timeout_ms=int(timeout_ms), preferred_capture_fps=max(1, int(capture_fps)))
+    options = SessionOptions(timeout=int(timeout_ms), preferred_capture_fps=max(1, int(capture_fps)))
     with Gemini305(options=options) as session:
         cam = session.get_camera_param()
         ci = cam.rgb_intrinsic if session.has_color_sensor else cam.depth_intrinsic
@@ -637,7 +637,9 @@ def _run_loop(
                             f"颜色 - 关键词映射：{' | '.join(mapping)} | detect_interval_now={current_detect_interval}"
                         )
                     else:
-                        logger.info(f"颜色 - 关键词映射：当前无有效目标 | detect_interval_now={current_detect_interval}")
+                        logger.info(
+                            f"颜色 - 关键词映射：当前无有效目标 | detect_interval_now={current_detect_interval}"
+                        )
             else:
                 dets = cached_dets
                 detect_countdown -= 1
@@ -881,9 +883,7 @@ def _mask_iou(mask_a: np.ndarray, mask_b: np.ndarray) -> float:
     return float(inter) / float(union)
 
 
-def _capture_preview_with_color_once(
-    session: Gemini305, point_filter
-) -> tuple[np.ndarray | None, np.ndarray | None]:
+def _capture_preview_with_color_once(session: Gemini305, point_filter) -> tuple[np.ndarray | None, np.ndarray | None]:
     frames = session.wait_for_frames()
     if frames is None:
         return None, None
@@ -1331,4 +1331,3 @@ if __name__ == "__main__":
     except Exception as exc:
         logger.warning(f"程序异常退出：{exc}")
         raise
-

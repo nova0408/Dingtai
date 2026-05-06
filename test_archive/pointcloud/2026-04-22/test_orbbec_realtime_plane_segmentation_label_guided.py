@@ -27,9 +27,10 @@ from src.rgbd_camera import (
     set_point_cloud_filter_format,
 )
 
-
 # region 默认参数（优先在这里直接改）
-DEFAULT_LABEL_IMAGE = PROJECT_ROOT / "experiments" / "sampled_images" / "color" / "sample_0002_20260423_103758.png"  # 标注图路径
+DEFAULT_LABEL_IMAGE = (
+    PROJECT_ROOT / "experiments" / "sampled_images" / "color" / "sample_0002_20260423_103758.png"
+)  # 标注图路径
 DEFAULT_TIMEOUT_MS = 120  # 等待帧超时，单位 ms
 DEFAULT_CAPTURE_FPS = 30  # 请求采集帧率，单位 fps
 DEFAULT_MAX_DEPTH_MM = 5000.0  # 深度截断上限，单位 mm
@@ -209,7 +210,7 @@ def main(
     if int(np.count_nonzero(warper.green_mask_ref)) < DEFAULT_MASK_MIN_PIXELS:
         raise RuntimeError("标注图中绿色区域像素过少，无法作为平面先验。")
 
-    options = SessionOptions(timeout_ms=int(timeout_ms), preferred_capture_fps=max(1, int(capture_fps)))
+    options = SessionOptions(timeout=int(timeout_ms), preferred_capture_fps=max(1, int(capture_fps)))
 
     with OrbbecSession(options=options) as session:
         cam = session.get_camera_param()
@@ -334,7 +335,9 @@ def _run_loop(
             if red_fit is not None:
                 red_inliers, red_normal = red_fit
                 labels[red_inliers] = 0
-                plane_quads[0] = _sanitize_quad(_min_area_box_from_uv(uv[red_inliers]), w=img_w, h=img_h).astype(np.int32)
+                plane_quads[0] = _sanitize_quad(_min_area_box_from_uv(uv[red_inliers]), w=img_w, h=img_h).astype(
+                    np.int32
+                )
                 source_tags[0] = "recognition"
 
             green_ids = _collect_indices_in_mask(uv=uv, valid_proj=valid_proj, mask=green_mask_prior)
@@ -350,7 +353,9 @@ def _run_loop(
             if green_fit is not None:
                 green_inliers, green_normal = green_fit
                 labels[green_inliers] = 1
-                plane_quads[1] = _sanitize_quad(_min_area_box_from_uv(uv[green_inliers]), w=img_w, h=img_h).astype(np.int32)
+                plane_quads[1] = _sanitize_quad(_min_area_box_from_uv(uv[green_inliers]), w=img_w, h=img_h).astype(
+                    np.int32
+                )
                 source_tags[1] = "recognition"
 
             if red_normal is not None and green_normal is not None:
@@ -460,9 +465,7 @@ def _fit_plane_indices(
     if inlier_xyz.shape[0] >= 30:
         inlier_pcd = o3d.geometry.PointCloud()
         inlier_pcd.points = o3d.utility.Vector3dVector(inlier_xyz)
-        inlier_pcd.estimate_normals(
-            o3d.geometry.KDTreeSearchParamHybrid(radius=max(distance_mm * 6.0, 8.0), max_nn=30)
-        )
+        inlier_pcd.estimate_normals(o3d.geometry.KDTreeSearchParamHybrid(radius=max(distance_mm * 6.0, 8.0), max_nn=30))
         normals = np.asarray(inlier_pcd.normals, dtype=np.float64)
         if normals.shape[0] > 0:
             align = np.abs(normals @ plane_normal.reshape(3))
@@ -530,7 +533,9 @@ def _draw_2d_overlay(rgb_img: np.ndarray, plane_quads: dict[int, np.ndarray], al
         cv2.fillConvexPoly(overlay, q, c)
         cv2.polylines(overlay, [q], True, (255, 255, 255), 1, cv2.LINE_AA)
         center = np.mean(q, axis=0).astype(np.int32)
-        cv2.putText(overlay, f"P{plane_id}", (int(center[0]), int(center[1])), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+        cv2.putText(
+            overlay, f"P{plane_id}", (int(center[0]), int(center[1])), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1
+        )
 
     blended = cv2.addWeighted(overlay, float(alpha), rgb_img, float(1.0 - alpha), 0.0)
     return blended
@@ -540,7 +545,9 @@ def _draw_2d_overlay(rgb_img: np.ndarray, plane_quads: dict[int, np.ndarray], al
 
 
 # region 采集/投影工具
-def _capture_preview_with_color_once(session: OrbbecSession, point_filter) -> tuple[np.ndarray | None, np.ndarray | None]:
+def _capture_preview_with_color_once(
+    session: OrbbecSession, point_filter
+) -> tuple[np.ndarray | None, np.ndarray | None]:
     frames = session.wait_for_frames()
     if frames is None:
         return None, None
@@ -649,7 +656,9 @@ def _project_points_to_image(
     return uv, (u >= 0) & (v >= 0)
 
 
-def _rasterize_rgb(xyz: np.ndarray, rgb: np.ndarray, uv: np.ndarray, valid_proj: np.ndarray, w: int, h: int) -> np.ndarray:
+def _rasterize_rgb(
+    xyz: np.ndarray, rgb: np.ndarray, uv: np.ndarray, valid_proj: np.ndarray, w: int, h: int
+) -> np.ndarray:
     out = np.zeros((h, w, 3), dtype=np.uint8)
     idx = np.where(valid_proj)[0]
     if idx.size == 0:

@@ -409,8 +409,7 @@ def _run_geotransformer_demo(
 
     # Fallback for release packages (e.g. v1.0.0) where demo.py is absent.
     logger.warning("demo.py not found, use internal single-pair fallback.")
-    fallback_code = textwrap.dedent(
-        """
+    fallback_code = textwrap.dedent("""
         import argparse
         import os
         import os.path as osp
@@ -479,8 +478,7 @@ def _run_geotransformer_demo(
 
         if __name__ == "__main__":
             main()
-        """
-    ).strip()
+        """).strip()
 
     cmd = [
         geot_python,
@@ -650,7 +648,7 @@ def main() -> None:
         detect_max_side=int(args.detect_max_side),
     )
 
-    options = SessionOptions(timeout_ms=int(args.timeout_ms), preferred_capture_fps=max(1, int(args.capture_fps)))
+    options = SessionOptions(timeout=int(args.timeout_ms), preferred_capture_fps=max(1, int(args.capture_fps)))
 
     template_points: np.ndarray | None = None
     template_file: Path | None = None

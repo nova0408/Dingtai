@@ -116,7 +116,7 @@ def main(
         f"优化全流程参数：tray_exclusion {cfg.enable_tray_exclusion}, tray_use_sam {cfg.tray_use_sam}, "
         f"pose_smooth_frames {cfg.pose_smooth_frames}, compute_min_interval_s {cfg.compute_min_interval_s:.3f} s"
     )
-    options = SessionOptions(timeout_ms=int(timeout_ms), preferred_capture_fps=max(1, int(capture_fps)))
+    options = SessionOptions(timeout=int(timeout_ms), preferred_capture_fps=max(1, int(capture_fps)))
     with Gemini305(options=options) as session:
         cam = session.get_camera_param()
         projection_intrinsics = session.get_projection_intrinsics()

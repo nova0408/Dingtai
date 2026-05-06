@@ -21,7 +21,6 @@ from src.rgbd_camera import (
     set_point_cloud_filter_format,
 )
 
-
 # region 默认参数（优先在这里直接改）
 DEFAULT_TIMEOUT_MS = 120
 DEFAULT_CAPTURE_FPS = 30
@@ -200,7 +199,7 @@ def main(
     alpha = float(np.clip(alpha, 0.0, 1.0))
 
     session_options = SessionOptions(
-        timeout_ms=int(timeout_ms),
+        timeout=int(timeout_ms),
         preferred_capture_fps=max(1, int(capture_fps)),
     )
 
@@ -506,7 +505,9 @@ def _parse_cli() -> tuple[int, int, float, int, int, int, float]:
     parser = argparse.ArgumentParser(description="Orbbec 每帧快速平面识别与预览（CLI 仅用于覆盖调参）")
     parser.add_argument("--timeout-ms", type=int, default=DEFAULT_TIMEOUT_MS, help="wait_for_frames timeout in ms")
     parser.add_argument("--capture-fps", type=int, default=DEFAULT_CAPTURE_FPS, help="preferred capture fps")
-    parser.add_argument("--plane-distance-mm", type=float, default=DEFAULT_PLANE_DISTANCE_MM, help="RANSAC 平面距离阈值（毫米）")
+    parser.add_argument(
+        "--plane-distance-mm", type=float, default=DEFAULT_PLANE_DISTANCE_MM, help="RANSAC 平面距离阈值（毫米）"
+    )
     parser.add_argument("--plane-ransac-iter", type=int, default=DEFAULT_PLANE_RANSAC_ITER, help="RANSAC 迭代次数")
     parser.add_argument("--max-planes", type=int, default=DEFAULT_MAX_PLANES, help="每帧最多识别平面数")
     parser.add_argument("--min-inliers", type=int, default=DEFAULT_MIN_INLIERS, help="单平面最小内点数")

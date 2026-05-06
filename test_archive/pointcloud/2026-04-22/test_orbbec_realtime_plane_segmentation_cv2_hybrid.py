@@ -27,7 +27,6 @@ from src.rgbd_camera import (
     set_point_cloud_filter_format,
 )
 
-
 # region 默认参数（优先在这里直接改）
 DEFAULT_TIMEOUT_MS = 120  # 等待帧超时，单位 ms
 DEFAULT_CAPTURE_FPS = 30  # 请求相机帧率，单位 fps
@@ -216,7 +215,7 @@ def main(
     min_inlier_ratio = float(np.clip(min_inlier_ratio, 0.05, 0.99))
 
     session_options = SessionOptions(
-        timeout_ms=int(timeout_ms),
+        timeout=int(timeout_ms),
         preferred_capture_fps=max(1, int(capture_fps)),
     )
 
@@ -603,14 +602,16 @@ def _build_cv2_prior_regions(
     return dedup_regions
 
 
-def _collect_thin_strip_regions(edge: np.ndarray, point_index_img: np.ndarray, valid_img: np.ndarray) -> list[np.ndarray]:
+def _collect_thin_strip_regions(
+    edge: np.ndarray, point_index_img: np.ndarray, valid_img: np.ndarray
+) -> list[np.ndarray]:
     contours, _ = cv2.findContours(edge, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
     regions: list[np.ndarray] = []
     for contour in contours:
         if contour.shape[0] < 8:
             continue
         rect = cv2.minAreaRect(contour)
-        (w_rect, h_rect) = rect[1]
+        w_rect, h_rect = rect[1]
         long_side = float(max(w_rect, h_rect))
         short_side = float(min(w_rect, h_rect))
         if short_side < 1.0:
@@ -913,7 +914,9 @@ def _parse_cli() -> tuple[int, int, float, int, int, int, float, float]:
     parser = argparse.ArgumentParser(description="Orbbec cv2+3D 混合平面识别（CLI 仅用于覆盖调参）")
     parser.add_argument("--timeout-ms", type=int, default=DEFAULT_TIMEOUT_MS, help="wait_for_frames timeout in ms")
     parser.add_argument("--capture-fps", type=int, default=DEFAULT_CAPTURE_FPS, help="preferred capture fps")
-    parser.add_argument("--plane-distance-mm", type=float, default=DEFAULT_PLANE_DISTANCE_MM, help="RANSAC 平面距离阈值（毫米）")
+    parser.add_argument(
+        "--plane-distance-mm", type=float, default=DEFAULT_PLANE_DISTANCE_MM, help="RANSAC 平面距离阈值（毫米）"
+    )
     parser.add_argument("--plane-ransac-iter", type=int, default=DEFAULT_PLANE_RANSAC_ITER, help="RANSAC 迭代次数")
     parser.add_argument("--max-planes", type=int, default=DEFAULT_MAX_PLANES, help="每帧最多识别平面数")
     parser.add_argument("--min-inliers", type=int, default=DEFAULT_MIN_INLIERS, help="单平面最小内点数")
@@ -938,7 +941,9 @@ def _parse_cli() -> tuple[int, int, float, int, int, int, float, float]:
 if __name__ == "__main__":
     try:
         if len(sys.argv) > 1:
-            timeout_arg, fps_arg, dist_arg, iter_arg, planes_arg, inliers_arg, inlier_ratio_arg, alpha_arg = _parse_cli()
+            timeout_arg, fps_arg, dist_arg, iter_arg, planes_arg, inliers_arg, inlier_ratio_arg, alpha_arg = (
+                _parse_cli()
+            )
             main(
                 timeout_ms=timeout_arg,
                 capture_fps=fps_arg,

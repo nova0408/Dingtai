@@ -141,7 +141,7 @@ def main(
     run_dir.mkdir(parents=True, exist_ok=True)
 
     options = SessionOptions(
-        timeout_ms=int(timeout_ms),
+        timeout=int(timeout_ms),
         preferred_capture_fps=max(1, int(capture_fps)),
     )
 
@@ -546,4 +546,3 @@ if __name__ == "__main__":
     except Exception as exc:
         logger.warning(f"程序异常退出：{exc}")
         raise
-

@@ -4,6 +4,7 @@ import numpy as np
 from pyorbbecsdk import OBFormat, PointCloudFilter
 
 
+# region 点云形状与有效性处理
 def normalize_points(points: np.ndarray) -> np.ndarray:
     """
     将任意点云数组标准化为 `Nx3` 或 `Nx6` 的 `float32` 数组。
@@ -16,12 +17,18 @@ def normalize_points(points: np.ndarray) -> np.ndarray:
     Returns
     -------
     np.ndarray
-        标准化后的点云数组。
+        标准化后的点云数组，形状为 `(N, 3)` 或 `(N, 6)`，dtype 为 `float32`。
+
+    Raises
+    ------
+    RuntimeError
+        输入点数无法被 3 或 6 整除时抛出。
     """
     points = np.asarray(points, dtype=np.float32)
     if points.ndim == 2 and points.shape[1] in (3, 6):
         return points
 
+    # flat: (M,) float32，把任意形状展平成一维缓冲区再按 xyz/xyzrgb 解释。
     flat = points.reshape(-1)
     if flat.size == 0:
         return np.empty((0, 3), dtype=np.float32)
@@ -51,7 +58,9 @@ def filter_valid_points(points: np.ndarray, max_depth_mm: float | None) -> tuple
     if points.size == 0:
         return points.reshape(0, 3), 0.0
 
+    # xyz: (N, 3) float32，使用相机坐标系下的 X/Y/Z。
     xyz = points[:, :3]
+    # valid: (N,) bool；True 表示该点数值有效且深度满足约束。
     valid = np.isfinite(xyz).all(axis=1)
     valid &= xyz[:, 2] > 0.0
     if max_depth_mm is not None:
@@ -59,8 +68,10 @@ def filter_valid_points(points: np.ndarray, max_depth_mm: float | None) -> tuple
 
     valid_ratio = float(np.count_nonzero(valid)) / float(len(points))
     return points[valid], valid_ratio
+# endregion
 
 
+# region 视锥过滤
 def filter_points_in_sensor_frustum(
     points: np.ndarray,
     min_depth_mm: float,
@@ -88,18 +99,25 @@ def filter_points_in_sensor_frustum(
     -------
     np.ndarray
         切割后的点云。
+
+    Raises
+    ------
+    ValueError
+        `max_depth_mm <= min_depth_mm` 时抛出。
     """
     if points.size == 0:
         return points[0:0]
     if max_depth_mm <= min_depth_mm:
         raise ValueError("max_depth_mm must be > min_depth_mm")
 
+    # xyz: (N, 3) float32；z: (N,) float32。
     xyz = points[:, :3]
     z = xyz[:, 2]
     valid = (z >= float(min_depth_mm)) & (z <= float(max_depth_mm))
     if not np.any(valid):
         return points[valid]
 
+    # t: (N,) float32，表示每个点在近远平面间的归一化深度比例。
     t = np.clip((z - float(min_depth_mm)) / float(max_depth_mm - min_depth_mm), 0.0, 1.0)
     width = float(near_width_mm) + t * float(far_width_mm - near_width_mm)
     height = float(near_height_mm) + t * float(far_height_mm - near_height_mm)
@@ -107,8 +125,10 @@ def filter_points_in_sensor_frustum(
     valid &= np.abs(xyz[:, 0]) <= (0.5 * width)
     valid &= np.abs(xyz[:, 1]) <= (0.5 * height)
     return points[valid]
+# endregion
 
 
+# region SDK 点云过滤器适配
 def set_point_cloud_filter_format(point_filter: PointCloudFilter, depth_scale: float, use_color: bool) -> None:
     """
     设置 SDK 点云过滤器的输出格式。
@@ -124,8 +144,10 @@ def set_point_cloud_filter_format(point_filter: PointCloudFilter, depth_scale: f
     """
     point_filter.set_position_data_scaled(depth_scale)
     point_filter.set_create_point_format(OBFormat.RGB_POINT if use_color else OBFormat.POINT)
+# endregion
 
 
+# region 点云下采样
 def voxel_downsample_points_numpy(points: np.ndarray, voxel_size_mm: float) -> np.ndarray:
     """
     纯 NumPy 实现的体素下采样。
@@ -141,14 +163,21 @@ def voxel_downsample_points_numpy(points: np.ndarray, voxel_size_mm: float) -> n
     -------
     np.ndarray
         下采样后的点云。
+
+    Raises
+    ------
+    ValueError
+        `voxel_size_mm <= 0` 时抛出。
     """
     if points.size == 0:
         return points
     if voxel_size_mm <= 0:
         raise ValueError("voxel_size_mm must be > 0")
 
+    # xyz: (N, 3) float32；voxel: (N, 3) int64，表示每个点所属体素格坐标。
     xyz = points[:, :3]
     voxel = np.floor(xyz / float(voxel_size_mm)).astype(np.int64)
     _, unique_idx = np.unique(voxel, axis=0, return_index=True)
     unique_idx.sort()
     return points[unique_idx]
+# endregion

@@ -709,7 +709,7 @@ def main(
     if bool(vis):
         vis3d, vis3d_stop, observed_vis_pcd, prior_vis_pcd, observed_obb_ls, prior_obb_ls = _init_realtime_3d_viewer()
 
-    options = SessionOptions(timeout_ms=int(timeout_ms), preferred_capture_fps=max(1, int(capture_fps)))
+    options = SessionOptions(timeout=int(timeout_ms), preferred_capture_fps=max(1, int(capture_fps)))
     prior_for_view = o3d.geometry.PointCloud(prior_cloud)
     last_transform = np.eye(4, dtype=np.float64)
     last_async_result: AsyncRegistrationResult | None = None

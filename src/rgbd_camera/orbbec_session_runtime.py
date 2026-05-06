@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+# region 依赖导入
 import subprocess
 import sys
 import time
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -41,10 +43,15 @@ from .orbbec_pointcloud_utils import (
     voxel_downsample_points_numpy,
 )
 
+# endregion
+
+# region 类型声明
 if TYPE_CHECKING:
     from pyorbbecsdk import FrameSet
+# endregion
 
 
+# region 会话运行时
 class OrbbecSession:
     """Orbbec 通用会话，负责采集流、相机参数、对齐和点云计算。
 
@@ -65,10 +72,13 @@ class OrbbecSession:
     - 不继承业务基类。具体设备型号通过子类覆盖默认视锥参数。
     """
 
+    # region 生命周期与上下文管理
     def __init__(
         self,
         options: SessionOptions | None = None,
         sensor_frustum: SensorFrustumConfig | None = None,
+        log_level: OBLogLevel = OBLogLevel.NONE,
+        log_path: str | None = None,
     ) -> None:
         """初始化 Orbbec 会话配置。
 
@@ -78,6 +88,10 @@ class OrbbecSession:
             会话运行参数。为 None 时使用 `SessionOptions()` 默认值。
         sensor_frustum:
             应用层点云裁切视锥。为 None 时使用当前会话类的默认视锥。
+        log_level:
+            SDK 日志级别。默认 `OBLogLevel.NONE`，即默认关闭日志输出。
+        log_path:
+            SDK 文件日志目录。为 None 时使用项目目录下 `.log/orbbec_sdk`。
 
         Notes
         -----
@@ -85,6 +99,8 @@ class OrbbecSession:
         """
         self.options = options or SessionOptions()
         self.sensor_frustum = sensor_frustum or self.get_default_sensor_frustum()
+        self.log_level = log_level
+        self.log_path = log_path or str((Path.cwd() / ".log" / "orbbec_sdk").resolve())
 
         # 关键：不要在 __init__ 里直接触发 Pipeline()。
         # 某些 pyorbbecsdk 版本在无设备时会原生崩溃，Python 层无法捕获。
@@ -132,6 +148,9 @@ class OrbbecSession:
         """
         self.stop()
 
+    # endregion
+
+    # region 会话启动与停止
     def start(self) -> None:
         """
         启动相机会话。
@@ -145,7 +164,7 @@ class OrbbecSession:
             return
 
         self._init_runtime_objects()
-        self._set_log_level()
+        self._apply_log_config()
         self._configure_streams()
 
         if self.has_color_sensor and self.options.enable_frame_sync:
@@ -184,6 +203,9 @@ class OrbbecSession:
             self._started = False
             self.align_filter = None
 
+    # endregion
+
+    # region 帧读取与参数查询
     def wait_for_frames(self, timeout_ms: int | None = None) -> "FrameSet | None":
         """
         等待一组帧数据。
@@ -200,7 +222,7 @@ class OrbbecSession:
         """
         if self.pipeline is None:
             raise RuntimeError("会话尚未初始化。请先调用 start()。")
-        timeout = self.options.timeout_ms if timeout_ms is None else timeout_ms
+        timeout = self.options.timeout if timeout_ms is None else timeout_ms
         return self.pipeline.wait_for_frames(timeout)
 
     def get_imu_sample_from_frames(self, frames: "FrameSet") -> OrbbecImuSample:
@@ -237,12 +259,12 @@ class OrbbecSession:
                 gyro_frame = None
 
         return OrbbecImuSample(
-            accel_mps2=_vector_from_imu_frame(accel_frame),
-            gyro_rad_s=_vector_from_imu_frame(gyro_frame),
-            accel_temperature_c=_temperature_from_imu_frame(accel_frame),
-            gyro_temperature_c=_temperature_from_imu_frame(gyro_frame),
-            accel_timestamp_us=_timestamp_us_from_frame(accel_frame),
-            gyro_timestamp_us=_timestamp_us_from_frame(gyro_frame),
+            accel=_vector_from_imu_frame(accel_frame),
+            gyro=_vector_from_imu_frame(gyro_frame),
+            accel_temperature=_temperature_from_imu_frame(accel_frame),
+            gyro_temperature=_temperature_from_imu_frame(gyro_frame),
+            accel_timestamp=_timestamp_us_from_frame(accel_frame),
+            gyro_timestamp=_timestamp_us_from_frame(gyro_frame),
         )
 
     def get_camera_param(self) -> OBCameraParam:
@@ -318,9 +340,10 @@ class OrbbecSession:
             target_stream="color",
         )
 
-    def create_point_cloud_filter(
-        self, camera_param: OBCameraParam | None = None
-    ) -> PointCloudFilter:
+    # endregion
+
+    # region 点云计算与过滤流程
+    def create_point_cloud_filter(self, camera_param: OBCameraParam | None = None) -> PointCloudFilter:
         """
         创建点云过滤器并可选写入相机参数。
 
@@ -353,26 +376,12 @@ class OrbbecSession:
         """解析本次调用的视锥参数（调用参数优先，实例默认次之）。"""
         cfg = self.sensor_frustum
         return SensorFrustumConfig(
-            min_depth_mm=(
-                cfg.min_depth_mm if min_depth_mm is None else float(min_depth_mm)
-            ),
-            max_depth_mm=(
-                cfg.max_depth_mm
-                if frustum_max_depth_mm is None
-                else float(frustum_max_depth_mm)
-            ),
-            near_width_mm=(
-                cfg.near_width_mm if near_width_mm is None else float(near_width_mm)
-            ),
-            near_height_mm=(
-                cfg.near_height_mm if near_height_mm is None else float(near_height_mm)
-            ),
-            far_width_mm=(
-                cfg.far_width_mm if far_width_mm is None else float(far_width_mm)
-            ),
-            far_height_mm=(
-                cfg.far_height_mm if far_height_mm is None else float(far_height_mm)
-            ),
+            min_depth=(cfg.min_depth if min_depth_mm is None else float(min_depth_mm)),
+            max_depth=(cfg.max_depth if frustum_max_depth_mm is None else float(frustum_max_depth_mm)),
+            near_width=(cfg.near_width if near_width_mm is None else float(near_width_mm)),
+            near_height=(cfg.near_height if near_height_mm is None else float(near_height_mm)),
+            far_width=(cfg.far_width if far_width_mm is None else float(far_width_mm)),
+            far_height=(cfg.far_height if far_height_mm is None else float(far_height_mm)),
         )
 
     def filter_points_for_sensor(
@@ -414,28 +423,24 @@ class OrbbecSession:
             far_height_mm=far_height_mm,
         )
 
-        effective_depth_limit = (
-            frustum_cfg.max_depth_mm if max_depth_mm is None else float(max_depth_mm)
-        )
+        effective_depth_limit = frustum_cfg.max_depth if max_depth_mm is None else float(max_depth_mm)
         normalized = normalize_points(points)
-        valid_points, _ = filter_valid_points(
-            normalized, max_depth_mm=effective_depth_limit
-        )
+        valid_points, _ = filter_valid_points(normalized, max_depth_mm=effective_depth_limit)
         if len(valid_points) == 0:
             return valid_points
 
         if not apply_sensor_frustum:
             return valid_points
 
-        frustum_depth = min(frustum_cfg.max_depth_mm, effective_depth_limit)
+        frustum_depth = min(frustum_cfg.max_depth, effective_depth_limit)
         return filter_points_in_sensor_frustum(
             valid_points,
-            min_depth_mm=frustum_cfg.min_depth_mm,
+            min_depth_mm=frustum_cfg.min_depth,
             max_depth_mm=frustum_depth,
-            near_width_mm=frustum_cfg.near_width_mm,
-            near_height_mm=frustum_cfg.near_height_mm,
-            far_width_mm=frustum_cfg.far_width_mm,
-            far_height_mm=frustum_cfg.far_height_mm,
+            near_width_mm=frustum_cfg.near_width,
+            near_height_mm=frustum_cfg.near_height,
+            far_width_mm=frustum_cfg.far_width,
+            far_height_mm=frustum_cfg.far_height,
         )
 
     def calculate_points_from_frames(
@@ -496,19 +501,13 @@ class OrbbecSession:
         fps = self._depth_stream_fps if self._depth_stream_fps > 0 else 30.0
         return max(1, int(round(fps * fusion_interval_s)))
 
-    def capture_fused_points_by_interval(
-        self, fusion_interval_s: float = 1.0
-    ) -> np.ndarray:
+    def capture_fused_points_by_interval(self, fusion_interval_s: float = 1.0) -> np.ndarray:
         """在指定时间窗口内采样并融合多帧点云。"""
         if not self._started:
             raise RuntimeError("Session must be started before capturing fused points.")
-        target_frames = self.estimate_fusion_frame_count(
-            fusion_interval_s=fusion_interval_s
-        )
+        target_frames = self.estimate_fusion_frame_count(fusion_interval_s=fusion_interval_s)
 
-        point_filter = self.create_point_cloud_filter(
-            camera_param=self.get_camera_param()
-        )
+        point_filter = self.create_point_cloud_filter(camera_param=self.get_camera_param())
         fused_parts: list[np.ndarray] = []
         sampled = 0
         deadline = time.monotonic() + max(fusion_interval_s * 3.0, 1.0)
@@ -523,7 +522,7 @@ class OrbbecSession:
             valid_points = self.calculate_points_from_frames(
                 frames=frames,
                 point_filter=point_filter,
-                max_depth_mm=self.sensor_frustum.max_depth_mm,
+                max_depth_mm=self.sensor_frustum.max_depth,
                 apply_sensor_frustum=True,
             )
             if len(valid_points) == 0:
@@ -539,9 +538,7 @@ class OrbbecSession:
         fused = np.concatenate(fused_parts, axis=0)
         return voxel_downsample_points_numpy(fused, voxel_size_mm=1.0)
 
-    def prepare_frame_for_point_cloud(
-        self, frames: "FrameSet"
-    ) -> tuple["FrameSet", bool]:
+    def prepare_frame_for_point_cloud(self, frames: "FrameSet") -> tuple["FrameSet", bool]:
         """将帧集合转换为可用于点云计算的输入。"""
         color_frame = frames.get_color_frame()
         use_color = self.has_color_sensor and color_frame is not None
@@ -555,10 +552,22 @@ class OrbbecSession:
                 pass
         return frames, use_color
 
-    def _set_log_level(self) -> None:
-        """设置 SDK 日志级别为静默，减少终端噪音。"""
+    # endregion
+
+    # region 日志与流配置
+    def _apply_log_config(self) -> None:
+        """应用 SDK 日志配置，默认关闭日志并支持自定义文件目录。"""
         try:
-            Context.set_logger_level(OBLogLevel.NONE)
+            Context.set_logger_level(self.log_level)
+        except Exception:
+            pass
+        try:
+            Context.set_logger_to_console(self.log_level)
+        except Exception:
+            pass
+        try:
+            Path(self.log_path).mkdir(parents=True, exist_ok=True)
+            Context.set_logger_to_file(self.log_level, self.log_path)
         except Exception:
             pass
 
@@ -568,9 +577,7 @@ class OrbbecSession:
             raise RuntimeError("会话运行对象未初始化。请先调用 start()。")
         depth_profile_list = None
         try:
-            depth_profile_list = self.pipeline.get_stream_profile_list(
-                OBSensorType.DEPTH_SENSOR
-            )
+            depth_profile_list = self.pipeline.get_stream_profile_list(OBSensorType.DEPTH_SENSOR)
         except OBError as exc:
             self._raise_device_runtime_error(
                 stage="get_stream_profile_list(DEPTH_SENSOR)",
@@ -578,10 +585,7 @@ class OrbbecSession:
                 extra_hint="未检测到可用深度设备，或设备枚举失败。",
             )
         if depth_profile_list is None:
-            raise RuntimeError(
-                "未获取到深度流 profile。请检查相机是否通过 USB 正常连接，"
-                "并确认未被其他程序占用。"
-            )
+            raise RuntimeError("未获取到深度流 profile。请检查相机是否通过 USB 正常连接，" "并确认未被其他程序占用。")
         depth_profile = _select_profile_with_preferred_fps(
             profile_list=depth_profile_list,
             preferred_fps=self.options.preferred_capture_fps,
@@ -594,9 +598,7 @@ class OrbbecSession:
         self.has_accel_sensor = False
         self.has_gyro_sensor = False
         try:
-            color_profile_list = self.pipeline.get_stream_profile_list(
-                OBSensorType.COLOR_SENSOR
-            )
+            color_profile_list = self.pipeline.get_stream_profile_list(OBSensorType.COLOR_SENSOR)
             if color_profile_list is not None:
                 color_profile = _select_profile_with_preferred_fps(
                     profile_list=color_profile_list,
@@ -605,9 +607,7 @@ class OrbbecSession:
                 )
                 self.config.enable_stream(color_profile)
                 if self.options.require_full_frame_when_color:
-                    self.config.set_frame_aggregate_output_mode(
-                        OBFrameAggregateOutputMode.FULL_FRAME_REQUIRE
-                    )
+                    self.config.set_frame_aggregate_output_mode(OBFrameAggregateOutputMode.FULL_FRAME_REQUIRE)
                 self.has_color_sensor = True
         except OBError:
             self.has_color_sensor = False
@@ -643,13 +643,12 @@ class OrbbecSession:
             )
 
         if self.options.require_full_frame_when_imu:
-            self.config.set_frame_aggregate_output_mode(
-                OBFrameAggregateOutputMode.FULL_FRAME_REQUIRE
-            )
+            self.config.set_frame_aggregate_output_mode(OBFrameAggregateOutputMode.FULL_FRAME_REQUIRE)
 
-    def _raise_device_runtime_error(
-        self, stage: str, exc: Exception, extra_hint: str
-    ) -> None:
+    # endregion
+
+    # region 运行时初始化与错误包装
+    def _raise_device_runtime_error(self, stage: str, exc: Exception, extra_hint: str) -> None:
         """
         将 SDK 设备异常统一包装为可读的运行时错误。
 
@@ -667,9 +666,7 @@ class OrbbecSession:
         RuntimeError
             统一错误类型，便于上层脚本输出清晰提示。
         """
-        message = (
-            f"Orbbec 会话初始化失败（阶段：{stage}）。{extra_hint} " f"原始错误：{exc}"
-        )
+        message = f"Orbbec 会话初始化失败（阶段：{stage}）。{extra_hint} " f"原始错误：{exc}"
         raise RuntimeError(message) from exc
 
     def _init_runtime_objects(self) -> None:
@@ -681,11 +678,7 @@ class OrbbecSession:
         当 pyorbbecsdk 在无设备时原生崩溃，主进程无法直接捕获。
         先在子进程探测 Pipeline() 构造，可把“直接退出”转成可读错误。
         """
-        if (
-            self.pipeline is not None
-            and self.config is not None
-            and self.context is not None
-        ):
+        if self.pipeline is not None and self.config is not None and self.context is not None:
             return
 
         self._probe_pipeline_ctor_in_subprocess()
@@ -705,7 +698,13 @@ class OrbbecSession:
         cmd = [
             sys.executable,
             "-c",
-            "from pyorbbecsdk import Pipeline; Pipeline(); print('ok')",
+            (
+                "from pyorbbecsdk import Context, Pipeline, OBLogLevel; "
+                f"Context.set_logger_level(OBLogLevel.{self.log_level.name}); "
+                f"Context.set_logger_to_console(OBLogLevel.{self.log_level.name}); "
+                f"Context.set_logger_to_file(OBLogLevel.{self.log_level.name}, {self.log_path!r}); "
+                "Pipeline(); print('ok')"
+            ),
         ]
         try:
             proc = subprocess.run(
@@ -715,9 +714,7 @@ class OrbbecSession:
                 timeout=8,
             )
         except Exception as exc:
-            raise RuntimeError(
-                f"Orbbec 子进程预检失败，无法验证 Pipeline 构造。原始错误：{exc}"
-            ) from exc
+            raise RuntimeError(f"Orbbec 子进程预检失败，无法验证 Pipeline 构造。原始错误：{exc}") from exc
 
         if proc.returncode != 0:
             stderr = (proc.stderr or "").strip()
@@ -729,7 +726,13 @@ class OrbbecSession:
                 f" 子进程退出码={proc.returncode}。输出：{detail}"
             )
 
+    # endregion
 
+
+# endregion
+
+
+# region 设备默认配置
 class Gemini305(OrbbecSession):
     """Gemini305 专用会话，集中维护该型号默认视锥参数。"""
 
@@ -737,15 +740,19 @@ class Gemini305(OrbbecSession):
     def get_default_sensor_frustum(cls) -> SensorFrustumConfig:
         """返回 Gemini305 的默认视锥参数。"""
         return SensorFrustumConfig(
-            min_depth_mm=70.0,
-            max_depth_mm=430.0,
-            near_width_mm=117.0,
-            near_height_mm=89.0,
-            far_width_mm=839.0,
-            far_height_mm=637.0,
+            min_depth=70.0,
+            max_depth=430.0,
+            near_width=117.0,
+            near_height=89.0,
+            far_width=839.0,
+            far_height=637.0,
         )
 
 
+# endregion
+
+
+# region SDK 参数转换
 def _camera_intrinsics_from_sdk(
     sdk_intrinsic: OBCameraIntrinsic,
     stream_name: str,
@@ -800,6 +807,7 @@ def _camera_extrinsics_from_sdk(
     -----
     `se3` 的形状为 `(4, 4)`，左上角来自 SDK `rot`，最后一列前三项来自 SDK `transform`。
     """
+    # se3: (4, 4) float64，单位约定为旋转无量纲 + 平移 mm。
     se3 = np.eye(4, dtype=np.float64)
     se3[:3, :3] = np.asarray(sdk_extrinsic.rot, dtype=np.float64).reshape(3, 3)
     se3[:3, 3] = np.asarray(sdk_extrinsic.transform, dtype=np.float64).reshape(3)
@@ -810,6 +818,10 @@ def _camera_extrinsics_from_sdk(
     )
 
 
+# endregion
+
+
+# region 基础工具函数
 def _safe_profile_fps(profile, fallback: float) -> float:
     """安全读取 profile 帧率。"""
     try:
@@ -851,9 +863,7 @@ def _timestamp_us_from_frame(frame) -> int | None:
             return None
 
 
-def _select_profile_with_preferred_fps(
-    profile_list, preferred_fps: int | None, preferred_format: OBFormat
-):
+def _select_profile_with_preferred_fps(profile_list, preferred_fps: int | None, preferred_format: OBFormat):
     """按“格式优先 + 帧率优先”策略选择流 profile。"""
     default_profile = profile_list.get_default_video_stream_profile()
     if preferred_fps is None:
@@ -870,10 +880,7 @@ def _select_profile_with_preferred_fps(
         return default_profile
 
     for profile in candidates:
-        if (
-            int(profile.get_fps()) == int(preferred_fps)
-            and profile.get_format() == preferred_format
-        ):
+        if int(profile.get_fps()) == int(preferred_fps) and profile.get_format() == preferred_format:
             return profile
 
     for profile in candidates:
@@ -881,3 +888,6 @@ def _select_profile_with_preferred_fps(
             return profile
 
     return default_profile
+
+
+# endregion

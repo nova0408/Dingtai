@@ -144,13 +144,14 @@ class TrayDetectState:
 
 # region 主流程
 
+
 def main(
     timeout_ms: int = DEFAULT_TIMEOUT_MS,
     capture_fps: int = DEFAULT_CAPTURE_FPS,
     max_depth_mm: float = DEFAULT_MAX_DEPTH_MM,
     compute_min_interval_s: float = DEFAULT_COMPUTE_MIN_INTERVAL_S,
 ) -> None:
-    options = SessionOptions(timeout_ms=int(timeout_ms), preferred_capture_fps=max(1, int(capture_fps)))
+    options = SessionOptions(timeout=int(timeout_ms), preferred_capture_fps=max(1, int(capture_fps)))
     with Gemini305(options=options) as session:
         cam = session.get_camera_param()
         color_intr = cam.rgb_intrinsic if session.has_color_sensor else cam.depth_intrinsic
@@ -321,10 +322,9 @@ def _run_pipeline(
             cv2.imshow(DEFAULT_2D_MERGED_WINDOW_NAME, merged)
             if cv2.waitKey(1) == 27:
                 break
-            if (
-                (not _poll_viewer(vis))
-                or cv2.getWindowProperty(DEFAULT_2D_MERGED_WINDOW_NAME, cv2.WND_PROP_VISIBLE) < 1
-            ):
+            if (not _poll_viewer(vis)) or cv2.getWindowProperty(
+                DEFAULT_2D_MERGED_WINDOW_NAME, cv2.WND_PROP_VISIBLE
+            ) < 1:
                 break
 
             if now - fps_t0 >= 3.0:
@@ -354,6 +354,7 @@ def _run_pipeline(
 
 
 # region 后台计算
+
 
 def _worker_loop(
     job_queue: queue.Queue[CaptureJob | None],
@@ -400,7 +401,16 @@ def _run_compute_job(
     )
     hp_bgr, hp_gray, hp_edge = _time_call(timings, "high_contrast_domain", _compute_high_contrast_domain, base_bgr)
     uv, valid = _time_call(
-        timings, "project_points_to_image", _project_points_to_image, xyz, job.fx, job.fy, job.cx, job.cy, job.img_w, job.img_h
+        timings,
+        "project_points_to_image",
+        _project_points_to_image,
+        xyz,
+        job.fx,
+        job.fy,
+        job.cx,
+        job.cy,
+        job.img_w,
+        job.img_h,
     )
 
     tray_mask: np.ndarray | None = None
@@ -442,7 +452,9 @@ def _run_compute_job(
         if xyz_local.shape[0] < DEFAULT_OPENING_MIN_POINTS:
             raise RuntimeError(f"开口局部点过少：{xyz_local.shape[0]}")
         plane = _time_call(timings, "estimate_opening_plane", _estimate_plane, xyz_local)
-        grasp = _time_call(timings, "compute_grasp_fast", _compute_grasp, opening, plane, job.fx, job.fy, job.cx, job.cy, None)
+        grasp = _time_call(
+            timings, "compute_grasp_fast", _compute_grasp, opening, plane, job.fx, job.fy, job.cx, job.cy, None
+        )
 
         try:
             near_plane_mask, no_hole_mask = _time_call(
@@ -456,7 +468,16 @@ def _run_compute_job(
                 timings, "estimate_top_plane_normal", _estimate_mask_plane_normal, xyz, no_hole_mask, uv, valid
             )
             grasp = _time_call(
-                timings, "compute_grasp_refined", _compute_grasp, opening, plane, job.fx, job.fy, job.cx, job.cy, top_normal
+                timings,
+                "compute_grasp_refined",
+                _compute_grasp,
+                opening,
+                plane,
+                job.fx,
+                job.fy,
+                job.cx,
+                job.cy,
+                top_normal,
             )
         except concurrent.futures.TimeoutError:
             failed_step = "mask_pipeline_sync_timeout"
@@ -557,7 +578,7 @@ def _estimate_mask_plane_normal(
 ) -> np.ndarray | None:
     if mask is None:
         return None
-    m = (np.asarray(mask) > 0)
+    m = np.asarray(mask) > 0
     if np.count_nonzero(m) < 60:
         return None
     idx = np.where(valid)[0]
@@ -597,6 +618,7 @@ def _estimate_mask_plane_normal(
 
 
 # region 估计抓取核心逻辑
+
 
 def _detect_rect_opening_auto(
     rgb_bgr: np.ndarray, tray_mask: np.ndarray | None, hp_gray: np.ndarray
@@ -683,7 +705,9 @@ def _detect_rect_opening_auto(
     quad = candidates[0][1]
     bx, by, bw, bh = cv2.boundingRect(np.round(quad).astype(np.int32))
     center_uv = np.mean(quad, axis=0).astype(np.float64)
-    return OpeningDetection(center_uv=center_uv, bbox_xywh=(int(bx), int(by), int(bw), int(bh)), quad_uv=quad, score=float(candidates[0][0]))
+    return OpeningDetection(
+        center_uv=center_uv, bbox_xywh=(int(bx), int(by), int(bw), int(bh)), quad_uv=quad, score=float(candidates[0][0])
+    )
 
 
 def _filter_local_points(
@@ -772,13 +796,10 @@ def _segment_tray_by_zero_shot(
     motion_dx, motion_dy = _estimate_tray_motion_prior(rgb_bgr, tray_state)
     tray_state.compute_count += 1
     fast_mask = _segment_tray_fast_fallback(rgb_bgr)
-    should_refresh = (
-        tray_detector is not None
-        and (
-            tray_state.cached_mask is None
-            or (tray_state.compute_count % int(max(1, DEFAULT_TRAY_DETECT_EVERY_N)) == 1)
-            or (not tray_state.cached_ok)
-        )
+    should_refresh = tray_detector is not None and (
+        tray_state.cached_mask is None
+        or (tray_state.compute_count % int(max(1, DEFAULT_TRAY_DETECT_EVERY_N)) == 1)
+        or (not tray_state.cached_ok)
     )
     if should_refresh:
         _start_async_tray_refine(rgb_bgr, tray_detector, tray_state)
@@ -1446,7 +1467,9 @@ def _compute_grasp(
     return GraspResult(grasp_point=grasp_point, pre_grasp_point=pre_grasp, rotation=rotation)
 
 
-def _pixel_ray_intersect_plane(u: float, v: float, n: np.ndarray, d: float, fx: float, fy: float, cx: float, cy: float) -> np.ndarray:
+def _pixel_ray_intersect_plane(
+    u: float, v: float, n: np.ndarray, d: float, fx: float, fy: float, cx: float, cy: float
+) -> np.ndarray:
     ray = np.array([(float(u) - cx) / fx, (float(v) - cy) / fy, 1.0], dtype=np.float64)
     ray = _normalize(ray)
     nn = _normalize(n)
@@ -1464,7 +1487,10 @@ def _pixel_ray_intersect_plane(u: float, v: float, n: np.ndarray, d: float, fx: 
 
 # region 相机采集与可视化
 
-def _capture_points_once(session: Gemini305, point_filter, max_depth_mm: float) -> tuple[np.ndarray | None, np.ndarray | None]:
+
+def _capture_points_once(
+    session: Gemini305, point_filter, max_depth_mm: float
+) -> tuple[np.ndarray | None, np.ndarray | None]:
     frames = session.wait_for_frames()
     if frames is None:
         return None, None
@@ -1553,7 +1579,9 @@ def _update_raw_cloud(pcd: o3d.geometry.PointCloud, points: np.ndarray) -> None:
     pcd.colors = o3d.utility.Vector3dVector(np.clip(0.35 * rgb + 0.15, 0.0, 1.0))
 
 
-def _update_result_3d(frame_mesh: o3d.geometry.TriangleMesh, grasp_line: o3d.geometry.LineSet, result: PipelineResult) -> None:
+def _update_result_3d(
+    frame_mesh: o3d.geometry.TriangleMesh, grasp_line: o3d.geometry.LineSet, result: PipelineResult
+) -> None:
     if result.grasp is None:
         return
     frame = o3d.geometry.TriangleMesh.create_coordinate_frame(size=40.0, origin=[0.0, 0.0, 0.0])
@@ -1600,19 +1628,30 @@ def _draw_overlay(
         cv2.putText(out, "Tray", (tx, max(14, ty - 4)), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (0, 220, 220), 1, cv2.LINE_AA)
     if near_m is not None:
         out[near_m] = (0.58 * out[near_m] + 0.42 * np.array([255, 120, 0], dtype=np.float64)).astype(np.uint8)
-        near_u8 = (near_m.astype(np.uint8) * 255)
+        near_u8 = near_m.astype(np.uint8) * 255
         if np.count_nonzero(near_u8) > 0:
             ctn, _ = cv2.findContours(near_u8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             cv2.drawContours(out, ctn, -1, (255, 170, 0), 1, cv2.LINE_AA)
             mx, my, mw, mh = cv2.boundingRect(np.vstack(ctn))
-            cv2.putText(out, "Opening Plane", (mx, max(14, my - 4)), cv2.FONT_HERSHEY_SIMPLEX, 0.40, (255, 170, 0), 1, cv2.LINE_AA)
+            cv2.putText(
+                out,
+                "Opening Plane",
+                (mx, max(14, my - 4)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.40,
+                (255, 170, 0),
+                1,
+                cv2.LINE_AA,
+            )
     if top_m is not None:
         out[top_m] = (0.55 * out[top_m] + 0.45 * np.array([0, 200, 0], dtype=np.float64)).astype(np.uint8)
         if top_plane_quad_uv is not None:
             tq = np.round(np.asarray(top_plane_quad_uv, dtype=np.float64)).astype(np.int32)
             cv2.polylines(out, [tq], True, (0, 255, 0), 1, cv2.LINE_AA)
             mx2, my2, mw2, mh2 = cv2.boundingRect(tq)
-            cv2.putText(out, "Top Plane", (mx2, max(14, my2 - 4)), cv2.FONT_HERSHEY_SIMPLEX, 0.40, (0, 255, 0), 1, cv2.LINE_AA)
+            cv2.putText(
+                out, "Top Plane", (mx2, max(14, my2 - 4)), cv2.FONT_HERSHEY_SIMPLEX, 0.40, (0, 255, 0), 1, cv2.LINE_AA
+            )
     if opening is not None:
         quad = np.round(opening.quad_uv).astype(np.int32)
         cv2.polylines(out, [quad], True, (0, 0, 255), 1, cv2.LINE_AA)
@@ -1669,7 +1708,9 @@ def _build_contrast_preview(
     if opening is not None:
         q = np.round(opening.quad_uv).astype(np.int32)
         cv2.polylines(out, [q], True, (0, 0, 255), 1, cv2.LINE_AA)
-    cv2.putText(out, "High-contrast retain + edges", (16, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.62, (255, 255, 255), 2, cv2.LINE_AA)
+    cv2.putText(
+        out, "High-contrast retain + edges", (16, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.62, (255, 255, 255), 2, cv2.LINE_AA
+    )
     return out
 
 
@@ -1797,7 +1838,9 @@ class _CsvTimingWriter:
                     ]
                 )
 
-    def write_rows(self, frame_idx: int, total_elapsed_ms: float, step_timings: list[StepTiming], error: str | None) -> None:
+    def write_rows(
+        self, frame_idx: int, total_elapsed_ms: float, step_timings: list[StepTiming], error: str | None
+    ) -> None:
         frame_status = "ok" if error is None else "error"
         frame_error = "" if error is None else str(error)
         rows = [
@@ -1864,6 +1907,7 @@ def _time_call(step_timings: list[StepTiming], step_name: str, fn, *args, **kwar
 
 # region 数学与通用工具
 
+
 def _normalize(v: np.ndarray, eps: float = 1e-12) -> np.ndarray:
     n = float(np.linalg.norm(v))
     if n < eps:
@@ -1907,7 +1951,9 @@ def _project_points_to_image(
     return uv, (u >= 0) & (v >= 0)
 
 
-def _rasterize_rgb(xyz: np.ndarray, rgb: np.ndarray, fx: float, fy: float, cx: float, cy: float, w: int, h: int) -> np.ndarray:
+def _rasterize_rgb(
+    xyz: np.ndarray, rgb: np.ndarray, fx: float, fy: float, cx: float, cy: float, w: int, h: int
+) -> np.ndarray:
     uv, valid = _project_points_to_image(xyz, fx, fy, cx, cy, w, h)
     out = np.zeros((h, w, 3), dtype=np.uint8)
     idx = np.where(valid)[0]
@@ -1957,7 +2003,9 @@ def _downsample_points(points: np.ndarray, max_points: int) -> np.ndarray:
 
 def _empty_mesh() -> o3d.geometry.TriangleMesh:
     mesh = o3d.geometry.TriangleMesh()
-    mesh.vertices = o3d.utility.Vector3dVector(np.asarray([[0.0, 0.0, -10000.0], [1.0, 0.0, -10000.0], [0.0, 1.0, -10000.0]]))
+    mesh.vertices = o3d.utility.Vector3dVector(
+        np.asarray([[0.0, 0.0, -10000.0], [1.0, 0.0, -10000.0], [0.0, 1.0, -10000.0]])
+    )
     mesh.triangles = o3d.utility.Vector3iVector(np.asarray([[0, 1, 2]], dtype=np.int32))
     return mesh
 

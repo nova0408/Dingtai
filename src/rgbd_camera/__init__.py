@@ -1,3 +1,10 @@
+"""Orbbec RGBD 相机子模块导出入口。
+
+该文件只负责聚合 `rgbd_camera` 子目录中的稳定公共接口，不承载算法、硬件调用或
+运行态状态。调用方通过本模块导入数据结构、会话对象和点云辅助函数，避免跨文件
+引用内部实现细节。
+"""
+
 from .orbbec_camera_param_utils import (
     apply_camera_param_patch,
     camera_param_summary,
@@ -20,6 +27,7 @@ from .orbbec_pointcloud_utils import (
     set_point_cloud_filter_format,
     voxel_downsample_points_numpy,
 )
+
 from .orbbec_session_runtime import (
     Gemini305,
     OrbbecSession,

@@ -21,7 +21,6 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from src.rgbd_camera import Gemini305, SessionOptions
 
-
 # region 默认参数（优先在这里直接改）
 DEFAULT_TIMEOUT_MS = 120  # 等待帧超时，单位 ms
 DEFAULT_CAPTURE_FPS = 30  # 请求采集帧率，单位 fps
@@ -55,7 +54,7 @@ def main(
         depth_vis_dir.mkdir(parents=True, exist_ok=True)
 
     options = SessionOptions(
-        timeout_ms=int(timeout_ms),
+        timeout=int(timeout_ms),
         preferred_capture_fps=max(1, int(capture_fps)),
     )
 
@@ -254,7 +253,13 @@ def _parse_cli() -> tuple[Path, int, int, float, bool]:
         help="是否保存深度伪彩图",
     )
     args = parser.parse_args()
-    return Path(args.output_dir), int(args.timeout_ms), int(args.capture_fps), float(args.max_depth_mm), bool(args.save_depth_vis)
+    return (
+        Path(args.output_dir),
+        int(args.timeout_ms),
+        int(args.capture_fps),
+        float(args.max_depth_mm),
+        bool(args.save_depth_vis),
+    )
 
 
 # endregion
@@ -278,4 +283,3 @@ if __name__ == "__main__":
     except Exception as exc:
         logger.warning(f"程序异常退出：{exc}")
         raise
-

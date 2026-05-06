@@ -20,7 +20,6 @@ from src.rgbd_camera import (
     set_point_cloud_filter_format,
 )
 
-
 # region 默认参数（优先在这里硬编码修改）
 DEFAULT_TIMEOUT_MS = 120
 DEFAULT_CAPTURE_FPS = 30
@@ -50,7 +49,7 @@ def main(
     output_pcd2.parent.mkdir(parents=True, exist_ok=True)
 
     session_options = SessionOptions(
-        timeout_ms=int(timeout_ms),
+        timeout=int(timeout_ms),
         preferred_capture_fps=max(1, int(capture_fps)),
     )
 
@@ -221,7 +220,9 @@ def _downsample_points(points: np.ndarray, max_points: int) -> np.ndarray:
 # region CLI（仅用于覆盖调参）
 def _parse_cli() -> tuple[float, Path, Path, int, int]:
     parser = argparse.ArgumentParser(description="Orbbec 动态预览 + 手动触发两组融合采样（CLI 仅用于覆盖调参）")
-    parser.add_argument("--fusion-interval-s", type=float, default=DEFAULT_FUSION_INTERVAL_S, help="fusion interval in seconds")
+    parser.add_argument(
+        "--fusion-interval-s", type=float, default=DEFAULT_FUSION_INTERVAL_S, help="fusion interval in seconds"
+    )
     parser.add_argument("--pcd1", type=Path, default=DEFAULT_OUTPUT_PCD1, help="output path for pcd1")
     parser.add_argument("--pcd2", type=Path, default=DEFAULT_OUTPUT_PCD2, help="output path for pcd2")
     parser.add_argument("--timeout-ms", type=int, default=DEFAULT_TIMEOUT_MS, help="wait_for_frames timeout in ms")
@@ -257,4 +258,3 @@ if __name__ == "__main__":
     except Exception as exc:
         logger.warning(f"程序异常退出：{exc}")
         raise
-

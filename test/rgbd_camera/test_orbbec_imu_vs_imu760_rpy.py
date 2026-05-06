@@ -32,13 +32,9 @@ DEFAULT_IMU760_PORT_PROBE_TIMEOUT_S = 0.8  # 自动探测单个串口超时，�
 DEFAULT_ORBBEC_TIMEOUT_MS = 120  # Orbbec 等待帧超时，单位 ms
 DEFAULT_ORBBEC_CAPTURE_FPS = 30  # Orbbec 请求采集帧率，单位 fps
 DEFAULT_DURATION_S = 30.0  # 对比采集时长，单位 s
-DEFAULT_OUTPUT_CSV = Path(
-    "test/rgbd_camera/orbbec_imu_vs_imu760_rpy.csv"
-)  # 对比结果 CSV 输出路径
+DEFAULT_OUTPUT_CSV = Path("test/rgbd_camera/orbbec_imu_vs_imu760_rpy.csv")  # 对比结果 CSV 输出路径
 DEFAULT_PLOT = True  # 是否显示 RPY 对比图
-DEFAULT_ORBBEC_GYRO_AXIS_MAP = (
-    "x,y,z"  # Orbbec gyro 到安装坐标映射，可写成 x,y,z 或 -x,y,z
-)
+DEFAULT_ORBBEC_GYRO_AXIS_MAP = "x,y,z"  # Orbbec gyro 到安装坐标映射，可写成 x,y,z 或 -x,y,z
 # endregion
 
 
@@ -104,7 +100,7 @@ def main(
     start_time = time.monotonic()
 
     options = SessionOptions(
-        timeout_ms=int(orbbec_timeout_ms),
+        timeout=int(orbbec_timeout_ms),
         preferred_capture_fps=max(1, int(orbbec_capture_fps)),
         enable_imu=True,
     )
@@ -112,9 +108,7 @@ def main(
     imu760.open()
     try:
         imu760.clear_input_buffer()
-        _configure_imu760_for_ahrs(
-            imu760=imu760, timeout_s=max(0.2, float(imu760_timeout_s))
-        )
+        _configure_imu760_for_ahrs(imu760=imu760, timeout_s=max(0.2, float(imu760_timeout_s)))
         logger.info("IMU760 已切换 AHRS，并设置输出内容为欧拉角。")
 
         with Gemini305(options=options) as session:
@@ -132,12 +126,10 @@ def main(
                     continue
 
                 orbbec_sample = session.get_imu_sample_from_frames(frames)
-                if orbbec_sample.gyro_rad_s is None:
+                if orbbec_sample.gyro is None:
                     continue
 
-                latest_imu760 = _read_latest_imu760_rpy(
-                    imu760=imu760, timeout_s=float(imu760_timeout_s)
-                )
+                latest_imu760 = _read_latest_imu760_rpy(imu760=imu760, timeout_s=float(imu760_timeout_s))
                 if latest_imu760 is not None:
                     imu760_current = latest_imu760
 
@@ -146,9 +138,7 @@ def main(
 
                 if imu760_initial is None:
                     imu760_initial = imu760_current
-                    last_orbbec_ts_s = _orbbec_sample_time_s(
-                        orbbec_sample.gyro_timestamp_us
-                    )
+                    last_orbbec_ts_s = _orbbec_sample_time_s(orbbec_sample.gyro_timestamp)
                     logger.info(
                         "初始姿态对齐：roll={:.3f} deg pitch={:.3f} deg yaw={:.3f} deg",
                         imu760_initial.roll,
@@ -157,23 +147,19 @@ def main(
                     )
                     continue
 
-                now_ts_s = _orbbec_sample_time_s(orbbec_sample.gyro_timestamp_us)
+                now_ts_s = _orbbec_sample_time_s(orbbec_sample.gyro_timestamp)
                 if last_orbbec_ts_s is None:
                     last_orbbec_ts_s = now_ts_s
                     continue
 
                 dt_s = max(0.0, min(now_ts_s - last_orbbec_ts_s, 0.2))
                 last_orbbec_ts_s = now_ts_s
-                gyro_rad_s = axis_mapper(
-                    np.asarray(orbbec_sample.gyro_rad_s, dtype=np.float64)
-                )
+                gyro_rad_s = axis_mapper(np.asarray(orbbec_sample.gyro, dtype=np.float64))
                 if dt_s > 0.0:
                     orbbec_rotation = orbbec_rotation * R.from_rotvec(gyro_rad_s * dt_s)
 
                 orbbec_delta = _rotation_to_rpy_delta(orbbec_rotation)
-                imu760_delta = _imu760_rpy_delta(
-                    current=imu760_current, initial=imu760_initial
-                )
+                imu760_delta = _imu760_rpy_delta(current=imu760_current, initial=imu760_initial)
                 samples.append(
                     CompareSample(
                         time_s=time.monotonic() - start_time,
@@ -183,15 +169,9 @@ def main(
                         imu760_roll_delta_deg=imu760_delta.roll,
                         imu760_pitch_delta_deg=imu760_delta.pitch,
                         imu760_yaw_delta_deg=imu760_delta.yaw,
-                        roll_error_deg=_angle_delta_deg(
-                            orbbec_delta.roll, imu760_delta.roll
-                        ),
-                        pitch_error_deg=_angle_delta_deg(
-                            orbbec_delta.pitch, imu760_delta.pitch
-                        ),
-                        yaw_error_deg=_angle_delta_deg(
-                            orbbec_delta.yaw, imu760_delta.yaw
-                        ),
+                        roll_error_deg=_angle_delta_deg(orbbec_delta.roll, imu760_delta.roll),
+                        pitch_error_deg=_angle_delta_deg(orbbec_delta.pitch, imu760_delta.pitch),
+                        yaw_error_deg=_angle_delta_deg(orbbec_delta.yaw, imu760_delta.yaw),
                         orbbec_gyro_x_rad_s=float(gyro_rad_s[0]),
                         orbbec_gyro_y_rad_s=float(gyro_rad_s[1]),
                         orbbec_gyro_z_rad_s=float(gyro_rad_s[2]),
@@ -218,12 +198,8 @@ def main(
 
 # region 设备与数据处理
 def _configure_imu760_for_ahrs(imu760: IMU760, timeout_s: float) -> None:
-    imu760.set_algorithm_mode(
-        IMU760AlgorithmMode.AHRS, save_to_flash=False, timeout_s=timeout_s
-    )
-    imu760.set_output_content_mask(
-        IMU760.OUTPUT_MASK_EULER, save_to_flash=False, timeout_s=timeout_s
-    )
+    imu760.set_algorithm_mode(IMU760AlgorithmMode.AHRS, save_to_flash=False, timeout_s=timeout_s)
+    imu760.set_output_content_mask(IMU760.OUTPUT_MASK_EULER, save_to_flash=False, timeout_s=timeout_s)
     imu760.clear_input_buffer()
 
 
@@ -287,9 +263,7 @@ def _parse_axis_map(axis_map: str):
         parsed.append((axis_index[name], sign))
 
     def mapper(values: np.ndarray) -> np.ndarray:
-        return np.asarray(
-            [sign * values[index] for index, sign in parsed], dtype=np.float64
-        )
+        return np.asarray([sign * values[index] for index, sign in parsed], dtype=np.float64)
 
     return mapper
 
@@ -302,14 +276,10 @@ def _write_samples_csv(samples: list[CompareSample], output_csv: Path) -> None:
     output_csv = Path(output_csv)
     output_csv.parent.mkdir(parents=True, exist_ok=True)
     with output_csv.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(
-            f, fieldnames=list(samples[0].__dataclass_fields__.keys())
-        )
+        writer = csv.DictWriter(f, fieldnames=list(samples[0].__dataclass_fields__.keys()))
         writer.writeheader()
         for sample in samples:
-            writer.writerow(
-                {key: getattr(sample, key) for key in sample.__dataclass_fields__}
-            )
+            writer.writerow({key: getattr(sample, key) for key in sample.__dataclass_fields__})
     logger.success("对比结果已保存：{}", output_csv)
 
 
@@ -361,9 +331,7 @@ def _plot_samples(samples: list[CompareSample]) -> None:
             "yaw_error_deg",
         ),
     ]
-    for ax, (_, ylabel, orbbec_key, imu760_key, error_key) in zip(
-        axes, series, strict=True
-    ):
+    for ax, (_, ylabel, orbbec_key, imu760_key, error_key) in zip(axes, series, strict=True):
         ax.plot(
             times,
             [getattr(sample, orbbec_key) for sample in samples],
@@ -393,9 +361,7 @@ def _plot_samples(samples: list[CompareSample]) -> None:
 
 # region CLI
 def _parse_cli() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="对比 Orbbec 内置 IMU 与 IMU760 AHRS 的 RPY 变化"
-    )
+    parser = argparse.ArgumentParser(description="对比 Orbbec 内置 IMU 与 IMU760 AHRS 的 RPY 变化")
     parser.add_argument(
         "--imu760-port",
         type=str,
@@ -403,28 +369,18 @@ def _parse_cli() -> argparse.Namespace:
         help="IMU760 串口号；不填时自动探测",
     )
     parser.add_argument("--imu760-baudrate", type=int, default=DEFAULT_IMU760_BAUDRATE)
-    parser.add_argument(
-        "--imu760-timeout-s", type=float, default=DEFAULT_IMU760_TIMEOUT_S
-    )
+    parser.add_argument("--imu760-timeout-s", type=float, default=DEFAULT_IMU760_TIMEOUT_S)
     parser.add_argument(
         "--imu760-port-probe-timeout-s",
         type=float,
         default=DEFAULT_IMU760_PORT_PROBE_TIMEOUT_S,
     )
-    parser.add_argument(
-        "--orbbec-timeout-ms", type=int, default=DEFAULT_ORBBEC_TIMEOUT_MS
-    )
-    parser.add_argument(
-        "--orbbec-capture-fps", type=int, default=DEFAULT_ORBBEC_CAPTURE_FPS
-    )
+    parser.add_argument("--orbbec-timeout-ms", type=int, default=DEFAULT_ORBBEC_TIMEOUT_MS)
+    parser.add_argument("--orbbec-capture-fps", type=int, default=DEFAULT_ORBBEC_CAPTURE_FPS)
     parser.add_argument("--duration-s", type=float, default=DEFAULT_DURATION_S)
     parser.add_argument("--output-csv", type=Path, default=DEFAULT_OUTPUT_CSV)
-    parser.add_argument(
-        "--plot", action=argparse.BooleanOptionalAction, default=DEFAULT_PLOT
-    )
-    parser.add_argument(
-        "--orbbec-gyro-axis-map", type=str, default=DEFAULT_ORBBEC_GYRO_AXIS_MAP
-    )
+    parser.add_argument("--plot", action=argparse.BooleanOptionalAction, default=DEFAULT_PLOT)
+    parser.add_argument("--orbbec-gyro-axis-map", type=str, default=DEFAULT_ORBBEC_GYRO_AXIS_MAP)
     return parser.parse_args()
 
 

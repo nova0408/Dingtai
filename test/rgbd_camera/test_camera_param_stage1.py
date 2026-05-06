@@ -47,7 +47,7 @@ CAMERA_PARAM_PRESETS: dict[str, CameraParamPatch] = {
     "depth_cx_minus10": CameraParamPatch(depth=IntrinsicPatch(cx_offset=-10.0)),
     "depth_cy_plus10": CameraParamPatch(depth=IntrinsicPatch(cy_offset=10.0)),
     "depth_k1_plus0p01": CameraParamPatch(depth_dist=DistortionPatch(k1_offset=0.01)),
-    "d2c_tx_plus5mm": CameraParamPatch(d2c_translation_offset_mm=(5.0, 0.0, 0.0)),
+    "d2c_tx_plus5mm": CameraParamPatch(d2c_translation_offset=(5.0, 0.0, 0.0)),
 }
 
 
@@ -123,7 +123,7 @@ def main(
     if frames <= 0:
         raise ValueError("frames must be > 0")
 
-    session_options = SessionOptions(timeout_ms=timeout_ms)
+    session_options = SessionOptions(timeout=timeout_ms)
     evaluators: list[PresetEvaluator] = [
         PresetEvaluator(name=name, patch=patch) for name, patch in CAMERA_PARAM_PRESETS.items()
     ]
@@ -339,4 +339,3 @@ if __name__ == "__main__":
         save_ply=save_arg,
         output_dir=output_dir_arg,
     )
-

@@ -6,6 +6,7 @@ from pyorbbecsdk import OBCameraDistortion, OBCameraIntrinsic, OBCameraParam, OB
 from .orbbec_models import CameraParamPatch, DistortionPatch, IntrinsicPatch
 
 
+# region 公共接口
 def clone_camera_param(source: OBCameraParam) -> OBCameraParam:
     """
     深拷贝相机参数对象。
@@ -21,6 +22,7 @@ def clone_camera_param(source: OBCameraParam) -> OBCameraParam:
         拷贝后的新对象。
     """
     cloned = OBCameraParam()
+    # depth/rgb intrinsic 都是 SDK 原生对象，这里逐字段复制，避免引用同一底层实例。
     cloned.depth_intrinsic = _clone_intrinsic(source.depth_intrinsic)
     cloned.rgb_intrinsic = _clone_intrinsic(source.rgb_intrinsic)
     cloned.depth_distortion = _clone_distortion(source.depth_distortion)
@@ -49,7 +51,7 @@ def apply_camera_param_patch(camera_param: OBCameraParam, patch: CameraParamPatc
     color_intrinsic = _apply_intrinsic_patch(camera_param.rgb_intrinsic, patch.color)
     depth_distortion = _apply_distortion_patch(camera_param.depth_distortion, patch.depth_dist)
     color_distortion = _apply_distortion_patch(camera_param.rgb_distortion, patch.color_dist)
-    transform = _apply_extrinsic_patch(camera_param.transform, patch.d2c_translation_offset_mm)
+    transform = _apply_extrinsic_patch(camera_param.transform, patch.d2c_translation_offset)
 
     camera_param.depth_intrinsic = depth_intrinsic
     camera_param.rgb_intrinsic = color_intrinsic
@@ -87,6 +89,10 @@ def camera_param_summary(name: str, camera_param: OBCameraParam) -> str:
     )
 
 
+# endregion
+
+
+# region SDK 对象克隆工具
 def _clone_intrinsic(source: OBCameraIntrinsic) -> OBCameraIntrinsic:
     """
     深拷贝相机内参。
@@ -152,11 +158,16 @@ def _clone_extrinsic(source: OBExtrinsic) -> OBExtrinsic:
         拷贝结果。
     """
     cloned = OBExtrinsic()
+    # rot: (3, 3) float32；transform: (3,) float32，单位 mm。
     cloned.rot = np.asarray(source.rot, dtype=np.float32).copy().reshape(3, 3)
     cloned.transform = np.asarray(source.transform, dtype=np.float32).copy().reshape(3)
     return cloned
 
 
+# endregion
+
+
+# region 补丁应用工具
 def _apply_intrinsic_patch(intrinsic: OBCameraIntrinsic, patch: IntrinsicPatch) -> OBCameraIntrinsic:
     """
     将内参补丁应用到对象（原地修改）。
@@ -219,7 +230,11 @@ def _apply_extrinsic_patch(extrinsic: OBExtrinsic, translation_offset_mm: tuple[
     OBExtrinsic
         修改后的同一对象。
     """
+    # translation: (3,) float32，单位 mm；按 X/Y/Z 逐轴偏移。
     translation = np.asarray(extrinsic.transform, dtype=np.float32).reshape(3)
     translation += np.asarray(translation_offset_mm, dtype=np.float32).reshape(3)
     extrinsic.transform = translation
     return extrinsic
+
+
+# endregion
