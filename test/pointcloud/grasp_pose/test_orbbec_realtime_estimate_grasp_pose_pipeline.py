@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import csv
+import concurrent.futures
 import queue
 import sys
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 
 import cv2
@@ -35,7 +38,14 @@ DEFAULT_POINT_SIZE = 1.5
 DEFAULT_2D_WINDOW_NAME = "Orbbec realtime estimate grasp"
 DEFAULT_2D_MERGED_WINDOW_NAME = "Orbbec realtime estimate grasp merged"
 DEFAULT_3D_WINDOW_NAME = "Orbbec realtime estimate grasp 3D"
-DEFAULT_TRAY_USE_SAM = True
+DEFAULT_TRAY_USE_SAM = False
+DEFAULT_TRAY_DETECT_EVERY_N = 6
+DEFAULT_TRAY_DETECT_MAX_SIDE = 384
+DEFAULT_TRAY_COMBINE_PROMPTS_FORWARD = True
+DEFAULT_MASK_SYNC_BUDGET_MS = 60.0
+DEFAULT_TRAY_MOTION_DOWNSAMPLE = 0.25
+DEFAULT_TRAY_MOTION_SMOOTH_ALPHA = 0.60
+DEFAULT_TRAY_MOTION_MAX_SHIFT_PX = 36.0
 DEFAULT_CONTRAST_SIGMA = 2.6
 DEFAULT_CONTRAST_HP_A = 1.90
 DEFAULT_CONTRAST_HP_B = -0.90
@@ -48,6 +58,7 @@ DEFAULT_NEAR_GROW_DIFF = 18
 DEFAULT_NEAR_GROW_MAX_PIXELS = 26000
 DEFAULT_NEAR_GROW_LOCAL_DIFF = 14
 DEFAULT_NEAR_GROW_GLOBAL_DIFF = 30
+DEFAULT_TIMING_CSV_PATH = PROJECT_ROOT / "logs" / "grasp_pose_pipeline_timing.csv"
 # endregion
 
 
@@ -102,6 +113,30 @@ class PipelineResult:
     contrast_bgr: np.ndarray
     elapsed_ms: float
     error: str | None
+    failed_step: str | None
+    completed_steps: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class StepTiming:
+    step_name: str
+    start_ts: str
+    end_ts: str
+    elapsed_ms: float
+    status: str
+    error: str
+
+
+@dataclass
+class TrayDetectState:
+    cached_mask: np.ndarray | None = None
+    cached_ok: bool = False
+    compute_count: int = 0
+    detect_inflight: bool = False
+    lock: threading.Lock = field(default_factory=threading.Lock)
+    prev_motion_gray_small: np.ndarray | None = None
+    motion_dx_smooth: float = 0.0
+    motion_dy_smooth: float = 0.0
 
 
 # endregion
@@ -150,15 +185,18 @@ def _run_pipeline(
     max_depth_mm: float,
     compute_min_interval_s: float,
 ) -> None:
+    run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+    timing_writer = _CsvTimingWriter(DEFAULT_TIMING_CSV_PATH, run_id)
+    logger.info(f"步骤耗时 CSV 输出：{DEFAULT_TIMING_CSV_PATH}")
     job_queue: queue.Queue[CaptureJob | None] = queue.Queue(maxsize=1)
     result_queue: queue.Queue[PipelineResult] = queue.Queue(maxsize=2)
     stop_event = threading.Event()
     busy_event = threading.Event()
     worker = threading.Thread(
         target=_worker_loop,
-        args=(job_queue, result_queue, stop_event, busy_event),
+        args=(job_queue, result_queue, stop_event, busy_event, timing_writer),
         name="estimate_grasp_worker",
-        daemon=True,
+        daemon=False,
     )
     worker.start()
 
@@ -176,6 +214,7 @@ def _run_pipeline(
     preview_frames = 0
     last_overlay = np.zeros((img_h, img_w, 3), dtype=np.uint8)
     last_contrast = np.zeros((img_h, img_w, 3), dtype=np.uint8)
+    latest_result_for_preview: PipelineResult | None = None
 
     try:
         while True:
@@ -200,8 +239,7 @@ def _run_pipeline(
                 _update_result_3d(frame_mesh, grasp_line, result)
                 vis.update_geometry(frame_mesh)
                 vis.update_geometry(grasp_line)
-                last_overlay = result.overlay_bgr
-                last_contrast = result.contrast_bgr
+                latest_result_for_preview = result
                 if result.error is None and result.grasp is not None:
                     p = result.grasp.grasp_point
                     rpy = _rotation_matrix_to_rpy_deg(result.grasp.rotation)
@@ -210,7 +248,11 @@ def _run_pipeline(
                         f"RPY {rpy[0]:.2f}, {rpy[1]:.2f}, {rpy[2]:.2f} deg; elapsed {result.elapsed_ms:.1f} ms"
                     )
                 elif result.error is not None:
-                    logger.warning(f"帧 {result.frame_idx} 计算失败：{result.error}")
+                    kind = _classify_failure_kind(result.failed_step)
+                    logger.warning(
+                        f"帧 {result.frame_idx} 计算失败[{kind}] step={result.failed_step} err={result.error}; "
+                        f"completed={'>'.join(result.completed_steps) if len(result.completed_steps) > 0 else 'none'}"
+                    )
 
             now = time.perf_counter()
             if (not busy_event.is_set()) and job_queue.empty() and (now - last_submit_ts >= compute_min_interval_s):
@@ -235,6 +277,46 @@ def _run_pipeline(
             else:
                 dropped += 1
 
+            # 2D 预览以“当前实时帧”为底图，再叠加最近一次计算结果，避免显示历史帧画面。
+            if color_bgr is not None:
+                base_live = cv2.resize(color_bgr, (img_w, img_h), interpolation=cv2.INTER_LINEAR)
+            else:
+                xyz_live = np.asarray(points[:, :3], dtype=np.float64)
+                rgb_live = _extract_rgb(points)
+                base_live = _rasterize_rgb(xyz_live, rgb_live, fx, fy, cx, cy, img_w, img_h)
+            if latest_result_for_preview is not None:
+                result = latest_result_for_preview
+                try:
+                    last_overlay = _safe_draw_overlay_partial(
+                        base_live,
+                        result.tray_mask,
+                        result.tray_detect_ok,
+                        result.near_plane_mask,
+                        result.no_hole_mask,
+                        result.top_plane_quad_uv,
+                        result.opening,
+                        result.grasp,
+                        result.error,
+                        result.failed_step,
+                    )
+                    _, live_hp_gray, live_hp_edge = _compute_high_contrast_domain(base_live)
+                    last_contrast = _safe_build_contrast_preview_partial(
+                        live_hp_gray,
+                        live_hp_edge,
+                        result.near_plane_mask,
+                        result.no_hole_mask,
+                        result.opening,
+                    )
+                except cv2.error as exc:
+                    logger.warning(f"帧 {frame_idx} 预览绘制失败（已忽略，继续流）：{exc}")
+                    last_overlay = _draw_status_only(base_live, f"preview draw cv2 err: {exc}")
+                    _, live_hp_gray, live_hp_edge = _compute_high_contrast_domain(base_live)
+                    last_contrast = _safe_build_contrast_preview_partial(live_hp_gray, live_hp_edge, None, None, None)
+            else:
+                last_overlay = base_live
+                _, live_hp_gray, live_hp_edge = _compute_high_contrast_domain(base_live)
+                last_contrast = _safe_build_contrast_preview_partial(live_hp_gray, live_hp_edge, None, None, None)
+
             merged = np.hstack([last_overlay, last_contrast])
             cv2.imshow(DEFAULT_2D_MERGED_WINDOW_NAME, merged)
             if cv2.waitKey(1) == 27:
@@ -254,13 +336,18 @@ def _run_pipeline(
                 preview_frames = 0
     finally:
         stop_event.set()
-        try:
-            job_queue.put_nowait(None)
-        except queue.Full:
-            pass
-        worker.join(timeout=1.0)
+        # 等待后台任务完成并确保最后一帧计时写入 CSV 后再退出。
+        job_queue.put(None)
+        worker.join()
+        while True:
+            try:
+                result = result_queue.get_nowait()
+            except queue.Empty:
+                break
+            completed += 1
+            _update_result_3d(frame_mesh, grasp_line, result)
         vis.destroy_window()
-        cv2.destroyWindow(DEFAULT_2D_MERGED_WINDOW_NAME)
+        _safe_destroy_cv_window(DEFAULT_2D_MERGED_WINDOW_NAME)
 
 
 # endregion
@@ -273,25 +360,37 @@ def _worker_loop(
     result_queue: queue.Queue[PipelineResult],
     stop_event: threading.Event,
     busy_event: threading.Event,
+    timing_writer: "_CsvTimingWriter",
 ) -> None:
     tray_detector = _build_tray_zero_shot_detector()
+    tray_state = TrayDetectState()
+    mask_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="mask_pipeline")
     while not stop_event.is_set():
         job = job_queue.get()
         if job is None:
+            job_queue.task_done()
             break
         busy_event.set()
         try:
-            result = _run_compute_job(job, tray_detector)
+            result = _run_compute_job(job, tray_detector, tray_state, timing_writer, mask_executor)
             _put_latest_result(result_queue, result)
         except Exception as exc:
             logger.exception(f"帧 {job.frame_idx} 计算线程异常：{exc}")
         finally:
             busy_event.clear()
             job_queue.task_done()
+    mask_executor.shutdown(wait=True)
 
 
-def _run_compute_job(job: CaptureJob, tray_detector) -> PipelineResult:
+def _run_compute_job(
+    job: CaptureJob,
+    tray_detector,
+    tray_state: TrayDetectState,
+    timing_writer: "_CsvTimingWriter",
+    mask_executor: concurrent.futures.ThreadPoolExecutor,
+) -> PipelineResult:
     t0 = time.perf_counter()
+    timings: list[StepTiming] = []
     xyz = np.asarray(job.points[:, :3], dtype=np.float64)
     rgb = _extract_rgb(job.points)
     base_bgr = (
@@ -299,58 +398,102 @@ def _run_compute_job(job: CaptureJob, tray_detector) -> PipelineResult:
         if job.color_bgr is not None
         else _rasterize_rgb(xyz, rgb, job.fx, job.fy, job.cx, job.cy, job.img_w, job.img_h)
     )
+    hp_bgr, hp_gray, hp_edge = _time_call(timings, "high_contrast_domain", _compute_high_contrast_domain, base_bgr)
+    uv, valid = _time_call(
+        timings, "project_points_to_image", _project_points_to_image, xyz, job.fx, job.fy, job.cx, job.cy, job.img_w, job.img_h
+    )
+
+    tray_mask: np.ndarray | None = None
+    tray_detect_ok = False
+    near_plane_mask: np.ndarray | None = None
+    no_hole_mask: np.ndarray | None = None
+    top_quad: np.ndarray | None = None
+    opening: OpeningDetection | None = None
+    grasp: GraspResult | None = None
+    failed_step: str | None = None
+    err: str | None = None
 
     try:
-        tray_mask, tray_detect_ok = _segment_tray_by_zero_shot(base_bgr, tray_detector)
-        opening = _detect_rect_opening_auto(base_bgr, tray_mask)
-        near_plane_mask = _build_near_dark_plane_mask(base_bgr, tray_mask, opening) if tray_detect_ok else None
-        no_hole_mask = _build_no_hole_top_plane_mask(base_bgr, tray_mask, opening, near_plane_mask)
-        near_plane_mask, no_hole_mask = _enforce_disjoint_region_masks(near_plane_mask, no_hole_mask)
-        top_quad = _fit_rotated_quad_from_mask(no_hole_mask)
-        xyz_local = _filter_local_points(
+        tray_mask, tray_detect_ok = _time_call(
+            timings, "segment_tray", _segment_tray_by_zero_shot, base_bgr, tray_detector, tray_state
+        )
+        opening = _time_call(timings, "detect_opening", _detect_rect_opening_auto, base_bgr, tray_mask, hp_gray)
+        mask_future = mask_executor.submit(
+            _compute_mask_pipeline,
+            tray_mask,
+            tray_detect_ok,
+            opening,
+            hp_gray,
+            hp_edge,
+        )
+        xyz_local = _time_call(
+            timings,
+            "filter_local_points_fast",
+            _filter_local_points,
             xyz,
             rgb,
             opening,
-            job.fx,
-            job.fy,
-            job.cx,
-            job.cy,
             job.img_w,
             job.img_h,
-            no_hole_mask=no_hole_mask,
+            uv,
+            valid,
+            no_hole_mask=None,
         )
         if xyz_local.shape[0] < DEFAULT_OPENING_MIN_POINTS:
             raise RuntimeError(f"开口局部点过少：{xyz_local.shape[0]}")
-        plane = _estimate_plane(xyz_local)
-        top_normal = _estimate_mask_plane_normal(xyz, no_hole_mask, job.fx, job.fy, job.cx, job.cy, job.img_w, job.img_h)
-        grasp = _compute_grasp(opening, plane, job.fx, job.fy, job.cx, job.cy, top_normal)
-        overlay = _draw_overlay(base_bgr, tray_mask, tray_detect_ok, near_plane_mask, no_hole_mask, top_quad, opening, grasp)
-        contrast = _build_contrast_preview(base_bgr, near_plane_mask, no_hole_mask, opening)
-        err = None
-    except cv2.error as exc:
-        tray_mask = None
-        tray_detect_ok = False
-        near_plane_mask = None
-        no_hole_mask = None
-        top_quad = None
-        opening = None
-        grasp = None
-        overlay = _draw_status_only(base_bgr, f"OpenCV error: {exc}")
-        contrast = _build_contrast_preview(base_bgr, None, None, None)
-        err = f"OpenCV error: {exc}"
+        plane = _time_call(timings, "estimate_opening_plane", _estimate_plane, xyz_local)
+        grasp = _time_call(timings, "compute_grasp_fast", _compute_grasp, opening, plane, job.fx, job.fy, job.cx, job.cy, None)
+
+        try:
+            near_plane_mask, no_hole_mask = _time_call(
+                timings,
+                "mask_pipeline_sync",
+                mask_future.result,
+                timeout=max(1e-3, float(DEFAULT_MASK_SYNC_BUDGET_MS)) / 1000.0,
+            )
+            top_quad = _time_call(timings, "fit_top_quad", _fit_rotated_quad_from_mask, no_hole_mask)
+            top_normal = _time_call(
+                timings, "estimate_top_plane_normal", _estimate_mask_plane_normal, xyz, no_hole_mask, uv, valid
+            )
+            grasp = _time_call(
+                timings, "compute_grasp_refined", _compute_grasp, opening, plane, job.fx, job.fy, job.cx, job.cy, top_normal
+            )
+        except concurrent.futures.TimeoutError:
+            failed_step = "mask_pipeline_sync_timeout"
+            logger.debug(f"帧 {job.frame_idx} mask pipeline timeout，使用快速抓取结果")
+        except Exception as exc:
+            failed_step = "mask_pipeline_sync_error"
+            logger.debug(f"帧 {job.frame_idx} mask pipeline error: {exc}")
     except Exception as exc:
-        tray_mask = None
-        tray_detect_ok = False
-        near_plane_mask = None
-        no_hole_mask = None
-        top_quad = None
-        opening = None
-        grasp = None
-        overlay = _draw_status_only(base_bgr, str(exc))
-        contrast = _build_contrast_preview(base_bgr, None, None, None)
-        err = str(exc)
+        failed_step = _infer_failed_step_from_timings(timings)
+        if isinstance(exc, cv2.error):
+            err = f"OpenCV error: {exc}"
+        else:
+            err = str(exc)
+
+    overlay = _safe_draw_overlay_partial(
+        base_bgr,
+        tray_mask,
+        tray_detect_ok,
+        near_plane_mask,
+        no_hole_mask,
+        top_quad,
+        opening,
+        grasp,
+        err,
+        failed_step,
+    )
+    contrast = _safe_build_contrast_preview_partial(
+        hp_gray,
+        hp_edge,
+        near_plane_mask,
+        no_hole_mask,
+        opening,
+    )
 
     elapsed_ms = (time.perf_counter() - t0) * 1000.0
+    timing_writer.write_rows(frame_idx=job.frame_idx, total_elapsed_ms=elapsed_ms, step_timings=timings, error=err)
+    completed_steps = tuple(s.step_name for s in timings if s.status == "ok")
     return PipelineResult(
         frame_idx=job.frame_idx,
         xyz=xyz,
@@ -366,6 +509,8 @@ def _run_compute_job(job: CaptureJob, tray_detector) -> PipelineResult:
         contrast_bgr=contrast,
         elapsed_ms=elapsed_ms,
         error=err,
+        failed_step=failed_step,
+        completed_steps=completed_steps,
     )
 
 
@@ -407,19 +552,14 @@ def _fit_rotated_quad_from_mask(mask: np.ndarray | None) -> np.ndarray | None:
 def _estimate_mask_plane_normal(
     xyz: np.ndarray,
     mask: np.ndarray | None,
-    fx: float,
-    fy: float,
-    cx: float,
-    cy: float,
-    img_w: int,
-    img_h: int,
+    uv: np.ndarray,
+    valid: np.ndarray,
 ) -> np.ndarray | None:
     if mask is None:
         return None
     m = (np.asarray(mask) > 0)
     if np.count_nonzero(m) < 60:
         return None
-    uv, valid = _project_points_to_image(xyz, fx, fy, cx, cy, img_w, img_h)
     idx = np.where(valid)[0]
     if idx.size < 120:
         return None
@@ -458,7 +598,9 @@ def _estimate_mask_plane_normal(
 
 # region 估计抓取核心逻辑
 
-def _detect_rect_opening_auto(rgb_bgr: np.ndarray, tray_mask: np.ndarray | None) -> OpeningDetection:
+def _detect_rect_opening_auto(
+    rgb_bgr: np.ndarray, tray_mask: np.ndarray | None, hp_gray: np.ndarray
+) -> OpeningDetection:
     h, w = rgb_bgr.shape[:2]
     if tray_mask is None or np.count_nonzero(tray_mask) < 0.01 * h * w:
         raise RuntimeError("托盘掩码无效，无法执行严格开口检测")
@@ -478,8 +620,7 @@ def _detect_rect_opening_auto(rgb_bgr: np.ndarray, tray_mask: np.ndarray | None)
         raise RuntimeError("前立面托盘像素不足")
     gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
     gray_blur = cv2.GaussianBlur(gray, (5, 5), 0)
-    _hp, hp_gray, _hp_edge = _compute_high_contrast_domain(roi)
-    del _hp, _hp_edge
+    hp_gray = hp_gray[y1:y2, x1:x2]
     thresholds = sorted(set(int(np.clip(t, 20, 180)) for t in np.percentile(gray_blur, [4, 6, 8, 12, 16, 20, 25, 30])))
 
     candidates: list[tuple[float, np.ndarray]] = []
@@ -549,15 +690,12 @@ def _filter_local_points(
     xyz: np.ndarray,
     rgb: np.ndarray,
     opening: OpeningDetection,
-    fx: float,
-    fy: float,
-    cx: float,
-    cy: float,
     img_w: int,
     img_h: int,
+    uv: np.ndarray,
+    valid: np.ndarray,
     no_hole_mask: np.ndarray | None,
 ) -> np.ndarray:
-    uv, valid = _project_points_to_image(xyz, fx, fy, cx, cy, img_w, img_h)
     local_roi = _build_opening_local_roi_mask((img_h, img_w), opening)
     uv_ok = valid & (uv[:, 0] >= 0) & (uv[:, 1] >= 0)
     mask = np.zeros_like(valid)
@@ -616,36 +754,85 @@ def _build_tray_zero_shot_detector():
             sam_max_boxes=1,
             sam_primary_only=True,
             sam_secondary_conf_threshold=zs.DEFAULT_SAM_SECONDARY_CONF_THRESHOLD,
-            combine_prompts_forward=zs.DEFAULT_COMBINE_PROMPTS_FORWARD,
+            combine_prompts_forward=DEFAULT_TRAY_COMBINE_PROMPTS_FORWARD,
             min_mask_pixels=zs.DEFAULT_MIN_MASK_PIXELS,
             mask_iou_suppress=zs.DEFAULT_MASK_IOU_SUPPRESS,
-            detect_max_side=zs.DEFAULT_DETECT_MAX_SIDE,
+            detect_max_side=DEFAULT_TRAY_DETECT_MAX_SIDE,
         )
     except Exception as exc:
         logger.warning(f"zero-shot 托盘分割器初始化失败，降级为传统分割：{exc}")
         return None
 
 
-def _segment_tray_by_zero_shot(rgb_bgr: np.ndarray, tray_detector) -> tuple[np.ndarray, bool]:
+def _segment_tray_by_zero_shot(
+    rgb_bgr: np.ndarray,
+    tray_detector,
+    tray_state: TrayDetectState,
+) -> tuple[np.ndarray, bool]:
+    motion_dx, motion_dy = _estimate_tray_motion_prior(rgb_bgr, tray_state)
+    tray_state.compute_count += 1
+    fast_mask = _segment_tray_fast_fallback(rgb_bgr)
+    should_refresh = (
+        tray_detector is not None
+        and (
+            tray_state.cached_mask is None
+            or (tray_state.compute_count % int(max(1, DEFAULT_TRAY_DETECT_EVERY_N)) == 1)
+            or (not tray_state.cached_ok)
+        )
+    )
+    if should_refresh:
+        _start_async_tray_refine(rgb_bgr, tray_detector, tray_state)
+
+    with tray_state.lock:
+        cached = None if tray_state.cached_mask is None else np.asarray(tray_state.cached_mask, dtype=np.uint8).copy()
+        cached_ok = bool(tray_state.cached_ok)
+    if cached is not None:
+        warped = _warp_mask_by_translation(cached, motion_dx, motion_dy)
+        with tray_state.lock:
+            tray_state.cached_mask = warped
+        return warped, cached_ok
+    return fast_mask, False
+
+
+def _start_async_tray_refine(rgb_bgr: np.ndarray, tray_detector, tray_state: TrayDetectState) -> None:
+    if tray_detector is None:
+        return
+    with tray_state.lock:
+        if tray_state.detect_inflight:
+            return
+        tray_state.detect_inflight = True
+    frame = rgb_bgr.copy()
+
+    def _task() -> None:
+        try:
+            dets = tray_detector.detect(frame)
+            if len(dets) > 0:
+                det = max(dets, key=lambda d: d.area_pixels)
+                mask = np.asarray(det.mask, dtype=np.uint8)
+                mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((9, 9), dtype=np.uint8), iterations=2)
+                mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((5, 5), dtype=np.uint8), iterations=1)
+                with tray_state.lock:
+                    tray_state.cached_mask = mask
+                    tray_state.cached_ok = True
+        except Exception:
+            pass
+        finally:
+            with tray_state.lock:
+                tray_state.detect_inflight = False
+
+    threading.Thread(target=_task, name="tray_refine_async", daemon=True).start()
+
+
+def _segment_tray_fast_fallback(rgb_bgr: np.ndarray) -> np.ndarray:
     h, w = rgb_bgr.shape[:2]
-    if tray_detector is not None:
-        dets = tray_detector.detect(rgb_bgr)
-        if len(dets) > 0:
-            det = max(dets, key=lambda d: d.area_pixels)
-            mask = np.asarray(det.mask, dtype=np.uint8)
-            mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((9, 9), dtype=np.uint8), iterations=2)
-            mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((5, 5), dtype=np.uint8), iterations=1)
-            return mask, True
-    # 兜底：zero-shot 空检时退回亮度阈值 + 连通域，避免整帧失败。
     gray = cv2.cvtColor(rgb_bgr, cv2.COLOR_BGR2GRAY)
-    base = (gray <= np.percentile(gray, 46)).astype(np.uint8) * 255
-    base = cv2.morphologyEx(base, cv2.MORPH_CLOSE, np.ones((9, 9), dtype=np.uint8), iterations=2)
-    # 只看下半区，降低背景盒子误选。
-    upper_cut = int(0.38 * h)
+    base = (gray <= np.percentile(gray, 48)).astype(np.uint8) * 255
+    base = cv2.morphologyEx(base, cv2.MORPH_CLOSE, np.ones((7, 7), dtype=np.uint8), iterations=1)
+    upper_cut = int(0.36 * h)
     base[:upper_cut, :] = 0
     num, cc, stats, _ = cv2.connectedComponentsWithStats(base, connectivity=8)
     if num <= 1:
-        return base, False
+        return base
     best = 1
     best_score = -1e18
     tgt = np.array([0.5 * w, 0.78 * h], dtype=np.float64)
@@ -654,26 +841,98 @@ def _segment_tray_by_zero_shot(rgb_bgr: np.ndarray, tray_detector) -> tuple[np.n
         x = float(stats[idx, cv2.CC_STAT_LEFT] + 0.5 * stats[idx, cv2.CC_STAT_WIDTH])
         y = float(stats[idx, cv2.CC_STAT_TOP] + 0.5 * stats[idx, cv2.CC_STAT_HEIGHT])
         dist = float(np.linalg.norm(np.array([x, y], dtype=np.float64) - tgt))
-        # 托盘通常在画面下方中间且连通域较大。
-        score = area - 1.6 * dist
+        score = area - 1.2 * dist
         if score > best_score:
             best_score = score
             best = idx
     out = np.zeros((h, w), dtype=np.uint8)
     out[cc == best] = 255
-    return out, False
+    return out
+
+
+def _estimate_tray_motion_prior(rgb_bgr: np.ndarray, tray_state: TrayDetectState) -> tuple[float, float]:
+    gray = cv2.cvtColor(rgb_bgr, cv2.COLOR_BGR2GRAY)
+    scale = float(np.clip(DEFAULT_TRAY_MOTION_DOWNSAMPLE, 0.1, 1.0))
+    small = cv2.resize(gray, (0, 0), fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+    if small.shape[0] >= 12:
+        small[: int(0.32 * small.shape[0]), :] = 0
+
+    with tray_state.lock:
+        prev = None if tray_state.prev_motion_gray_small is None else tray_state.prev_motion_gray_small.copy()
+        dx_s = float(tray_state.motion_dx_smooth)
+        dy_s = float(tray_state.motion_dy_smooth)
+        tray_state.prev_motion_gray_small = small
+
+    if prev is None or prev.shape != small.shape:
+        return dx_s, dy_s
+
+    try:
+        (dx_small, dy_small), response = cv2.phaseCorrelate(
+            np.asarray(prev, dtype=np.float32),
+            np.asarray(small, dtype=np.float32),
+        )
+    except cv2.error:
+        return dx_s, dy_s
+
+    if not np.isfinite(dx_small) or not np.isfinite(dy_small) or float(response) < 0.02:
+        return dx_s, dy_s
+
+    inv = 1.0 / scale
+    dx_raw = float(dx_small) * inv
+    dy_raw = float(dy_small) * inv
+    max_shift = float(max(1.0, DEFAULT_TRAY_MOTION_MAX_SHIFT_PX))
+    dx_raw = float(np.clip(dx_raw, -max_shift, max_shift))
+    dy_raw = float(np.clip(dy_raw, -max_shift, max_shift))
+
+    a = float(np.clip(DEFAULT_TRAY_MOTION_SMOOTH_ALPHA, 0.05, 0.98))
+    dx_new = a * dx_s + (1.0 - a) * dx_raw
+    dy_new = a * dy_s + (1.0 - a) * dy_raw
+    with tray_state.lock:
+        tray_state.motion_dx_smooth = dx_new
+        tray_state.motion_dy_smooth = dy_new
+    return dx_new, dy_new
+
+
+def _warp_mask_by_translation(mask: np.ndarray, dx: float, dy: float) -> np.ndarray:
+    h, w = mask.shape[:2]
+    mat = np.array([[1.0, 0.0, float(dx)], [0.0, 1.0, float(dy)]], dtype=np.float32)
+    warped = cv2.warpAffine(
+        np.asarray(mask, dtype=np.uint8),
+        mat,
+        (w, h),
+        flags=cv2.INTER_NEAREST,
+        borderMode=cv2.BORDER_CONSTANT,
+        borderValue=0,
+    )
+    warped = cv2.morphologyEx(warped, cv2.MORPH_CLOSE, np.ones((3, 3), dtype=np.uint8), iterations=1)
+    return warped
+
+
+def _compute_mask_pipeline(
+    tray_mask: np.ndarray,
+    tray_detect_ok: bool,
+    opening: OpeningDetection,
+    hp_gray: np.ndarray,
+    hp_edge: np.ndarray,
+) -> tuple[np.ndarray | None, np.ndarray | None]:
+    near_plane_mask = _build_near_dark_plane_mask(tray_mask, opening, hp_gray, hp_edge) if tray_detect_ok else None
+    no_hole_mask = _build_no_hole_top_plane_mask(tray_mask, opening, near_plane_mask, hp_gray, hp_edge)
+    near_plane_mask, no_hole_mask = _enforce_disjoint_region_masks(near_plane_mask, no_hole_mask)
+    return near_plane_mask, no_hole_mask
 
 
 def _build_near_dark_plane_mask(
-    rgb_bgr: np.ndarray, tray_mask: np.ndarray, opening: OpeningDetection
+    tray_mask: np.ndarray,
+    opening: OpeningDetection,
+    hp_gray: np.ndarray,
+    hp_edge: np.ndarray,
 ) -> np.ndarray | None:
     """分割开口附近暗色附近平面：以开口为种子做邻域生长，强制邻接。"""
-    h, w = rgb_bgr.shape[:2]
+    h, w = tray_mask.shape[:2]
     ring = _build_opening_surround_ring_mask((h, w), opening)
     work = cv2.bitwise_and(ring, tray_mask)
     if np.count_nonzero(work) == 0:
         return None
-    _hp_bgr, hp_gray, hp_edge = _compute_high_contrast_domain(rgb_bgr)
     # 以开口四边形边界上的像素作为 seed，保证与开口邻接。
     seeds = _collect_opening_boundary_seeds(opening, work, hp_gray)
     if len(seeds) == 0:
@@ -697,10 +956,14 @@ def _build_near_dark_plane_mask(
 
 
 def _build_no_hole_top_plane_mask(
-    rgb_bgr: np.ndarray, tray_mask: np.ndarray, opening: OpeningDetection, near_plane_mask: np.ndarray | None
+    tray_mask: np.ndarray,
+    opening: OpeningDetection,
+    near_plane_mask: np.ndarray | None,
+    hp_gray: np.ndarray,
+    hp_edge: np.ndarray,
 ) -> np.ndarray | None:
     """构造开口上方无孔平面像素掩码（多候选 + 回退）。"""
-    h, w = rgb_bgr.shape[:2]
+    h, w = tray_mask.shape[:2]
     roi_poly = _build_no_hole_roi_poly((h, w), opening, tray_mask)
     if roi_poly is None:
         return None
@@ -709,8 +972,6 @@ def _build_no_hole_top_plane_mask(
     base_mask = cv2.bitwise_and(poly_mask, tray_mask)
     if np.count_nonzero(base_mask) == 0:
         return None
-    hp_bgr, hp_gray, hp_edge = _compute_high_contrast_domain(rgb_bgr)
-    _ = hp_bgr
     target = np.mean(roi_poly, axis=0)
 
     # 优先策略：从附近平面边界邻接带作为种子，向 base_mask 内生长
@@ -1318,8 +1579,8 @@ def _draw_overlay(
     near_plane_mask: np.ndarray | None,
     no_hole_mask: np.ndarray | None,
     top_plane_quad_uv: np.ndarray | None,
-    opening: OpeningDetection,
-    grasp: GraspResult,
+    opening: OpeningDetection | None,
+    grasp: GraspResult | None,
 ) -> np.ndarray:
     out = base_bgr.copy()
     tray_m = None if tray_mask is None else (np.asarray(tray_mask) > 0)
@@ -1352,18 +1613,20 @@ def _draw_overlay(
             cv2.polylines(out, [tq], True, (0, 255, 0), 1, cv2.LINE_AA)
             mx2, my2, mw2, mh2 = cv2.boundingRect(tq)
             cv2.putText(out, "Top Plane", (mx2, max(14, my2 - 4)), cv2.FONT_HERSHEY_SIMPLEX, 0.40, (0, 255, 0), 1, cv2.LINE_AA)
-    quad = np.round(opening.quad_uv).astype(np.int32)
-    cv2.polylines(out, [quad], True, (0, 0, 255), 1, cv2.LINE_AA)
-    qx, qy, qw, qh = cv2.boundingRect(quad)
-    cv2.putText(out, "Opening", (qx, max(14, qy - 4)), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (0, 0, 255), 1, cv2.LINE_AA)
-    u, v = int(round(opening.center_uv[0])), int(round(opening.center_uv[1]))
-    cv2.circle(out, (u, v), 2, (0, 255, 0), -1)
-    cv2.putText(out, "Center", (u + 4, v - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (0, 255, 0), 1, cv2.LINE_AA)
-    rpy = _rotation_matrix_to_rpy_deg(grasp.rotation)
-    txt1 = f"grasp XYZ {grasp.grasp_point[0]:.1f}, {grasp.grasp_point[1]:.1f}, {grasp.grasp_point[2]:.1f} mm"
-    txt2 = f"RPY {rpy[0]:.1f}, {rpy[1]:.1f}, {rpy[2]:.1f} deg"
-    cv2.putText(out, txt1, (12, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.52, (255, 255, 255), 1, cv2.LINE_AA)
-    cv2.putText(out, txt2, (12, 46), cv2.FONT_HERSHEY_SIMPLEX, 0.52, (255, 255, 255), 1, cv2.LINE_AA)
+    if opening is not None:
+        quad = np.round(opening.quad_uv).astype(np.int32)
+        cv2.polylines(out, [quad], True, (0, 0, 255), 1, cv2.LINE_AA)
+        qx, qy, qw, qh = cv2.boundingRect(quad)
+        cv2.putText(out, "Opening", (qx, max(14, qy - 4)), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (0, 0, 255), 1, cv2.LINE_AA)
+        u, v = int(round(opening.center_uv[0])), int(round(opening.center_uv[1]))
+        cv2.circle(out, (u, v), 2, (0, 255, 0), -1)
+        cv2.putText(out, "Center", (u + 4, v - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (0, 255, 0), 1, cv2.LINE_AA)
+    if grasp is not None:
+        rpy = _rotation_matrix_to_rpy_deg(grasp.rotation)
+        txt1 = f"grasp XYZ {grasp.grasp_point[0]:.1f}, {grasp.grasp_point[1]:.1f}, {grasp.grasp_point[2]:.1f} mm"
+        txt2 = f"RPY {rpy[0]:.1f}, {rpy[1]:.1f}, {rpy[2]:.1f} deg"
+        cv2.putText(out, txt1, (12, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.52, (255, 255, 255), 1, cv2.LINE_AA)
+        cv2.putText(out, txt2, (12, 46), cv2.FONT_HERSHEY_SIMPLEX, 0.52, (255, 255, 255), 1, cv2.LINE_AA)
     cv2.putText(
         out,
         f"tray={'zero-shot' if tray_detect_ok else 'fallback'}",
@@ -1388,15 +1651,15 @@ def _draw_overlay(
 
 
 def _build_contrast_preview(
-    base_bgr: np.ndarray,
+    high_contrast_gray: np.ndarray,
+    edge_mask: np.ndarray,
     near_plane_mask: np.ndarray | None,
     no_hole_mask: np.ndarray | None,
     opening: OpeningDetection | None,
 ) -> np.ndarray:
     """高反差保留预览：增强边缘与邻接边界可见性。"""
-    highpass, gray, edge = _compute_high_contrast_domain(base_bgr)
-    out = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
-    out[edge > 0] = (255, 255, 255)
+    out = cv2.cvtColor(high_contrast_gray, cv2.COLOR_GRAY2BGR)
+    out[edge_mask > 0] = (255, 255, 255)
     if near_plane_mask is not None:
         c1, _ = cv2.findContours(near_plane_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         cv2.drawContours(out, c1, -1, (0, 165, 255), 1, cv2.LINE_AA)
@@ -1432,6 +1695,168 @@ def _draw_status_only(base_bgr: np.ndarray, message: str) -> np.ndarray:
     cv2.putText(out, "estimate_grasp failed", (16, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2, cv2.LINE_AA)
     cv2.putText(out, message[:110], (16, 58), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 255), 2, cv2.LINE_AA)
     return out
+
+
+def _infer_failed_step_from_timings(timings: list[StepTiming]) -> str | None:
+    for s in reversed(timings):
+        if s.status == "error":
+            return s.step_name
+    return None
+
+
+def _classify_failure_kind(failed_step: str | None) -> str:
+    if failed_step is None:
+        return "other"
+    if failed_step == "segment_tray":
+        return "tray"
+    if failed_step == "detect_opening":
+        return "opening"
+    return "other"
+
+
+def _safe_draw_overlay_partial(
+    base_bgr: np.ndarray,
+    tray_mask: np.ndarray | None,
+    tray_detect_ok: bool,
+    near_plane_mask: np.ndarray | None,
+    no_hole_mask: np.ndarray | None,
+    top_plane_quad_uv: np.ndarray | None,
+    opening: OpeningDetection | None,
+    grasp: GraspResult | None,
+    error: str | None,
+    failed_step: str | None,
+) -> np.ndarray:
+    out = _draw_overlay(
+        base_bgr,
+        tray_mask,
+        tray_detect_ok,
+        near_plane_mask,
+        no_hole_mask,
+        top_plane_quad_uv,
+        opening,
+        grasp,
+    )
+    if error is not None:
+        kind = _classify_failure_kind(failed_step)
+        cv2.putText(
+            out,
+            f"pipeline partial fail[{kind}] step={failed_step}",
+            (12, 104),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.42,
+            (0, 80, 255),
+            1,
+            cv2.LINE_AA,
+        )
+        cv2.putText(
+            out,
+            error[:120],
+            (12, 124),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.42,
+            (0, 80, 255),
+            1,
+            cv2.LINE_AA,
+        )
+    return out
+
+
+def _safe_build_contrast_preview_partial(
+    high_contrast_gray: np.ndarray,
+    edge_mask: np.ndarray,
+    near_plane_mask: np.ndarray | None,
+    no_hole_mask: np.ndarray | None,
+    opening: OpeningDetection | None,
+) -> np.ndarray:
+    try:
+        return _build_contrast_preview(high_contrast_gray, edge_mask, near_plane_mask, no_hole_mask, opening)
+    except cv2.error:
+        return cv2.cvtColor(high_contrast_gray, cv2.COLOR_GRAY2BGR)
+
+
+class _CsvTimingWriter:
+    def __init__(self, csv_path: Path, run_id: str) -> None:
+        self._csv_path = Path(csv_path)
+        self._run_id = str(run_id)
+        self._lock = threading.Lock()
+        self._csv_path.parent.mkdir(parents=True, exist_ok=True)
+        if not self._csv_path.exists():
+            with self._csv_path.open("w", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f)
+                writer.writerow(
+                    [
+                        "run_id",
+                        "frame_idx",
+                        "step_name",
+                        "start_ts",
+                        "end_ts",
+                        "elapsed_ms",
+                        "status",
+                        "error",
+                        "frame_total_elapsed_ms",
+                    ]
+                )
+
+    def write_rows(self, frame_idx: int, total_elapsed_ms: float, step_timings: list[StepTiming], error: str | None) -> None:
+        frame_status = "ok" if error is None else "error"
+        frame_error = "" if error is None else str(error)
+        rows = [
+            [
+                self._run_id,
+                int(frame_idx),
+                s.step_name,
+                s.start_ts,
+                s.end_ts,
+                f"{s.elapsed_ms:.3f}",
+                s.status,
+                s.error,
+                f"{total_elapsed_ms:.3f}",
+            ]
+            for s in step_timings
+        ]
+        rows.append(
+            [
+                self._run_id,
+                int(frame_idx),
+                "frame_total",
+                "",
+                "",
+                f"{total_elapsed_ms:.3f}",
+                frame_status,
+                frame_error,
+                f"{total_elapsed_ms:.3f}",
+            ]
+        )
+        with self._lock:
+            with self._csv_path.open("a", newline="", encoding="utf-8") as f:
+                csv.writer(f).writerows(rows)
+
+
+def _time_call(step_timings: list[StepTiming], step_name: str, fn, *args, **kwargs):
+    t0 = time.perf_counter()
+    start_ts = datetime.now().isoformat(timespec="milliseconds")
+    try:
+        out = fn(*args, **kwargs)
+        status = "ok"
+        err = ""
+        return out
+    except Exception as exc:
+        status = "error"
+        err = str(exc)
+        raise
+    finally:
+        elapsed_ms = (time.perf_counter() - t0) * 1000.0
+        end_ts = datetime.now().isoformat(timespec="milliseconds")
+        step_timings.append(
+            StepTiming(
+                step_name=str(step_name),
+                start_ts=start_ts,
+                end_ts=end_ts,
+                elapsed_ms=float(elapsed_ms),
+                status=status,
+                error=err,
+            )
+        )
 
 
 # endregion
@@ -1541,6 +1966,16 @@ def _poll_viewer(vis: o3d.visualization.VisualizerWithKeyCallback) -> bool:
     alive = vis.poll_events()
     vis.update_renderer()
     return bool(alive)
+
+
+def _safe_destroy_cv_window(window_name: str) -> None:
+    try:
+        visible = cv2.getWindowProperty(window_name, cv2.WND_PROP_VISIBLE)
+        if visible >= 0:
+            cv2.destroyWindow(window_name)
+    except cv2.error:
+        # 用户可能已手动关闭窗口，此时无需再次销毁。
+        pass
 
 
 def _put_latest_result(result_queue: queue.Queue[PipelineResult], result: PipelineResult) -> None:
