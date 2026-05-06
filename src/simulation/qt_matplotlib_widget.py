@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import matplotlib as mpl
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.figure import Figure
 from PySide6.QtWidgets import QSizePolicy, QVBoxLayout, QWidget
@@ -37,15 +38,19 @@ class MatplotKinematicsWidget(QWidget):
 
     def __init__(self, parent: QWidget | None = None, style: PlotStyle | None = None) -> None:
         super().__init__(parent)
+        mpl.rcParams["axes3d.mouserotationstyle"] = "arcball"
         self._style = PlotStyle() if style is None else style
         self._view_elev = 24.0
         self._view_azim = 38.0
+        self._view_roll = 0.0
+        self._interaction_enabled = True
 
         self._figure = Figure(figsize=(7.0, 6.0))
         self._figure.subplots_adjust(left=0.03, right=0.98, bottom=0.04, top=0.95)
         self._canvas = FigureCanvasQTAgg(self._figure)
         self._canvas.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self._ax = self._figure.add_subplot(111, projection="3d")
+        self._ax.mouse_init(rotate_btn=[1], zoom_btn=[3])
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -53,11 +58,21 @@ class MatplotKinematicsWidget(QWidget):
 
         self._init_axis(reset_view=True)
 
+    def set_interaction_enabled(self, enabled: bool) -> None:
+        """控制画布鼠标交互；用于拖动滑条时避免误旋转。"""
+
+        self._interaction_enabled = enabled
+        if enabled:
+            self._ax.mouse_init(rotate_btn=[1], zoom_btn=[3])
+        else:
+            self._ax.mouse_init(rotate_btn=[], zoom_btn=[])
+
     def _capture_view(self) -> None:
         """缓存当前视角，避免重绘时重置观察方向。"""
 
         self._view_elev = float(self._ax.elev)
         self._view_azim = float(self._ax.azim)
+        self._view_roll = float(getattr(self._ax, "roll", 0.0))
 
     def _init_axis(self, reset_view: bool = False) -> None:
         """初始化坐标轴与可视范围。"""
@@ -73,7 +88,9 @@ class MatplotKinematicsWidget(QWidget):
         if reset_view:
             self._view_elev = 24.0
             self._view_azim = 38.0
-        self._ax.view_init(elev=self._view_elev, azim=self._view_azim)
+            self._view_roll = 0.0
+        self._ax.view_init(elev=self._view_elev, azim=self._view_azim, roll=self._view_roll)
+        self.set_interaction_enabled(self._interaction_enabled)
 
     def render_snapshots(
         self,

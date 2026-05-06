@@ -107,6 +107,9 @@ class ArmSimulationBinding:
     link_point_solver: Callable[[tuple[float, ...]], tuple[Point, ...]] | None = None
     """可选渲染点求解器，返回 `Point` 序列"""
 
+    joint_axis_solver: Callable[[tuple[float, ...]], tuple[JointAxisGlyph, ...]] | None = None
+    """可选关节轴求解器，返回关节轴可视化序列"""
+
 
 # endregion
 

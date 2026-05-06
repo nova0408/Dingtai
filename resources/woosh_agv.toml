@@ -1,0 +1,9 @@
+name = "woosh"
+
+[size]
+length = 0.76
+width = 0.52
+height = 0.22
+
+[mount]
+install_height = 0.05

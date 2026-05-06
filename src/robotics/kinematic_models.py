@@ -3,7 +3,23 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Protocol, runtime_checkable
 from collections.abc import Callable
-from src.utils.datas import Transform
+from src.utils.datas import AngleType, Radian, Transform
+
+JointAngleValue = AngleType
+JointAngleTuple = tuple[JointAngleValue, ...]
+
+
+def as_radian(value: JointAngleValue | float | int) -> Radian:
+    """将角度值归一化为 `Radian`。
+
+    约定：
+    - `Radian` 原样返回；
+    - 其它数字输入按“弧度”解释，与 URDF 的角度单位保持一致。
+    """
+
+    if isinstance(value, Radian):
+        return value
+    return Radian.from_radians(float(value))
 
 # region 数据结构
 
@@ -55,7 +71,7 @@ class ArmMountState:
     lift_end_to_shoulder: Transform = field(default_factory=Transform.Identity)
     """举升末端到该肩部坐标系的安装变换。"""
 
-    joint_positions: tuple[float, ...] = ()
+    joint_positions: JointAngleTuple = ()
     """当前关节位置序列，单位和顺序由对应 `ArmKinematicModel` 约定。"""
 
 
@@ -73,7 +89,7 @@ class PalmMountState:
     arm_tcp_to_palm_base: Transform = field(default_factory=Transform.Identity)
     """手臂 TCP 到手掌基坐标系的安装变换。"""
 
-    joint_positions: tuple[float, ...] = ()
+    joint_positions: JointAngleTuple = ()
     """手掌关节位置序列，单位和顺序由对应 `PalmKinematicModel` 约定。"""
 
 
@@ -87,7 +103,7 @@ class ArmKinematicInput:
         手臂关节位置序列，形状语义为 `(N,)`，N 可为 6、7 或其它模型定义值。
     """
 
-    joint_positions: tuple[float, ...]
+    joint_positions: JointAngleTuple
     """手臂关节位置序列。"""
 
 
@@ -101,7 +117,7 @@ class PalmKinematicInput:
         手掌关节位置序列，形状语义为 `(M,)`，M 由手掌结构定义，例如 3 或 5。
     """
 
-    joint_positions: tuple[float, ...]
+    joint_positions: JointAngleTuple
     """手掌关节位置序列。"""
 
 
@@ -138,7 +154,7 @@ class ArmMountStateProtocol(Protocol):
         ...
 
     @property
-    def joint_positions(self) -> tuple[float, ...]:
+    def joint_positions(self) -> JointAngleTuple:
         """手臂关节位置序列。"""
         ...
 
@@ -153,7 +169,7 @@ class PalmMountStateProtocol(Protocol):
         ...
 
     @property
-    def joint_positions(self) -> tuple[float, ...]:
+    def joint_positions(self) -> JointAngleTuple:
         """手掌关节位置序列。"""
         ...
 
@@ -170,11 +186,11 @@ class ArmKinematicProtocol(Protocol):
         """模型名称。"""
         ...
 
-    def solve_tcp(self, joint_positions: tuple[float, ...]) -> Transform:
+    def solve_tcp(self, joint_positions: JointAngleTuple) -> Transform:
         """正解：关节 -> TCP 位姿。"""
         ...
 
-    def solve_joints(self, target_tcp_pose: Transform, reference_joints: tuple[float, ...]) -> tuple[float, ...]:
+    def solve_joints(self, target_tcp_pose: Transform, reference_joints: JointAngleTuple) -> JointAngleTuple:
         """逆解：目标 TCP 位姿 + 参考关节 -> 关节解。"""
         ...
 
@@ -191,11 +207,11 @@ class PalmKinematicProtocol(Protocol):
         """模型名称。"""
         ...
 
-    def solve_grasp_pose(self, joint_positions: tuple[float, ...]) -> Transform:
+    def solve_grasp_pose(self, joint_positions: JointAngleTuple) -> Transform:
         """正解：手掌关节 -> 抓取位姿。"""
         ...
 
-    def solve_joints(self, target_grasp_pose: Transform, reference_joints: tuple[float, ...]) -> tuple[float, ...]:
+    def solve_joints(self, target_grasp_pose: Transform, reference_joints: JointAngleTuple) -> JointAngleTuple:
         """逆解：目标抓取位姿 + 参考关节 -> 手掌关节解。"""
         ...
 
@@ -220,10 +236,10 @@ class ArmKinematicModel:
     fk_solver: Callable[[ArmKinematicInput], Transform]
     """正解函数：输入关节值，返回肩部到 TCP 的变换。"""
 
-    ik_solver: Callable[[Transform, tuple[float, ...]], tuple[float, ...]] | None = None
+    ik_solver: Callable[[Transform, JointAngleTuple], JointAngleTuple] | None = None
     """逆解函数：输入目标 TCP 位姿与参考关节，返回关节解；允许先不提供。"""
 
-    def solve_tcp(self, joint_positions: tuple[float, ...]) -> Transform:
+    def solve_tcp(self, joint_positions: JointAngleTuple) -> Transform:
         """计算肩部到手臂 TCP 的位姿。
 
         Parameters
@@ -239,7 +255,7 @@ class ArmKinematicModel:
 
         return self.fk_solver(ArmKinematicInput(joint_positions=joint_positions))
 
-    def solve_joints(self, target_tcp_pose: Transform, reference_joints: tuple[float, ...]) -> tuple[float, ...]:
+    def solve_joints(self, target_tcp_pose: Transform, reference_joints: JointAngleTuple) -> JointAngleTuple:
         """计算目标 TCP 位姿对应的关节解。
 
         Parameters
@@ -251,7 +267,7 @@ class ArmKinematicModel:
 
         Returns
         -------
-        tuple[float, ...]
+        JointAngleTuple
             逆解得到的关节序列。
         """
 
@@ -277,15 +293,15 @@ class PalmKinematicModel:
     fk_solver: Callable[[PalmKinematicInput], Transform]
     """正解函数：输入手掌关节值，返回手掌基座到抓取位姿的变换。"""
 
-    ik_solver: Callable[[Transform, tuple[float, ...]], tuple[float, ...]] | None = None
+    ik_solver: Callable[[Transform, JointAngleTuple], JointAngleTuple] | None = None
     """逆解函数：输入目标抓取位姿与参考关节，返回手掌关节解；允许先不提供。"""
 
-    def solve_grasp_pose(self, joint_positions: tuple[float, ...]) -> Transform:
+    def solve_grasp_pose(self, joint_positions: JointAngleTuple) -> Transform:
         """计算手掌基座到抓取位姿的变换。"""
 
         return self.fk_solver(PalmKinematicInput(joint_positions=joint_positions))
 
-    def solve_joints(self, target_grasp_pose: Transform, reference_joints: tuple[float, ...]) -> tuple[float, ...]:
+    def solve_joints(self, target_grasp_pose: Transform, reference_joints: JointAngleTuple) -> JointAngleTuple:
         """计算目标抓取位姿对应的手掌关节解。"""
 
         if self.ik_solver is None:

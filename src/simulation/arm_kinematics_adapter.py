@@ -303,6 +303,9 @@ class ArmSimulationModel:
     def _world_axes(self, binding: ArmSimulationBinding) -> tuple[JointAxisGlyph, ...]:
         """计算关节轴在世界坐标系下的箭头信息"""
 
+        if binding.joint_axis_solver is not None:
+            return binding.joint_axis_solver(binding.arm_state.joint_positions)
+
         model = binding.arm_model
         if not hasattr(model, "forward_joint_axes_local"):
             return ()

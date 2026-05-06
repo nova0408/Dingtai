@@ -8,6 +8,7 @@ from PySide6.QtWidgets import QComboBox, QGridLayout, QGroupBox, QHBoxLayout, QL
 from gui.util_components.casia_value_slider import CasiaValueSlider
 from src.simulation.arm_kinematics_adapter import ArmSimulationModel
 from src.simulation.qt_matplotlib_widget import MatplotKinematicsWidget
+from src.robotics.kinematic_models import ArmMountState
 from src.utils.datas import Degree, Radian
 
 # region 数据结构
@@ -111,6 +112,12 @@ class KinematicsSimulationWidget(QWidget):
         self._target_x_slider.valueChanged.connect(self._on_target_changed)
         self._target_y_slider.valueChanged.connect(self._on_target_changed)
         self._target_z_slider.valueChanged.connect(self._on_target_changed)
+        self._target_x_slider.sliderPressed.connect(self._on_slider_press)
+        self._target_y_slider.sliderPressed.connect(self._on_slider_press)
+        self._target_z_slider.sliderPressed.connect(self._on_slider_press)
+        self._target_x_slider.sliderReleased.connect(self._on_slider_release)
+        self._target_y_slider.sliderReleased.connect(self._on_slider_release)
+        self._target_z_slider.sliderReleased.connect(self._on_slider_release)
 
     def _reload_chain_options(self) -> None:
         """刷新链下拉框内容"""
@@ -147,6 +154,8 @@ class KinematicsSimulationWidget(QWidget):
             slider.setValue(int(value * 10.0))
             slider.set_value_converter(lambda raw: f"{raw / 10.0:.1f}")
             slider.valueChanged.connect(self._on_joint_slider_changed)
+            slider.sliderPressed.connect(self._on_slider_press)
+            slider.sliderReleased.connect(self._on_slider_release)
 
             self._joint_layout.addWidget(label, row, 0)
             self._joint_layout.addWidget(slider, row, 1)
@@ -191,6 +200,16 @@ class KinematicsSimulationWidget(QWidget):
         )
         self._refresh_plot()
 
+    def _on_slider_press(self) -> None:
+        """滑条拖动开始：临时屏蔽画布交互，避免误旋转。"""
+
+        self._plot_widget.set_interaction_enabled(False)
+
+    def _on_slider_release(self) -> None:
+        """滑条拖动结束：恢复画布交互。"""
+
+        self._plot_widget.set_interaction_enabled(True)
+
     def _on_solve_ik(self) -> None:
         """触发当前链 IK 求解并同步 UI"""
 
@@ -226,6 +245,37 @@ class KinematicsSimulationWidget(QWidget):
             self._build_joint_sliders()
         self._status_label.setText(f"Active chain: {self._chain_combo.currentText()}")
         self._refresh_plot()
+
+    def set_status_text(self, text: str) -> None:
+        """设置状态栏文本。"""
+
+        self._status_label.setText(text)
+
+    def replace_model(self, model: ArmSimulationModel, preserve_joint_values: bool = True) -> None:
+        """替换仿真模型，并按关节名称尽量保留当前关节值。"""
+
+        selected_chain = self._chain_combo.currentText()
+        old_model = self._model
+
+        if preserve_joint_values:
+            for chain_name in old_model.chain_names():
+                if chain_name not in model.bindings:
+                    continue
+                old_binding = old_model.get_binding(chain_name)
+                new_binding = model.get_binding(chain_name)
+                old_values = {ui.name: value for ui, value in zip(old_binding.joint_ui, old_binding.arm_state.joint_positions, strict=True)}
+                merged_positions = tuple(old_values.get(ui.name, value) for ui, value in zip(new_binding.joint_ui, new_binding.arm_state.joint_positions, strict=True))
+                new_binding.arm_state = ArmMountState(
+                    lift_end_to_shoulder=new_binding.arm_state.lift_end_to_shoulder,
+                    joint_positions=merged_positions,
+                )
+
+        self._model = model
+        self._reload_chain_options()
+        if selected_chain and selected_chain in self._model.chain_names():
+            self._chain_combo.setCurrentText(selected_chain)
+        self._build_joint_sliders()
+        self._refresh_from_model()
 
 
 # endregion
