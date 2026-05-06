@@ -207,3 +207,16 @@ centered = pts - center.reshape(1, 3)
 2. 是否补齐了数据结构字段说明、class 设计说明、函数 NumPy 风格 docstring 和关键数组注释。
 3. 是否保持单一职责，若仍有跨层依赖，明确残留原因。
 4. 已验证内容和未验证内容。
+
+## 标点与注释语气
+
+1. 中文注释与 docstring 避免过量标点，优先短句和并列结构。
+2. 不要在同一段内连续使用多个句号或感叹号；字段说明优先“名词短语 + 必要单位”。
+3. 可读性优先于修辞，不使用聊天式语气。
+
+## 类型与数据复用（会话补充）
+
+1. 在 `src/` 内涉及几何、姿态、角度、颜色时，优先复用 `src.utils.datas` 现有类型（如 `Point`、`Vector`、`Axis`、`Transform`、`Quaternion`、`Degree`、`Radian`、`Color`）。
+2. 禁止重复定义已存在的数据转换辅助函数（例如数组与 `Vector/Point` 互转 helper），优先使用现有类型的 `from_array`、`as_array`、`__array__`、`transformed` 等能力。
+3. 角度语义必须显式：旋转关节优先使用 `Degree` 或 `Radian` 表达，避免把角度直接作为无语义 `float` 透传。
+4. 若必须保留线性关节的 `float`，需在注释中明确单位（通常为米）并与角度类型分离。
