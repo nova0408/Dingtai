@@ -2,18 +2,15 @@ from __future__ import annotations
 
 import math
 import os
+import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+import xml.etree.ElementTree as ET
 
 import numpy as np
 from scipy.spatial.transform import Rotation as R
 from PySide6.QtCore import QFileSystemWatcher, QObject, QTimer
-
-try:
-    import tomllib
-except ModuleNotFoundError:  # pragma: no cover
-    import tomli as tomllib  # type: ignore[import-not-found]
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
@@ -35,8 +32,9 @@ from src.simulation.protocols import JointAxisGlyph
 from src.utils.datas import Axis, Color, Degree, Point, Quaternion, Transform, Translation, Vector
 
 RESOURCE_DIR = PROJECT_ROOT / "resources"
-DEMO_CONFIG_PATH = RESOURCE_DIR / "humanoid_robot_demo.toml"
+ASSEMBLY_TEMPLATE_PATH = RESOURCE_DIR / "humanoid_assembly.urdf.xacro"
 MOVABLE_TYPES = {"revolute", "prismatic", "continuous"}
+XACRO_BACKEND = "unknown"
 
 
 class ResourceAutoReloader(QObject):
@@ -45,6 +43,7 @@ class ResourceAutoReloader(QObject):
     def __init__(self, widget: KinematicsSimulationWidget, parent: QObject | None = None) -> None:
         super().__init__(parent)
         self._widget = widget
+        self._changed_files: set[str] = set()
         self._watcher = QFileSystemWatcher(self)
         self._debounce = QTimer(self)
         self._debounce.setSingleShot(True)
@@ -56,11 +55,16 @@ class ResourceAutoReloader(QObject):
 
     @staticmethod
     def _collect_watch_paths() -> list[str]:
-        paths = [str(DEMO_CONFIG_PATH.resolve())]
+        paths = [str(ASSEMBLY_TEMPLATE_PATH.resolve())]
         for p in sorted(RESOURCE_DIR.glob("*.urdf")):
             paths.append(str(p.resolve()))
-        for p in sorted(RESOURCE_DIR.glob("*.toml")):
+        for p in sorted(RESOURCE_DIR.glob("*.xacro")):
             rp = str(p.resolve())
+            if rp not in paths:
+                paths.append(rp)
+        profile_path = RESOURCE_DIR / "woosh_agv.toml"
+        if profile_path.exists():
+            rp = str(profile_path.resolve())
             if rp not in paths:
                 paths.append(rp)
         return paths
@@ -71,18 +75,43 @@ class ResourceAutoReloader(QObject):
             if Path(path).exists() and path not in existing:
                 self._watcher.addPath(path)
 
-    def _on_file_changed(self, _: str) -> None:
+    def _on_file_changed(self, path: str) -> None:
+        self._changed_files.add(path)
         self._debounce.start()
+
+    @staticmethod
+    def _resolve_changed_chains(changed_files: list[str]) -> tuple[str, ...]:
+        """根据变更文件推断受影响链名称。"""
+
+        changed_names = {Path(p).name.lower() for p in changed_files}
+        impacted: list[str] = []
+        try:
+            _, configs = _load_assembly_template()
+        except Exception:
+            return ()
+        for cfg in configs:
+            if cfg.urdf.lower() in changed_names:
+                impacted.append(cfg.name)
+        return tuple(impacted)
 
     def _reload(self) -> None:
         self._ensure_paths()
+        changed = sorted(self._changed_files)
+        self._changed_files.clear()
+        changed_text = ", ".join(Path(p).name for p in changed) if changed else "unknown file"
+        changed_chains = self._resolve_changed_chains(changed)
+        chain_text = ", ".join(changed_chains) if changed_chains else "unknown"
         try:
             model = build_robot_model()
         except Exception as exc:
-            self._widget.set_status_text(f"Reload failed: {exc}")
+            self._widget.set_status_text(f"Reload failed [chains: {chain_text}] ({changed_text}): {exc}")
+            print(f"[hot-reload] failed, chains: {chain_text}, changed: {changed_text}, error: {exc}")
             return
         self._widget.replace_model(model, preserve_joint_values=True)
-        self._widget.set_status_text("Reloaded from updated URDF/TOML")
+        self._widget.set_status_text(
+            f"Reloaded [chains: {chain_text}] ({changed_text}) [xacro: {XACRO_BACKEND}]"
+        )
+        print(f"[hot-reload] reloaded, chains: {chain_text}, changed: {changed_text}, xacro={XACRO_BACKEND}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -130,7 +159,119 @@ def _joint_motion_transform(joint: UrdfJoint, joint_value: float) -> Transform:
 
 
 def _load_urdf_model(urdf_name: str) -> UrdfModel:
-    return UrdfConverter().from_file(RESOURCE_DIR / urdf_name)
+    urdf_path = RESOURCE_DIR / urdf_name
+    if urdf_path.suffix == ".xacro":
+        urdf_text = _expand_xacro_to_urdf_text(urdf_path)
+        return UrdfConverter().from_xml_text(urdf_text)
+    return UrdfConverter().from_file(urdf_path)
+
+
+def _expand_xacro_to_urdf_text(xacro_path: Path) -> str:
+    """调用 ROS 官方 xacro 命令展开为 URDF 文本。"""
+
+    cmd = ["xacro", str(xacro_path)]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, cwd=str(RESOURCE_DIR))
+    except FileNotFoundError:
+        return _expand_xacro_to_urdf_text_fallback(xacro_path)
+    if proc.returncode != 0:
+        stderr = proc.stderr.strip()
+        raise RuntimeError(f"xacro expand failed for {xacro_path.name}: {stderr}")
+    global XACRO_BACKEND
+    XACRO_BACKEND = "ros-xacro"
+    return proc.stdout
+
+
+@dataclass(frozen=True, slots=True)
+class _XacroMacro:
+    param_names: tuple[str, ...]
+    defaults: dict[str, str]
+    body: tuple[ET.Element, ...]
+
+
+def _parse_xacro_params(raw: str) -> tuple[tuple[str, ...], dict[str, str]]:
+    names: list[str] = []
+    defaults: dict[str, str] = {}
+    for token in raw.split():
+        if ":=" in token:
+            key, default = token.split(":=", 1)
+            names.append(key)
+            defaults[key] = default.strip("'\"")
+        else:
+            names.append(token)
+    return tuple(names), defaults
+
+
+def _collect_xacro_macros(root: ET.Element, base_dir: Path, macros: dict[str, _XacroMacro]) -> None:
+    for child in list(root):
+        local = _tag_local_name(child.tag)
+        if local == "include":
+            inc = child.attrib.get("filename", "")
+            if not inc:
+                continue
+            inc_path = (base_dir / inc).resolve()
+            inc_root = ET.fromstring(inc_path.read_text(encoding="utf-8"))
+            _collect_xacro_macros(inc_root, inc_path.parent, macros)
+        elif local == "macro":
+            name = child.attrib.get("name", "").strip()
+            params_raw = child.attrib.get("params", "")
+            if not name:
+                continue
+            param_names, defaults = _parse_xacro_params(params_raw)
+            macros[name] = _XacroMacro(
+                param_names=param_names,
+                defaults=defaults,
+                body=tuple(ET.fromstring(ET.tostring(elem, encoding="unicode")) for elem in list(child)),
+            )
+
+
+def _subst_text(value: str, ctx: dict[str, str]) -> str:
+    out = value
+    for key, val in ctx.items():
+        out = out.replace("${" + key + "}", val)
+    return out
+
+
+def _subst_element(elem: ET.Element, ctx: dict[str, str]) -> None:
+    for k, v in list(elem.attrib.items()):
+        elem.attrib[k] = _subst_text(v, ctx)
+    for child in list(elem):
+        _subst_element(child, ctx)
+
+
+def _expand_xacro_to_urdf_text_fallback(xacro_path: Path) -> str:
+    """轻量 xacro 回退展开器（支持 include + macro + 参数替换）。"""
+
+    root = ET.fromstring(xacro_path.read_text(encoding="utf-8"))
+    global XACRO_BACKEND
+    XACRO_BACKEND = "builtin-fallback"
+    macros: dict[str, _XacroMacro] = {}
+    _collect_xacro_macros(root, xacro_path.parent, macros)
+
+    expanded_children: list[ET.Element] = []
+    for child in list(root):
+        local = _tag_local_name(child.tag)
+        if local in {"include", "macro"}:
+            continue
+        if local in macros:
+            macro = macros[local]
+            ctx: dict[str, str] = dict(macro.defaults)
+            for name in macro.param_names:
+                if name in child.attrib:
+                    ctx[name] = child.attrib[name]
+                elif name not in ctx:
+                    ctx[name] = ""
+            for body_elem in macro.body:
+                cloned = ET.fromstring(ET.tostring(body_elem, encoding="unicode"))
+                _subst_element(cloned, ctx)
+                expanded_children.append(cloned)
+            continue
+        expanded_children.append(ET.fromstring(ET.tostring(child, encoding="unicode")))
+
+    urdf_root = ET.Element("robot", {"name": root.attrib.get("name", "expanded_from_xacro")})
+    for elem in expanded_children:
+        urdf_root.append(elem)
+    return ET.tostring(urdf_root, encoding="unicode")
 
 
 def _movable_joints(model: UrdfModel) -> tuple[UrdfJoint, ...]:
@@ -201,51 +342,111 @@ def _default_joint_positions(joints: tuple[UrdfJoint, ...], init_values: tuple[f
     return tuple(defaults)
 
 
-def _load_demo_config() -> tuple[dict[str, object], tuple[ChainConfig, ...]]:
-    raw = tomllib.loads(DEMO_CONFIG_PATH.read_text(encoding="utf-8"))
-    raw_chains = raw.get("chains")
-    if not isinstance(raw_chains, list) or not raw_chains:
-        raise ValueError("humanoid_robot_demo.toml must contain non-empty [[chains]]")
+def _parse_vec3_attr(raw: str | None, default: tuple[float, float, float] = (0.0, 0.0, 0.0)) -> tuple[float, float, float]:
+    if raw is None or raw.strip() == "":
+        return default
+    values = raw.strip().split()
+    if len(values) != 3:
+        raise ValueError(f"vec3 attr expects 3 values, got: {raw}")
+    return (float(values[0]), float(values[1]), float(values[2]))
 
+
+def _tag_local_name(tag: str) -> str:
+    if "}" in tag:
+        return tag.split("}", 1)[1]
+    return tag
+
+
+@dataclass(frozen=True, slots=True)
+class XacroChainInstance:
+    module_name: str
+    chain_name: str
+    prefix: str
+    parent_link: str
+    xyz: tuple[float, float, float]
+    color: str
+    urdf_source: str
+
+
+def _parse_xacro_instances(root: ET.Element) -> tuple[XacroChainInstance, ...]:
+    instances: list[XacroChainInstance] = []
+    for elem in root:
+        module_name = _tag_local_name(elem.tag)
+        if not module_name.endswith("_module"):
+            continue
+        prefix = elem.attrib.get("prefix", "")
+        parent_link = elem.attrib.get("parent_link", "")
+        chain_name = elem.attrib.get("chain_name", "").strip()
+        color = elem.attrib.get("color", "#2a9d8f")
+        urdf_source = elem.attrib.get("urdf_source", "").strip()
+        xyz = _parse_vec3_attr(elem.attrib.get("xyz"))
+        if not prefix or not parent_link or not chain_name or not urdf_source:
+            continue
+        instances.append(
+            XacroChainInstance(
+                module_name=module_name,
+                chain_name=chain_name,
+                prefix=prefix,
+                parent_link=parent_link,
+                xyz=xyz,
+                color=color,
+                urdf_source=urdf_source,
+            )
+        )
+    if not instances:
+        raise ValueError("no xacro module instances found in assembly file")
+    return tuple(instances)
+
+
+def _load_assembly_template() -> tuple[ET.Element, tuple[ChainConfig, ...]]:
+    root = ET.fromstring(ASSEMBLY_TEMPLATE_PATH.read_text(encoding="utf-8"))
+    instances = _parse_xacro_instances(root)
     configs: list[ChainConfig] = []
-    for item in raw_chains:
-        if not isinstance(item, dict):
-            raise ValueError("each [[chains]] entry must be a table")
+    by_prefix = {inst.prefix: inst for inst in instances}
 
-        mount_type = str(item.get("mount_type", "tcp"))
-        parent_raw = item.get("parent")
-        parent = str(parent_raw) if parent_raw is not None else None
-        parent_link_raw = item.get("parent_link")
-        parent_link = str(parent_link_raw) if parent_link_raw is not None else None
-        init_values_raw = item.get("init_values")
-        init_values: tuple[float, ...] | None = None
-        if init_values_raw is not None:
-            if not isinstance(init_values_raw, list):
-                raise ValueError("init_values must be an array when provided")
-            init_values = tuple(float(v) for v in init_values_raw)
+    for inst in instances:
+        if inst.parent_link == "world":
+            configs.append(
+                ChainConfig(
+                    name=inst.chain_name,
+                    urdf=inst.urdf_source,
+                    color=inst.color,
+                    mount_type="world",
+                    parent=None,
+                    parent_link=None,
+                    mount_translation=(0.0, 0.0, 0.0),
+                    base_translation=inst.xyz,
+                    init_values=None,
+                )
+            )
+            continue
 
-        mount_translation_raw = item.get("mount_translation", [0.0, 0.0, 0.0])
-        base_translation_raw = item.get("base_translation", [0.0, 0.0, 0.0])
-        if not isinstance(mount_translation_raw, list) or len(mount_translation_raw) != 3:
-            raise ValueError("mount_translation must be [x, y, z]")
-        if not isinstance(base_translation_raw, list) or len(base_translation_raw) != 3:
-            raise ValueError("base_translation must be [x, y, z]")
+        parent_inst: XacroChainInstance | None = None
+        parent_prefix = ""
+        for prefix, candidate in by_prefix.items():
+            if inst.parent_link.startswith(prefix) and len(prefix) > len(parent_prefix):
+                parent_inst = candidate
+                parent_prefix = prefix
+        if parent_inst is None:
+            raise ValueError(f"cannot resolve parent chain for {inst.chain_name}, parent_link={inst.parent_link}")
 
+        local_parent_link = inst.parent_link[len(parent_prefix) :] if parent_prefix else inst.parent_link
+        mount_type = "tcp" if local_parent_link in {"link6", "tcp", "tool0"} else "link"
         configs.append(
             ChainConfig(
-                name=str(item["name"]),
-                urdf=str(item["urdf"]),
-                color=str(item["color"]),
+                name=inst.chain_name,
+                urdf=inst.urdf_source,
+                color=inst.color,
                 mount_type=mount_type,
-                parent=parent,
-                parent_link=parent_link,
-                mount_translation=tuple(float(v) for v in mount_translation_raw),
-                base_translation=tuple(float(v) for v in base_translation_raw),
-                init_values=init_values,
+                parent=parent_inst.chain_name,
+                parent_link=None if mount_type == "tcp" else local_parent_link,
+                mount_translation=inst.xyz,
+                base_translation=(0.0, 0.0, 0.0),
+                init_values=None,
             )
         )
 
-    return raw, tuple(configs)
+    return root, tuple(configs)
 
 
 def _binding_base_transform(binding: ArmSimulationBinding) -> Transform:
@@ -417,16 +618,23 @@ def _build_runtime(cfg: ChainConfig, runtimes: dict[str, ChainRuntime]) -> Chain
     )
 
 
-def _build_agv_outline(raw_cfg: dict[str, object]) -> tuple[ChainSnapshot, ...]:
-    agv_cfg = raw_cfg.get("agv")
-    if not isinstance(agv_cfg, dict):
-        raise ValueError("humanoid_robot_demo.toml missing [agv]")
-
-    profile = tomllib.loads((RESOURCE_DIR / str(agv_cfg.get("profile", "woosh_agv.toml"))).read_text(encoding="utf-8"))
+def _build_agv_outline(template_root: ET.Element) -> tuple[ChainSnapshot, ...]:
+    agv_node = template_root.find("agv")
+    if agv_node is None:
+        profile_path = RESOURCE_DIR / "woosh_agv.toml"
+        agv_color = "#6c757d"
+    else:
+        profile_path = RESOURCE_DIR / agv_node.attrib.get("profile", "woosh_agv.toml")
+        agv_color = agv_node.attrib.get("color", "#6c757d")
+    try:
+        import tomllib
+    except ModuleNotFoundError:  # pragma: no cover
+        import tomli as tomllib  # type: ignore[import-not-found]
+    profile = tomllib.loads(profile_path.read_text(encoding="utf-8"))
     length = float(profile["size"]["length"])
     width = float(profile["size"]["width"])
     install_height = float(profile["mount"]["install_height"])
-    color = Color.from_hex(str(agv_cfg.get("color", "#6c757d")))
+    color = Color.from_hex(agv_color)
 
     lx = length * 0.5
     wy = width * 0.5
@@ -446,7 +654,7 @@ def _build_agv_outline(raw_cfg: dict[str, object]) -> tuple[ChainSnapshot, ...]:
 
 
 def build_robot_model() -> ArmSimulationModel:
-    raw_cfg, chain_cfgs = _load_demo_config()
+    template_root, chain_cfgs = _load_assembly_template()
     runtimes: dict[str, ChainRuntime] = {}
 
     pending = list(chain_cfgs)
@@ -466,7 +674,7 @@ def build_robot_model() -> ArmSimulationModel:
         pending = next_pending
 
     bindings = {name: runtime.binding for name, runtime in runtimes.items()}
-    return ArmSimulationModel(bindings=bindings, static_snapshots=_build_agv_outline(raw_cfg))
+    return ArmSimulationModel(bindings=bindings, static_snapshots=_build_agv_outline(template_root))
 
 
 def main() -> int:
@@ -474,15 +682,21 @@ def main() -> int:
     if os.path.isdir(pyside6_plugin_path):
         os.environ.setdefault("QT_QPA_PLATFORM_PLUGIN_PATH", pyside6_plugin_path)
 
-    cfg = tomllib.loads(DEMO_CONFIG_PATH.read_text(encoding="utf-8"))
-    window_title = str(cfg.get("window_title", "Kinematics Simulator"))
-    window_width = int(cfg.get("window_width", 1460))
-    window_height = int(cfg.get("window_height", 920))
+    template_root = ET.fromstring(ASSEMBLY_TEMPLATE_PATH.read_text(encoding="utf-8"))
+    viewer_node = template_root.find("viewer")
+    window_title = "Kinematics Simulator"
+    window_width = 1460
+    window_height = 920
+    if viewer_node is not None:
+        window_title = viewer_node.attrib.get("window_title", window_title)
+        window_width = int(viewer_node.attrib.get("window_width", str(window_width)))
+        window_height = int(viewer_node.attrib.get("window_height", str(window_height)))
 
     app = QApplication(sys.argv)
     widget = KinematicsSimulationWidget(model=build_robot_model())
     auto_reloader = ResourceAutoReloader(widget, parent=widget)
     widget._auto_reloader = auto_reloader  # type: ignore[attr-defined]
+    widget.set_status_text(f"Ready [xacro: {XACRO_BACKEND}]")
     widget.setWindowTitle(window_title)
     widget.resize(window_width, window_height)
     widget.show()

@@ -1,0 +1,19 @@
+<?xml version="1.0"?>
+<robot name="humanoid_assembly" xmlns:xacro="http://www.ros.org/wiki/xacro">
+  <xacro:include filename="lift_module.xacro"/>
+  <xacro:include filename="arm_module.xacro"/>
+  <xacro:include filename="dof3_hand_module.xacro"/>
+
+  <link name="world"/>
+  <xacro:lift_module prefix="lift_" parent_link="world" xyz="0 0 0.05" rpy="0 0 0"
+                     chain_name="lift" color="#8d99ae" urdf_source="lift.urdf.xacro"/>
+  <xacro:arm_module prefix="left_" parent_link="lift_left_mount_link" xyz="0 0 0" rpy="0 0 0"
+                    chain_name="left_arm" color="#1d3557" urdf_source="arm.urdf.xacro"/>
+  <xacro:arm_module prefix="right_" parent_link="lift_right_mount_link" xyz="0 0 0" rpy="0 0 3.1415926"
+                    chain_name="right_arm" color="#457b9d" urdf_source="arm.urdf.xacro"/>
+
+  <xacro:dof3_hand_module prefix="left_hand_" parent_link="left_link6" xyz="0 0 0" rpy="0 0 0"
+                          chain_name="left_hand" color="#e76f51" urdf_source="m10_hand.urdf.xacro"/>
+  <xacro:dof3_hand_module prefix="right_hand_" parent_link="right_link6" xyz="0 0 0" rpy="0 0 0"
+                          chain_name="right_hand" color="#f4a261" urdf_source="dof3_hand.urdf.xacro"/>
+</robot>

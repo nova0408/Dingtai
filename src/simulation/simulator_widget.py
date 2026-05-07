@@ -122,13 +122,22 @@ class KinematicsSimulationWidget(QWidget):
     def _reload_chain_options(self) -> None:
         """刷新链下拉框内容"""
 
+        self._chain_combo.blockSignals(True)
         self._chain_combo.clear()
         self._chain_combo.addItems(list(self._model.chain_names()))
+        if self._chain_combo.count() > 0 and self._chain_combo.currentIndex() < 0:
+            self._chain_combo.setCurrentIndex(0)
+        self._chain_combo.blockSignals(False)
 
     def _active_binding(self):
         """返回当前选中链绑定"""
 
-        return self._model.get_binding(self._chain_combo.currentText())
+        chain_name = self._chain_combo.currentText()
+        if not chain_name:
+            return None
+        if chain_name not in self._model.chain_names():
+            return None
+        return self._model.get_binding(chain_name)
 
     def _clear_joint_layout(self) -> None:
         """清空关节滑条区域"""
@@ -145,6 +154,8 @@ class KinematicsSimulationWidget(QWidget):
 
         self._clear_joint_layout()
         binding = self._active_binding()
+        if binding is None:
+            return
         for row, (ui_spec, value) in enumerate(zip(binding.joint_ui, binding.arm_state.joint_positions, strict=True)):
             label = QLabel(ui_spec.name)
             slider = CasiaValueSlider(Qt.Orientation.Horizontal)
@@ -179,6 +190,8 @@ class KinematicsSimulationWidget(QWidget):
     def _on_chain_changed(self, _: str) -> None:
         """切换链时重建关节面板"""
 
+        if not self._chain_combo.currentText():
+            return
         self._build_joint_sliders()
         self._refresh_from_model()
 
@@ -186,6 +199,8 @@ class KinematicsSimulationWidget(QWidget):
         """滑条改变后更新模型并重绘"""
 
         chain_name = self._chain_combo.currentText()
+        if not chain_name:
+            return
         self._model.set_joint_positions(chain_name, self._collect_slider_values())
         self._status_label.setText(f"Updated joints for {chain_name}")
         self._refresh_plot()
@@ -214,6 +229,8 @@ class KinematicsSimulationWidget(QWidget):
         """触发当前链 IK 求解并同步 UI"""
 
         chain_name = self._chain_combo.currentText()
+        if not chain_name:
+            return
         target_xyz = (
             self._target_x_slider.value() / 1000.0,
             self._target_y_slider.value() / 1000.0,
@@ -274,6 +291,8 @@ class KinematicsSimulationWidget(QWidget):
         self._reload_chain_options()
         if selected_chain and selected_chain in self._model.chain_names():
             self._chain_combo.setCurrentText(selected_chain)
+        elif self._chain_combo.count() > 0:
+            self._chain_combo.setCurrentIndex(0)
         self._build_joint_sliders()
         self._refresh_from_model()
 

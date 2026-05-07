@@ -1,0 +1,43 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+  <xacro:macro name="lift_module" params="prefix parent_link xyz:='0 0 0' rpy:='0 0 0' chain_name:='' color:='' urdf_source:=''">
+    <link name="${prefix}base_link"/>
+    <joint name="${prefix}mount" type="fixed">
+      <parent link="${parent_link}"/>
+      <child link="${prefix}base_link"/>
+      <origin xyz="${xyz}" rpy="${rpy}"/>
+    </joint>
+
+    <joint name="${prefix}lift_pitch" type="revolute">
+      <parent link="${prefix}base_link"/>
+      <child link="${prefix}pitch_frame"/>
+      <origin xyz="0 0 0.8" rpy="0 0 0"/>
+      <axis xyz="0 1 0"/>
+      <limit lower="-0.3490659" upper="0.7853982" effort="120" velocity="1.2"/>
+    </joint>
+    <link name="${prefix}pitch_frame"/>
+
+    <joint name="${prefix}lift_z" type="prismatic">
+      <parent link="${prefix}pitch_frame"/>
+      <child link="${prefix}lift_center"/>
+      <origin xyz="0 0 0.1" rpy="0 0 0"/>
+      <axis xyz="0 0 1"/>
+      <limit lower="0" upper="0.5" effort="120" velocity="0.3"/>
+    </joint>
+    <link name="${prefix}lift_center"/>
+
+    <joint name="${prefix}left_mount_fixed" type="fixed">
+      <parent link="${prefix}lift_center"/>
+      <child link="${prefix}left_mount_link"/>
+      <origin xyz="0 0.3 0.1" rpy="0 0 0"/>
+    </joint>
+    <link name="${prefix}left_mount_link"/>
+
+    <joint name="${prefix}right_mount_fixed" type="fixed">
+      <parent link="${prefix}lift_center"/>
+      <child link="${prefix}right_mount_link"/>
+      <origin xyz="0 -0.3 0.1" rpy="0 0 0"/>
+    </joint>
+    <link name="${prefix}right_mount_link"/>
+  </xacro:macro>
+</robot>
