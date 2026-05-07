@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
+from loguru import logger
 from pyorbbecsdk import (
     AlignFilter,
     Config,
@@ -114,6 +115,8 @@ class OrbbecSession:
         self.align_filter: AlignFilter | None = None
         self._depth_stream_fps: float = 0.0
         self._started = False
+        self._consecutive_wait_timeouts = 0
+        self._recovering = False
 
     @classmethod
     def get_default_sensor_frustum(cls) -> SensorFrustumConfig:
@@ -202,6 +205,7 @@ class OrbbecSession:
         finally:
             self._started = False
             self.align_filter = None
+            self._consecutive_wait_timeouts = 0
 
     # endregion
 
@@ -223,7 +227,144 @@ class OrbbecSession:
         if self.pipeline is None:
             raise RuntimeError("会话尚未初始化。请先调用 start()。")
         timeout = self.options.timeout if timeout_ms is None else timeout_ms
-        return self.pipeline.wait_for_frames(timeout)
+        try:
+            frames = self.pipeline.wait_for_frames(timeout)
+        except OBError as exc:
+            return self._handle_wait_for_frames_error(exc=exc, timeout_ms=int(timeout))
+
+        if frames is None:
+            self._consecutive_wait_timeouts += 1
+            if self._should_trigger_recover_on_timeout():
+                self._attempt_runtime_recover(reason=f"连续超时 {self._consecutive_wait_timeouts} 次")
+            return None
+
+        self._consecutive_wait_timeouts = 0
+        return frames
+
+    def _handle_wait_for_frames_error(self, exc: Exception, timeout_ms: int) -> "FrameSet | None":
+        """处理取帧异常并按配置尝试运行时恢复。
+
+        Parameters
+        ----------
+        exc:
+            `pipeline.wait_for_frames()` 抛出的原始异常，通常是 `OBError`。
+        timeout_ms:
+            本次取帧使用的超时参数，单位 毫秒。仅用于日志定位。
+
+        Returns
+        -------
+        FrameSet | None
+            恢复成功且拿到新帧时返回帧集合；恢复失败或本次仍无帧时返回 `None`。
+
+        Raises
+        ------
+        RuntimeError
+            当关闭自动恢复或恢复超出次数后仍失败时，抛出统一错误给上层处理。
+        """
+        if not self.options.auto_recover_on_disconnect:
+            self._raise_device_runtime_error(
+                stage="wait_for_frames",
+                exc=exc,
+                extra_hint=f"取帧异常且未启用自动恢复。timeout_ms={timeout_ms}。",
+            )
+
+        logger.warning(f"Orbbec 取帧异常，准备自动恢复：timeout_ms={timeout_ms}，error={exc}")
+        self._attempt_runtime_recover(reason=f"wait_for_frames 异常：{exc}")
+        if self.pipeline is None:
+            return None
+        try:
+            frames = self.pipeline.wait_for_frames(timeout_ms)
+        except OBError as retry_exc:
+            logger.warning(f"Orbbec 恢复后首次取帧仍异常：{retry_exc}")
+            return None
+        if frames is None:
+            self._consecutive_wait_timeouts = 1
+            return None
+        self._consecutive_wait_timeouts = 0
+        return frames
+
+    def _should_trigger_recover_on_timeout(self) -> bool:
+        """判断连续超时是否达到恢复触发条件。"""
+        if not self.options.auto_recover_on_disconnect:
+            return False
+        threshold = int(self.options.recover_after_consecutive_timeouts)
+        if threshold <= 0:
+            return False
+        return self._consecutive_wait_timeouts >= threshold
+
+    def _attempt_runtime_recover(self, reason: str) -> None:
+        """执行运行时恢复，支持热插拔等待和有限次重试。
+
+        Parameters
+        ----------
+        reason:
+            触发恢复的原因文本，用于日志诊断。
+
+        Raises
+        ------
+        RuntimeError
+            在超时窗口内无法恢复会话时抛出异常。
+        """
+        if self._recovering:
+            logger.debug("Orbbec 已在恢复流程中，跳过重复恢复请求。")
+            return
+
+        self._recovering = True
+        t0 = time.monotonic()
+        deadline = t0 + max(0.5, float(self.options.recover_wait_timeout_s))
+        attempts = 0
+        last_exc: Exception | None = None
+
+        try:
+            while time.monotonic() <= deadline and attempts < max(1, int(self.options.max_auto_recover_attempts)):
+                attempts += 1
+                try:
+                    self._restart_pipeline_runtime()
+                    self._consecutive_wait_timeouts = 0
+                    logger.info(f"Orbbec 自动恢复成功：attempt={attempts}，reason={reason}")
+                    return
+                except Exception as exc:
+                    last_exc = exc
+                    logger.warning(f"Orbbec 自动恢复失败：attempt={attempts}，reason={reason}，error={exc}")
+                    time.sleep(max(0.05, float(self.options.recover_retry_interval_s)))
+        finally:
+            self._recovering = False
+
+        detail = "unknown" if last_exc is None else str(last_exc)
+        raise RuntimeError(
+            "Orbbec 会话自动恢复失败。"
+            f" reason={reason}，attempts={attempts}，wait_timeout_s={self.options.recover_wait_timeout_s}，last_error={detail}"
+        )
+
+    def _restart_pipeline_runtime(self) -> None:
+        """重建 SDK 运行时对象并重新启动流。
+
+        Notes
+        -----
+        该方法用于运行中断链恢复。它会按顺序执行：
+        1. 尝试停止旧 pipeline。
+        2. 清空旧 context/pipeline/config/align 状态。
+        3. 重新初始化并调用 `start()`。
+        """
+        old_started = bool(self._started)
+        try:
+            if self.pipeline is not None:
+                try:
+                    self.pipeline.stop()
+                except Exception:
+                    pass
+        finally:
+            self.pipeline = None
+            self.config = None
+            self.context = None
+            self.align_filter = None
+            self._started = False
+
+        if old_started:
+            self.start()
+        else:
+            self._init_runtime_objects()
+            self._apply_log_config()
 
     def get_imu_sample_from_frames(self, frames: "FrameSet") -> OrbbecImuSample:
         """

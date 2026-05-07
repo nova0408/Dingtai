@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import csv
 import concurrent.futures
+import faulthandler
 import queue
 import sys
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -58,6 +60,16 @@ DEFAULT_NEAR_GROW_DIFF = 18
 DEFAULT_NEAR_GROW_MAX_PIXELS = 26000
 DEFAULT_NEAR_GROW_LOCAL_DIFF = 14
 DEFAULT_NEAR_GROW_GLOBAL_DIFF = 30
+DEFAULT_TOP_NORMAL_EMA_ALPHA = 0.35
+DEFAULT_TOP_NORMAL_MAX_ANGLE_DEG = 12.0
+DEFAULT_GRASP_POINT_EMA_ALPHA = 0.30
+DEFAULT_GRASP_AXIS_EMA_ALPHA = 0.28
+DEFAULT_GRASP_MAX_TRANSLATION_MM = 40.0
+DEFAULT_GRASP_MAX_AXIS_ANGLE_DEG = 15.0
+DEFAULT_GRASP_TRANSLATION_SOFT_MM = 1.5
+DEFAULT_GRASP_AXIS_SOFT_DEG = 1.2
+DEFAULT_GRASP_MEDIAN_WINDOW = 5
+DEFAULT_FAULT_LOG_PATH = PROJECT_ROOT / "logs" / "grasp_pose_pipeline_fault.log"
 DEFAULT_TIMING_CSV_PATH = PROJECT_ROOT / "logs" / "grasp_pose_pipeline_timing.csv"
 # endregion
 
@@ -139,10 +151,33 @@ class TrayDetectState:
     motion_dy_smooth: float = 0.0
 
 
+@dataclass
+class TemporalFilterState:
+    last_top_normal: np.ndarray | None = None
+    last_grasp: GraspResult | None = None
+    point_hist: deque[np.ndarray] = field(default_factory=lambda: deque(maxlen=DEFAULT_GRASP_MEDIAN_WINDOW))
+
+
 # endregion
 
 
 # region 主流程
+def _enable_fault_logging(log_path: Path) -> None:
+    try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        f = open(log_path, "a", encoding="utf-8")
+        faulthandler.enable(file=f, all_threads=True)
+        faulthandler.register(signum=2, file=f, all_threads=True)
+        logger.info(f"faulthandler 已启用，故障日志输出到：{log_path}")
+    except Exception as exc:
+        logger.warning(f"faulthandler 启用失败：{exc}")
+
+    def _thread_excepthook(args: threading.ExceptHookArgs) -> None:
+        logger.exception(
+            f"线程未捕获异常 thread={args.thread.name if args.thread is not None else 'unknown'}: {args.exc_value}"
+        )
+
+    threading.excepthook = _thread_excepthook
 
 
 def main(
@@ -151,6 +186,7 @@ def main(
     max_depth_mm: float = DEFAULT_MAX_DEPTH_MM,
     compute_min_interval_s: float = DEFAULT_COMPUTE_MIN_INTERVAL_S,
 ) -> None:
+    _enable_fault_logging(DEFAULT_FAULT_LOG_PATH)
     options = SessionOptions(timeout=int(timeout_ms), preferred_capture_fps=max(1, int(capture_fps)))
     with Gemini305(options=options) as session:
         cam = session.get_camera_param()
@@ -334,6 +370,9 @@ def _run_pipeline(
                 )
                 fps_t0 = now
                 preview_frames = 0
+    except Exception as exc:
+        logger.exception(f"主循环异常退出：{exc}")
+        raise
     finally:
         stop_event.set()
         # 等待后台任务完成并确保最后一帧计时写入 CSV 后再退出。
@@ -365,6 +404,7 @@ def _worker_loop(
 ) -> None:
     tray_detector = _build_tray_zero_shot_detector()
     tray_state = TrayDetectState()
+    temporal_state = TemporalFilterState()
     mask_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="mask_pipeline")
     while not stop_event.is_set():
         job = job_queue.get()
@@ -373,7 +413,7 @@ def _worker_loop(
             break
         busy_event.set()
         try:
-            result = _run_compute_job(job, tray_detector, tray_state, timing_writer, mask_executor)
+            result = _run_compute_job(job, tray_detector, tray_state, temporal_state, timing_writer, mask_executor)
             _put_latest_result(result_queue, result)
         except Exception as exc:
             logger.exception(f"帧 {job.frame_idx} 计算线程异常：{exc}")
@@ -387,6 +427,7 @@ def _run_compute_job(
     job: CaptureJob,
     tray_detector,
     tray_state: TrayDetectState,
+    temporal_state: TemporalFilterState,
     timing_writer: "_CsvTimingWriter",
     mask_executor: concurrent.futures.ThreadPoolExecutor,
 ) -> PipelineResult:
@@ -467,6 +508,9 @@ def _run_compute_job(
             top_normal = _time_call(
                 timings, "estimate_top_plane_normal", _estimate_mask_plane_normal, xyz, no_hole_mask, uv, valid
             )
+            top_normal = _time_call(
+                timings, "stabilize_top_plane_normal", _stabilize_top_normal, top_normal, temporal_state
+            )
             grasp = _time_call(
                 timings,
                 "compute_grasp_refined",
@@ -491,6 +535,7 @@ def _run_compute_job(
             err = f"OpenCV error: {exc}"
         else:
             err = str(exc)
+    grasp = _time_call(timings, "stabilize_grasp_pose", _stabilize_grasp_result, grasp, temporal_state)
 
     overlay = _safe_draw_overlay_partial(
         base_bgr,
@@ -603,6 +648,15 @@ def _estimate_mask_plane_normal(
     pts = pts[d <= d_thr]
     if pts.shape[0] < 100:
         return None
+    if pts.shape[0] >= 180:
+        pcd = o3d.geometry.PointCloud()
+        pcd.points = o3d.utility.Vector3dVector(np.asarray(pts, dtype=np.float64))
+        try:
+            _, inliers = pcd.segment_plane(distance_threshold=1.8, ransac_n=3, num_iterations=800)
+            if len(inliers) >= 100:
+                pts = np.asarray(pts[np.asarray(inliers, dtype=np.int32)], dtype=np.float64)
+        except RuntimeError:
+            pass
     c = np.mean(pts, axis=0)
     q = pts - c.reshape(1, 3)
     cov = (q.T @ q) / max(1, q.shape[0])
@@ -1467,6 +1521,73 @@ def _compute_grasp(
     return GraspResult(grasp_point=grasp_point, pre_grasp_point=pre_grasp, rotation=rotation)
 
 
+def _stabilize_top_normal(n: np.ndarray | None, state: TemporalFilterState) -> np.ndarray | None:
+    if n is None:
+        return state.last_top_normal
+    nn = _normalize(np.asarray(n, dtype=np.float64))
+    prev = state.last_top_normal
+    if prev is None:
+        state.last_top_normal = nn
+        return nn
+    blended = _blend_unit_vector(
+        prev=prev,
+        curr=nn,
+        alpha=float(DEFAULT_TOP_NORMAL_EMA_ALPHA),
+        max_angle_deg=float(DEFAULT_TOP_NORMAL_MAX_ANGLE_DEG),
+    )
+    state.last_top_normal = blended
+    return blended
+
+
+def _stabilize_grasp_result(grasp: GraspResult | None, state: TemporalFilterState) -> GraspResult | None:
+    if grasp is None:
+        return state.last_grasp
+    prev = state.last_grasp
+    if prev is None:
+        state.point_hist.clear()
+        state.point_hist.append(np.asarray(grasp.grasp_point, dtype=np.float64))
+        state.last_grasp = grasp
+        return grasp
+    curr_p = np.asarray(grasp.grasp_point, dtype=np.float64)
+    prev_p = np.asarray(prev.grasp_point, dtype=np.float64)
+    dp = curr_p - prev_p
+    dp_norm = float(np.linalg.norm(dp))
+    point_alpha = float(DEFAULT_GRASP_POINT_EMA_ALPHA)
+    if dp_norm > float(DEFAULT_GRASP_MAX_TRANSLATION_MM):
+        point_alpha *= float(DEFAULT_GRASP_MAX_TRANSLATION_MM / max(1e-9, dp_norm))
+    point_alpha *= _soft_gate_gain(dp_norm, float(DEFAULT_GRASP_TRANSLATION_SOFT_MM))
+    p_new = prev_p + point_alpha * dp
+    state.point_hist.append(np.asarray(p_new, dtype=np.float64))
+    if len(state.point_hist) >= 3:
+        hist = np.asarray(list(state.point_hist), dtype=np.float64)
+        p_new = np.median(hist, axis=0)
+
+    prev_r = np.asarray(prev.rotation, dtype=np.float64)
+    curr_r = np.asarray(grasp.rotation, dtype=np.float64)
+    x_ang = _vector_angle_deg(prev_r[:, 0], curr_r[:, 0])
+    y_ang = _vector_angle_deg(prev_r[:, 1], curr_r[:, 1])
+    axis_alpha_x = float(DEFAULT_GRASP_AXIS_EMA_ALPHA) * _soft_gate_gain(x_ang, float(DEFAULT_GRASP_AXIS_SOFT_DEG))
+    axis_alpha_y = float(DEFAULT_GRASP_AXIS_EMA_ALPHA) * _soft_gate_gain(y_ang, float(DEFAULT_GRASP_AXIS_SOFT_DEG))
+    x_new = _blend_unit_vector(prev_r[:, 0], curr_r[:, 0], axis_alpha_x, DEFAULT_GRASP_MAX_AXIS_ANGLE_DEG)
+    y_new = _blend_unit_vector(prev_r[:, 1], curr_r[:, 1], axis_alpha_y, DEFAULT_GRASP_MAX_AXIS_ANGLE_DEG)
+    y_new = y_new - float(np.dot(y_new, x_new)) * x_new
+    if float(np.linalg.norm(y_new)) < 1e-9:
+        y_new = _normalize(np.cross(prev_r[:, 2], x_new))
+    else:
+        y_new = _normalize(y_new)
+    z_new = _normalize(np.cross(x_new, y_new))
+    y_new = _normalize(np.cross(z_new, x_new))
+    r_new = np.column_stack([x_new, y_new, z_new]).astype(np.float64)
+
+    pre_dist = float(np.linalg.norm(np.asarray(grasp.pre_grasp_point, dtype=np.float64) - curr_p))
+    if not np.isfinite(pre_dist) or pre_dist < 1e-6:
+        pre_dist = 80.0
+    pre_new = p_new + z_new * pre_dist
+    out = GraspResult(grasp_point=p_new, pre_grasp_point=pre_new, rotation=r_new)
+    state.last_grasp = out
+    return out
+
+
 def _pixel_ray_intersect_plane(
     u: float, v: float, n: np.ndarray, d: float, fx: float, fy: float, cx: float, cy: float
 ) -> np.ndarray:
@@ -1913,6 +2034,32 @@ def _normalize(v: np.ndarray, eps: float = 1e-12) -> np.ndarray:
     if n < eps:
         raise RuntimeError(f"向量归一化失败，norm={n}")
     return np.asarray(v, dtype=np.float64) / n
+
+
+def _blend_unit_vector(prev: np.ndarray, curr: np.ndarray, alpha: float, max_angle_deg: float) -> np.ndarray:
+    p = _normalize(np.asarray(prev, dtype=np.float64))
+    c = _normalize(np.asarray(curr, dtype=np.float64))
+    if float(np.dot(p, c)) < 0.0:
+        c = -c
+    cosang = float(np.clip(np.dot(p, c), -1.0, 1.0))
+    ang_deg = float(np.degrees(np.arccos(cosang)))
+    aa = float(np.clip(alpha, 0.0, 1.0))
+    if ang_deg > float(max_angle_deg):
+        aa *= float(max_angle_deg / max(1e-6, ang_deg))
+    return _normalize((1.0 - aa) * p + aa * c)
+
+
+def _vector_angle_deg(v0: np.ndarray, v1: np.ndarray) -> float:
+    a = _normalize(np.asarray(v0, dtype=np.float64))
+    b = _normalize(np.asarray(v1, dtype=np.float64))
+    c = float(np.clip(np.dot(a, b), -1.0, 1.0))
+    return float(np.degrees(np.arccos(c)))
+
+
+def _soft_gate_gain(magnitude: float, soft_threshold: float) -> float:
+    thr = max(1e-6, float(soft_threshold))
+    x = max(0.0, float(magnitude)) / thr
+    return float(x / (1.0 + x))
 
 
 def _extract_rgb(points: np.ndarray) -> np.ndarray:

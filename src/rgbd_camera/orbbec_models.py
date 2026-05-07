@@ -159,6 +159,16 @@ class SessionOptions:
     "是否尝试启用设备 IMU`True` 启用，`False` 禁用"
     require_full_frame_when_imu: bool = True
     "启用 IMU 时是否要求 FULL_FRAME 聚合输出"
+    auto_recover_on_disconnect: bool = True
+    "运行中检测到掉线或取帧异常时，是否自动重建会话并继续采集"
+    max_auto_recover_attempts: int = 6
+    "单次异常后的最大自动恢复重试次数。超过后抛出异常交由上层决策"
+    recover_retry_interval_s: float = 0.35
+    "自动恢复重试间隔，单位 秒。用于热插拔等待设备重新枚举"
+    recover_wait_timeout_s: float = 8.0
+    "单次自动恢复允许的最长等待时间，单位 秒"
+    recover_after_consecutive_timeouts: int = 10
+    "连续取帧超时达到该阈值后触发自动恢复。0 表示仅在异常时恢复"
 
 
 # endregion
