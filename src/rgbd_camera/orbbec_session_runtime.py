@@ -130,7 +130,7 @@ class OrbbecSession:
         """
         return SensorFrustumConfig()
 
-    def __enter__(self) -> "OrbbecSession":
+    def __enter__(self) -> OrbbecSession:
         """进入上下文并启动相机会话。
 
         Returns
@@ -333,7 +333,7 @@ class OrbbecSession:
         detail = "unknown" if last_exc is None else str(last_exc)
         raise RuntimeError(
             "Orbbec 会话自动恢复失败。"
-            f" reason={reason}，attempts={attempts}，wait_timeout_s={self.options.recover_wait_timeout_s}，last_error={detail}"
+            f" reason={reason}, attempts={attempts}, wait_timeout_s={self.options.recover_wait_timeout_s}, last_error={detail}"
         )
 
     def _restart_pipeline_runtime(self) -> None:

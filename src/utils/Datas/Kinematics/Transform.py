@@ -8,7 +8,7 @@ import numpy as np
 from loguru import logger
 
 from .quaternion import Quaternion
-from .transform_protocol import MatrixConstructible, MatrixSerializable
+from ...protocol import MatrixConstructible, MatrixSerializable
 from .translation import Translation
 
 

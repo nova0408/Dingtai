@@ -19,7 +19,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[3]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.rgbd_camera import Gemini305, SessionOptions, set_point_cloud_filter_format
+from src.rgbd_camera import Gemini305, SessionOptions, set_point_cloud_filter_format, OrbbecSession
 
 # region 默认参数（优先在这里直接改）
 DEFAULT_TIMEOUT_MS = 120  # 等待相机帧超时，单位 ms
@@ -324,7 +324,7 @@ def _build_tray_exclusion_detector(cfg: PlaneDetectorConfig):
 
 # region 实时预览与后台计算
 def _run_preview_loop(
-    session: Gemini305,
+    session: OrbbecSession,
     point_filter,
     fx: float,
     fy: float,
@@ -1058,7 +1058,7 @@ def _draw_2d_overlay(
 
 # region 捕获与图像投影
 def _capture_cropped_points_once(
-    session: Gemini305,
+    session: OrbbecSession,
     point_filter,
     max_depth_mm: float,
 ) -> tuple[np.ndarray | None, np.ndarray | None]:

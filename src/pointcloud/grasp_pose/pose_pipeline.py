@@ -6,6 +6,8 @@ from dataclasses import dataclass, field
 import numpy as np
 import open3d as o3d
 
+from src.utils.protocol import CameraIntrinsicsProtocol
+
 from .types import GraspResult, OpeningDetection, PlaneResult
 
 # region 数据结构
@@ -112,10 +114,7 @@ class GraspPoseEstimator:
         self,
         opening: OpeningDetection,
         plane: PlaneResult,
-        fx: float,
-        fy: float,
-        cx: float,
-        cy: float,
+        intrinsics: CameraIntrinsicsProtocol,
         top_ref_normal: np.ndarray | None,
     ) -> GraspResult:
         """基于开口与平面估计抓取位姿。
@@ -126,13 +125,13 @@ class GraspPoseEstimator:
             开口检测结果。
         plane:
             开口局部平面模型。
-        fx, fy, cx, cy:
-            相机内参，单位 像素。
+        intrinsics:
+            相机针孔内参协议对象，需提供 `fx/fy/cx/cy/width/height` 字段，单位 像素。
         top_ref_normal:
             顶面参考法向量，形状 `(3,)`，dtype `float64`。为空时回退到默认方向。
         """
         grasp_point = _pixel_ray_intersect_plane(
-            opening.center_uv[0], opening.center_uv[1], plane.normal, plane.d, fx, fy, cx, cy
+            opening.center_uv[0], opening.center_uv[1], plane.normal, plane.d, intrinsics
         )
         quad = np.asarray(opening.quad_uv, dtype=np.float64)
         lengths = [float(np.linalg.norm(quad[(i + 1) % 4] - quad[i])) for i in range(4)]
@@ -141,8 +140,8 @@ class GraspPoseEstimator:
         half = 0.45 * float(lengths[best_i])
         left_uv = opening.center_uv - edge_dir * half
         right_uv = opening.center_uv + edge_dir * half
-        p_left = _pixel_ray_intersect_plane(left_uv[0], left_uv[1], plane.normal, plane.d, fx, fy, cx, cy)
-        p_right = _pixel_ray_intersect_plane(right_uv[0], right_uv[1], plane.normal, plane.d, fx, fy, cx, cy)
+        p_left = _pixel_ray_intersect_plane(left_uv[0], left_uv[1], plane.normal, plane.d, intrinsics)
+        p_right = _pixel_ray_intersect_plane(right_uv[0], right_uv[1], plane.normal, plane.d, intrinsics)
         x_axis = _normalize(p_right - p_left)
         if float(np.dot(x_axis, np.array([1.0, 0.0, 0.0], dtype=np.float64))) < 0.0:
             x_axis = -x_axis
@@ -248,10 +247,19 @@ def _normalize(v: np.ndarray, eps: float = 1e-12) -> np.ndarray:
 
 
 def _pixel_ray_intersect_plane(
-    u: float, v: float, n: np.ndarray, d: float, fx: float, fy: float, cx: float, cy: float
+    u: float, v: float, n: np.ndarray, d: float, intrinsics: CameraIntrinsicsProtocol
 ) -> np.ndarray:
     """求像素射线与平面交点。"""
-    ray = _normalize(np.array([(float(u) - cx) / fx, (float(v) - cy) / fy, 1.0], dtype=np.float64))
+    ray = _normalize(
+        np.array(
+            [
+                (float(u) - float(intrinsics.cx)) / float(intrinsics.fx),
+                (float(v) - float(intrinsics.cy)) / float(intrinsics.fy),
+                1.0,
+            ],
+            dtype=np.float64,
+        )
+    )
     nn = _normalize(n)
     denom = float(np.dot(nn, ray))
     if abs(denom) < 1e-9:

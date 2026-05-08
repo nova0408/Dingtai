@@ -12,7 +12,7 @@ from scipy.spatial.transform import Rotation as R
 
 from ..degree import Degree
 from ..vector import Vector
-from .transform_protocol import MatrixConstructible, MatrixSerializable
+from ...protocol import MatrixConstructible, MatrixSerializable
 
 
 class EulerSequence(Enum):

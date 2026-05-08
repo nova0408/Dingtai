@@ -9,9 +9,9 @@ import numpy as np
 from numpy.typing import NDArray
 
 from .geometric_tolerances import LINEAR_TOLERANCES
-from .kinematics.transform_protocol import MatrixSerializable
 
 if TYPE_CHECKING:
+    from ..protocol import MatrixSerializable
     from .kinematics.quaternion import Quaternion
     from .kinematics.transform import Transform
     from .point import Point
@@ -171,10 +171,10 @@ class Vector(Sequence[float]):
 
     def normalized(self) -> Vector:
         """返回单位向量；长度过小时返回零向量。"""
-        l = self.length
-        if l < 1e-12:
+        length_value = self.length
+        if length_value < 1e-12:
             return Vector.zero()
-        return self / l
+        return self / length_value
 
     def dot(self, other: Vector) -> float:
         """点积"""

@@ -3,7 +3,7 @@
 from .axis import Axis
 from .quaternion import EulerSequence, Quaternion
 from .transform import Transform
-from .transform_protocol import (
+from src.utils.protocol import (
     ArraySerializable,
     HomogeneousTransformProtocol,
     ListSerializable,

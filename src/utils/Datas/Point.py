@@ -11,7 +11,7 @@ from .geometric_tolerances import LINEAR_TOLERANCES
 
 if TYPE_CHECKING:
     from .kinematics.transform import Transform
-    from .kinematics.transform_protocol import MatrixSerializable
+    from ..protocol import MatrixSerializable
     from .vector import Vector
 
 

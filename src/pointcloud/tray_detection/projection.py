@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import numpy as np
 
-from src.rgbd_camera import CameraIntrinsics
+from src.utils.protocol import CameraIntrinsicsProtocol
 
 
 # region 点云投影与图像索引
 def project_points_to_image(
     xyz: np.ndarray,
-    intrinsics: CameraIntrinsics,
+    intrinsics: CameraIntrinsicsProtocol,
 ) -> tuple[np.ndarray, np.ndarray]:
     """将相机坐标系点云投影到图像平面。
 

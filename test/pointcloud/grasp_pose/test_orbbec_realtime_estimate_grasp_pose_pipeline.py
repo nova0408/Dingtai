@@ -21,9 +21,13 @@ PROJECT_ROOT = Path(__file__).resolve().parents[3]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.pointcloud.grasp_pose.opening_pipeline import OpeningDetectionPipeline
-from src.pointcloud.grasp_pose.pose_pipeline import GraspPoseEstimator, TemporalFilterState
-from src.pointcloud.grasp_pose.types import GraspResult, OpeningDetection
+from src.pointcloud.grasp_pose import (
+    OpeningDetectionPipeline,
+    GraspPoseEstimator,
+    TemporalFilterState,
+    GraspResult,
+    OpeningDetection,
+)
 from src.pointcloud.tray_detection import TrayDetectionPipeline, TrayRuntimeState
 from src.rgbd_camera import Gemini305, SessionOptions, set_point_cloud_filter_format
 
@@ -87,6 +91,21 @@ class CaptureJob:
     cy: float
     img_w: int
     img_h: int
+
+
+@dataclass(frozen=True)
+class ProjectionIntrinsics:
+    """测试脚本内参对象。
+
+    该结构用于适配 `CameraIntrinsicsProtocol`，避免测试脚本直接依赖 `src.rgbd_camera`。
+    """
+
+    width: int
+    height: int
+    fx: float
+    fy: float
+    cx: float
+    cy: float
 
 
 @dataclass(frozen=True)
@@ -252,7 +271,7 @@ def _run_pipeline(
                 elif result.error is not None:
                     kind = _classify_failure_kind(result.failed_step)
                     logger.warning(
-                        f"帧 {result.frame_idx} 计算失败[{kind}] step={result.failed_step} err={result.error}; "
+                        f"帧 {result.frame_idx} 计算失败 [{kind}] step={result.failed_step} err={result.error}; "
                         f"completed={'>'.join(result.completed_steps) if len(result.completed_steps) > 0 else 'none'}"
                     )
 
@@ -481,8 +500,16 @@ def _run_compute_job(
         if xyz_local.shape[0] < DEFAULT_OPENING_MIN_POINTS:
             raise RuntimeError(f"开口局部点过少：{xyz_local.shape[0]}")
         plane = _time_call(timings, "estimate_opening_plane", pose_estimator.estimate_plane, xyz_local)
+        intrinsics = ProjectionIntrinsics(
+            width=job.img_w,
+            height=job.img_h,
+            fx=job.fx,
+            fy=job.fy,
+            cx=job.cx,
+            cy=job.cy,
+        )
         grasp = _time_call(
-            timings, "compute_grasp_fast", pose_estimator.compute_grasp, opening, plane, job.fx, job.fy, job.cx, job.cy, None
+            timings, "compute_grasp_fast", pose_estimator.compute_grasp, opening, plane, intrinsics, None
         )
 
         try:
@@ -511,10 +538,7 @@ def _run_compute_job(
                 pose_estimator.compute_grasp,
                 opening,
                 plane,
-                job.fx,
-                job.fy,
-                job.cx,
-                job.cy,
+                intrinsics,
                 top_normal,
             )
         except concurrent.futures.TimeoutError:
@@ -1137,4 +1161,3 @@ def _put_latest_result(result_queue: queue.Queue[PipelineResult], result: Pipeli
 
 if __name__ == "__main__":
     main()
-

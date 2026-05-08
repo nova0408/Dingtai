@@ -7,7 +7,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from src.utils.datas import Quaternion, Transform, Translation
-from src.utils.datas.kinematics.transform_protocol import MatrixSerializable
+from src.utils.protocol import MatrixSerializable
 
 PoseLike = MatrixSerializable | NDArray[np.floating]
 PairMode = Literal["adjacent", "all"]
