@@ -210,7 +210,7 @@ class Vector(Sequence[float]):
     def transformed(self, transformation: NDArray[np.float64] | Transform | Quaternion | MatrixSerializable) -> Vector:
         """对向量应用变换，自动忽略 4x4 变换中的平移分量。"""
         if hasattr(transformation, "as_SE3"):
-            mat = np.asarray(transformation.as_SE3(), dtype=np.float64)
+            mat = transformation.as_SE3()
         elif isinstance(transformation, np.ndarray):
             mat = transformation.astype(np.float64, copy=False)
         else:

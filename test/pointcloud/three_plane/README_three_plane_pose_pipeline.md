@@ -4,8 +4,8 @@
 
 本文档记录 Orbbec Gemini 305 三平面位姿测试方案，覆盖当前优化脚本和参考脚本：
 
-- 当前优化脚本：`test/pointcloud/test_orbbec_three_plane_pose_optimized_pipeline.py`
-- 参考脚本：`test/pointcloud/test_orbbec_realtime_three_plane_pose_frame.py`
+- 当前优化脚本：`test/pointcloud/three_plane/test_orbbec_three_plane_pose_optimized_pipeline.py`
+- 参考脚本：`test/pointcloud/three_plane/test_orbbec_realtime_three_plane_pose_frame.py`
 
 方案目标是在 Orbbec Gemini 305 实时点云中检测三个结构平面，并以三平面交点为原点计算测试坐标系，同时排除料盘区域对平面拟合的干扰。测试重点是观察当相机视角转动后，计算出的测试坐标系是否仍稳定落在同一空间位置。
 
@@ -16,7 +16,8 @@
 - `src/pointcloud/tray_detection/projection.py`：点云到图像的投影。
 - `src/pointcloud/three_plane_pose.py`：三平面分割、平面排序、坐标系计算。
 - `src/pointcloud/three_plane_types.py`：三平面配置、结果结构和位姿稳定器。
-- `test/pointcloud/test_orbbec_three_plane_pose_optimized_pipeline.py`：实时采集、线程调度、Open3D/CV2 预览和日志。
+- `test/pointcloud/three_plane/test_orbbec_three_plane_pose_optimized_pipeline.py`：实时采集、线程调度、Open3D/CV2 预览和日志。
+- `src/pointcloud/motion_shift.py`：跨模块复用的平移估计与 mask 平移工具。
 
 ## 脚本关系
 
@@ -44,6 +45,9 @@
 - 仍然输出当前 XYZ/RPY 和相对参考 delta。
 - 仍然在 2D 和 3D 中预览检测结果。
 - 料盘绘制按实际 mask 区域显示，默认启用 SAM，避免只画检测框。
+- 料盘检测改为异步独立线程，主计算帧不阻塞等待检测完成。
+- 在异步检测间隙使用图像平移估计对历史托盘 mask 进行预测补偿。
+- 通过帧索引同步保护避免“未来帧检测结果”回灌到历史计算帧。
 
 当前脚本做出的结构调整：
 
@@ -60,13 +64,13 @@
 推荐直接运行当前优化脚本：
 
 ```powershell
-C:\Users\ICO\anaconda3\envs\DingTai\python.exe test\pointcloud\test_orbbec_three_plane_pose_optimized_pipeline.py
+C:\Users\ICO\anaconda3\envs\DingTai\python.exe test\pointcloud\three_plane\test_orbbec_three_plane_pose_optimized_pipeline.py
 ```
 
 常用参数：
 
 ```powershell
-C:\Users\ICO\anaconda3\envs\DingTai\python.exe test\pointcloud\test_orbbec_three_plane_pose_optimized_pipeline.py `
+C:\Users\ICO\anaconda3\envs\DingTai\python.exe test\pointcloud\three_plane\test_orbbec_three_plane_pose_optimized_pipeline.py `
   --tray-exclusion `
   --tray-use-sam `
   --pose-smooth-frames 5 `
@@ -83,7 +87,7 @@ C:\Users\ICO\anaconda3\envs\DingTai\python.exe test\pointcloud\test_orbbec_three
 参考脚本仍可用于对照行为：
 
 ```powershell
-C:\Users\ICO\anaconda3\envs\DingTai\python.exe test\pointcloud\test_orbbec_realtime_three_plane_pose_frame.py
+C:\Users\ICO\anaconda3\envs\DingTai\python.exe test\pointcloud\three_plane\test_orbbec_realtime_three_plane_pose_frame.py
 ```
 
 建议只在需要对比旧行为、排查预览差异或确认迁移结果时运行参考脚本。
@@ -115,6 +119,8 @@ C:\Users\ICO\anaconda3\envs\DingTai\python.exe test\pointcloud\test_orbbec_realt
 - 上一帧计算未完成时，新帧直接丢弃。
 - 结果队列保留最新结果，避免旧结果阻塞预览。
 - 3D 预览点云做点数上限控制。
+- 托盘检测单独线程异步运行，主计算帧只消费“最新已完成快照”。
+- 托盘快照包含参考灰度图，计算帧通过 phase correlation 估计平移并预测补偿 mask。
 
 ## 数据流
 
@@ -126,8 +132,10 @@ C:\Users\ICO\anaconda3\envs\DingTai\python.exe test\pointcloud\test_orbbec_realt
 4. `session.filter_points_for_sensor()` 使用 Gemini 305 默认视锥裁切点云。
 5. 预览线程持续更新原始点云。
 6. 若计算线程空闲，将当前帧放入单元素队列。
-7. 计算线程执行料盘排除、三平面检测和坐标系估计。
-8. 预览线程消费最新结果，更新 2D overlay、3D 平面点云、坐标系和日志。
+7. 托盘线程异步执行 `TrayPointExcluder.detect`，更新托盘快照。
+8. 计算线程读取托盘快照，估计当前帧相对快照帧平移，先平移 mask 再做点云排除。
+9. 计算线程执行三平面检测和坐标系估计。
+10. 预览线程消费最新结果，更新 2D overlay、3D 平面点云、坐标系和日志。
 
 计算队列是单元素模式：如果上一帧计算尚未完成，当前帧直接丢弃，不进入计算队列。这样可以避免积压旧帧，保持预览和计算结果尽量接近实时状态。
 
@@ -160,22 +168,38 @@ C:\Users\ICO\anaconda3\envs\DingTai\python.exe test\pointcloud\test_orbbec_realt
 2. 调用 `_capture_filtered_points()` 得到裁切点云。
 3. 更新 Open3D 原始点云。
 4. 若计算线程空闲且达到最小提交间隔，则把当前帧打包为 `CaptureJob`。
-5. 若计算线程繁忙或队列非空，则丢弃当前帧。
-6. 消费 `PipelineResult`，刷新 2D/3D 结果。
+5. 同时提交 `TrayDetectJob`（仅用于异步托盘识别快照刷新）。
+6. 若对应队列繁忙则丢弃旧任务，仅保留最新任务。
+7. 若计算线程繁忙或队列非空，则丢弃当前帧。
+8. 消费 `PipelineResult`，刷新 2D/3D 结果。
 
-### 3. 计算层
+### 3. 托盘异步层
+
+入口在 `_tray_worker_loop()`：
+
+1. 从 `tray_job_queue` 取最新 `TrayDetectJob`。
+2. 调用 `TrayPointExcluder.detect(base_bgr)` 获取 2D 托盘检测结果。
+3. 同步生成托盘快照参考灰度图（缩放）用于平移预测。
+4. 写入 `TrayDetectionSnapshot(frame_idx, detections, detect_ms, tracking_gray, tracking_scale)`。
+
+该层只做 2D 识别，不做点云投影与排除。
+
+### 4. 计算层
 
 入口在 `_run_compute_job()`：
 
 1. 从 `CaptureJob.points` 提取 `xyz` 和 `rgb`。
 2. 使用 `project_points_to_image(xyz, job.intrinsics)` 得到 `uv` 和 `valid_proj`。
 3. 构造 2D 基底图：优先使用彩色帧，否则用点云颜色栅格化。
-4. 执行 `TrayPointExcluder.exclude_points()`。
+4. 读取托盘快照，执行 `_build_excluded_mask_from_snapshot()`：
+   - 若快照帧号晚于当前计算帧，直接丢弃快照（索引保护）。
+   - 若快照滞后，先做图像平移估计，再平移历史 mask。
+   - 将平移后的 mask 投影到当前点云，得到 `excluded_mask`。
 5. 执行 `estimate_three_plane_pose()`。
 6. 绘制 2D overlay。
 7. 返回 `PipelineResult`。
 
-### 4. 可视化层
+### 5. 可视化层
 
 2D 可视化：
 
@@ -211,17 +235,34 @@ C:\Users\ICO\anaconda3\envs\DingTai\python.exe test\pointcloud\test_orbbec_realt
 
 ## 料盘排除
 
-料盘排除由 `TrayPointExcluder` 负责：
+料盘排除由 “异步检测 + 同步投影” 两段组成：
 
-1. GroundingDINO 根据 prompt 检测候选料盘。
-2. 严格关键词过滤保留目标标签。
-3. 默认启用 SAM，生成实际料盘 mask。
-4. 对 mask 做闭运算和最小面积过滤。
-5. 使用 `project_points_to_image()` 得到每个点云点的像素坐标。
-6. 通过 `collect_indices_in_mask()` 将 2D mask 映射到点云 `(N,) bool` 排除掩码。
-7. `estimate_three_plane_pose()` 对排除点标记为 `-2`，不参与 RANSAC 和 PCA。
+1. 托盘线程调用 `TrayPointExcluder.detect()` 只输出 2D `TrayDetection` 列表。
+2. 计算线程读取快照帧号，若快照晚于当前帧则弃用（避免时间错乱）。
+3. 快照滞后时，调用 `src/pointcloud/motion_shift.py` 做 `phaseCorrelate` 平移估计。
+4. 对快照中的 `mask` 做平移补偿后，再投影回当前帧点云生成 `(N,) bool` 排除掩码。
+5. `estimate_three_plane_pose()` 对排除点标记为 `-2`，不参与 RANSAC 和 PCA。
 
 2D 预览中料盘区域按 `TrayDetection.mask` 实际区域半透明填充；只有关闭 SAM 时，该 mask 才会退化为检测框区域。
+
+## 偏移估计复用设计
+
+当前项目已把图像平移估计抽到 `src/pointcloud/motion_shift.py`，统一提供：
+
+- `prepare_tracking_gray()`：生成缩放灰度跟踪图。
+- `estimate_phase_shift()`：基于 `cv2.phaseCorrelate` 估计平移（含响应阈值与可选限幅）。
+- `warp_mask()`：按平移量高效平移 mask（最近邻插值）。
+
+复用方：
+
+- `test_orbbec_three_plane_pose_optimized_pipeline.py`：托盘快照补偿与实时排除。
+- `src/pointcloud/tray_detection/pipeline.py`：通用托盘管线运动补偿。
+
+这样做的收益：
+
+- 避免多个模块维护不同的平移估计实现。
+- 降低后续“平面检测/位姿流程也要接入偏移估计”的接入成本。
+- 统一性能优化入口（缩放策略、响应阈值、限幅策略）。
 
 ## 三平面位姿算法
 
@@ -266,16 +307,19 @@ estimate_three_plane_pose(xyz, excluded_mask=excluded, config=pose_cfg)
 
 ## 实时线程模型
 
-脚本分为预览线程和计算线程：
+脚本分为预览线程、托盘线程和计算线程：
 
 - 预览线程：相机取帧、点云裁切、Open3D 原始点云刷新、CV2 2D 图显示、计算任务提交。
-- 计算线程：料盘检测、点云排除、三平面估计、2D overlay 生成。
+- 托盘线程：托盘 2D 检测与快照更新。
+- 计算线程：托盘快照补偿、点云排除、三平面估计、2D overlay 生成。
 
 队列策略：
 
 - `job_queue` 最大长度为 1。
+- `tray_job_queue` 最大长度为 1。
 - `result_queue` 最大长度为 2。
 - 计算线程忙时，预览线程丢弃当前帧。
+- 托盘线程忙时，预览线程只保留最新托盘任务。
 - 结果队列满时，丢弃旧结果，只保留最新结果。
 
 该设计优先保证实时性，不追求每帧都计算。
@@ -334,6 +378,8 @@ estimate_three_plane_pose(xyz, excluded_mask=excluded, config=pose_cfg)
 - `project_points_to_image()` 不做畸变校正。
 - SAM 打开后料盘区域更接近真实形状，但计算耗时更高。
 - SAM 关闭时料盘 mask 会退化为检测框区域，预览会显示矩形区域。
+- 当托盘检测明显慢于实时帧率时，显示与排除依赖“旧快照 + 偏移预测”，极端快速运动下仍可能出现边界偏差。
+- 平移预测当前仅建模 2D 平移，不建模尺度变化和旋转。
 - 三平面排序依赖底面参考轴和侧面 X 坐标均值，视角或场景变化过大时需要调整 `PlanePoseConfig`。
 - 文档描述的是当前工程实现；实机效果仍受相机曝光、点云质量、料盘颜色和模型缓存影响。
 

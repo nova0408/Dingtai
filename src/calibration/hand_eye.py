@@ -8,6 +8,7 @@ from numpy.typing import NDArray
 
 from src.utils.datas import Quaternion, Transform, Translation
 from src.utils.protocol import MatrixSerializable
+from collections.abc import Sequence
 
 PoseLike = MatrixSerializable | NDArray[np.floating]
 PairMode = Literal["adjacent", "all"]
@@ -108,7 +109,7 @@ def make_relative_motion_pairs(
 
 
 def calibrate_hand_eye_ax_xb(
-    a_motions: list[PoseLike], b_motions: list[PoseLike], min_required_samples: int = 3
+    a_motions: Sequence[PoseLike], b_motions: Sequence[PoseLike], min_required_samples: int = 3
 ) -> Transform:
     """
     纯数学 AX=XB 手眼标定求解。
@@ -155,7 +156,7 @@ def calibrate_hand_eye_ax_xb(
 
 
 def evaluate_hand_eye_solution(
-    a_motions: list[PoseLike], b_motions: list[PoseLike], x: PoseLike
+    a_motions: Sequence[PoseLike], b_motions: Sequence[PoseLike], x: PoseLike
 ) -> HandEyeResidualStats:
     """评估 A X 与 X B 的闭环残差。"""
     if len(a_motions) != len(b_motions):

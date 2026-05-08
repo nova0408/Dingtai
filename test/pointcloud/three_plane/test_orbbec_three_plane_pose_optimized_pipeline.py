@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import queue
 import sys
 import threading
@@ -20,21 +21,19 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from src.pointcloud import (
     CoordinateFramePose,
+    estimate_phase_shift,
     PlanePoseConfig,
     PoseWindowStabilizer,
+    prepare_tracking_gray,
     TrayDetection,
     TrayDetectionConfig,
     TrayPointExcluder,
     estimate_three_plane_pose,
     project_points_to_image,
     relative_pose,
+    warp_mask,
 )
-from src.rgbd_camera import (
-    CameraIntrinsics,
-    Gemini305,
-    SessionOptions,
-    set_point_cloud_filter_format,
-)
+from src.rgbd_camera import CameraIntrinsics, Gemini305, SessionOptions, set_point_cloud_filter_format, OrbbecSession
 from src.utils.datas import Color
 
 # region 默认参数（优先在这里直接改）
@@ -59,6 +58,8 @@ PLANE_PREVIEW_COLORS = (
 )
 MARKER_PREVIEW_COLOR = Color.from_rgb(1.0, 1.0, 0.0)
 TRAY_MASK_PREVIEW_COLOR = Color.from_rgb(1.0, 0.0, 0.0)
+RUNTIME_THREE_PLANE_DIR = PROJECT_ROOT / "runtime" / "three_plane"
+TRAY_TRACKING_MAX_SIDE = 320  # 托盘图像平移跟踪最长边，单位像素
 # endregion
 
 
@@ -82,6 +83,21 @@ class CaptureJob:
 
 
 @dataclass(frozen=True)
+class TrayDetectJob:
+    frame_idx: int
+    base_bgr: np.ndarray
+
+
+@dataclass(frozen=True)
+class TrayDetectionSnapshot:
+    frame_idx: int
+    detections: list[TrayDetection]
+    detect_ms: float
+    tracking_gray: np.ndarray
+    tracking_scale: float
+
+
+@dataclass(frozen=True)
 class PipelineResult:
     frame_idx: int
     xyz: np.ndarray
@@ -92,6 +108,53 @@ class PipelineResult:
     tray_excluded_points: int
     overlay_bgr: np.ndarray
     timings_ms: dict[str, float]
+
+
+class TimingCsvWriter:
+    """按帧写入 pipeline 耗时 CSV。"""
+
+    BASE_FIELDS = (
+        "frame_idx",
+        "tray_excluded_points",
+        "prepare_xyz_rgb",
+        "project_points",
+        "prepare_preview",
+        "tray",
+        "tray_detect_async",
+        "tray_snapshot_age",
+        "tray_predict_shift",
+        "tray_shift_dx",
+        "tray_shift_dy",
+        "tray_shift_score",
+        "pose",
+        "draw_overlay",
+        "total",
+    )
+
+    def __init__(self, output_dir: Path) -> None:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        file_name = time.strftime("three_plane_timing_%Y%m%d_%H%M%S.csv", time.localtime())
+        self.csv_path = output_dir / file_name
+        self._fp = self.csv_path.open("w", encoding="utf-8", newline="")
+        self._writer = csv.DictWriter(self._fp, fieldnames=self.BASE_FIELDS)
+        self._writer.writeheader()
+        self._fp.flush()
+        logger.info(f"性能 CSV 输出路径：{self.csv_path.as_posix()}")
+
+    def write_result(self, result: PipelineResult) -> None:
+        row = {
+            "frame_idx": int(result.frame_idx),
+            "tray_excluded_points": int(result.tray_excluded_points),
+        }
+        for key in self.BASE_FIELDS:
+            if key in ("frame_idx", "tray_excluded_points"):
+                continue
+            row[key] = float(result.timings_ms.get(key, 0.0))
+        self._writer.writerow(row)
+        self._fp.flush()
+
+    def close(self) -> None:
+        self._fp.close()
 
 
 # endregion
@@ -134,7 +197,7 @@ def main(
 
 # region 实时管线
 def _run_pipeline(
-    session: Gemini305,
+    session: OrbbecSession,
     point_filter,
     projection_intrinsics: CameraIntrinsics,
     cfg: PipelineConfig,
@@ -143,15 +206,25 @@ def _run_pipeline(
     img_h = int(projection_intrinsics.height)
     job_queue: queue.Queue[CaptureJob | None] = queue.Queue(maxsize=1)
     result_queue: queue.Queue[PipelineResult] = queue.Queue(maxsize=2)
+    tray_job_queue: queue.Queue[TrayDetectJob | None] = queue.Queue(maxsize=1)
     stop_event = threading.Event()
     busy_event = threading.Event()
+    tray_state: dict[str, TrayDetectionSnapshot | None] = {"latest": None}
+    tray_state_lock = threading.Lock()
     worker = threading.Thread(
         target=_worker_loop,
-        args=(job_queue, result_queue, stop_event, busy_event, cfg),
+        args=(job_queue, result_queue, tray_state, tray_state_lock, stop_event, busy_event, cfg),
         name="optimized_three_plane_worker",
         daemon=True,
     )
     worker.start()
+    tray_worker = threading.Thread(
+        target=_tray_worker_loop,
+        args=(tray_job_queue, tray_state, tray_state_lock, stop_event, cfg),
+        name="optimized_three_plane_tray_worker",
+        daemon=True,
+    )
+    tray_worker.start()
 
     vis, stop_flag, raw_pcd, plane_pcd, frame_mesh, marker_mesh = _init_3d_viewer()
     cv2.namedWindow(DEFAULT_2D_WINDOW_NAME, cv2.WINDOW_NORMAL)
@@ -167,6 +240,7 @@ def _run_pipeline(
     last_overlay = np.zeros((img_h, img_w, 3), dtype=np.uint8)
     reference_pose: CoordinateFramePose | None = None
     stabilizer = PoseWindowStabilizer(max_frames=cfg.pose_smooth_frames)
+    timing_csv_writer = TimingCsvWriter(RUNTIME_THREE_PLANE_DIR)
     fps_t0 = time.perf_counter()
     preview_frames = 0
 
@@ -211,11 +285,13 @@ def _run_pipeline(
                 vis.update_geometry(frame_mesh)
                 vis.update_geometry(marker_mesh)
                 last_overlay = result.overlay_bgr
+                timing_csv_writer.write_result(result)
                 logger.info(
                     f"帧 {result.frame_idx} 完成：tray_excluded {result.tray_excluded_points} 点，"
                     f"total {result.timings_ms.get('total', 0.0):.1f} ms，"
                     f"tray {result.timings_ms.get('tray', 0.0):.1f} ms，"
-                    f"pose {result.timings_ms.get('pose', 0.0):.1f} ms"
+                    f"pose {result.timings_ms.get('pose', 0.0):.1f} ms，"
+                    f"top { _format_top_timings(result.timings_ms, 4) }"
                 )
 
             now = time.perf_counter()
@@ -231,6 +307,17 @@ def _run_pipeline(
                             img_w=img_w,
                             img_h=img_h,
                         )
+                    )
+                    _submit_tray_job(
+                        tray_job_queue=tray_job_queue,
+                        cfg=cfg,
+                        frame_idx=frame_idx,
+                        color_bgr=color_bgr,
+                        xyz=np.asarray(points[:, :3], dtype=np.float64),
+                        rgb=_extract_rgb(points),
+                        intrinsics=projection_intrinsics,
+                        img_w=img_w,
+                        img_h=img_h,
                     )
                     submitted += 1
                     last_submit_ts = now
@@ -257,7 +344,13 @@ def _run_pipeline(
             job_queue.put_nowait(None)
         except queue.Full:
             pass
+        try:
+            tray_job_queue.put_nowait(None)
+        except queue.Full:
+            pass
         worker.join(timeout=1.0)
+        tray_worker.join(timeout=1.0)
+        timing_csv_writer.close()
         vis.destroy_window()
         cv2.destroyWindow(DEFAULT_2D_WINDOW_NAME)
 
@@ -265,13 +358,12 @@ def _run_pipeline(
 def _worker_loop(
     job_queue: queue.Queue[CaptureJob | None],
     result_queue: queue.Queue[PipelineResult],
+    tray_state: dict[str, TrayDetectionSnapshot | None],
+    tray_state_lock: threading.Lock,
     stop_event: threading.Event,
     busy_event: threading.Event,
     cfg: PipelineConfig,
 ) -> None:
-    tray_excluder = None
-    if cfg.enable_tray_exclusion:
-        tray_excluder = TrayPointExcluder(TrayDetectionConfig(use_sam=cfg.tray_use_sam))
     pose_cfg = PlanePoseConfig()
     while not stop_event.is_set():
         job = job_queue.get()
@@ -279,7 +371,9 @@ def _worker_loop(
             break
         busy_event.set()
         try:
-            result = _run_compute_job(job, pose_cfg, tray_excluder)
+            with tray_state_lock:
+                tray_snapshot = tray_state["latest"]
+            result = _run_compute_job(job, pose_cfg, tray_snapshot)
             _put_latest_result(result_queue, result)
         except Exception as exc:
             logger.exception(f"帧 {job.frame_idx} 优化管线计算失败：{exc}")
@@ -289,38 +383,63 @@ def _worker_loop(
 
 
 def _run_compute_job(
-    job: CaptureJob, pose_cfg: PlanePoseConfig, tray_excluder: TrayPointExcluder | None
+    job: CaptureJob, pose_cfg: PlanePoseConfig, tray_snapshot: TrayDetectionSnapshot | None
 ) -> PipelineResult:
     t0 = time.perf_counter()
+    timings_ms: dict[str, float] = {}
+
+    step_t0 = time.perf_counter()
     # 计算线程只取 XYZ 三列参与几何计算，颜色单独归一化给 2D/3D 预览使用。
     # xyz: (N, 3) float64，单位 mm；rgb: (N, 3) float64，范围 0-1。
     xyz = np.asarray(job.points[:, :3], dtype=np.float64)
     rgb = _extract_rgb(job.points)
+    timings_ms["prepare_xyz_rgb"] = (time.perf_counter() - step_t0) * 1000.0
+
+    step_t0 = time.perf_counter()
     # uv: (N, 2) int32，valid_proj: (N,) bool；二者都与 xyz 原始点顺序对齐。
     uv, valid_proj = project_points_to_image(xyz, job.intrinsics)
+    timings_ms["project_points"] = (time.perf_counter() - step_t0) * 1000.0
+
+    step_t0 = time.perf_counter()
     base_bgr = (
-        cv2.resize(job.color_bgr, (job.img_w, job.img_h), interpolation=cv2.INTER_LINEAR)
-        if job.color_bgr is not None
-        else _rasterize_rgb(xyz, rgb, uv, valid_proj, job.img_w, job.img_h)
+        _prepare_base_bgr(job.color_bgr, xyz, rgb, uv, valid_proj, job.img_w, job.img_h)
     )
+    timings_ms["prepare_preview"] = (time.perf_counter() - step_t0) * 1000.0
 
     tray_t0 = time.perf_counter()
-    if tray_excluder is not None:
-        tray_result = tray_excluder.exclude_points(base_bgr, uv, valid_proj, xyz.shape[0])
-        # excluded: (N,) bool；True 的点在 estimate_three_plane_pose 内会被标记为 -2。
-        excluded = tray_result.excluded_mask
-        tray_dets = tray_result.detections
-    else:
-        excluded = np.zeros((xyz.shape[0],), dtype=bool)
-        tray_dets = []
+    excluded, tray_dets, tray_shift_meta = _build_excluded_mask_from_snapshot(
+        point_count=xyz.shape[0],
+        uv=uv,
+        valid_proj=valid_proj,
+        tray_snapshot=tray_snapshot,
+        frame_idx=job.frame_idx,
+        current_bgr=base_bgr,
+    )
     tray_ms = (time.perf_counter() - tray_t0) * 1000.0
 
     pose_t0 = time.perf_counter()
     # pose_result.labels 与 xyz 逐点对齐，2D 和 3D 预览都复用同一份标签数组。
     pose_result = estimate_three_plane_pose(xyz, excluded_mask=excluded, config=pose_cfg)
     pose_ms = (time.perf_counter() - pose_t0) * 1000.0
-    overlay = _draw_overlay(base_bgr.copy(), pose_result.labels, pose_result.pose, tray_dets)
+    overlay_t0 = time.perf_counter()
+    # 2D 叠加在主线程拿到平滑后的位姿后再补充文字，避免重复绘制造成额外开销。
+    overlay = _draw_overlay(base_bgr, pose_result.labels, None, tray_dets)
+    overlay_ms = (time.perf_counter() - overlay_t0) * 1000.0
     total_ms = (time.perf_counter() - t0) * 1000.0
+    timings_ms.update(
+        {
+            "tray": tray_ms,
+            "tray_detect_async": 0.0 if tray_snapshot is None else float(tray_snapshot.detect_ms),
+            "tray_snapshot_age": -1.0 if tray_snapshot is None else float(job.frame_idx - tray_snapshot.frame_idx),
+            "tray_predict_shift": float(tray_shift_meta.get("predict_shift", 0.0)),
+            "tray_shift_dx": float(tray_shift_meta.get("shift_dx", 0.0)),
+            "tray_shift_dy": float(tray_shift_meta.get("shift_dy", 0.0)),
+            "tray_shift_score": float(tray_shift_meta.get("shift_score", 0.0)),
+            "pose": pose_ms,
+            "draw_overlay": overlay_ms,
+            "total": total_ms,
+        }
+    )
     return PipelineResult(
         frame_idx=job.frame_idx,
         xyz=xyz,
@@ -330,7 +449,7 @@ def _run_compute_job(
         tray_detections=tray_dets,
         tray_excluded_points=int(np.count_nonzero(excluded)),
         overlay_bgr=overlay,
-        timings_ms={"total": total_ms, "tray": tray_ms, "pose": pose_ms},
+        timings_ms=timings_ms,
     )
 
 
@@ -338,7 +457,7 @@ def _run_compute_job(
 
 
 # region Orbbec 与可视化工具
-def _capture_points_once(session: Gemini305, point_filter) -> tuple[np.ndarray | None, np.ndarray | None]:
+def _capture_points_once(session: OrbbecSession, point_filter) -> tuple[np.ndarray | None, np.ndarray | None]:
     frames = session.wait_for_frames()
     if frames is None:
         return None, None
@@ -506,6 +625,150 @@ def _draw_overlay(
     return out
 
 
+def _prepare_base_bgr(
+    color_bgr: np.ndarray | None,
+    xyz: np.ndarray,
+    rgb: np.ndarray,
+    uv: np.ndarray,
+    valid_proj: np.ndarray,
+    w: int,
+    h: int,
+) -> np.ndarray:
+    """准备 2D 预览底图。"""
+    if color_bgr is None:
+        return _rasterize_rgb(xyz, rgb, uv, valid_proj, w, h)
+    if color_bgr.shape[1] == w and color_bgr.shape[0] == h:
+        return color_bgr.copy()
+    return cv2.resize(color_bgr, (w, h), interpolation=cv2.INTER_LINEAR)
+
+
+def _submit_tray_job(
+    tray_job_queue: queue.Queue[TrayDetectJob | None],
+    cfg: PipelineConfig,
+    frame_idx: int,
+    color_bgr: np.ndarray | None,
+    xyz: np.ndarray,
+    rgb: np.ndarray,
+    intrinsics: CameraIntrinsics,
+    img_w: int,
+    img_h: int,
+) -> None:
+    if not cfg.enable_tray_exclusion:
+        return
+    if color_bgr is not None:
+        base_bgr = _prepare_base_bgr(color_bgr, xyz, rgb, np.zeros((0, 2), dtype=np.int32), np.zeros((0,), dtype=bool), img_w, img_h)
+    else:
+        uv, valid_proj = project_points_to_image(xyz, intrinsics)
+        base_bgr = _prepare_base_bgr(color_bgr, xyz, rgb, uv, valid_proj, img_w, img_h)
+    _put_latest_result(tray_job_queue, TrayDetectJob(frame_idx=frame_idx, base_bgr=base_bgr))
+
+
+def _tray_worker_loop(
+    tray_job_queue: queue.Queue[TrayDetectJob | None],
+    tray_state: dict[str, TrayDetectionSnapshot | None],
+    tray_state_lock: threading.Lock,
+    stop_event: threading.Event,
+    cfg: PipelineConfig,
+) -> None:
+    if not cfg.enable_tray_exclusion:
+        return
+    tray_excluder = TrayPointExcluder(TrayDetectionConfig(use_sam=cfg.tray_use_sam))
+    while not stop_event.is_set():
+        job = tray_job_queue.get()
+        if job is None:
+            break
+        try:
+            t0 = time.perf_counter()
+            tray_detections = tray_excluder.detect(job.base_bgr)
+            tracking_gray, tracking_scale = prepare_tracking_gray(job.base_bgr, TRAY_TRACKING_MAX_SIDE)
+            detect_ms = (time.perf_counter() - t0) * 1000.0
+            snapshot = TrayDetectionSnapshot(
+                frame_idx=job.frame_idx,
+                detections=list(tray_detections),
+                detect_ms=detect_ms,
+                tracking_gray=tracking_gray,
+                tracking_scale=tracking_scale,
+            )
+            with tray_state_lock:
+                tray_state["latest"] = snapshot
+        except Exception as exc:
+            logger.exception(f"帧 {job.frame_idx} 托盘异步检测失败：{exc}")
+        finally:
+            tray_job_queue.task_done()
+
+
+def _build_excluded_mask_from_snapshot(
+    point_count: int,
+    uv: np.ndarray,
+    valid_proj: np.ndarray,
+    tray_snapshot: TrayDetectionSnapshot | None,
+    frame_idx: int,
+    current_bgr: np.ndarray,
+) -> tuple[np.ndarray, list[TrayDetection], dict[str, float]]:
+    excluded = np.zeros((point_count,), dtype=bool)
+    if tray_snapshot is None or len(tray_snapshot.detections) == 0:
+        return excluded, [], {"predict_shift": 0.0, "shift_dx": 0.0, "shift_dy": 0.0, "shift_score": 0.0}
+    if tray_snapshot.frame_idx > frame_idx:
+        # 索引保护：禁止把“未来帧”的检测结果应用到当前帧。
+        return excluded, [], {"predict_shift": 0.0, "shift_dx": 0.0, "shift_dy": 0.0, "shift_score": 0.0}
+
+    shift_dx = 0.0
+    shift_dy = 0.0
+    shift_score = 0.0
+    if frame_idx > tray_snapshot.frame_idx:
+        current_gray, _ = prepare_tracking_gray(current_bgr, TRAY_TRACKING_MAX_SIDE)
+        shift = estimate_phase_shift(
+            ref_gray=tray_snapshot.tracking_gray,
+            cur_gray=current_gray,
+            scale=tray_snapshot.tracking_scale,
+            min_response=0.02,
+        )
+        shift_dx, shift_dy, shift_score = shift.dx_px, shift.dy_px, shift.response
+
+    shift_meta = {
+        "predict_shift": 1.0 if abs(shift_dx) > 1e-3 or abs(shift_dy) > 1e-3 else 0.0,
+        "shift_dx": float(shift_dx),
+        "shift_dy": float(shift_dy),
+        "shift_score": float(shift_score),
+    }
+    det_with_excluded_points: list[TrayDetection] = []
+    for tray in tray_snapshot.detections:
+        shifted_tray = _shift_tray_detection(tray, shift_dx, shift_dy)
+        mask = np.asarray(shifted_tray.mask > 0, dtype=bool)
+        if mask.ndim != 2:
+            det_with_excluded_points.append(shifted_tray)
+            continue
+        h, w = mask.shape
+        valid_uv = (
+            valid_proj
+            & (uv[:, 0] >= 0)
+            & (uv[:, 0] < int(w))
+            & (uv[:, 1] >= 0)
+            & (uv[:, 1] < int(h))
+        )
+        if not np.any(valid_uv):
+            det_with_excluded_points.append(shifted_tray)
+            continue
+        idx = np.where(valid_uv)[0]
+        in_mask = np.asarray(mask[uv[idx, 1], uv[idx, 0]], dtype=bool)
+        excluded[idx] |= in_mask
+        det_with_excluded_points.append(replace(shifted_tray, excluded_points=int(np.count_nonzero(in_mask))))
+    return excluded, det_with_excluded_points, shift_meta
+
+
+def _shift_tray_detection(tray: TrayDetection, dx: float, dy: float) -> TrayDetection:
+    if abs(dx) <= 1e-3 and abs(dy) <= 1e-3:
+        return tray
+    mask_u8 = np.asarray(tray.mask, dtype=np.uint8)
+    shifted = warp_mask(mask_u8, dx_px=float(dx), dy_px=float(dy))
+    contours, _ = cv2.findContours((shifted > 0).astype(np.uint8) * 255, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if len(contours) == 0:
+        contour = np.zeros((0, 2), dtype=np.int32)
+    else:
+        contour = max(contours, key=cv2.contourArea).reshape(-1, 2).astype(np.int32, copy=False)
+    return replace(tray, mask=shifted, contour=contour)
+
+
 def _draw_tray_mask_overlay(out_bgr: np.ndarray, tray: TrayDetection) -> None:
     """按料盘实际 mask 区域绘制 2D 预览。
 
@@ -627,6 +890,14 @@ def _format_delta_log(reference: CoordinateFramePose, current: CoordinateFramePo
     )
 
 
+def _format_top_timings(timings_ms: dict[str, float], top_k: int) -> str:
+    items = [(k, v) for k, v in timings_ms.items() if k != "total"]
+    if not items:
+        return "n/a"
+    top_items = sorted(items, key=lambda item: item[1], reverse=True)[: max(1, int(top_k))]
+    return ", ".join(f"{name}={value:.1f}ms" for name, value in top_items)
+
+
 def _compute_preview_window_size(src_w: int, src_h: int, min_long_side: int) -> tuple[int, int]:
     long_side = max(1, src_w, src_h)
     if long_side >= min_long_side:
@@ -659,7 +930,7 @@ def _poll_viewer(vis: o3d.visualization.VisualizerWithKeyCallback) -> bool:
     return bool(alive)
 
 
-def _put_latest_result(result_queue: queue.Queue[PipelineResult], result: PipelineResult) -> None:
+def _put_latest_result(result_queue: queue.Queue, result) -> None:
     while True:
         try:
             result_queue.put_nowait(result)

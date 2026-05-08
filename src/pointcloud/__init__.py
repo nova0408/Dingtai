@@ -22,6 +22,12 @@ from .grasp_pose import (
     OpeningDetectionPipeline,
     TemporalFilterState,
 )
+from .motion_shift import (
+    PhaseShiftEstimate,
+    estimate_phase_shift,
+    prepare_tracking_gray,
+    warp_mask,
+)
 __all__ = [
     "CoordinateFramePose",
     "PlanePatch",
@@ -45,4 +51,8 @@ __all__ = [
     "load_pcd",
     "project_points_to_image",
     "relative_pose",
+    "PhaseShiftEstimate",
+    "estimate_phase_shift",
+    "prepare_tracking_gray",
+    "warp_mask",
 ]

@@ -4,7 +4,7 @@ from collections.abc import Iterator, Sequence
 from colorsys import rgb_to_hls
 from dataclasses import dataclass, replace
 from itertools import cycle
-from typing import TYPE_CHECKING, Any, Self, overload
+from typing import TYPE_CHECKING, Any, Literal, Self, cast, overload
 
 import numpy as np
 from numpy.typing import NDArray
@@ -62,7 +62,7 @@ class Color(Sequence[int]):
     def __len__(self) -> int:
         return len(self._components())
 
-    def __array__(self, dtype: Any = None) -> NDArray[np.int64] | NDArray[np.float64]:
+    def __array__(self, dtype: Any = None) -> NDArray[np.generic]:
         return np.array(self._components(), dtype=dtype)
 
     def __str__(self) -> str:
@@ -88,11 +88,29 @@ class Color(Sequence[int]):
     ) -> Self:
         if isinstance(r, Sequence) and not isinstance(r, (str, bytes)):
             if len(r) == 3:
-                return cls(r[0], r[1], r[2], a)
+                alpha_value = None if a is None else _normalize_channel(a, name="a")
+                return cls(
+                    _normalize_channel(r[0], name="r"),
+                    _normalize_channel(r[1], name="g"),
+                    _normalize_channel(r[2], name="b"),
+                    alpha_value,
+                )
             if len(r) == 4:
-                return cls(r[0], r[1], r[2], r[3])
+                return cls(
+                    _normalize_channel(r[0], name="r"),
+                    _normalize_channel(r[1], name="g"),
+                    _normalize_channel(r[2], name="b"),
+                    _normalize_channel(r[3], name="a"),
+                )
             raise ValueError("from_rgb 序列输入仅支持长度 3 或 4")
-        return cls(r, g, b, a)
+        alpha_value = None if a is None else _normalize_channel(a, name="a")
+        scalar_r = cast(int | float, r)
+        return cls(
+            _normalize_channel(scalar_r, name="r"),
+            _normalize_channel(g, name="g"),
+            _normalize_channel(b, name="b"),
+            alpha_value,
+        )
 
     @classmethod
     def from_hex(cls, value: str) -> Self:
@@ -114,9 +132,9 @@ class Color(Sequence[int]):
         return (self.r, self.g, self.b)
 
     @property
-    def rgba(self) -> tuple[int, int, int, int] | None:
+    def rgba(self) -> tuple[int, int, int, int]:
         if self.a is None:
-            return None
+            return (self.r, self.g, self.b, 0)
         return (self.r, self.g, self.b, self.a)
 
     @property
@@ -124,10 +142,81 @@ class Color(Sequence[int]):
         return self.a is not None
 
     def with_alpha(self, alpha: int | float | None = 255) -> Self:
-        return self.__class__(self.r, self.g, self.b, alpha)
+        alpha_value = None if alpha is None else _normalize_channel(alpha, name="a")
+        return self.__class__(self.r, self.g, self.b, alpha_value)
+
+    @overload
+    def to_list(
+        self,
+        normalized: Literal[True],
+        include_alpha: Literal[True],
+    ) -> list[float]: ...
+
+    @overload
+    def to_list(
+        self,
+        normalized: Literal[True],
+        include_alpha: Literal[False],
+    ) -> list[float]: ...
+
+    @overload
+    def to_list(
+        self,
+        normalized: Literal[False] = False,
+        include_alpha: Literal[True] = True,
+    ) -> list[int]: ...
+
+    @overload
+    def to_list(
+        self,
+        normalized: Literal[False] = False,
+        include_alpha: Literal[False] = False,
+    ) -> list[int]: ...
+
+    @overload
+    def to_list(
+        self,
+        normalized: bool = False,
+        include_alpha: None = None,
+    ) -> list[int] | list[float]: ...
 
     def to_list(self, normalized: bool = False, include_alpha: bool | None = None) -> list[int] | list[float]:
         return list(self.to_tuple(normalized=normalized, include_alpha=include_alpha))
+
+    @overload
+    def as_array(
+        self,
+        normalized: Literal[True],
+        include_alpha: Literal[True],
+    ) -> NDArray[np.float64]: ...
+
+    @overload
+    def as_array(
+        self,
+        normalized: Literal[True],
+        include_alpha: Literal[False],
+    ) -> NDArray[np.float64]: ...
+
+    @overload
+    def as_array(
+        self,
+        normalized: Literal[False] = False,
+        include_alpha: Literal[True] = True,
+    ) -> NDArray[np.int64]: ...
+
+    @overload
+    def as_array(
+        self,
+        normalized: Literal[False] = False,
+        include_alpha: Literal[False] = False,
+    ) -> NDArray[np.int64]: ...
+
+    @overload
+    def as_array(
+        self,
+        normalized: bool = False,
+        include_alpha: None = None,
+    ) -> NDArray[np.int64] | NDArray[np.float64]: ...
 
     def as_array(
         self, normalized: bool = False, include_alpha: bool | None = None
@@ -136,6 +225,55 @@ class Color(Sequence[int]):
         if normalized:
             return np.array(values, dtype=np.float64)
         return np.array(values, dtype=np.int64)
+
+    @overload
+    def to_tuple(
+        self,
+        normalized: Literal[True],
+        include_alpha: Literal[True],
+    ) -> tuple[float, float, float, float]: ...
+
+    @overload
+    def to_tuple(
+        self,
+        normalized: Literal[True],
+        include_alpha: Literal[False],
+    ) -> tuple[float, float, float]: ...
+
+    @overload
+    def to_tuple(
+        self,
+        normalized: Literal[False],
+        include_alpha: Literal[True],
+    ) -> tuple[int, int, int, int]: ...
+
+    @overload
+    def to_tuple(
+        self,
+        normalized: Literal[False],
+        include_alpha: Literal[False],
+    ) -> tuple[int, int, int]: ...
+
+    @overload
+    def to_tuple(
+        self,
+        normalized: Literal[False] = False,
+        include_alpha: None = None,
+    ) -> tuple[int, ...]: ...
+
+    @overload
+    def to_tuple(
+        self,
+        normalized: Literal[True],
+        include_alpha: None = None,
+    ) -> tuple[float, ...]: ...
+
+    @overload
+    def to_tuple(
+        self,
+        normalized: bool,
+        include_alpha: bool,
+    ) -> tuple[int, ...] | tuple[float, ...]: ...
 
     def to_tuple(
         self, normalized: bool = False, include_alpha: bool | None = None
@@ -162,9 +300,19 @@ class Color(Sequence[int]):
         alpha = self.a if self.a is not None else 255
         return f"#{alpha:02X}{self.r:02X}{self.g:02X}{self.b:02X}"
 
+    @overload
+    def to_hsl(self, include_alpha: Literal[False] = False) -> tuple[int, int, int]: ...
+
+    @overload
+    def to_hsl(self, include_alpha: Literal[True]) -> tuple[int, int, int, int]: ...
+
     def to_hsl(self, include_alpha: bool = False) -> tuple[int, int, int] | tuple[int, int, int, int]:
-        h, l, s = rgb_to_hls(self.r / 255.0, self.g / 255.0, self.b / 255.0)
-        hsl = (int(round(h * 360.0)), int(round(s * 100.0)), int(round(l * 100.0)))
+        h_value, lightness_value, saturation_value = rgb_to_hls(self.r / 255.0, self.g / 255.0, self.b / 255.0)
+        hsl = (
+            int(round(h_value * 360.0)),
+            int(round(saturation_value * 100.0)),
+            int(round(lightness_value * 100.0)),
+        )
         if include_alpha:
             alpha = self.a if self.a is not None else 255
             return (*hsl, alpha)
@@ -175,7 +323,7 @@ class Color(Sequence[int]):
             from OCC.Core.Quantity import Quantity_Color, Quantity_TOC_RGB
         except ModuleNotFoundError as exc:
             raise ModuleNotFoundError("to_quantity 需要安装 pythonocc-core (OCC)") from exc
-        return Quantity_Color(self.r / 255.0, self.g / 255.0, self.b / 255.0, Quantity_TOC_RGB)
+        return Quantity_Color(self.r / 255.0, self.g / 255.0, self.b / 255.0, cast(Any, Quantity_TOC_RGB))
 
     # endregion
 

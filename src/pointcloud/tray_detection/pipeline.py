@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 import cv2
 import numpy as np
 
+from ..motion_shift import estimate_phase_shift, prepare_tracking_gray, warp_mask
 from .detector import TrayPointExcluder
 from .types import TrayDetectionConfig
 
@@ -215,35 +216,29 @@ class TrayDetectionPipeline:
 
     def _estimate_motion(self, rgb_bgr: np.ndarray, state: TrayRuntimeState) -> tuple[float, float]:
         """估计当前帧相对上一帧的平移并做平滑。"""
-        gray = cv2.cvtColor(rgb_bgr, cv2.COLOR_BGR2GRAY)
-        small = cv2.resize(
-            gray,
-            (0, 0),
-            fx=float(self._config.motion_downsample),
-            fy=float(self._config.motion_downsample),
-            interpolation=cv2.INTER_AREA,
-        )
+        max_side = int(round(max(rgb_bgr.shape[0], rgb_bgr.shape[1]) * float(self._config.motion_downsample)))
+        small, scale = prepare_tracking_gray(rgb_bgr, max(32, max_side))
+        small_u8 = np.asarray(np.clip(small, 0.0, 255.0), dtype=np.uint8)
         with state.lock:
             prev = None if state.prev_motion_gray_small is None else state.prev_motion_gray_small.copy()
-            state.prev_motion_gray_small = small
+            state.prev_motion_gray_small = small_u8
             dx_s = float(state.motion_dx_smooth)
             dy_s = float(state.motion_dy_smooth)
-        if prev is None or prev.shape != small.shape:
+        if prev is None or prev.shape != small_u8.shape:
             return dx_s, dy_s
 
-        try:
-            (dx_small, dy_small), response = cv2.phaseCorrelate(
-                np.asarray(prev, dtype=np.float32), np.asarray(small, dtype=np.float32)
-            )
-        except cv2.error:
-            return dx_s, dy_s
-        if not np.isfinite(dx_small) or not np.isfinite(dy_small) or float(response) < 0.02:
+        shift = estimate_phase_shift(
+            ref_gray=np.asarray(prev, dtype=np.float32),
+            cur_gray=np.asarray(small_u8, dtype=np.float32),
+            scale=float(scale),
+            min_response=0.02,
+            max_shift_px=float(self._config.motion_max_shift_px),
+        )
+        if not shift.valid:
             return dx_s, dy_s
 
-        inv = 1.0 / float(self._config.motion_downsample)
-        max_shift = float(self._config.motion_max_shift_px)
-        dx_raw = float(np.clip(float(dx_small) * inv, -max_shift, max_shift))
-        dy_raw = float(np.clip(float(dy_small) * inv, -max_shift, max_shift))
+        dx_raw = float(shift.dx_px)
+        dy_raw = float(shift.dy_px)
 
         a = float(np.clip(float(self._config.motion_smooth_alpha), 0.05, 0.98))
         dx_new = a * dx_s + (1.0 - a) * dx_raw
@@ -256,16 +251,7 @@ class TrayDetectionPipeline:
     @staticmethod
     def _warp_mask(mask: np.ndarray, dx: float, dy: float) -> np.ndarray:
         """对托盘掩码执行平移补偿。"""
-        h, w = mask.shape[:2]
-        mat = np.array([[1.0, 0.0, float(dx)], [0.0, 1.0, float(dy)]], dtype=np.float32)
-        return cv2.warpAffine(
-            np.asarray(mask, dtype=np.uint8),
-            mat,
-            (w, h),
-            flags=cv2.INTER_NEAREST,
-            borderMode=cv2.BORDER_CONSTANT,
-            borderValue=0,
-        )
+        return warp_mask(np.asarray(mask, dtype=np.uint8), dx_px=float(dx), dy_px=float(dy))
 
 
 # endregion

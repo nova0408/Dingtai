@@ -14,15 +14,32 @@ class CameraIntrinsicsProtocol(Protocol):
     - `cx`、`cy`：主点坐标，单位 像素。
     """
 
-    width: int
-    "图像宽度，单位 像素。"
-    height: int
-    "图像高度，单位 像素。"
-    fx: float
-    "X 方向焦距，单位 像素。"
-    fy: float
-    "Y 方向焦距，单位 像素。"
-    cx: float
-    "主点 X 坐标，单位 像素。"
-    cy: float
-    "主点 Y 坐标，单位 像素。"
+    @property
+    def width(self) -> int:
+        """图像宽度，单位 像素。"""
+        ...
+
+    @property
+    def height(self) -> int:
+        """图像高度，单位 像素。"""
+        ...
+
+    @property
+    def fx(self) -> float:
+        """X 方向焦距，单位 像素。"""
+        ...
+
+    @property
+    def fy(self) -> float:
+        """Y 方向焦距，单位 像素。"""
+        ...
+
+    @property
+    def cx(self) -> float:
+        """主点 X 坐标，单位 像素。"""
+        ...
+
+    @property
+    def cy(self) -> float:
+        """主点 Y 坐标，单位 像素。"""
+        ...
