@@ -1,10 +1,17 @@
 {
+    "python.defaultInterpreterPath": "C:\\Users\\ICO\\anaconda3\\envs\\DingTai\\python.exe",
     "python.analysis.stubPath": "",
     "python.analysis.typeCheckingMode": "standard",
+    "python.analysis.diagnosticMode": "workspace",
     "python.analysis.generateWithTypeAnnotation": false,
     "python.analysis.includeAliasesFromUserFiles": true,
     "python.analysis.inlayHints.callArgumentNames": "partial",
     "python.analysis.inlayHints.functionReturnTypes": true,
     "python.analysis.typeEvaluation.deprecateTypingAliases": true,
-    "python.analysis.typeEvaluation.disableBytesTypePromotions": true
+    "python.analysis.typeEvaluation.disableBytesTypePromotions": true,
+    "ruff.enable": true,
+    "ruff.nativeServer": "on",
+    "ruff.path": [
+        "C:\\Users\\ICO\\anaconda3\\envs\\DingTai\\Scripts\\ruff.exe"
+    ]
 }
