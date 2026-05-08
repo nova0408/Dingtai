@@ -12,8 +12,8 @@
 当前实现把可复用能力沉淀到 `src`：
 
 - `src/rgbd_camera`：Orbbec 会话、点云裁切、相机内参/外参数据结构。
-- `src/pointcloud/tray_detection.py`：料盘 zero-shot 检测与点云排除。
-- `src/pointcloud/tray_projection.py`：点云到图像的投影。
+- `src/pointcloud/tray_detection/detector.py`：料盘 zero-shot 检测与点云排除。
+- `src/pointcloud/tray_detection/projection.py`：点云到图像的投影。
 - `src/pointcloud/three_plane_pose.py`：三平面分割、平面排序、坐标系计算。
 - `src/pointcloud/three_plane_types.py`：三平面配置、结果结构和位姿稳定器。
 - `test/pointcloud/test_orbbec_three_plane_pose_optimized_pipeline.py`：实时采集、线程调度、Open3D/CV2 预览和日志。
@@ -49,7 +49,7 @@
 
 - 三平面算法进入 `src/pointcloud/three_plane_pose.py`。
 - 三平面结果结构进入 `src/pointcloud/three_plane_types.py`。
-- 料盘识别进入 `src/pointcloud/tray_detection.py`。
+- 料盘识别进入 `src/pointcloud/tray_detection/detector.py`。
 - 相机内参/外参封装进入 `src/rgbd_camera/orbbec_models.py`。
 - 实时脚本只保留测试管线和预览职责。
 
@@ -311,7 +311,7 @@ estimate_three_plane_pose(xyz, excluded_mask=excluded, config=pose_cfg)
 - `DEFAULT_TRAY_USE_SAM = True`
 - `DEFAULT_POSE_SMOOTH_FRAMES = 5`
 
-`TrayDetectionConfig` 的模型和阈值默认值定义在 `src/pointcloud/tray_detection_types.py` 字段上，不再通过同文件 `DEFAULT_*` 二次包装。
+`TrayDetectionConfig` 的模型和阈值默认值定义在 `src/pointcloud/tray_detection/types.py` 字段上，不再通过同文件 `DEFAULT_*` 二次包装。
 
 ## 结果解释
 
@@ -347,3 +347,4 @@ estimate_three_plane_pose(xyz, excluded_mask=excluded, config=pose_cfg)
 - 2D 料盘 mask overlay 纯图像冒烟。
 
 实机实时效果需要连接 Orbbec Gemini 305 后运行测试脚本确认。
+

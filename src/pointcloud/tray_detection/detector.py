@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import contextlib
 from pathlib import Path
-
 import cv2
 import numpy as np
 import torch
@@ -10,9 +9,9 @@ from loguru import logger
 from PIL import Image
 from transformers import AutoModelForZeroShotObjectDetection, AutoProcessor, SamModel, SamProcessor
 
-from .hf_model_cache import apply_download_proxy, load_pretrained_with_project_cache, prepare_hf_cache_dir
-from .tray_detection_types import TrayDetection, TrayDetectionConfig, TrayExclusionResult
-from .tray_detection_utils import (
+from .model_cache import apply_download_proxy, load_pretrained_with_project_cache, prepare_hf_cache_dir
+from .types import TrayDetection, TrayDetectionConfig, TrayExclusionResult
+from .utils import (
     build_combined_prompt,
     build_rect_mask,
     mask_to_contour,
@@ -23,10 +22,10 @@ from .tray_detection_utils import (
     scale_box_xyxy,
     suppress_masks_by_iou,
 )
-from .tray_projection import collect_indices_in_mask
+from .projection import collect_indices_in_mask
 
 # region 默认路径
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_HF_CACHE_DIR = str(PROJECT_ROOT / ".cache" / "huggingface")
 # endregion
 
@@ -408,7 +407,7 @@ class TrayPointExcluder:
             CUDA 下为 `torch.autocast`，CPU 下为空上下文。该返回值只用于 `with` 语句。
         """
         if self._use_cuda:
-            return torch.autocast(device_type="cuda", dtype=torch.float16)
+            return torch.autocast(device_type="cuda")
         return contextlib.nullcontext()
 
     def _is_target_label(self, label_text: str) -> bool:
@@ -518,7 +517,7 @@ class TrayPointExcluder:
 
 
 # region 模型与数组工具
-def _resolve_device(device: str) -> torch.device:
+def _resolve_device(device: str) -> str:
     """解析推理设备字符串。
 
     Parameters
@@ -528,8 +527,8 @@ def _resolve_device(device: str) -> torch.device:
 
     Returns
     -------
-    torch_device:
-        PyTorch 设备对象。
+    resolved:
+        规范化设备字符串，如 `cpu`、`cuda:0`。
 
     Raises
     ------
@@ -539,12 +538,10 @@ def _resolve_device(device: str) -> torch.device:
     d = str(device).strip().lower()
     if d.startswith("cuda") and not torch.cuda.is_available():
         raise RuntimeError("请求使用 CUDA，但当前环境未检测到可用 GPU。")
-    if d == "cpu":
-        return torch.device("cpu")
-    return torch.device(d)
+    return "cpu" if d == "cpu" else d
 
 
-def _tensor_dict_to_device(batch: dict, device: torch.device) -> dict:
+def _tensor_dict_to_device(batch: dict, device: str) -> dict:
     """把 Transformers batch 中的 tensor 移动到指定设备。
 
     Parameters

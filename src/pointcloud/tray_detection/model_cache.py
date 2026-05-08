@@ -73,7 +73,7 @@ def load_pretrained_with_project_cache(loader, model_id: str, cache_dir: str, lo
         return loader(str(store_dir), local_files_only=True)
     try:
         obj = loader(model_id, cache_dir=cache_dir, local_files_only=local_files_only)
-    except Exception as exc:
+    except Exception:
         if not local_files_only:
             raise
         logger.warning(f"{role} 项目缓存未命中，尝试从全局 HuggingFace 缓存迁移：{model_id}")
