@@ -18,7 +18,7 @@ from PySide6.QtCore import (
     QTimer,
     Signal,
 )
-from PySide6.QtGui import QAction, QDrag, QIcon, QMouseEvent, QPainter, QPaintEvent, QPalette, QPen, QPolygon
+from PySide6.QtGui import QAction, QColor, QDrag, QIcon, QMouseEvent, QPainter, QPaintEvent, QPalette, QPen, QPolygon
 from PySide6.QtWidgets import (
     QAbstractButton,
     QAbstractScrollArea,
@@ -31,6 +31,11 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+try:
+    from shiboken6 import isValid as _qt_obj_is_valid
+except Exception:  # pragma: no cover - fallback for environments without shiboken6
+    def _qt_obj_is_valid(_obj) -> bool:
+        return True
 
 QWIDGETSIZE_MAX = 16777215
 ANIMATION_DURATION_MS = 140
@@ -104,6 +109,9 @@ class ToolBoxHeader(QAbstractButton):
 
         self._expanded = True
         self._active = False
+        self._custom_fill_color: QColor | None = None
+        self._custom_text_color: QColor | None = None
+        self._custom_accent_color: QColor | None = None
         self._drag_start_pos = QPoint()
         self._drag_started = False
 
@@ -140,12 +148,12 @@ class ToolBoxHeader(QAbstractButton):
         rect = self.rect().adjusted(0, 0, -1, -1)
         pal = self.palette()
         base_color = pal.color(QPalette.ColorRole.Button)
-        text_color = pal.color(QPalette.ColorRole.ButtonText)
+        text_color = self._custom_text_color if self._custom_text_color is not None else pal.color(QPalette.ColorRole.ButtonText)
         border_color = pal.color(QPalette.ColorRole.Mid)
         light_color = pal.color(QPalette.ColorRole.Light)
         highlight_color = pal.color(QPalette.ColorRole.Highlight)
 
-        fill_color = base_color
+        fill_color = self._custom_fill_color if self._custom_fill_color is not None else base_color
         if self.underMouse():
             fill_color = fill_color.lighter(103)
         if self.isDown():
@@ -153,7 +161,10 @@ class ToolBoxHeader(QAbstractButton):
 
         painter.fillRect(rect, fill_color)
         if self._active:
-            painter.fillRect(QRect(rect.left(), rect.top(), 3, rect.height() + 1), highlight_color)
+            painter.fillRect(
+                QRect(rect.left(), rect.top(), 3, rect.height() + 1),
+                self._custom_accent_color if self._custom_accent_color is not None else highlight_color,
+            )
 
         painter.setPen(border_color)
         painter.drawLine(rect.topLeft(), rect.topRight())
@@ -175,6 +186,18 @@ class ToolBoxHeader(QAbstractButton):
         painter.setPen(text_color)
         text_rect = QRect(left, rect.top(), rect.width() - left - 8, rect.height())
         painter.drawText(text_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, self.text())
+
+    def set_style_colors(
+        self,
+        *,
+        fill_color: QColor | None = None,
+        text_color: QColor | None = None,
+        accent_color: QColor | None = None,
+    ) -> None:
+        self._custom_fill_color = fill_color
+        self._custom_text_color = text_color
+        self._custom_accent_color = accent_color
+        self.update()
 
     def _draw_arrow(self, painter: QPainter, rect: QRect, expanded: bool, color) -> None:
         cx = rect.center().x()
@@ -523,6 +546,15 @@ class ToolBoxSection(QWidget):
         self.header.setIcon(icon)
         self.header.update()
 
+    def set_header_colors(
+        self,
+        *,
+        fill_color: QColor | None = None,
+        text_color: QColor | None = None,
+        accent_color: QColor | None = None,
+    ) -> None:
+        self.header.set_style_colors(fill_color=fill_color, text_color=text_color, accent_color=accent_color)
+
     def content_widget(self) -> QWidget:
         return self._content_widget
 
@@ -759,17 +791,35 @@ class AdvancedToolBox(QWidget):
 
     def _flush_layout_sync(self) -> None:
         self._sync_pending = False
+        self._prune_deleted_sections()
         self._update_section_stretches()
         self._container.adjustSize()
         self.updateGeometry()
         self.update()
 
     def _update_section_stretches(self) -> None:
+        self._prune_deleted_sections()
         for i, section in enumerate(self._sections):
             stretch = 0
             if section.isVisible() and section.is_expanded() and section.content_mode() is SectionContentMode.EXPANDING_PANEL:
                 stretch = max(1, section.grow_priority())
             self._layout.setStretch(i, stretch)
+
+    def _prune_deleted_sections(self) -> None:
+        if not self._sections:
+            return
+        alive_sections: list[ToolBoxSection] = []
+        changed = False
+        for section in self._sections:
+            if _qt_obj_is_valid(section):
+                alive_sections.append(section)
+            else:
+                changed = True
+        if not changed:
+            return
+        self._sections = alive_sections
+        if self._current_index >= len(self._sections):
+            self._current_index = len(self._sections) - 1
 
     def count(self) -> int:
         return len(self._sections)
@@ -792,6 +842,22 @@ class AdvancedToolBox(QWidget):
 
     def set_icon(self, index: int, icon: QIcon) -> None:
         self._sections[index].set_icon(icon)
+
+    def set_header_colors(
+        self,
+        index: int,
+        *,
+        fill_color: QColor | None = None,
+        text_color: QColor | None = None,
+        accent_color: QColor | None = None,
+    ) -> None:
+        if not (0 <= index < len(self._sections)):
+            return
+        self._sections[index].set_header_colors(
+            fill_color=fill_color,
+            text_color=text_color,
+            accent_color=accent_color,
+        )
 
     def _section_insert_layout_index(self, logical_index: int) -> int:
         return clamp(logical_index, 0, len(self._sections))
@@ -861,6 +927,7 @@ class AdvancedToolBox(QWidget):
             self._refresh_active_states()
 
     def _refresh_active_states(self) -> None:
+        self._prune_deleted_sections()
         for i, section in enumerate(self._sections):
             section.set_active(i == self._current_index)
 
@@ -965,6 +1032,7 @@ class AdvancedToolBox(QWidget):
             return -1
 
     def _visible_sections(self) -> list[ToolBoxSection]:
+        self._prune_deleted_sections()
         return [section for section in self._sections if section.isVisible()]
 
     def _show_context_menu(self, global_pos: QPoint) -> None:

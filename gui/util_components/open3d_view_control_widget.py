@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from typing import Optional
-
 from PySide6.QtCore import Qt, Slot
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -71,15 +69,23 @@ class O3DViewControlWidget(QWidget):
         view_layout.setHorizontalSpacing(6)
         view_layout.setVerticalSpacing(6)
 
-        self.front_button = QPushButton("正视")
+        self.front_button = QPushButton("前视")
+        self.back_button = QPushButton("后视")
+        self.left_button = QPushButton("左视")
+        self.right_button = QPushButton("右视")
         self.top_button = QPushButton("俯视")
-        self.side_button = QPushButton("侧视")
+        self.bottom_button = QPushButton("仰视")
+        self.iso_button = QPushButton("等轴")
         self.reset_button = QPushButton("重置")
 
         view_layout.addWidget(self.front_button, 0, 0)
-        view_layout.addWidget(self.top_button, 0, 1)
-        view_layout.addWidget(self.side_button, 1, 0)
-        view_layout.addWidget(self.reset_button, 1, 1)
+        view_layout.addWidget(self.back_button, 0, 1)
+        view_layout.addWidget(self.left_button, 1, 0)
+        view_layout.addWidget(self.right_button, 1, 1)
+        view_layout.addWidget(self.top_button, 2, 0)
+        view_layout.addWidget(self.bottom_button, 2, 1)
+        view_layout.addWidget(self.iso_button, 3, 0)
+        view_layout.addWidget(self.reset_button, 3, 1)
 
         main_layout.addLayout(view_layout)
 
@@ -107,9 +113,13 @@ class O3DViewControlWidget(QWidget):
 
         # 内部自动绑定
         self.origin_axis_checkbox.toggled.connect(self._on_origin_axis_toggled)
-        self.front_button.clicked.connect(self._on_front_view_clicked)
-        self.top_button.clicked.connect(self._on_top_view_clicked)
-        self.side_button.clicked.connect(self._on_side_view_clicked)
+        self.front_button.clicked.connect(lambda: self._set_standard_view("front"))
+        self.back_button.clicked.connect(lambda: self._set_standard_view("back"))
+        self.left_button.clicked.connect(lambda: self._set_standard_view("left"))
+        self.right_button.clicked.connect(lambda: self._set_standard_view("right"))
+        self.top_button.clicked.connect(lambda: self._set_standard_view("top"))
+        self.bottom_button.clicked.connect(lambda: self._set_standard_view("bottom"))
+        self.iso_button.clicked.connect(lambda: self._set_standard_view("iso"))
         self.reset_button.clicked.connect(self._on_reset_view_clicked)
         self.point_size_minus_button.clicked.connect(self._on_point_size_minus_clicked)
         self.point_size_plus_button.clicked.connect(self._on_point_size_plus_clicked)
@@ -133,8 +143,12 @@ class O3DViewControlWidget(QWidget):
         """根据是否有画布决定控件可用性。"""
         self.origin_axis_checkbox.setEnabled(enabled)
         self.front_button.setEnabled(enabled)
+        self.back_button.setEnabled(enabled)
+        self.left_button.setEnabled(enabled)
+        self.right_button.setEnabled(enabled)
         self.top_button.setEnabled(enabled)
-        self.side_button.setEnabled(enabled)
+        self.bottom_button.setEnabled(enabled)
+        self.iso_button.setEnabled(enabled)
         self.reset_button.setEnabled(enabled)
         self.point_size_minus_button.setEnabled(enabled)
         self.point_size_plus_button.setEnabled(enabled)
@@ -178,41 +192,13 @@ class O3DViewControlWidget(QWidget):
         if hasattr(self._canvas, "show_origin_axis"):
             setattr(self._canvas, "show_origin_axis", checked)
 
-    @Slot()
-    def _on_front_view_clicked(self) -> None:
-        """切换为正视图。"""
+    def _set_standard_view(self, view_name: str) -> None:
         if self._canvas is None:
             return
 
         set_standard_view = getattr(self._canvas, "set_standard_view", None)
         if callable(set_standard_view):
-            set_standard_view("front")
-
-    @Slot()
-    def _on_top_view_clicked(self) -> None:
-        """切换为俯视图。"""
-        if self._canvas is None:
-            return
-
-        set_standard_view = getattr(self._canvas, "set_standard_view", None)
-        if callable(set_standard_view):
-            set_standard_view("top")
-
-    @Slot()
-    def _on_side_view_clicked(self) -> None:
-        """切换为侧视图。
-
-        Notes
-        -----
-        这里默认使用 right。
-        如果你的业务语义更希望从另一侧看，可以改成 left。
-        """
-        if self._canvas is None:
-            return
-
-        set_standard_view = getattr(self._canvas, "set_standard_view", None)
-        if callable(set_standard_view):
-            set_standard_view("right")
+            set_standard_view(view_name)
 
     @Slot()
     def _on_reset_view_clicked(self) -> None:

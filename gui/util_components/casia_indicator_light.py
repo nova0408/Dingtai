@@ -82,6 +82,7 @@ class CasiaIndicatorLight(QWidget):
         self._status_colors = list(status_color)  # 转为 list 以便修改
         self._text_colors = list(text_color)
         self._font_size = font_size
+        self._margin = 4
 
         # 交互状态
         self._is_pressed = False
@@ -91,6 +92,7 @@ class CasiaIndicatorLight(QWidget):
         self._formatted_false = ""
 
         # 初始化
+        self.setContentsMargins(self._margin, self._margin, self._margin, self._margin)
         self._update_formatted_text_and_size()
         self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
 
@@ -150,7 +152,8 @@ class CasiaIndicatorLight(QWidget):
         min_d = self._font_size * 2.5
         diameter = max(int(diameter), int(min_d))
 
-        self.setFixedSize(diameter, diameter)
+        outer_size = diameter + self._margin * 2
+        self.setFixedSize(outer_size, outer_size)
         self.update()
 
     # --- 增强：覆盖标准 setFont 方法 ---
@@ -225,6 +228,20 @@ class CasiaIndicatorLight(QWidget):
         self._font_size = size
         self._update_formatted_text_and_size()
 
+    # 支持 QSS: qproperty-margin: 8;
+    @Property(int)
+    def margin(self):
+        return self._margin
+
+    @margin.setter
+    def margin(self, value: int):
+        new_margin = max(0, int(value))
+        if self._margin == new_margin:
+            return
+        self._margin = new_margin
+        self.setContentsMargins(self._margin, self._margin, self._margin, self._margin)
+        self._update_formatted_text_and_size()
+
     # 为了方便外部修改颜色，提供专门的方法
     def setStatusColors(self, true_color: QColor, false_color: QColor):
         self._status_colors = [true_color, false_color]
@@ -240,9 +257,10 @@ class CasiaIndicatorLight(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
-        side = min(self.width(), self.height())
+        content_rect = self.contentsRect()
+        side = min(content_rect.width(), content_rect.height())
         rect = QRect(0, 0, side, side)
-        rect.moveCenter(self.rect().center())
+        rect.moveCenter(content_rect.center())
 
         idx = 0 if self._status else 1
 

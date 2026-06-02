@@ -8,7 +8,7 @@ import win32gui
 from loguru import logger
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QWindow
-from PySide6.QtWidgets import QVBoxLayout, QWidget
+from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
 
 # ---------------------------------------------------------
 # 1. 核心渲染组件：O3DViewerWidget (API 承载体)
@@ -21,10 +21,14 @@ class O3DViewerWidget(QWidget):
         self.unique_name = f"O3D_{uuid.uuid4().hex[:8]}"
         # 关闭 o3d 警告
         o3d.utility.set_verbosity_level(o3d.utility.VerbosityLevel.Error)
-        self.vis: o3d.visualization.Visualizer = o3d.visualization.Visualizer()
+        self.vis: o3d.visualization.Visualizer | None = None
         self.hwnd = 0
         self._is_cleaned = False
+        self._is_open3d_initialized = False
         self.default_zoom = 0.7
+        self.default_field_of_view = 60.0
+        self._pending_background_color: np.ndarray | None = None
+        self._pending_point_size: int | None = None
         # 用于记录鼠标状态，实现“点击”检测（边缘触发）
         self._was_ctrl_lbutton_down = False
         # 几何体管理
@@ -33,9 +37,9 @@ class O3DViewerWidget(QWidget):
         self._show_origin_axis = False
         self._helpers_data = {"bboxes": {}, "others": {}, "select_points": {}}
         self._select_points: list[np.ndarray] = []
+        self._empty_grid_name = "__empty_scene_grid__"
         self._origin_axis = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.5, origin=np.array([0, 0, 0]))
         self._setup_ui()
-        self._init_open3d()
         self.destroyed.connect(self.cleanup)
 
     @property
@@ -48,8 +52,19 @@ class O3DViewerWidget(QWidget):
         self.setStyleSheet("background-color: black;")
         self._layout = QVBoxLayout(self)
         self._layout.setContentsMargins(0, 0, 0, 0)
+        self._loading_label = QLabel("正在加载点云显示窗口...", self)
+        self._loading_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._loading_label.setStyleSheet("color: #bdbdbd;")
+        self._layout.addWidget(self._loading_label)
+
+    def _ensure_open3d_initialized(self) -> None:
+        if self._is_open3d_initialized or self._is_cleaned:
+            return
+        self._is_open3d_initialized = True
+        self._init_open3d()
 
     def _init_open3d(self):
+        self.vis = o3d.visualization.Visualizer()
         # 【方案一：坐标放逐】
         # 在创建时就把它丢到屏幕外（-9999），防止在屏幕中心闪现
         logger.debug(f"创建 Open3D 窗口 {self.unique_name}")
@@ -63,12 +78,7 @@ class O3DViewerWidget(QWidget):
         )
         # 获取视图控制器
         view_ctl = self.vis.get_view_control()
-        # 设置正交投影
-        current_fov = view_ctl.get_field_of_view()
-        # logger.debug(f"当前 FOV :{current_fov}")
-        fov_step = 5 - current_fov  # for example self.target_fov == 5
-        view_ctl.change_field_of_view(step=fov_step)
-        # logger.debug(f"修改后 FOV :{view_ctl.get_field_of_view()}")
+        self._normalize_camera_projection(view_ctl)
 
         self.hwnd = win32gui.FindWindowEx(0, 0, None, self.unique_name)
 
@@ -82,6 +92,7 @@ class O3DViewerWidget(QWidget):
             self.o3d_window = QWindow.fromWinId(self.hwnd)
             self.container = QWidget.createWindowContainer(self.o3d_window, self)
             self._layout.addWidget(self.container)
+            self._loading_label.hide()
 
             # 初始时让它在容器内也是隐藏的，直到第一次 Resize 确定大小
             win32gui.ShowWindow(self.hwnd, win32con.SW_HIDE)
@@ -89,10 +100,17 @@ class O3DViewerWidget(QWidget):
             self.timer = QTimer(self)
             self.timer.timeout.connect(self._render_loop)
             self.timer.start(16)
+            if self._pending_background_color is not None:
+                self.vis.get_render_option().background_color = self._pending_background_color
+            if self._pending_point_size is not None:
+                self.vis.get_render_option().point_size = self._pending_point_size
+            self._display_axis()
+            self._sync_empty_scene_grid()
+            self._apply_default_camera_view()
 
     def _render_loop(self):
         """渲染循环：Open3D 所有的 API 都在这里执行，确保线程安全"""
-        if self._is_cleaned:
+        if self._is_cleaned or self.vis is None:
             return
 
         # 1. Open3D 正常的事件处理和渲染
@@ -143,6 +161,8 @@ class O3DViewerWidget(QWidget):
         super().hideEvent(event)
 
     def showEvent(self, event):
+        if not self._is_open3d_initialized:
+            QTimer.singleShot(0, self._ensure_open3d_initialized)
         if self.hwnd and not self._is_cleaned:
             win32gui.ShowWindow(self.hwnd, win32con.SW_SHOW)
         super().showEvent(event)
@@ -187,7 +207,7 @@ class O3DViewerWidget(QWidget):
                 # 3. 解除父子关系
                 win32gui.SetParent(self.hwnd, 0)
 
-            if self.vis:
+            if self.vis is not None:
                 # 4. 强制销毁
                 self.vis.destroy_window()
                 self.vis = None
@@ -198,13 +218,21 @@ class O3DViewerWidget(QWidget):
 
     def add_point_cloud(self, name: str, geometry, reset_view=True):
         """添加核心业务几何体（点云等），允许根据需求重置视角"""
+        self._ensure_open3d_initialized()
+        if self.vis is None:
+            return
         self.remove_geometry(name)
         self._geometries[name] = geometry
         self._geometry_transforms[name] = np.eye(4)
         # 添加主几何体时，根据参数决定是否重置包围盒（即相机视角）
         self.vis.add_geometry(geometry, reset_bounding_box=reset_view)
+        if reset_view:
+            view_ctl = self.vis.get_view_control()
+            if view_ctl is not None:
+                self._normalize_camera_projection(view_ctl)
         self.vis.update_geometry(geometry)
         self._display_axis()
+        self._sync_empty_scene_grid()
 
     def update_point_cloud(
         self,
@@ -233,6 +261,8 @@ class O3DViewerWidget(QWidget):
             raise KeyError(f"未找到点云：{name}")
         if not isinstance(geometry, o3d.geometry.PointCloud):
             raise TypeError(f"{name} 不是点云对象，当前类型为 {type(geometry).__name__}")
+        if self.vis is None:
+            return
 
         if points is not None:
             pts = np.asarray(points, dtype=np.float64)
@@ -286,6 +316,8 @@ class O3DViewerWidget(QWidget):
             raise KeyError(f"未找到几何体：{name}")
         if not hasattr(geometry, "transform"):
             raise ValueError(f"{name} 不是可变换几何体")
+        if self.vis is None:
+            return
         current = self._geometry_transforms.get(name, np.eye(4))
 
         if absolute:
@@ -341,6 +373,8 @@ class O3DViewerWidget(QWidget):
         if not hasattr(geometry, "transform"):
             logger.warning(f"{name} 不是可变换几何体")
             return
+        if self.vis is None:
+            return
         current = self._geometry_transforms.get(name, np.eye(4))
 
         if absolute:
@@ -355,6 +389,9 @@ class O3DViewerWidget(QWidget):
 
     def add_helper_geometry(self, name: str, geometry, helper_type: str = "others"):
         """添加辅助几何体（标记、框、轴），严格禁止相机跳变"""
+        self._ensure_open3d_initialized()
+        if self.vis is None:
+            return
         self.remove_geometry(name)
         if helper_type not in self._helpers_data:
             helper_type = "others"
@@ -366,6 +403,8 @@ class O3DViewerWidget(QWidget):
 
     def remove_geometry(self, name: str):
         """全量搜索并移除几何体"""
+        if self.vis is None:
+            return
         if name in self._geometries:
             self.vis.remove_geometry(self._geometries.pop(name), reset_bounding_box=False)
             self._geometry_transforms.pop(name, None)
@@ -378,12 +417,17 @@ class O3DViewerWidget(QWidget):
 
     def remove_point_cloud(self, name: str):
         """移除核心业务几何体（点云等）"""
+        if self.vis is None:
+            return
         if name in self._geometries:
             self.vis.remove_geometry(self._geometries.pop(name), reset_bounding_box=False)
             self._geometry_transforms.pop(name, None)
             self._display_axis()
+            self._sync_empty_scene_grid()
 
     def remove_select_point(self):
+        if self.vis is None:
+            return
         for point in self.helpers["select_points"].values():
             self.vis.remove_geometry(point, reset_bounding_box=False)
 
@@ -417,11 +461,15 @@ class O3DViewerWidget(QWidget):
     @show_origin_axis.setter
     def show_origin_axis(self, show: bool):
         self._show_origin_axis = show
+        if self.vis is None:
+            return
         # logger.debug(f"修改显示原点坐标轴为 {show}")
         self._display_axis()
 
     def _display_axis(self):
         """移除坐标轴辅助对象"""
+        if self.vis is None:
+            return
         if self._origin_axis is not None:
             self.vis.remove_geometry(self._origin_axis, reset_bounding_box=False)
             self._origin_axis = None
@@ -433,6 +481,8 @@ class O3DViewerWidget(QWidget):
 
     def remove_bounding_box(self, name: str):
         """移除包围框辅助对象"""
+        if self.vis is None:
+            return
         if name in self.helpers["bboxes"]:
             self.vis.remove_geometry(self.helpers["bboxes"].pop(name), reset_bounding_box=False)
             return
@@ -442,14 +492,8 @@ class O3DViewerWidget(QWidget):
         self.add_helper_geometry(name, geometry, helper_type="bboxes")
 
     def add_select_point(self, name: str, coord: np.ndarray):
-        """添加选中点辅助对象"""
+        """记录选中点（不绘制选点球标记）。"""
         self._select_points.append(coord)
-        dynamic_radius = self._get_dynamic_marker_radius()
-
-        sphere = o3d.geometry.TriangleMesh.create_sphere(radius=dynamic_radius)
-        sphere.paint_uniform_color(np.array([1, 0, 0]))  # 红色标记
-        sphere.translate(coord)
-        self.add_helper_geometry(name, sphere, helper_type="select_points")
 
     # endregion
 
@@ -458,6 +502,60 @@ class O3DViewerWidget(QWidget):
         names = list(self._geometries.keys())
         for n in names:
             self.remove_geometry(n)
+        self._sync_empty_scene_grid()
+
+    def _build_empty_scene_grid(self) -> o3d.geometry.LineSet:
+        half_extent = 1.5
+        step = 0.1
+        line_color = np.array([0.35, 0.35, 0.35], dtype=np.float64)
+        points: list[list[float]] = []
+        lines: list[list[int]] = []
+        colors: list[list[float]] = []
+
+        positions = np.arange(-half_extent, half_extent + 1e-9, step, dtype=np.float64)
+        for coord in positions:
+            idx = len(points)
+            points.append([-half_extent, coord, 0.0])
+            points.append([half_extent, coord, 0.0])
+            lines.append([idx, idx + 1])
+            colors.append(line_color.tolist())
+
+            idx = len(points)
+            points.append([coord, -half_extent, 0.0])
+            points.append([coord, half_extent, 0.0])
+            lines.append([idx, idx + 1])
+            colors.append(line_color.tolist())
+
+        grid = o3d.geometry.LineSet()
+        grid.points = o3d.utility.Vector3dVector(np.asarray(points, dtype=np.float64))
+        grid.lines = o3d.utility.Vector2iVector(np.asarray(lines, dtype=np.int32))
+        grid.colors = o3d.utility.Vector3dVector(np.asarray(colors, dtype=np.float64))
+        return grid
+
+    def _sync_empty_scene_grid(self) -> None:
+        if self.vis is None:
+            return
+        has_main_geometry = len(self._geometries) > 0
+        grid_exists = self._empty_grid_name in self._helpers_data["others"]
+        if has_main_geometry and grid_exists:
+            self.remove_geometry(self._empty_grid_name)
+            return
+        if (not has_main_geometry) and (not grid_exists):
+            self.add_helper_geometry(self._empty_grid_name, self._build_empty_scene_grid(), helper_type="others")
+
+    def _apply_default_camera_view(self) -> None:
+        if self.vis is None:
+            return
+        view_ctl = self.vis.get_view_control()
+        if view_ctl is None:
+            return
+        self._normalize_camera_projection(view_ctl)
+        view_ctl.set_lookat(np.array([0.0, 0.0, 0.0], dtype=np.float64))
+        view_ctl.set_front(np.array([-1.0, -1.0, -0.8], dtype=np.float64))
+        view_ctl.set_up(np.array([0.0, 0.0, 1.0], dtype=np.float64))
+        view_ctl.set_zoom(self.default_zoom)
+        self.vis.poll_events()
+        self.vis.update_renderer()
 
     # region 视角控制
     def _get_all_visible_geometries(self):
@@ -509,6 +607,9 @@ class O3DViewerWidget(QWidget):
 
     def set_standard_view(self, view_name: str, zoom: float = None):
         """设置标准化视角"""
+        self._ensure_open3d_initialized()
+        if self.vis is None:
+            return
         view_ctl = self.vis.get_view_control()
         if not view_ctl:
             return
@@ -517,30 +618,35 @@ class O3DViewerWidget(QWidget):
         zoom = zoom or self.default_zoom
 
         views = {
-            "front": {"front": [0, 0, -1], "up": [0, 1, 0]},
-            "back": {"front": [0, 0, 1], "up": [0, 1, 0]},
-            "top": {"front": [0, -1, 0], "up": [0, 0, -1]},
-            "bottom": {"front": [0, 1, 0], "up": [0, 0, 1]},
-            "left": {"front": [1, 0, 0], "up": [0, 1, 0]},
-            "right": {"front": [-1, 0, 0], "up": [0, 1, 0]},
-            "iso": {"front": [-1, -1, -1], "up": [0, 1, 0]},
+            "front": {"front": [0, 1, 0], "up": [0, 0, 1]},
+            "back": {"front": [0, -1, 0], "up": [0, 0, 1]},
+            "top": {"front": [0, 0, -1], "up": [0, 1, 0]},
+            "bottom": {"front": [0, 0, 1], "up": [0, 1, 0]},
+            "left": {"front": [1, 0, 0], "up": [0, 0, 1]},
+            "right": {"front": [-1, 0, 0], "up": [0, 0, 1]},
+            "iso": {"front": [-1, 1, -1], "up": [0, 0, 1]},
         }
 
         conf = views.get(view_name.lower(), views["front"])
+        self._normalize_camera_projection(view_ctl)
         view_ctl.set_lookat(center)
         view_ctl.set_front(np.array(conf["front"]))
         view_ctl.set_up(np.array(conf["up"]))
         view_ctl.set_zoom(zoom)
 
-        # 设置一个较大的远裁剪面，防止深度图在远处被截断
-        view_ctl.set_constant_z_far(2000.0)
-        view_ctl.set_constant_z_near(0.1)
-
         self.vis.poll_events()
         self.vis.update_renderer()
 
     def reset_view(self):
-        self.set_standard_view("front")
+        self.set_standard_view("top")
+
+    def _normalize_camera_projection(self, view_ctl) -> None:
+        """归一化投影视角与裁剪面，避免模式切换后的相机参数污染。"""
+        current_fov = view_ctl.get_field_of_view()
+        fov_step = self.default_field_of_view - current_fov
+        view_ctl.change_field_of_view(step=fov_step)
+        view_ctl.unset_constant_z_far()
+        view_ctl.unset_constant_z_near()
 
     # endregion
 
@@ -548,7 +654,7 @@ class O3DViewerWidget(QWidget):
 
     def pick_point_from_depth(self, x, y):
         """利用深度缓冲区实现精准点选"""
-        if self._is_cleaned:
+        if self._is_cleaned or self.vis is None:
             return
 
         try:
@@ -568,12 +674,6 @@ class O3DViewerWidget(QWidget):
             # 我们只需要排除 0 或无效值。
             if z_depth <= 0.0:
                 # logger.debug(f"点击位置无深度信息 (背景)")
-                return
-
-            # 如果 z_depth 特别大（接近远裁剪面），也视为背景
-            # 这里取 999 只是一个经验值，取决于 set_constant_z_far 的设置
-            if z_depth > 2000.0:
-                # logger.debug(f"点击位置在远裁剪面之外 (z={z_depth})")
                 return
 
             view_ctl = self.vis.get_view_control()
@@ -617,6 +717,8 @@ class O3DViewerWidget(QWidget):
 
     def _add_selection_mark(self, coord):
         """添加辅助标记球"""
+        if self.vis is None:
+            return
         name = f"mark_{uuid.uuid4().hex[:4]}"
         self.add_select_point(name, coord)
 
@@ -638,8 +740,24 @@ class O3DViewerWidget(QWidget):
     # endregion
 
     def set_background_color(self, r, g, b):
-        self.vis.get_render_option().background_color = np.asarray([r, g, b])
+        self._pending_background_color = np.asarray([r, g, b], dtype=np.float64)
+        if self.vis is not None:
+            self.vis.get_render_option().background_color = self._pending_background_color
 
     def set_point_size(self, size):
-        self.vis.get_render_option().point_size = size
-        self.vis.get_render_option().point_size = size
+        self._pending_point_size = int(size)
+        if self.vis is not None:
+            self.vis.get_render_option().point_size = self._pending_point_size
+
+    def save_screenshot(self, output_path: str, do_render: bool = True) -> bool:
+        """Save current Open3D viewport as an image file."""
+        self._ensure_open3d_initialized()
+        if self.vis is None:
+            return False
+        try:
+            self.vis.poll_events()
+            self.vis.update_renderer()
+            return bool(self.vis.capture_screen_image(str(output_path), do_render=bool(do_render)))
+        except Exception as exc:
+            logger.warning(f"Open3D screenshot save failed: {exc}")
+            return False

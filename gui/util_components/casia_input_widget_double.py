@@ -1,7 +1,7 @@
 import sys
 
 from PySide6.QtCore import QPoint, Qt, Signal
-from PySide6.QtGui import QFont, QKeyEvent
+from PySide6.QtGui import QFont, QGuiApplication, QKeyEvent
 from PySide6.QtWidgets import (
     QApplication,
     QGridLayout,
@@ -541,10 +541,47 @@ class CasiaInputWidgetDouble(QWidget):
         return f"{value:.{self.decimals}f}"
 
     def _move_near_button(self, button: QPushButton) -> None:
-        """将窗口移动到按钮附近。"""
-        global_pos = button.mapToGlobal(button.rect().bottomLeft())
-        x = global_pos.x()
-        y = global_pos.y() + 6
+        """将输入框自适应放在按钮附近，尽量完整可见。"""
+        rect = button.rect()
+        below_left = button.mapToGlobal(rect.bottomLeft())
+        below_right = button.mapToGlobal(rect.bottomRight())
+        above_left = button.mapToGlobal(rect.topLeft())
+        above_right = button.mapToGlobal(rect.topRight())
+
+        screen = QGuiApplication.screenAt(button.mapToGlobal(rect.center()))
+        if screen is None:
+            screen = QApplication.primaryScreen()
+        available = screen.availableGeometry() if screen else QApplication.primaryScreen().availableGeometry()
+
+        margin = 6
+        candidates = [
+            # 先下方，再上方；每个方向先右对齐再左对齐，兼顾左右可见性。
+            (below_right.x() - self.width(), below_right.y() + margin),
+            (below_left.x(), below_left.y() + margin),
+            (above_right.x() - self.width(), above_right.y() - self.height() - margin),
+            (above_left.x(), above_left.y() - self.height() - margin),
+        ]
+
+        x, y = candidates[0]
+        for cx, cy in candidates:
+            if (
+                cx >= available.left()
+                and cy >= available.top()
+                and cx + self.width() <= available.right()
+                and cy + self.height() <= available.bottom()
+            ):
+                x, y = cx, cy
+                break
+
+        if x + self.width() > available.right():
+            x = available.right() - self.width()
+        if x < available.left():
+            x = available.left()
+        if y + self.height() > available.bottom():
+            y = available.bottom() - self.height()
+        if y < available.top():
+            y = available.top()
+
         self.move(QPoint(x, y))
 
     def _sync_display(self) -> None:
