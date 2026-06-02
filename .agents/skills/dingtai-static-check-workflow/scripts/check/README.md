@@ -11,12 +11,12 @@
 ## 用法
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\.agents\tools\check\run_all_checks.ps1 -Target .
+powershell -ExecutionPolicy Bypass -File .\.agents\skills\dingtai-static-check-workflow\scripts\check\run_all_checks.ps1 -Target .
 ```
 
 仅检查某个目录或文件：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\.agents\tools\check\run_ruff.ps1 -Target .\src
-powershell -ExecutionPolicy Bypass -File .\.agents\tools\check\run_pyright.ps1 -Target .\test\pointcloud
+powershell -ExecutionPolicy Bypass -File .\.agents\skills\dingtai-static-check-workflow\scripts\check\run_ruff.ps1 -Target .\src
+powershell -ExecutionPolicy Bypass -File .\.agents\skills\dingtai-static-check-workflow\scripts\check\run_pyright.ps1 -Target .\test\pointcloud
 ```

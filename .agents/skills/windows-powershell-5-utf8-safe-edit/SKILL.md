@@ -14,9 +14,15 @@ description: 在 Windows PowerShell 5.1 下执行 UTF-8 安全文本编辑。用
 
 ## 执行命令模板
 ```powershell
-powershell -File .agents/tools/utf8_snapshot.ps1 -Path <relative-path>
-powershell -File .agents/tools/utf8_replace.ps1 -Path <relative-path> -Pattern '<pattern>' -Replacement '<replacement>'
+powershell -File .agents/skills/windows-powershell-utf8-safe-edit/scripts/utf8_snapshot.ps1 -Path <relative-path>
+powershell -File .agents/skills/windows-powershell-utf8-safe-edit/scripts/utf8_replace.ps1 -Path <relative-path> -Pattern '<pattern>' -Replacement '<replacement>'
 ```
+
+## Hook 入口
+1. 项目级 hooks 位于 `.codex/hooks.json`。
+2. `PreToolUse` 负责编辑前快照。
+3. `PostToolUse` 负责编辑后 UTF-8 扫描、确定性修复和静态检查。
+4. 旧的 `.agents/tools` 路径已废弃，不允许继续引用。
 
 ## 编码与换行注意事项（5.1 重点）
 1. 禁止 `Get-Content`（不加 `-Raw`）读后直接写回。
