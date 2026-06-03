@@ -9,6 +9,7 @@ from PySide6.QtWidgets import QApplication, QHBoxLayout, QLabel, QLineEdit, QMai
 from gui.test_gui.TestWujiCasiaArm_ui import Ui_MainWindow
 from gui.test_gui.test_wuji_casia_arm import TestWujiCasiaArmWidget
 from gui.util_components.casia_indicator_light import CasiaIndicatorLight
+from src.ssh import QmlinkerArmSshBackend
 
 SshConnectionState = Literal["disconnected", "connecting", "connected", "disconnecting"]
 
@@ -42,6 +43,7 @@ class TestMainView(QMainWindow):
         self.ui = Ui_MainWindow()
         self.ui.setupUi(self)
         self.context = WujiCasiaDebugContext()
+        self._arm_backend = QmlinkerArmSshBackend(self, ssh_host_alias=self.context.host_alias)
         self._state_refresh_timer = QTimer(self)
         self._state_refresh_timer.setInterval(500)
         self._ssh_status_timer = QTimer(self)
@@ -104,6 +106,21 @@ class TestMainView(QMainWindow):
         self.robot_widget.enableStateRefreshRequested.connect(self._on_enable_state_refresh_requested)
         self._state_refresh_timer.timeout.connect(self._on_state_refresh_timer_timeout)
         self._ssh_status_timer.timeout.connect(self._on_ssh_status_timer_timeout)
+        self.sshConnectRequested.connect(lambda _context: self._arm_backend.connect_ssh())
+        self.sshDisconnectRequested.connect(lambda _context: self._arm_backend.disconnect_ssh())
+        self.sshStateRefreshRequested.connect(lambda _context: self._arm_backend.refresh_ssh_state())
+        self.dofTargetRequested.connect(lambda _context, axis, value: self._arm_backend.set_dof_target(axis, value))
+        self.dofValueRefreshRequested.connect(lambda _context, axis: self._arm_backend.refresh_dof_value(axis))
+        self.enableToggleRequested.connect(
+            lambda _context, device_name, enabled: self._arm_backend.set_enable_state(device_name, enabled)
+        )
+        self.enableStateRefreshRequested.connect(
+            lambda _context, device_name: self._arm_backend.refresh_enable_state(device_name)
+        )
+        self._arm_backend.sshStateChanged.connect(self.update_ssh_connection_state)
+        self._arm_backend.enableStateReceived.connect(self.update_enable_state)
+        self._arm_backend.dofValuesReceived.connect(self.update_dof_values)
+        self._arm_backend.requestFailed.connect(self._on_backend_request_failed)
 
     def _sync_context_from_ui(self) -> None:
         self.context.host = self.host_edit.text().strip()
@@ -164,6 +181,10 @@ class TestMainView(QMainWindow):
         self._set_ssh_connection_state("connected" if connected else "disconnected")
         if message:
             self.statusBar().showMessage(message)
+
+    @Slot(str)
+    def _on_backend_request_failed(self, message: str) -> None:
+        self.statusBar().showMessage(message)
 
     @Slot()
     def _on_state_refresh_timer_timeout(self) -> None:

@@ -33,6 +33,7 @@
 - 涉及几何、姿态、角度、颜色时，优先使用 `src.utils.datas` 已有类型。
 - Windows PowerShell 文本编辑优先使用 `.agents/skills/windows-powershell-utf8-safe-edit/scripts/` 下脚本。
 - 静态检查统一使用 `.agents/skills/dingtai-static-check-workflow/scripts/check/` 下脚本。
+- 静态检查默认使用 DingTai Conda 环境。
 
 ---
 
@@ -64,7 +65,7 @@ powershell -ExecutionPolicy Bypass -File .\.agents\skills\windows-powershell-utf
 
 - `.codex/hooks.json` 是项目级 hooks 入口。
 - `PreToolUse` 在 `apply_patch` 前解析补丁路径，并为已有文件生成 `.archive` 快照。
-- `PostToolUse` 在 `apply_patch` 后扫描 UTF-8、字面量 `` 
+- `PostToolUse` 在 `apply_patch` 后扫描 UTF-8、字面量 ``
  ``、字面量 `
 `、替换字符和 NUL。
 - `PostToolUse` 对 Python 文件运行 `ruff --fix` 和 `pyright`。

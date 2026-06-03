@@ -47,7 +47,7 @@ class OrbbecOpen3DPreview:
         self.align_filter: AlignFilter | None = None
         self.point_cloud_filter = PointCloudFilter()
 
-        self.vis: o3d.visualization.Visualizer = None
+        self.vis: o3d.visualization.Visualizer = None  # type: ignore
         self.pcd = o3d.geometry.PointCloud()
         self.axis = o3d.geometry.TriangleMesh.create_coordinate_frame(
             size=self.options.coordinate_frame_size,

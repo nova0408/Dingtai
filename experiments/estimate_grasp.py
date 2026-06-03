@@ -176,12 +176,11 @@ def make_o3d_cloud(xyz: np.ndarray, rgb: np.ndarray | None = None):
     return pcd
 
 
-def auto_search_roi(image_shape: tuple[int, int, int]) -> tuple[int, int, int, int]:
+def auto_search_roi(h: int, w: int) -> tuple[int, int, int, int]:
     """
     自动搜索料盘前端开口所在区域。
     只搜索图像下半部中间区域，避免上表面孔阵列和背景误检。
     """
-    h, w = image_shape[:2]
     return int(0.24 * w), int(0.62 * h), int(0.76 * w), int(0.90 * h)
 
 
@@ -225,7 +224,7 @@ def detect_rect_opening_auto(rgb_bgr: np.ndarray, debug_dir: Path) -> OpeningDet
     ensure_dir(debug_dir)
 
     h, w = rgb_bgr.shape[:2]
-    x1, y1, x2, y2 = auto_search_roi(rgb_bgr.shape)
+    x1, y1, x2, y2 = auto_search_roi(h, w)
     roi = rgb_bgr[y1:y2, x1:x2]
 
     gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
@@ -330,9 +329,9 @@ def project_points_to_image(xyz: np.ndarray, K: np.ndarray) -> np.ndarray:
 
 
 def _local_bbox_from_opening(
-    opening: OpeningDetection, image_shape: tuple[int, int, int], scale_x: float, scale_y: float
+    opening: OpeningDetection, image_shape: tuple[int, int], scale_x: float, scale_y: float
 ) -> tuple[int, int, int, int]:
-    h, w = image_shape[:2]
+    h, w = image_shape
     gx, gy, bw, bh = opening.bbox_xywh
     cx = gx + bw / 2.0
     cy = gy + bh / 2.0
@@ -369,7 +368,7 @@ def filter_local_points_by_opening(
     chosen_roi = None
 
     for scale_x, scale_y in [(2.6, 3.0), (3.6, 4.0), (4.8, 5.0)]:
-        x1, y1, x2, y2 = _local_bbox_from_opening(opening, rgb_bgr.shape, scale_x, scale_y)
+        x1, y1, x2, y2 = _local_bbox_from_opening(opening, (h, w), scale_x, scale_y)
         mask = valid.copy()
         mask &= uv[:, 0] >= x1
         mask &= uv[:, 0] <= x2

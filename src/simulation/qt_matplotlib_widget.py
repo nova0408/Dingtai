@@ -9,7 +9,6 @@ from PySide6.QtWidgets import QSizePolicy, QVBoxLayout, QWidget
 
 from src.simulation.protocols import ChainSnapshot
 
-
 # region 数据结构
 
 
@@ -50,7 +49,7 @@ class MatplotKinematicsWidget(QWidget):
         self._canvas = FigureCanvasQTAgg(self._figure)
         self._canvas.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self._ax = self._figure.add_subplot(111, projection="3d")
-        self._ax.mouse_init(rotate_btn=[1], zoom_btn=[3])
+        self._ax.mouse_init(rotate_btn=[1], zoom_btn=[3])  # type: ignore
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -63,9 +62,9 @@ class MatplotKinematicsWidget(QWidget):
 
         self._interaction_enabled = enabled
         if enabled:
-            self._ax.mouse_init(rotate_btn=[1], zoom_btn=[3])
+            self._ax.mouse_init(rotate_btn=[1], zoom_btn=[3])  # type: ignore
         else:
-            self._ax.mouse_init(rotate_btn=[], zoom_btn=[])
+            self._ax.mouse_init(rotate_btn=[], zoom_btn=[])  # type: ignore
 
     def _capture_view(self) -> None:
         """缓存当前视角，避免重绘时重置观察方向。"""
@@ -131,7 +130,7 @@ class MatplotKinematicsWidget(QWidget):
                     dx,
                     dy,
                     dz,
-                    length=0.10,
+                    length=0.10,  # type: ignore
                     normalize=True,
                     color=plot_color,
                     linewidths=0.8,
@@ -142,7 +141,7 @@ class MatplotKinematicsWidget(QWidget):
             self._ax.scatter(
                 [target_xyz[0]],
                 [target_xyz[1]],
-                [target_xyz[2]],
+                [target_xyz[2]],  # type: ignore
                 marker="x",
                 c="#d62828",
                 s=90,

@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 import numpy as np
 import open3d as o3d
-from scipy.spatial import cKDTree
+from scipy.spatial import cKDTree  # type: ignore[import-not-found]
 
 
 @dataclass(frozen=True)
@@ -144,7 +144,7 @@ def _build_color_aware_correspondences(
     src_pts = src_xyz[src_sel[valid]]
     tgt_pts = tgt_xyz[tgt_sel[valid]]
     if src_pts.shape[0] < 20:
-        raise RuntimeError(f"有效对应过少: {src_pts.shape[0]}")
+        raise RuntimeError(f"有效对应过少：{src_pts.shape[0]}")
     return src_pts.T, tgt_pts.T
 
 
@@ -330,7 +330,9 @@ def _gnc_tls_rotation(
     return r, w >= 0.5
 
 
-def _tls_translation(src: np.ndarray, dst: np.ndarray, noise_bound: float, cbar2: float) -> tuple[np.ndarray, np.ndarray]:
+def _tls_translation(
+    src: np.ndarray, dst: np.ndarray, noise_bound: float, cbar2: float
+) -> tuple[np.ndarray, np.ndarray]:
     raw_t = dst - src
     beta = noise_bound * np.sqrt(cbar2)
     ranges = np.ones((raw_t.shape[1],), dtype=np.float64) * beta
@@ -401,7 +403,7 @@ def _joint_color_geometry_refine(
             w_geo = np.exp(-(geo * geo) / (2.0 * sigma_geo * sigma_geo + 1e-12))
             w_col = np.exp(-(col * col) / (2.0 * params.sigma_color * params.sigma_color + 1e-12))
             w_curv = src_curv_w[valid]
-            delta = _weighted_kabsch(src_sel, tgt_sel, w_geo * (w_col ** params.color_weight_power) * w_curv)
+            delta = _weighted_kabsch(src_sel, tgt_sel, w_geo * (w_col**params.color_weight_power) * w_curv)
             transform = delta @ transform
     return transform
 
@@ -428,7 +430,9 @@ def _colored_icp_refine(
     return np.asarray(res.transformation, dtype=np.float64)
 
 
-def _coarse_ransac_fpfh(source: o3d.geometry.PointCloud, target: o3d.geometry.PointCloud, voxel_mm: float, max_corr_mm: float) -> np.ndarray:
+def _coarse_ransac_fpfh(
+    source: o3d.geometry.PointCloud, target: o3d.geometry.PointCloud, voxel_mm: float, max_corr_mm: float
+) -> np.ndarray:
     src_down, src_fpfh = _preprocess_for_global_registration(source, voxel_mm)
     tgt_down, tgt_fpfh = _preprocess_for_global_registration(target, voxel_mm)
     res = o3d.pipelines.registration.registration_ransac_based_on_feature_matching(
@@ -449,7 +453,9 @@ def _coarse_ransac_fpfh(source: o3d.geometry.PointCloud, target: o3d.geometry.Po
     return np.asarray(res.transformation, dtype=np.float64)
 
 
-def _coarse_fgr_fpfh(source: o3d.geometry.PointCloud, target: o3d.geometry.PointCloud, voxel_mm: float, max_corr_mm: float) -> np.ndarray:
+def _coarse_fgr_fpfh(
+    source: o3d.geometry.PointCloud, target: o3d.geometry.PointCloud, voxel_mm: float, max_corr_mm: float
+) -> np.ndarray:
     src_down, src_fpfh = _preprocess_for_global_registration(source, voxel_mm)
     tgt_down, tgt_fpfh = _preprocess_for_global_registration(target, voxel_mm)
     option = o3d.pipelines.registration.FastGlobalRegistrationOption(
@@ -468,7 +474,9 @@ def _coarse_fgr_fpfh(source: o3d.geometry.PointCloud, target: o3d.geometry.Point
     return np.asarray(res.transformation, dtype=np.float64)
 
 
-def _color_residual(source: o3d.geometry.PointCloud, target: o3d.geometry.PointCloud, transform: np.ndarray, dist_gate: float) -> float:
+def _color_residual(
+    source: o3d.geometry.PointCloud, target: o3d.geometry.PointCloud, transform: np.ndarray, dist_gate: float
+) -> float:
     src_xyz = np.asarray(source.points, dtype=np.float64)
     tgt_xyz = np.asarray(target.points, dtype=np.float64)
     src_rgb = np.asarray(source.colors, dtype=np.float64)
@@ -486,7 +494,9 @@ def _color_residual(source: o3d.geometry.PointCloud, target: o3d.geometry.PointC
     return float(np.mean(np.linalg.norm(src_rgb[valid] - tgt_rgb[idx[valid]], axis=1)))
 
 
-def _score_candidate(source: o3d.geometry.PointCloud, target: o3d.geometry.PointCloud, t: np.ndarray, params: TeaserLikeParams) -> tuple[float, float, float, float, float]:
+def _score_candidate(
+    source: o3d.geometry.PointCloud, target: o3d.geometry.PointCloud, t: np.ndarray, params: TeaserLikeParams
+) -> tuple[float, float, float, float, float, float]:
     strict_eval = o3d.pipelines.registration.evaluate_registration(source, target, params.strict_eval_mm, t)
     wide_eval = o3d.pipelines.registration.evaluate_registration(source, target, params.wide_eval_mm, t)
     color_res = _color_residual(source, target, t, dist_gate=params.wide_eval_mm)
@@ -497,7 +507,14 @@ def _score_candidate(source: o3d.geometry.PointCloud, target: o3d.geometry.Point
         - 0.04 * float(wide_eval.inlier_rmse)
         - params.score_color_weight * color_res
     )
-    return score, float(strict_eval.fitness), float(strict_eval.inlier_rmse), float(wide_eval.fitness), float(wide_eval.inlier_rmse), color_res
+    return (
+        score,
+        float(strict_eval.fitness),
+        float(strict_eval.inlier_rmse),
+        float(wide_eval.fitness),
+        float(wide_eval.inlier_rmse),
+        color_res,
+    )
 
 
 def teaser_like_color_coarse_registration(
@@ -515,7 +532,9 @@ def teaser_like_color_coarse_registration(
 
     src_tims, edge_map = _compute_tims(src_corr)
     dst_tims, _ = _compute_tims(dst_corr)
-    used_noise = cfg.noise_bound_mm if cfg.noise_bound_mm > 0 else _estimate_noise_bound_from_tims(src_tims, dst_tims, cfg.cbar2)
+    used_noise = (
+        cfg.noise_bound_mm if cfg.noise_bound_mm > 0 else _estimate_noise_bound_from_tims(src_tims, dst_tims, cfg.cbar2)
+    )
 
     scale_mask = _scale_inlier_mask(src_tims, dst_tims, noise_bound=used_noise, cbar2=cfg.cbar2)
     adj = _build_adjacency(src_corr.shape[1], edge_map, scale_mask)
@@ -578,7 +597,9 @@ def teaser_like_color_coarse_registration(
     )
 
 
-def visualize_registration(source: o3d.geometry.PointCloud, target: o3d.geometry.PointCloud, transform: np.ndarray) -> None:
+def visualize_registration(
+    source: o3d.geometry.PointCloud, target: o3d.geometry.PointCloud, transform: np.ndarray
+) -> None:
     raw_src = o3d.geometry.PointCloud(source)
     raw_tgt = o3d.geometry.PointCloud(target)
     reg_src = o3d.geometry.PointCloud(source)
@@ -593,7 +614,7 @@ def visualize_registration(source: o3d.geometry.PointCloud, target: o3d.geometry
     vis = o3d.visualization.O3DVisualizer("TEASER-like Coarse Registration", 1440, 900)
     vis.show_settings = True
     vis.show_skybox(False)
-    vis.set_background(np.array([0, 0, 0, 0]), None)
+    vis.set_background(np.array([0, 0, 0, 0]), None)  # type: ignore
 
     mat = o3d.visualization.rendering.MaterialRecord()
     mat.shader = "defaultUnlit"

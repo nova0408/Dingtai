@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 """Orbbec 异步采集结果读取脚本（配套 test_orbbec_frame_async_capture.py）。"""
 
 import argparse
@@ -11,18 +13,10 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+import cv2
 import numpy as np
+import open3d as o3d
 from loguru import logger
-
-try:
-    import cv2
-except Exception:  # pragma: no cover
-    cv2 = None
-try:
-    import open3d as o3d
-except Exception:  # pragma: no cover
-    o3d = None
-
 
 # region 默认参数（优先在这里直接改）
 
@@ -138,7 +132,7 @@ class FrameDataReader:
         return _read_pcd_ascii(record.pcd_path)
 
     @staticmethod
-    def read_frame_bundle(record: FrameRecord) -> dict[str, object]:
+    def read_frame_bundle(record: FrameRecord) -> dict[str, Any]:
         rgb = FrameDataReader.read_rgb(record)
         depth = FrameDataReader.read_depth(record)
         xyz, rgb_pts = FrameDataReader.read_pcd(record)

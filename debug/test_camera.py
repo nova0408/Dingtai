@@ -55,7 +55,7 @@ try:
             # B. 限制深度范围并归一化 (聚焦能提升细节感)
             min_dist, max_dist = 400, 2500  # 稍微缩短距离，细节会更丰富
             depth_clipped = np.clip(depth_filtered, min_dist, max_dist)
-            depth_norm = cv2.normalize(depth_clipped, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
+            depth_norm = cv2.normalize(depth_clipped, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)  # type: ignore
 
             # C. 图像锐化 (Unsharp Masking)
             # 通过拉高高频信号，让深度的“纹理”跳出来

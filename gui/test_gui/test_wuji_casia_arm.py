@@ -11,6 +11,7 @@ from gui.test_gui.uitl_dof_widget_view import UtilDoFWidget
 from gui.util_components.casia_indicator_light import CasiaIndicatorLight
 from src.servers.common import JointLimit
 from src.servers.wuji_ind_casia_arm import WujiIndCasiaArmServer
+from src.simulation.qmlinker_arm_remote import SUPPORTED_ARM_DEVICES, parse_arm_axis_name
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,6 +56,8 @@ class TestWujiCasiaArmWidget(QWidget):
             )
             widget = UtilDoFWidget.replace_placeholder(placeholder, model)
             widget.targetRequested.connect(self._on_dof_target_requested)
+            if parse_arm_axis_name(binding.axis_name) is None:
+                widget.setEnabled(False)
             self.dof_widgets[binding.placeholder_name] = widget
             self.dof_widgets_by_axis[binding.axis_name] = widget
 
@@ -74,7 +77,7 @@ class TestWujiCasiaArmWidget(QWidget):
                 default_status=False,
             )
             indicator.setObjectName(placeholder_name)
-            indicator.setEnabled(True)
+            indicator.setEnabled(device_name in SUPPORTED_ARM_DEVICES)
             indicator.clicked.connect(lambda name=device_name, light=indicator: self._request_enable_toggle(name, light))
             self.enable_indicators[device_name] = indicator
 
