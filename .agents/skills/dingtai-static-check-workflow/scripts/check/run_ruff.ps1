@@ -8,7 +8,21 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$RuffPath = "C:\Users\ICO\anaconda3\envs\DingTai\Scripts\ruff.exe"
+function Get-DingTaiEnvRoot {
+    if ($env:CONDA_PREFIX -and (Split-Path -Leaf $env:CONDA_PREFIX) -eq "DingTai") {
+        return $env:CONDA_PREFIX
+    }
+
+    $defaultRoot = Join-Path $env:USERPROFILE "anaconda3\envs\DingTai"
+    if (Test-Path -LiteralPath $defaultRoot) {
+        return $defaultRoot
+    }
+
+    return "C:\Users\ICO\anaconda3\envs\DingTai"
+}
+
+$EnvRoot = Get-DingTaiEnvRoot
+$RuffPath = Join-Path $EnvRoot "Scripts\ruff.exe"
 if (-not (Test-Path -LiteralPath $RuffPath)) {
     throw "ruff not found: $RuffPath"
 }
