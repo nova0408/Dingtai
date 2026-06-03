@@ -45,6 +45,32 @@ class CasiaValueConverter(Protocol):
         raise NotImplementedError
 
 
+@runtime_checkable
+class CasiaEditableValueConverter(Protocol):
+    """
+    可选的编辑文本转换协议。
+
+    实现该协议后，控件进入点击编辑模式时会使用 ``convert_edit`` 的返回值作为
+    输入框文本，避免单位、提示语等展示性内容被选中和编辑。
+    """
+
+    def convert_edit(self, value: int) -> str:
+        """
+        将滑块整数值转换为可编辑文本。
+
+        Parameters
+        ----------
+        value:
+            QSlider 当前整数值。
+
+        Returns
+        -------
+        str
+            仅包含用户应编辑内容的文本。
+        """
+        raise NotImplementedError
+
+
 class IntValueConverter:
     """
     默认整数转换器。
@@ -53,6 +79,9 @@ class IntValueConverter:
     """
 
     def convert(self, value: int) -> str:
+        return str(value)
+
+    def convert_edit(self, value: int) -> str:
         return str(value)
 
     def convert_back(self, text: str) -> int:
@@ -73,6 +102,9 @@ class CallableValueConverter:
 
     def convert(self, value: int) -> str:
         return self._converter(value)
+
+    def convert_edit(self, value: int) -> str:
+        return self._fallback.convert_edit(value)
 
     def convert_back(self, text: str) -> int:
         return self._fallback.convert_back(text)

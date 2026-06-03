@@ -30,6 +30,10 @@ class DegreeValueConverter(CasiaValueConverter):
         degree = Degree(float(value) / self.units_per_degree)
         return f"{degree.value:.{self.display_precision}f}{self.suffix}"
 
+    def convert_edit(self, value: int) -> str:
+        degree = Degree(float(value) / self.units_per_degree)
+        return f"{degree.value:.{self.display_precision}f}"
+
     def convert_back(self, text: str) -> int:
         raw_text = text.strip()
         if self.suffix and raw_text.endswith(self.suffix):

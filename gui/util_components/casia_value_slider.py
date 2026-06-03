@@ -1,10 +1,15 @@
 from collections.abc import Callable
 
-from PySide6.QtCore import Property, QRect, Qt, Slot
-from PySide6.QtGui import QColor, QFont, QFontMetrics, QKeyEvent, QMouseEvent, QPainter, QWheelEvent
+from PySide6.QtCore import QEvent, QObject, QPoint, Property, QRect, Qt, Slot
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QKeyEvent, QMouseEvent, QPainter, QPolygon, QWheelEvent
 from PySide6.QtWidgets import QApplication, QLineEdit, QSlider, QStyle, QStyleOptionSlider
 
-from .casia_value_converter import CallableValueConverter, CasiaValueConverter, IntValueConverter
+from .casia_value_converter import (
+    CallableValueConverter,
+    CasiaEditableValueConverter,
+    CasiaValueConverter,
+    IntValueConverter,
+)
 
 
 class CasiaValueSlider(QSlider):
@@ -33,6 +38,7 @@ class CasiaValueSlider(QSlider):
             qproperty-editorBackgroundColor: #2b2b2b;
             qproperty-editorBorderColor: #6fa8dc;
             qproperty-grooveThickness: 8;
+            qproperty-valueDisplayMode: bubble;
         }
 
     Parameters
@@ -82,17 +88,27 @@ class CasiaValueSlider(QSlider):
         super().__init__(orientation, parent)
         self._touch_scale = self._get_touch_scale()
         self._interaction_enabled: bool = True
+        self._drag_edit_enabled: bool = True
         self._click_edit_enabled: bool = True
         self._value_converter: CasiaValueConverter = IntValueConverter()
         self._font_size: int = self._scaled(16)  # 默认字体大小
-        self._slider_width_chars: int = 6  # 默认滑块宽度（字符数）
+        self._slider_width_chars: int = 4  # 默认滑块宽度（字符数）
         self._min_font_size: int = self._scaled(10)  # 最小字体大小
-        self._slider_height: int = self._scaled(40)  # 滑块高度
-        self._groove_thickness: int = self._scaled(8)
+        self._slider_height: int = self._scaled(24)  # 滑块高度
+        self._groove_thickness: int = self._scaled(6)
+        self._handle_horizontal_padding: int = self._scaled(6)
+        self._value_display_mode: str = "handle"
+        self._bubble_padding_x: int = self._scaled(8)
+        self._bubble_padding_y: int = self._scaled(4)
+        self._bubble_pointer_height: int = self._scaled(9)
+        self._bubble_border_radius: int = self._scaled(5)
         self._handle_start_color = QColor("#5c5c5c")
         self._handle_end_color = QColor("#787878")
         self._groove_start_color = QColor("#b1b1b1")
         self._groove_end_color = QColor("#c4c4c4")
+        self._bubble_background_color = QColor("#f7f7f7")
+        self._bubble_border_color = QColor("#2b2b2b")
+        self._bubble_text_color = QColor("#2b2b2b")
         self._slider_text_color = QColor(Qt.GlobalColor.white)
         self._editor_text_color = QColor(Qt.GlobalColor.white)
         self._editor_background_color = QColor("#2b2b2b")
@@ -103,10 +119,11 @@ class CasiaValueSlider(QSlider):
         self._value_editor = QLineEdit(self)
         self._value_editor.hide()
         self._value_editor.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._value_editor.installEventFilter(self)
         self._value_editor.returnPressed.connect(self._on_value_editor_return_pressed)
 
         # 设置一些默认样式，确保滑块足够大以显示文本
-        self.setMinimumHeight(self._scaled(60))
+        self.setMinimumHeight(self._scaled(44))
         self._update_style()
 
     # endregion
@@ -134,6 +151,18 @@ class CasiaValueSlider(QSlider):
         self._interaction_enabled = bool(enabled)
 
     interactionEnabled = Property(bool, get_interaction_enabled, set_interaction_enabled)
+
+    def get_drag_edit_enabled(self) -> bool:
+        """获取拖动、滚轮和键盘调值开关。"""
+
+        return self._drag_edit_enabled
+
+    def set_drag_edit_enabled(self, enabled: bool) -> None:
+        """设置是否允许拖动、滚轮和键盘修改滑块值。"""
+
+        self._drag_edit_enabled = bool(enabled)
+
+    dragEditEnabled = Property(bool, get_drag_edit_enabled, set_drag_edit_enabled)
 
     def get_click_edit_enabled(self) -> bool:
         """获取点击编辑开关。
@@ -260,6 +289,73 @@ class CasiaValueSlider(QSlider):
 
     grooveThickness = Property(int, get_groove_thickness, set_groove_thickness)
 
+    def get_handle_horizontal_padding(self) -> int:
+        """获取手柄内文本左右内边距。"""
+        return self._handle_horizontal_padding
+
+    def set_handle_horizontal_padding(self, padding: int) -> None:
+        """设置手柄内文本左右内边距。"""
+        if padding < 0:
+            return
+        self._handle_horizontal_padding = int(padding)
+        self._update_style()
+
+    handleHorizontalPadding = Property(int, get_handle_horizontal_padding, set_handle_horizontal_padding)
+
+    def get_value_display_mode(self) -> str:
+        """获取当前数值显示模式。"""
+        return self._value_display_mode
+
+    def set_value_display_mode(self, mode: str) -> None:
+        """设置数值显示模式。
+
+        Parameters
+        ----------
+        mode : str
+            ``"handle"`` 表示在手柄内显示，``"bubble"`` 表示在滑块上方气泡显示。
+        """
+        normalized_mode = mode.strip().lower()
+        if normalized_mode not in {"handle", "bubble"}:
+            return
+        self._value_display_mode = normalized_mode
+        self._update_style()
+        self.update()
+
+    valueDisplayMode = Property(str, get_value_display_mode, set_value_display_mode)
+
+    def get_bubble_background_color(self) -> QColor:
+        """获取气泡背景色。"""
+        return QColor(self._bubble_background_color)
+
+    def set_bubble_background_color(self, color: QColor) -> None:
+        """设置气泡背景色。"""
+        self._bubble_background_color = QColor(color)
+        self.update()
+
+    bubbleBackgroundColor = Property(QColor, get_bubble_background_color, set_bubble_background_color)
+
+    def get_bubble_border_color(self) -> QColor:
+        """获取气泡边框色。"""
+        return QColor(self._bubble_border_color)
+
+    def set_bubble_border_color(self, color: QColor) -> None:
+        """设置气泡边框色。"""
+        self._bubble_border_color = QColor(color)
+        self.update()
+
+    bubbleBorderColor = Property(QColor, get_bubble_border_color, set_bubble_border_color)
+
+    def get_bubble_text_color(self) -> QColor:
+        """获取气泡文本色。"""
+        return QColor(self._bubble_text_color)
+
+    def set_bubble_text_color(self, color: QColor) -> None:
+        """设置气泡文本色。"""
+        self._bubble_text_color = QColor(color)
+        self.update()
+
+    bubbleTextColor = Property(QColor, get_bubble_text_color, set_bubble_text_color)
+
     def set_value_converter(self, converter: CasiaValueConverter | Callable[[int], str] | None):
         """设置数值转换器。
 
@@ -326,15 +422,17 @@ class CasiaValueSlider(QSlider):
         font = QFont("Arial", self._font_size)
         font_metrics = QFontMetrics(font)
         char_width = font_metrics.horizontalAdvance("M")
-        slider_width = char_width * self._slider_width_chars
-        border_radius = min(slider_width, self._slider_height) // 4
+        text_width = font_metrics.horizontalAdvance(self.get_display_text())
+        slider_width = max(char_width * self._slider_width_chars, text_width + self._handle_horizontal_padding * 2)
+        effective_handle_height = self._effective_handle_height()
+        border_radius = min(slider_width, effective_handle_height) // 4
 
         if self.orientation() == Qt.Orientation.Horizontal:
             style_sheet = f"""
             QSlider::handle:horizontal {{
                 width: {slider_width}px;
-                height: {self._slider_height}px;
-                margin: -{self._slider_height//2 - 5}px 0;
+                height: {effective_handle_height}px;
+                margin: -{max(0, (effective_handle_height - self._groove_thickness) // 2)}px 0;
                 border-radius: {border_radius}px;
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
                     stop:0 {self._handle_start_color.name()}, stop:1 {self._handle_end_color.name()});
@@ -349,9 +447,9 @@ class CasiaValueSlider(QSlider):
         else:
             style_sheet = f"""
             QSlider::handle:vertical {{
-                width: {self._slider_height}px;
+                width: {effective_handle_height}px;
                 height: {slider_width}px;
-                margin: 0 -{self._slider_height//2 - 5}px;
+                margin: 0 -{max(0, (effective_handle_height - self._groove_thickness) // 2)}px;
                 border-radius: {border_radius}px;
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
                     stop:0 {self._handle_start_color.name()}, stop:1 {self._handle_end_color.name()});
@@ -365,6 +463,7 @@ class CasiaValueSlider(QSlider):
             """
 
         self.setStyleSheet(style_sheet)
+        self._update_minimum_size()
         self._update_editor_style()
 
     def _update_editor_style(self) -> None:
@@ -400,6 +499,21 @@ class CasiaValueSlider(QSlider):
         except (TypeError, ValueError):
             return str(current_value)
 
+    def get_edit_text(self) -> str:
+        """获取进入点击编辑模式时使用的文本。
+
+        Returns
+        -------
+        str
+            仅包含用户需要编辑的值，单位和提示文字可由 converter 排除。
+        """
+        if isinstance(self._value_converter, CasiaEditableValueConverter):
+            try:
+                return self._value_converter.convert_edit(self.value())
+            except (TypeError, ValueError):
+                return str(self.value())
+        return self.get_display_text()
+
     def paintEvent(self, event):
         """绘制滑块和手柄中心文本。"""
         super().paintEvent(event)
@@ -409,30 +523,14 @@ class CasiaValueSlider(QSlider):
 
         font = QFont("Arial", self._font_size)
         painter.setFont(font)
-        painter.setPen(self._slider_text_color)
-
         slider_rect = self._handle_rect()
-        if slider_rect.isValid():
+        if slider_rect.isValid() and self._value_display_mode == "handle":
             display_text = self.get_display_text()
-
-            font_metrics = QFontMetrics(font)
-            text_width = font_metrics.horizontalAdvance(display_text)
-            current_font_size = self._font_size
-
-            # 文本过长时仅缩小绘制字体，不改变控件配置，避免布局抖动。
-            while text_width > slider_rect.width() * 0.9 and current_font_size > self._min_font_size:
-                current_font_size -= 1
-                smaller_font = QFont(font)
-                smaller_font.setPointSize(current_font_size)
-                font_metrics = QFontMetrics(smaller_font)
-                text_width = font_metrics.horizontalAdvance(display_text)
-
-            if current_font_size != self._font_size:
-                adjusted_font = QFont(font)
-                adjusted_font.setPointSize(current_font_size)
-                painter.setFont(adjusted_font)
-
+            painter.setPen(self._slider_text_color)
+            painter.setFont(self._font_for_text(display_text, slider_rect.width() - self._handle_horizontal_padding * 2))
             painter.drawText(slider_rect, Qt.AlignmentFlag.AlignCenter, display_text)
+        elif slider_rect.isValid() and self._value_display_mode == "bubble":
+            self._paint_value_bubble(painter, slider_rect)
 
         painter.end()
 
@@ -448,12 +546,18 @@ class CasiaValueSlider(QSlider):
         if event.button() == Qt.MouseButton.LeftButton:
             self._press_pos = event.pos()
             self._pressed_on_handle = self._handle_rect().contains(event.pos())
+            if not self._drag_edit_enabled:
+                event.accept()
+                return
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event: QMouseEvent):
         """鼠标移动超过拖动阈值后取消本次点击编辑判定。"""
         if not self._interaction_enabled:
             event.ignore()
+            return
+        if not self._drag_edit_enabled:
+            event.accept()
             return
         if self._press_pos is not None and (event.pos() - self._press_pos).manhattanLength() > self._drag_threshold:
             self._pressed_on_handle = False
@@ -465,7 +569,10 @@ class CasiaValueSlider(QSlider):
             event.ignore()
             return
         should_edit = self._is_click_edit_release(event)
-        super().mouseReleaseEvent(event)
+        if self._drag_edit_enabled:
+            super().mouseReleaseEvent(event)
+        else:
+            event.accept()
         self._press_pos = None
         self._pressed_on_handle = False
         if should_edit:
@@ -473,7 +580,7 @@ class CasiaValueSlider(QSlider):
 
     def wheelEvent(self, event: QWheelEvent):
         """根据交互开关拦截滚轮调节。"""
-        if not self._interaction_enabled:
+        if not self._interaction_enabled or not self._drag_edit_enabled:
             event.ignore()
             return
         super().wheelEvent(event)
@@ -483,7 +590,7 @@ class CasiaValueSlider(QSlider):
         if self._value_editor.isVisible():
             event.ignore()
             return
-        if not self._interaction_enabled:
+        if not self._interaction_enabled or not self._drag_edit_enabled:
             event.ignore()
             return
         super().keyPressEvent(event)
@@ -493,6 +600,31 @@ class CasiaValueSlider(QSlider):
         super().resizeEvent(event)
         if self._value_editor.isVisible():
             self._position_value_editor()
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        """拦截内部输入框的取消事件。
+
+        Parameters
+        ----------
+        watched : QObject
+            触发事件的对象。
+        event : QEvent
+            Qt 事件对象。
+
+        Returns
+        -------
+        bool
+            ``True`` 表示事件已被控件消费。
+        """
+        if watched is self._value_editor and self._value_editor.isVisible():
+            if event.type() == QEvent.Type.FocusOut:
+                self._cancel_value_edit(restore_focus=False)
+                return False
+            if event.type() == QEvent.Type.KeyPress and isinstance(event, QKeyEvent):
+                if event.key() == Qt.Key.Key_Escape:
+                    self._cancel_value_edit()
+                    return True
+        return super().eventFilter(watched, event)
 
     # endregion
 
@@ -596,7 +728,7 @@ class CasiaValueSlider(QSlider):
 
     def _start_value_edit(self) -> None:
         """显示覆盖在手柄上的输入框。"""
-        self._value_editor.setText(self.get_display_text())
+        self._value_editor.setText(self.get_edit_text())
         self._position_value_editor()
         self._value_editor.selectAll()
         self._value_editor.show()
@@ -604,15 +736,16 @@ class CasiaValueSlider(QSlider):
 
     def _position_value_editor(self) -> None:
         """将输入框同步到当前手柄矩形内。"""
-        handle_rect = self._handle_rect()
-        if not handle_rect.isValid():
+        edit_rect = self._edit_rect()
+        if not edit_rect.isValid():
             return
-        self._value_editor.setGeometry(handle_rect.adjusted(2, 2, -2, -2))
+        self._value_editor.setGeometry(edit_rect)
 
-    def _cancel_value_edit(self) -> None:
+    def _cancel_value_edit(self, restore_focus: bool = True) -> None:
         """关闭输入框并恢复滑块绘制。"""
         self._value_editor.hide()
-        self.setFocus(Qt.FocusReason.OtherFocusReason)
+        if restore_focus:
+            self.setFocus(Qt.FocusReason.OtherFocusReason)
         self.update()
 
     @Slot()
@@ -631,6 +764,81 @@ class CasiaValueSlider(QSlider):
         if old_value == value:
             self.valueChanged.emit(value)
         self._cancel_value_edit()
+
+    # endregion
+
+    # region 几何与气泡绘制
+
+    def _effective_handle_height(self) -> int:
+        """获取当前显示模式下的手柄高度。"""
+        if self._value_display_mode == "bubble":
+            return max(self._groove_thickness * 2, self._scaled(14))
+        return self._slider_height
+
+    def _update_minimum_size(self) -> None:
+        """根据显示模式更新控件最小尺寸，避免气泡被裁切。"""
+        if self.orientation() == Qt.Orientation.Horizontal:
+            if self._value_display_mode == "bubble":
+                self.setMinimumHeight(self._scaled(70))
+            else:
+                self.setMinimumHeight(max(self._scaled(38), self._slider_height + self._scaled(12)))
+        elif self._value_display_mode == "bubble":
+            self.setMinimumWidth(self._scaled(70))
+
+    def _font_for_text(self, text: str, available_width: int) -> QFont:
+        """根据可用宽度计算绘制字体。"""
+        font = QFont("Arial", self._font_size)
+        font_metrics = QFontMetrics(font)
+        current_font_size = self._font_size
+        while font_metrics.horizontalAdvance(text) > available_width and current_font_size > self._min_font_size:
+            current_font_size -= 1
+            font.setPointSize(current_font_size)
+            font_metrics = QFontMetrics(font)
+        return font
+
+    def _bubble_rect(self, handle_rect: QRect, display_text: str) -> QRect:
+        """计算气泡矩形。"""
+        font_metrics = QFontMetrics(QFont("Arial", self._font_size))
+        width = font_metrics.horizontalAdvance(display_text) + self._bubble_padding_x * 2
+        height = font_metrics.height() + self._bubble_padding_y * 2
+        x = handle_rect.center().x() - width // 2
+        y = max(0, handle_rect.top() - self._bubble_pointer_height - height)
+        rect = QRect(x, y, width, height)
+        if rect.left() < 0:
+            rect.moveLeft(0)
+        if rect.right() > self.width():
+            rect.moveRight(self.width())
+        return rect
+
+    def _paint_value_bubble(self, painter: QPainter, handle_rect: QRect) -> None:
+        """绘制位于滑块上方的数值气泡。"""
+        display_text = self.get_display_text()
+        bubble_rect = self._bubble_rect(handle_rect, display_text)
+        pointer_center_x = handle_rect.center().x()
+        pointer_half_width = self._scaled(4)
+        pointer_bottom_y = min(handle_rect.top(), bubble_rect.bottom() + self._bubble_pointer_height)
+        pointer = QPolygon(
+            [
+                QPoint(pointer_center_x - pointer_half_width, bubble_rect.bottom() - 1),
+                QPoint(pointer_center_x + pointer_half_width, bubble_rect.bottom() - 1),
+                QPoint(pointer_center_x, pointer_bottom_y),
+            ]
+        )
+
+        painter.setPen(self._bubble_border_color)
+        painter.setBrush(self._bubble_background_color)
+        painter.drawRoundedRect(bubble_rect, self._bubble_border_radius, self._bubble_border_radius)
+        painter.drawPolygon(pointer)
+        painter.setPen(self._bubble_text_color)
+        painter.setFont(self._font_for_text(display_text, bubble_rect.width() - self._bubble_padding_x * 2))
+        painter.drawText(bubble_rect, Qt.AlignmentFlag.AlignCenter, display_text)
+
+    def _edit_rect(self) -> QRect:
+        """计算输入框矩形。"""
+        if self._value_display_mode == "bubble":
+            bubble_rect = self._bubble_rect(self._handle_rect(), self.get_display_text())
+            return bubble_rect.adjusted(2, 2, -2, -2)
+        return self._handle_rect().adjusted(2, 2, -2, -2)
 
     # endregion
 
