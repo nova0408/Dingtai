@@ -36,3 +36,8 @@ class DoFWidgetModel:
         """以真实反馈值为基准生成增量目标值。"""
 
         return self.set_command_value(self.feedback_value + float(delta))
+
+    def offset_command(self, delta: float) -> float:
+        """以上一次命令值为基准生成连续增量目标值。"""
+
+        return self.set_command_value(self.command_value + float(delta))

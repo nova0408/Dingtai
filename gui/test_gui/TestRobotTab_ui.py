@@ -8,14 +8,8 @@
 ## WARNING! All changes made in this file will be lost when recompiling UI file!
 ################################################################################
 
-from PySide6.QtCore import (QCoreApplication, QDate, QDateTime, QLocale,
-    QMetaObject, QObject, QPoint, QRect,
-    QSize, QTime, QUrl, Qt)
-from PySide6.QtGui import (QBrush, QColor, QConicalGradient, QCursor,
-    QFont, QFontDatabase, QGradient, QIcon,
-    QImage, QKeySequence, QLinearGradient, QPainter,
-    QPalette, QPixmap, QRadialGradient, QTransform)
-from PySide6.QtWidgets import (QApplication, QGridLayout, QGroupBox, QHBoxLayout,
+from PySide6.QtCore import (QCoreApplication, QMetaObject, QSize)
+from PySide6.QtWidgets import (QGridLayout, QGroupBox, QHBoxLayout,
     QLabel, QSizePolicy, QSpacerItem, QVBoxLayout,
     QWidget)
 
@@ -28,6 +22,7 @@ class Ui_Form(object):
         self.verticalLayout.setObjectName(u"verticalLayout")
         self.groupBox_4 = QGroupBox(Form)
         self.groupBox_4.setObjectName(u"groupBox_4")
+        self.groupBox_4.setVisible(False)
         self.verticalLayout_5 = QVBoxLayout(self.groupBox_4)
         self.verticalLayout_5.setObjectName(u"verticalLayout_5")
         self.horizontalLayout_5 = QHBoxLayout()
@@ -37,14 +32,14 @@ class Ui_Form(object):
 
         self.horizontalLayout_5.addWidget(self.label_4)
 
-        self.body_enable_2 = QWidget(self.groupBox_4)
-        self.body_enable_2.setObjectName(u"body_enable_2")
-        self.body_enable_2.setMinimumSize(QSize(44, 44))
-        self.body_enable_2.setStyleSheet(u"[_q_custom_style_disabled=\"true\"] QObject {\n"
+        self.base_enable = QWidget(self.groupBox_4)
+        self.base_enable.setObjectName(u"base_enable")
+        self.base_enable.setMinimumSize(QSize(44, 44))
+        self.base_enable.setStyleSheet(u"[_q_custom_style_disabled=\"true\"] QObject {\n"
 "	background-color: rgb(85, 170, 255)\n"
 "}")
 
-        self.horizontalLayout_5.addWidget(self.body_enable_2)
+        self.horizontalLayout_5.addWidget(self.base_enable)
 
         self.horizontalSpacer_4 = QSpacerItem(40, 20, QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
 
@@ -55,29 +50,29 @@ class Ui_Form(object):
 
         self.gridLayout_4 = QGridLayout()
         self.gridLayout_4.setObjectName(u"gridLayout_4")
-        self.dof_agv_x = QWidget(self.groupBox_4)
-        self.dof_agv_x.setObjectName(u"dof_agv_x")
-        self.dof_agv_x.setStyleSheet(u"[_q_custom_style_disabled=\"true\"] QObject {\n"
+        self.dof_base_x = QWidget(self.groupBox_4)
+        self.dof_base_x.setObjectName(u"dof_base_x")
+        self.dof_base_x.setStyleSheet(u"[_q_custom_style_disabled=\"true\"] QObject {\n"
 "	background-color: rgb(255, 55, 168);\n"
 "}")
 
-        self.gridLayout_4.addWidget(self.dof_agv_x, 0, 0, 1, 1)
+        self.gridLayout_4.addWidget(self.dof_base_x, 0, 0, 1, 1)
 
-        self.dof_agv_y = QWidget(self.groupBox_4)
-        self.dof_agv_y.setObjectName(u"dof_agv_y")
-        self.dof_agv_y.setStyleSheet(u"[_q_custom_style_disabled=\"true\"] QObject {\n"
+        self.dof_base_y = QWidget(self.groupBox_4)
+        self.dof_base_y.setObjectName(u"dof_base_y")
+        self.dof_base_y.setStyleSheet(u"[_q_custom_style_disabled=\"true\"] QObject {\n"
 "	background-color: rgb(255, 55, 168);\n"
 "}")
 
-        self.gridLayout_4.addWidget(self.dof_agv_y, 0, 1, 1, 1)
+        self.gridLayout_4.addWidget(self.dof_base_y, 0, 1, 1, 1)
 
-        self.dof_agv_yaw = QWidget(self.groupBox_4)
-        self.dof_agv_yaw.setObjectName(u"dof_agv_yaw")
-        self.dof_agv_yaw.setStyleSheet(u"[_q_custom_style_disabled=\"true\"] QObject {\n"
+        self.dof_base_yaw = QWidget(self.groupBox_4)
+        self.dof_base_yaw.setObjectName(u"dof_base_yaw")
+        self.dof_base_yaw.setStyleSheet(u"[_q_custom_style_disabled=\"true\"] QObject {\n"
 "	background-color: rgb(255, 55, 168);\n"
 "}")
 
-        self.gridLayout_4.addWidget(self.dof_agv_yaw, 0, 2, 1, 1)
+        self.gridLayout_4.addWidget(self.dof_base_yaw, 0, 2, 1, 1)
 
 
         self.verticalLayout_5.addLayout(self.gridLayout_4)
@@ -114,27 +109,67 @@ class Ui_Form(object):
 
         self.gridLayout = QGridLayout()
         self.gridLayout.setObjectName(u"gridLayout")
-        self.dof_pitch = QWidget(self.groupBox)
-        self.dof_pitch.setObjectName(u"dof_pitch")
-        self.dof_pitch.setStyleSheet(u"[_q_custom_style_disabled=\"true\"] QObject {\n"
+        self.dof_body_ry = QWidget(self.groupBox)
+        self.dof_body_ry.setObjectName(u"dof_body_ry")
+        self.dof_body_ry.setStyleSheet(u"[_q_custom_style_disabled=\"true\"] QObject {\n"
 "	background-color: rgb(255, 55, 168);\n"
 "}")
 
-        self.gridLayout.addWidget(self.dof_pitch, 0, 1, 1, 1)
+        self.gridLayout.addWidget(self.dof_body_ry, 0, 1, 1, 1)
 
-        self.dof_roll = QWidget(self.groupBox)
-        self.dof_roll.setObjectName(u"dof_roll")
-        self.dof_roll.setStyleSheet(u"[_q_custom_style_disabled=\"true\"] QObject {\n"
+        self.dof_body_z = QWidget(self.groupBox)
+        self.dof_body_z.setObjectName(u"dof_body_z")
+        self.dof_body_z.setStyleSheet(u"[_q_custom_style_disabled=\"true\"] QObject {\n"
 "	background-color: rgb(255, 55, 168);\n"
 "}")
 
-        self.gridLayout.addWidget(self.dof_roll, 0, 0, 1, 1)
+        self.gridLayout.addWidget(self.dof_body_z, 0, 0, 1, 1)
 
 
         self.verticalLayout_2.addLayout(self.gridLayout)
 
 
         self.verticalLayout.addWidget(self.groupBox)
+
+        self.groupBox_head = QGroupBox(Form)
+        self.groupBox_head.setObjectName(u"groupBox_head")
+        self.verticalLayout_head = QVBoxLayout(self.groupBox_head)
+        self.verticalLayout_head.setObjectName(u"verticalLayout_head")
+        self.horizontalLayout_head = QHBoxLayout()
+        self.horizontalLayout_head.setObjectName(u"horizontalLayout_head")
+        self.label_head = QLabel(self.groupBox_head)
+        self.label_head.setObjectName(u"label_head")
+
+        self.horizontalLayout_head.addWidget(self.label_head)
+
+        self.head_enable = QWidget(self.groupBox_head)
+        self.head_enable.setObjectName(u"head_enable")
+        self.head_enable.setMinimumSize(QSize(44, 44))
+        self.head_enable.setStyleSheet(u"[_q_custom_style_disabled=\"true\"] QObject {\n"
+"	background-color: rgb(85, 170, 255)\n"
+"}")
+
+        self.horizontalLayout_head.addWidget(self.head_enable)
+
+        self.horizontalSpacer_head = QSpacerItem(40, 20, QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+
+        self.horizontalLayout_head.addItem(self.horizontalSpacer_head)
+
+        self.verticalLayout_head.addLayout(self.horizontalLayout_head)
+
+        self.gridLayout_head = QGridLayout()
+        self.gridLayout_head.setObjectName(u"gridLayout_head")
+        self.dof_head_yaw = QWidget(self.groupBox_head)
+        self.dof_head_yaw.setObjectName(u"dof_head_yaw")
+        self.dof_head_yaw.setStyleSheet(u"[_q_custom_style_disabled=\"true\"] QObject {\n"
+"	background-color: rgb(255, 55, 168);\n"
+"}")
+
+        self.gridLayout_head.addWidget(self.dof_head_yaw, 0, 0, 1, 1)
+
+        self.verticalLayout_head.addLayout(self.gridLayout_head)
+
+        self.verticalLayout.addWidget(self.groupBox_head)
 
         self.horizontalLayout = QHBoxLayout()
         self.horizontalLayout.setObjectName(u"horizontalLayout")
@@ -319,6 +354,8 @@ class Ui_Form(object):
         self.label_4.setText(QCoreApplication.translate("Form", u"\u4f7f\u80fd:", None))
         self.groupBox.setTitle(QCoreApplication.translate("Form", u"body", None))
         self.label_3.setText(QCoreApplication.translate("Form", u"\u4f7f\u80fd:", None))
+        self.groupBox_head.setTitle(QCoreApplication.translate("Form", u"head", None))
+        self.label_head.setText(QCoreApplication.translate("Form", u"\u4f7f\u80fd:", None))
         self.groupBox_2.setTitle(QCoreApplication.translate("Form", u"left arm", None))
         self.label.setText(QCoreApplication.translate("Form", u"\u4f7f\u80fd:", None))
         self.groupBox_3.setTitle(QCoreApplication.translate("Form", u"right arm", None))

@@ -16,6 +16,9 @@
   <layout class="QVBoxLayout" name="verticalLayout">
    <item>
     <widget class="QGroupBox" name="groupBox_4">
+     <property name="visible">
+      <bool>false</bool>
+     </property>
      <property name="title">
       <string>AGV</string>
      </property>
@@ -30,7 +33,7 @@
          </widget>
         </item>
         <item>
-         <widget class="QWidget" name="body_enable_2" native="true">
+         <widget class="QWidget" name="base_enable" native="true">
           <property name="minimumSize">
            <size>
             <width>44</width>
@@ -62,7 +65,7 @@
       <item>
        <layout class="QGridLayout" name="gridLayout_4">
         <item row="0" column="0">
-         <widget class="QWidget" name="dof_agv_x" native="true">
+         <widget class="QWidget" name="dof_base_x" native="true">
           <property name="styleSheet">
            <string notr="true">[_q_custom_style_disabled=&quot;true&quot;] QObject {
 	background-color: rgb(255, 55, 168);
@@ -71,7 +74,7 @@
          </widget>
         </item>
         <item row="0" column="1">
-         <widget class="QWidget" name="dof_agv_y" native="true">
+         <widget class="QWidget" name="dof_base_y" native="true">
           <property name="styleSheet">
            <string notr="true">[_q_custom_style_disabled=&quot;true&quot;] QObject {
 	background-color: rgb(255, 55, 168);
@@ -80,7 +83,7 @@
          </widget>
         </item>
         <item row="0" column="2">
-         <widget class="QWidget" name="dof_agv_yaw" native="true">
+         <widget class="QWidget" name="dof_base_yaw" native="true">
           <property name="styleSheet">
            <string notr="true">[_q_custom_style_disabled=&quot;true&quot;] QObject {
 	background-color: rgb(255, 55, 168);
@@ -141,7 +144,7 @@
       <item>
        <layout class="QGridLayout" name="gridLayout">
         <item row="0" column="1">
-         <widget class="QWidget" name="dof_pitch" native="true">
+         <widget class="QWidget" name="dof_body_ry" native="true">
           <property name="styleSheet">
            <string notr="true">[_q_custom_style_disabled=&quot;true&quot;] QObject {
 	background-color: rgb(255, 55, 168);
@@ -150,7 +153,7 @@
          </widget>
         </item>
         <item row="0" column="0">
-         <widget class="QWidget" name="dof_roll" native="true">
+         <widget class="QWidget" name="dof_body_z" native="true">
           <property name="styleSheet">
            <string notr="true">[_q_custom_style_disabled=&quot;true&quot;] QObject {
 	background-color: rgb(255, 55, 168);
@@ -161,10 +164,71 @@
        </layout>
       </item>
      </layout>
-    </widget>
-   </item>
-   <item>
-    <layout class="QHBoxLayout" name="horizontalLayout">
+   </widget>
+  </item>
+  <item>
+   <widget class="QGroupBox" name="groupBox_head">
+    <property name="title">
+     <string>head</string>
+    </property>
+    <layout class="QVBoxLayout" name="verticalLayout_head">
+     <item>
+      <layout class="QHBoxLayout" name="horizontalLayout_head">
+       <item>
+        <widget class="QLabel" name="label_head">
+         <property name="text">
+          <string>使能:</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QWidget" name="head_enable" native="true">
+         <property name="minimumSize">
+          <size>
+           <width>44</width>
+           <height>44</height>
+          </size>
+         </property>
+         <property name="styleSheet">
+          <string notr="true">[_q_custom_style_disabled=&quot;true&quot;] QObject {
+	background-color: rgb(85, 170, 255)
+}</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <spacer name="horizontalSpacer_head">
+         <property name="orientation">
+          <enum>Qt::Orientation::Horizontal</enum>
+         </property>
+         <property name="sizeHint" stdset="0">
+          <size>
+           <width>40</width>
+           <height>20</height>
+          </size>
+         </property>
+        </spacer>
+       </item>
+      </layout>
+     </item>
+     <item>
+      <layout class="QGridLayout" name="gridLayout_head">
+       <item row="0" column="0">
+        <widget class="QWidget" name="dof_head_yaw" native="true">
+         <property name="styleSheet">
+          <string notr="true">[_q_custom_style_disabled=&quot;true&quot;] QObject {
+	background-color: rgb(255, 55, 168);
+}</string>
+         </property>
+        </widget>
+       </item>
+      </layout>
+     </item>
+    </layout>
+   </widget>
+  </item>
+  <item>
+   <layout class="QHBoxLayout" name="horizontalLayout">
      <item>
       <widget class="QGroupBox" name="groupBox_2">
        <property name="title">

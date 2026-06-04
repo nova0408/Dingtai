@@ -1,0 +1,33 @@
+syntax = "proto3";
+
+package robot.api.v1;
+
+import "common.proto";
+
+service WaistService {
+  rpc SetPitchAngle(SetWaistPitchRequest) returns (SetWaistPitchResponse);
+  rpc GetCurrentPitch(google.protobuf.Empty) returns (GetWaistPitchResponse);
+
+  // 新增：腰部标定接口（请求为空，返回状态）
+  rpc CalibrateWaist(google.protobuf.Empty) returns (CalibrateWaistResponse);
+
+  rpc SetEnabled(ModuleEnableRequest) returns (ModuleEnableResponse);
+  rpc GetEnabled(google.protobuf.Empty) returns (ModuleEnableResponse);
+}
+
+message SetWaistPitchRequest {
+  double pitch_angle_deg = 1;  // 俯仰角度（度），正值前俯
+}
+
+message SetWaistPitchResponse {
+  StatusResponse status = 1;
+}
+
+message GetWaistPitchResponse {
+  double current_pitch_deg = 1;
+  google.protobuf.Timestamp timestamp = 2;
+}
+
+message CalibrateWaistResponse {
+  StatusResponse status = 1;  // 复用通用状态结构，包含标定结果（成功/失败原因等）
+}

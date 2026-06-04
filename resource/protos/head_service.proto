@@ -1,0 +1,44 @@
+syntax = "proto3";
+
+package robot.api.v1;
+
+import "common.proto";
+
+service HeadService {
+  // 俯仰控制
+  rpc SetHeadPitch(SetHeadPitchRequest) returns (SetHeadPitchResponse);
+  rpc GetHeadPitch(google.protobuf.Empty) returns (GetHeadPitchResponse);
+  
+  // 旋转控制
+  rpc SetHeadYaw(SetHeadYawRequest) returns (SetHeadYawResponse);
+  rpc GetHeadYaw(google.protobuf.Empty) returns (GetHeadYawResponse);
+
+  rpc SetEnabled(ModuleEnableRequest) returns (ModuleEnableResponse);
+  rpc GetEnabled(google.protobuf.Empty) returns (ModuleEnableResponse);
+}
+
+message SetHeadPitchRequest {
+  double pitch_angle_deg = 1;  // 俯仰角度
+}
+
+message SetHeadPitchResponse {
+  StatusResponse status = 1;
+}
+
+message GetHeadPitchResponse {
+  double current_pitch_deg = 1;
+  google.protobuf.Timestamp timestamp = 2;
+}
+
+message SetHeadYawRequest {
+  double yaw_angle_deg = 1;  // 偏航角度，正数左转
+}
+
+message SetHeadYawResponse {
+  StatusResponse status = 1;
+}
+
+message GetHeadYawResponse {
+  double current_yaw_deg = 1;
+  google.protobuf.Timestamp timestamp = 2;
+}

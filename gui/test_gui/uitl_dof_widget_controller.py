@@ -38,3 +38,13 @@ class DoFWidgetController(QObject):
     def move_backward(self) -> None:
         valid_value = self._model.offset_command_from_feedback(self._model.step)
         self.targetRequested.emit(self._model.name, valid_value)
+
+    @Slot()
+    def continue_forward(self) -> None:
+        valid_value = self._model.offset_command(-self._model.step)
+        self.targetRequested.emit(self._model.name, valid_value)
+
+    @Slot()
+    def continue_backward(self) -> None:
+        valid_value = self._model.offset_command(self._model.step)
+        self.targetRequested.emit(self._model.name, valid_value)

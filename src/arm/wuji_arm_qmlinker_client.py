@@ -7,9 +7,12 @@ from typing import Any
 
 import numpy as np
 from qmlinker import QMArm, create_channel
-from qmlinker.grpc_py import arm_pb2
+from qmlinker.grpc_py import arm_pb2, common_pb2, head_pb2, head_pb2_grpc
+from qmlinker.grpc_py import lift_pb2, lift_pb2_grpc
+from qmlinker.grpc_py import waist_pb2, waist_pb2_grpc
+from google.protobuf import empty_pb2
 
-from src.arm.wuji_arm_protocol import ArmDeviceName, WujiArmQmlinkerConfig
+from src.arm.wuji_arm_protocol import ArmDeviceName, WujiArmQmlinkerConfig, WujiModuleName
 
 # region 数据结构
 
@@ -57,7 +60,7 @@ class WujiArmQmlinkerClient:
 
     职责边界：
     - 负责在 DingTai 环境中通过 qmlinker SDK 访问基础控制工控机 ArmService。
-    - 不通过 SSH 执行远端 Python，不修改远端环境。
+    - 不执行远端 Python，不修改远端环境。
     - 不持有 GUI 控件，不发 Qt 信号。
 
     设计思想：
@@ -66,7 +69,7 @@ class WujiArmQmlinkerClient:
 
     生命周期：
     - 随 GUI 后端创建和关闭。
-    - `close` 只停止 SDK 内部线程，不负责关闭 GUI 或 SSH 会话。
+    - `close` 只停止 SDK 内部线程，不负责关闭 GUI 会话。
 
     继承关系：
     - 不继承业务基类，作为硬件协议适配器使用。
@@ -84,6 +87,10 @@ class WujiArmQmlinkerClient:
         self._config = WujiArmQmlinkerConfig() if config is None else config
         self._channel = create_channel(self._config.target())
         self._arms: dict[ArmDeviceName, Any] = {}
+        self._default_channel = self._channel["DEFAULT"] if isinstance(self._channel, dict) else self._channel
+        self._waist_stub = waist_pb2_grpc.WaistServiceStub(self._default_channel)
+        self._lift_stub = lift_pb2_grpc.LiftServiceStub(self._default_channel)
+        self._head_stub = head_pb2_grpc.HeadServiceStub(self._default_channel)
 
     def close(self) -> None:
         """停止 qmlinker 内部状态线程。"""
@@ -105,10 +112,50 @@ class WujiArmQmlinkerClient:
             在配置时间内 gRPC 通道无法 ready。
         """
 
-        channel = self._channel["DEFAULT"] if isinstance(self._channel, dict) else self._channel
         import grpc
 
-        grpc.channel_ready_future(channel).result(timeout=self._config.request_timeout_s)
+        grpc.channel_ready_future(self._default_channel).result(timeout=self._config.request_timeout_s)
+
+    def get_module_enable(self, module_name: WujiModuleName) -> bool:
+        """读取整机模块使能状态。
+
+        Parameters
+        ----------
+        module_name:
+            模块名，支持 `base`、`body`、`head`、`left_arm` 与 `right_arm`。
+
+        Returns
+        -------
+        bool
+            `True` 表示模块已使能。
+        """
+
+        if module_name in {"left_arm", "right_arm"}:
+            return self.get_enable(self._arm_device_name(module_name))
+        if module_name == "body":
+            return self._get_stub_enable(self._lift_stub) and self._get_stub_enable(self._waist_stub)
+        response = self._module_stub(module_name).GetEnabled(
+            empty_pb2.Empty(),
+            timeout=self._config.request_timeout_s,
+        )
+        return bool(response.status.success and response.current_state == common_pb2.MODULE_ENABLED)
+
+    def set_module_enable(self, module_name: WujiModuleName, enabled: bool) -> bool:
+        """设置整机模块使能状态。"""
+
+        if module_name in {"left_arm", "right_arm"}:
+            return self.set_enable(self._arm_device_name(module_name), enabled)
+        if module_name == "body":
+            return self._set_stub_enable(self._lift_stub, enabled) and self._set_stub_enable(
+                self._waist_stub,
+                enabled,
+            )
+        request = common_pb2.ModuleEnableRequest(enable=bool(enabled))
+        response = self._module_stub(module_name).SetEnabled(
+            request,
+            timeout=self._config.request_timeout_s,
+        )
+        return bool(response.status.success)
 
     def get_enable(self, device_name: ArmDeviceName) -> bool:
         """读取机械臂使能状态。
@@ -348,6 +395,69 @@ class WujiArmQmlinkerClient:
         joint_angles_rad = [float(np.deg2rad(joint.angle_deg)) for joint in joints]
         return self.fk_fast(device_name, joint_angles_rad)
 
+    def get_body_z(self) -> float:
+        """读取身体 z 轴升降高度。
+
+        Returns
+        -------
+        float
+            当前升降高度，单位 mm。
+        """
+
+        response = self._lift_stub.GetCurrentLiftPhysicalHeight(
+            empty_pb2.Empty(),
+            timeout=self._config.request_timeout_s,
+        )
+        return float(response.current_height_mm)
+
+    def set_body_z(self, height_mm: float) -> bool:
+        """设置身体 z 轴升降高度，单位 mm。"""
+
+        request = lift_pb2.SetLiftPhysicalHeightRequest(height_mm=int(round(height_mm)))
+        response = self._lift_stub.SetLiftPhysicalHeight(
+            request,
+            timeout=self._config.request_timeout_s,
+        )
+        return bool(response.status.success)
+
+    def get_body_ry(self) -> float:
+        """读取身体 Ry 俯仰角，单位 deg。"""
+
+        response = self._waist_stub.GetCurrentPitch(
+            empty_pb2.Empty(),
+            timeout=self._config.request_timeout_s,
+        )
+        return float(response.current_pitch_deg)
+
+    def set_body_ry(self, pitch_deg: float) -> bool:
+        """设置身体 Ry 俯仰角，单位 deg。"""
+
+        request = waist_pb2.SetWaistPitchRequest(pitch_angle_deg=float(pitch_deg))
+        response = self._waist_stub.SetPitchAngle(
+            request,
+            timeout=self._config.request_timeout_s,
+        )
+        return bool(response.status.success)
+
+    def get_head_yaw(self) -> float:
+        """读取头部旋转轴角度，单位 deg。"""
+
+        response = self._head_stub.GetHeadYaw(
+            empty_pb2.Empty(),
+            timeout=self._config.request_timeout_s,
+        )
+        return float(response.current_yaw_deg)
+
+    def set_head_yaw(self, yaw_deg: float) -> bool:
+        """设置头部旋转轴角度，单位 deg。"""
+
+        request = head_pb2.SetHeadYawRequest(yaw_angle_deg=float(yaw_deg))
+        response = self._head_stub.SetHeadYaw(
+            request,
+            timeout=self._config.request_timeout_s,
+        )
+        return bool(response.status.success)
+
     def _arm(self, device_name: ArmDeviceName) -> Any:
         """返回指定机械臂的 qmlinker QMArm 实例。"""
 
@@ -365,6 +475,37 @@ class WujiArmQmlinkerClient:
         if device_name == "left_arm":
             return arm_pb2.ArmType.ARM_LEFT
         return arm_pb2.ArmType.ARM_RIGHT
+
+    def _module_stub(self, module_name: WujiModuleName) -> Any:
+        """返回非机械臂模块的 qmlinker gRPC stub。"""
+
+        if module_name == "body":
+            return self._lift_stub
+        if module_name == "head":
+            return self._head_stub
+        raise ValueError(f"unsupported non-arm module: {module_name}")
+
+    def _arm_device_name(self, module_name: WujiModuleName) -> ArmDeviceName:
+        """将整机模块名收窄为机械臂设备名。"""
+
+        if module_name == "left_arm":
+            return "left_arm"
+        if module_name == "right_arm":
+            return "right_arm"
+        raise ValueError(f"module is not an arm device: {module_name}")
+
+    def _get_stub_enable(self, stub: Any) -> bool:
+        """读取通用模块 stub 的使能状态。"""
+
+        response = stub.GetEnabled(empty_pb2.Empty(), timeout=self._config.request_timeout_s)
+        return bool(response.status.success and response.current_state == common_pb2.MODULE_ENABLED)
+
+    def _set_stub_enable(self, stub: Any, enabled: bool) -> bool:
+        """设置通用模块 stub 的使能状态。"""
+
+        request = common_pb2.ModuleEnableRequest(enable=bool(enabled))
+        response = stub.SetEnabled(request, timeout=self._config.request_timeout_s)
+        return bool(response.status.success)
 
 
 # endregion

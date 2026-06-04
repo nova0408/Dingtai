@@ -9,9 +9,8 @@ from gui.test_gui.TestRobotTab_ui import Ui_Form
 from gui.test_gui.uitl_dof_widget_model import DoFWidgetModel
 from gui.test_gui.uitl_dof_widget_view import UtilDoFWidget
 from gui.util_components.casia_indicator_light import CasiaIndicatorLight
-from src.arm import SUPPORTED_ARM_DEVICES, parse_arm_axis_name
+from src.arm import SUPPORTED_WUJI_MODULES, WUJI_ARM_JOINT_LIMITS_DEG
 from src.servers.common import JointLimit
-from src.servers.wuji_ind_casia_arm import WujiIndCasiaArmServer
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,7 +35,6 @@ class TestWujiCasiaArmWidget(QWidget):
         super().__init__(parent)
         self.ui = Ui_Form()
         self.ui.setupUi(self)
-        self._robot = WujiIndCasiaArmServer()
         self.dof_widgets: dict[str, UtilDoFWidget] = {}
         self.dof_widgets_by_axis: dict[str, UtilDoFWidget] = {}
         self.enable_indicators: dict[str, CasiaIndicatorLight] = {}
@@ -56,15 +54,13 @@ class TestWujiCasiaArmWidget(QWidget):
             )
             widget = UtilDoFWidget.replace_placeholder(placeholder, model)
             widget.targetRequested.connect(self._on_dof_target_requested)
-            if parse_arm_axis_name(binding.axis_name) is None:
-                widget.setEnabled(False)
             self.dof_widgets[binding.placeholder_name] = widget
             self.dof_widgets_by_axis[binding.axis_name] = widget
 
     def _replace_enable_placeholders(self) -> None:
         enable_names = {
-            "body_enable_2": "AGV",
             "body_enable": "body",
+            "head_enable": "head",
             "left_enable": "left_arm",
             "right_enable": "right_arm",
         }
@@ -77,26 +73,31 @@ class TestWujiCasiaArmWidget(QWidget):
                 default_status=False,
             )
             indicator.setObjectName(placeholder_name)
-            indicator.setEnabled(device_name in SUPPORTED_ARM_DEVICES)
+            indicator.setEnabled(device_name in SUPPORTED_WUJI_MODULES)
             indicator.clicked.connect(lambda name=device_name, light=indicator: self._request_enable_toggle(name, light))
             self.enable_indicators[device_name] = indicator
 
     def _build_axis_bindings(self) -> tuple[DebugAxisBinding, ...]:
-        body_limits = {item.name: item for item in self._robot.body.get_movable_range()}
-        left_limits = self._robot.left_arm.get_movable_range()
-        right_limits = self._robot.right_arm.get_movable_range()
-        agv_limits = (
-            JointLimit("agv_x", -1.0, 1.0, "m"),
-            JointLimit("agv_y", -1.0, 1.0, "m"),
-            JointLimit("agv_yaw", -180.0, 180.0, "deg"),
+        left_limits = tuple(
+            JointLimit(item.name, item.minimum_deg, item.maximum_deg, item.unit)
+            for item in WUJI_ARM_JOINT_LIMITS_DEG["left_arm"]
+        )
+        right_limits = tuple(
+            JointLimit(item.name, item.minimum_deg, item.maximum_deg, item.unit)
+            for item in WUJI_ARM_JOINT_LIMITS_DEG["right_arm"]
+        )
+        body_limits = (
+            JointLimit("body_z", 0.0, 850.0, "mm"),
+            JointLimit("body_ry", -30.0, 30.0, "deg"),
+        )
+        head_limits = (
+            JointLimit("head_yaw", -90.0, 90.0, "deg"),
         )
 
         return (
-            DebugAxisBinding("dof_agv_x", "agv_x", agv_limits[0], 0.01),
-            DebugAxisBinding("dof_agv_y", "agv_y", agv_limits[1], 0.01),
-            DebugAxisBinding("dof_agv_yaw", "agv_yaw", agv_limits[2], 1.0),
-            DebugAxisBinding("dof_roll", "head_yaw", body_limits["head_yaw"], 1.0),
-            DebugAxisBinding("dof_pitch", "head_pitch", body_limits["head_pitch"], 1.0),
+            DebugAxisBinding("dof_body_z", "body_z", body_limits[0], 10.0),
+            DebugAxisBinding("dof_body_ry", "body_ry", body_limits[1], 1.0),
+            DebugAxisBinding("dof_head_yaw", "head_yaw", head_limits[0], 1.0),
             *(
                 DebugAxisBinding(f"dof_l_{idx}", f"left_{limit.name}", limit, 1.0)
                 for idx, limit in enumerate(left_limits, start=1)

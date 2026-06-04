@@ -30,13 +30,13 @@ def _setup_loguru_file_sink() -> None:
     log_dir = project_root / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     logger.add(
-        log_dir / "test_gui_ssh.log",
+        log_dir / "test_gui_service.log",
         level="DEBUG",
         encoding="utf-8",
         rotation="5 MB",
         retention=5,
     )
-    logger.info("Test GUI log file initialized: {}", log_dir / "test_gui_ssh.log")
+    logger.info("Test GUI log file initialized: {}", log_dir / "test_gui_service.log")
 
 
 def main() -> int:

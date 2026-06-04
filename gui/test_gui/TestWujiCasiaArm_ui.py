@@ -8,15 +8,8 @@
 ## WARNING! All changes made in this file will be lost when recompiling UI file!
 ################################################################################
 
-from PySide6.QtCore import (QCoreApplication, QDate, QDateTime, QLocale,
-    QMetaObject, QObject, QPoint, QRect,
-    QSize, QTime, QUrl, Qt)
-from PySide6.QtGui import (QBrush, QColor, QConicalGradient, QCursor,
-    QFont, QFontDatabase, QGradient, QIcon,
-    QImage, QKeySequence, QLinearGradient, QPainter,
-    QPalette, QPixmap, QRadialGradient, QTransform)
-from PySide6.QtWidgets import (QApplication, QHBoxLayout, QLabel, QMainWindow,
-    QMenuBar, QPushButton, QSizePolicy, QSpacerItem,
+from PySide6.QtCore import (QCoreApplication, QMetaObject, QRect)
+from PySide6.QtWidgets import (QHBoxLayout, QLabel, QMenuBar, QPushButton, QSizePolicy, QSpacerItem,
     QStatusBar, QTabWidget, QVBoxLayout, QWidget)
 
 class Ui_MainWindow(object):
@@ -95,7 +88,7 @@ class Ui_MainWindow(object):
 
     def retranslateUi(self, MainWindow):
         MainWindow.setWindowTitle(QCoreApplication.translate("MainWindow", u"MainWindow", None))
-        self.label.setText(QCoreApplication.translate("MainWindow", u"SSH:", None))
+        self.label.setText(QCoreApplication.translate("MainWindow", u"Service:", None))
         self.pushButton.setText(QCoreApplication.translate("MainWindow", u"\u8fde\u63a5", None))
         self.pushButton_2.setText(QCoreApplication.translate("MainWindow", u"\u65ad\u5f00", None))
         self.tabWidget.setTabText(self.tabWidget.indexOf(self.robot_tab), QCoreApplication.translate("MainWindow", u"robot", None))

@@ -9,6 +9,9 @@ import tomllib
 
 ArmSide = Literal["left", "right"]
 ArmDeviceName = Literal["left_arm", "right_arm"]
+WujiModuleName = Literal["body", "head", "left_arm", "right_arm"]
+WujiBodyAxisName = Literal["body_z", "body_ry"]
+WujiHeadAxisName = Literal["head_yaw"]
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 ROBOT_NETWORK_CONFIG_PATH = PROJECT_ROOT / "config" / "robot_network.toml"
 
@@ -90,6 +93,38 @@ class WujiRobotNetworkConfig:
     "qmlinker 机械臂连接配置。"
 
 
+@dataclass(frozen=True, slots=True)
+class WujiArmJointLimit:
+    """qmlinker 机械臂单关节真实限位。
+
+    职责边界：
+    - 只描述 qmlinker SDK 内置 FK/IK 模型暴露的关节角度限位。
+    - 不负责 GUI 控件创建、运动命令发送或硬件状态刷新。
+
+    设计思想：
+    - 以 qmlinker 中 `fkik.joint_min/joint_max` 的真实值为准，避免 GUI 使用占位范围。
+    - 左右臂分开保存，因为右臂安装与模型限位并不是左臂简单复制。
+
+    生命周期：
+    - 不持有网络连接，可作为配置常量跨线程读取。
+
+    继承关系：
+    - 不继承业务基类，作为机械臂 UI 与协议层共享的数据契约。
+    """
+
+    name: str
+    "关节名，格式为 `j1` 到 `j6`。"
+
+    minimum_deg: float
+    "关节最小角度，单位 deg。"
+
+    maximum_deg: float
+    "关节最大角度，单位 deg。"
+
+    unit: str = "deg"
+    "角度单位，当前固定为 deg。"
+
+
 def load_wuji_robot_network_config(path: Path | None = None) -> WujiRobotNetworkConfig:
     """读取无际机器人网络配置。
 
@@ -133,6 +168,34 @@ def load_wuji_robot_network_config(path: Path | None = None) -> WujiRobotNetwork
 SUPPORTED_ARM_DEVICES: tuple[ArmDeviceName, ...] = ("left_arm", "right_arm")
 "当前 arm 接口文档可真实控制的机械臂设备。"
 
+SUPPORTED_WUJI_MODULES: tuple[WujiModuleName, ...] = (
+    "body",
+    "head",
+    "left_arm",
+    "right_arm",
+)
+"当前 qmlinker 可真实读写使能状态的整机模块。"
+
+WUJI_ARM_JOINT_LIMITS_DEG: dict[ArmDeviceName, tuple[WujiArmJointLimit, ...]] = {
+    "left_arm": (
+        WujiArmJointLimit("j1", -269.98, 269.98),
+        WujiArmJointLimit("j2", -84.0, 84.8),
+        WujiArmJointLimit("j3", -269.98, 269.98),
+        WujiArmJointLimit("j4", -196.7, 35.01),
+        WujiArmJointLimit("j5", -180.02, 180.02),
+        WujiArmJointLimit("j6", -176.99, 0.52),
+    ),
+    "right_arm": (
+        WujiArmJointLimit("j1", -449.77, 89.95),
+        WujiArmJointLimit("j2", -95.0, 84.0),
+        WujiArmJointLimit("j3", -269.98, 269.98),
+        WujiArmJointLimit("j4", -214.97, 0.0),
+        WujiArmJointLimit("j5", -180.02, 180.02),
+        WujiArmJointLimit("j6", -180.02, 0.0),
+    ),
+}
+"qmlinker SDK FK/IK 模型暴露的左右臂真实关节限位，角度单位 deg。"
+
 
 def parse_arm_axis_name(axis_name: str) -> tuple[ArmDeviceName, int] | None:
     """解析 GUI DoF 轴名为机械臂设备与关节索引。
@@ -158,6 +221,46 @@ def parse_arm_axis_name(axis_name: str) -> tuple[ArmDeviceName, int] | None:
         if index_text.isdigit() and 1 <= int(index_text) <= 6:
             return "right_arm", int(index_text)
         return None
+    return None
+
+
+def parse_body_axis_name(axis_name: str) -> WujiBodyAxisName | None:
+    """解析身体轴名。
+
+    Parameters
+    ----------
+    axis_name:
+        GUI 轴名，当前支持 `body_z` 与 `body_ry`。
+
+    Returns
+    -------
+    WujiBodyAxisName | None
+        身体轴名；非身体轴返回 `None`。
+    """
+
+    if axis_name == "body_z":
+        return "body_z"
+    if axis_name == "body_ry":
+        return "body_ry"
+    return None
+
+
+def parse_head_axis_name(axis_name: str) -> WujiHeadAxisName | None:
+    """解析头部轴名。
+
+    Parameters
+    ----------
+    axis_name:
+        GUI 轴名，当前支持 `head_yaw`。
+
+    Returns
+    -------
+    WujiHeadAxisName | None
+        头部轴名；非头部轴返回 `None`。
+    """
+
+    if axis_name == "head_yaw":
+        return "head_yaw"
     return None
 
 

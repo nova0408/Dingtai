@@ -1,0 +1,43 @@
+syntax = "proto3";
+
+package robot.api.v1;
+
+import "common.proto";
+
+service LiftService {
+  rpc SetLiftHeight(SetLiftHeightRequest) returns (SetLiftHeightResponse);
+  rpc GetCurrentLiftHeight(google.protobuf.Empty) returns (GetLiftHeightResponse);
+
+  // 新增物理高度（毫米）控制接口
+  rpc SetLiftPhysicalHeight(SetLiftPhysicalHeightRequest) returns (SetLiftHeightResponse);
+  rpc GetCurrentLiftPhysicalHeight(google.protobuf.Empty) returns (GetLiftPhysicalHeightResponse);
+
+  rpc SetEnabled(ModuleEnableRequest) returns (ModuleEnableResponse);
+  rpc GetEnabled(google.protobuf.Empty) returns (ModuleEnableResponse);
+}
+
+message SetLiftHeightRequest {
+  double scale = 1;    // 比例值[0,1]
+}
+
+message SetLiftHeightResponse {
+  StatusResponse status = 1;
+}
+
+message GetLiftHeightResponse {
+  double current_scale = 1;
+  google.protobuf.Timestamp timestamp = 2;
+  StatusResponse status = 3;    // 可选：增加状态信息，便于排查问题
+}
+
+// 新增：设置物理高度请求（单位：毫米，范围0-850）
+message SetLiftPhysicalHeightRequest {
+  int32 height_mm = 1;  // 物理高度，单位毫米，取值范围[0, 850]
+}
+
+// 新增：获取物理高度响应
+message GetLiftPhysicalHeightResponse {
+  int32 current_height_mm = 1;  // 当前物理高度，单位毫米
+  google.protobuf.Timestamp timestamp = 2;  // 时间戳，与比例值接口保持一致
+  StatusResponse status = 3;    // 可选：增加状态信息，便于排查问题
+}

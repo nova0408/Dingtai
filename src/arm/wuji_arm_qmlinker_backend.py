@@ -8,15 +8,19 @@ from typing import Any
 from loguru import logger
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal, Slot
 
-from src.arm import (
+from src.arm.wuji_arm_protocol import (
     SUPPORTED_ARM_DEVICES,
-    WujiArmQmlinkerClient,
+    SUPPORTED_WUJI_MODULES,
+    ArmDeviceName,
     WujiArmQmlinkerConfig,
+    WujiModuleName,
     axis_names_for_device,
     load_wuji_robot_network_config,
     parse_arm_axis_name,
+    parse_body_axis_name,
+    parse_head_axis_name,
 )
-from src.arm.wuji_arm_protocol import ArmDeviceName
+from src.arm.wuji_arm_qmlinker_client import WujiArmQmlinkerClient
 
 # region 数据结构
 
@@ -33,7 +37,7 @@ class _SdkRequest:
     - Qt 线程池完成时需要恢复请求语义，便于将结果分发到对应 GUI 信号。
 
     生命周期：
-    - 由 `WujiArmGrpcBackend` 创建，在 worker 完成后从 pending 集合中删除。
+    - 由 `WujiArmQmlinkerBackend` 创建，在 worker 完成后从 pending 集合中删除。
 
     继承关系：
     - 不继承业务基类，作为后端内部数据结构使用。
@@ -48,8 +52,8 @@ class _SdkRequest:
     axis_name: str | None = None
     "GUI 轴名，仅关节相关请求使用。"
 
-    device_name: ArmDeviceName | None = None
-    "机械臂设备名，仅机械臂请求使用。"
+    device_name: WujiModuleName | None = None
+    "整机模块名，仅具体模块请求使用。"
 
 
 class _SdkWorkerSignals(QObject):
@@ -86,16 +90,16 @@ class _SdkWorker(QRunnable):
 # region 主入口
 
 
-class WujiArmGrpcBackend(QObject):
-    """无际机械臂 GUI 后端。
+class WujiArmQmlinkerBackend(QObject):
+    """无际机械臂 qmlinker GUI 后端。
 
     职责边界：
     - 负责将 GUI 请求转换为本机 qmlinker SDK 调用并分发结果。
-    - 不通过 SSH 执行远端 Python，不修改远端环境。
+    - 不执行远端 Python，不修改远端环境。
     - 不创建或修改 GUI 控件。
 
     设计思想：
-    - 保留原 GUI 使用的信号名，降低调试页改动范围。
+    - 使用清晰的 qmlinker/service 命名，避免把 gRPC 通道检查误读为 SSH 登录。
     - 底层使用接口文档提供的 qmlinker wheel，避免重复实现协议细节。
     - 后端持有一个 qmlinker 客户端，复用 SDK 内部状态更新线程。
 
@@ -111,7 +115,7 @@ class WujiArmGrpcBackend(QObject):
     - `_pending` 只在 GUI 线程读写，worker 通过 Qt queued signal 回传结果。
     """
 
-    sshStateChanged = Signal(bool, str)
+    serviceStateChanged = Signal(bool, str)
     enableStateReceived = Signal(str, bool)
     dofValuesReceived = Signal(dict)
     requestFailed = Signal(str)
@@ -119,11 +123,11 @@ class WujiArmGrpcBackend(QObject):
     def __init__(
         self,
         parent: QObject | None = None,
-        ssh_host_alias: str = "base_control",
+        service_host_alias: str = "base_control",
         config: WujiArmQmlinkerConfig | None = None,
     ) -> None:
         super().__init__(parent)
-        self._legacy_host_alias = ssh_host_alias
+        self._service_host_alias = service_host_alias
         self._config = load_wuji_robot_network_config().qmlinker if config is None else config
         self._thread_pool = QThreadPool.globalInstance()
         self._pending: dict[str, _SdkRequest] = {}
@@ -149,12 +153,12 @@ class WujiArmGrpcBackend(QObject):
             self._close_client()
             logger.info("Configured qmlinker endpoint: target={}", self._config.target())
 
-    def connect_ssh(self) -> None:
+    def connect_service(self) -> None:
         """检查 qmlinker 目标是否可读取机械臂状态。"""
 
         logger.info(
             "qmlinker connect requested: alias={} target={}",
-            self._legacy_host_alias,
+            self._service_host_alias,
             self._config.target(),
         )
         self._start_worker(
@@ -162,25 +166,41 @@ class WujiArmGrpcBackend(QObject):
             lambda: self._with_client(lambda client: client.check_ready()),
         )
 
-    def disconnect_ssh(self) -> None:
+    def disconnect_service(self) -> None:
         """断开 GUI 侧连接状态。"""
 
         logger.info("qmlinker disconnect requested: target={}", self._config.target())
         self._close_client()
-        self.sshStateChanged.emit(False, "qmlinker disconnected")
+        self.serviceStateChanged.emit(False, "qmlinker disconnected")
 
-    def refresh_ssh_state(self) -> None:
+    def refresh_service_state(self) -> None:
         """刷新 qmlinker 目标可达性。"""
 
-        self.connect_ssh()
+        self.connect_service()
 
     def refresh_enable_state(self, device_name: str) -> None:
         """读取机械臂真实使能状态。"""
 
         if device_name not in SUPPORTED_ARM_DEVICES:
-            logger.warning("Skip unsupported enable refresh: device_name={}", device_name)
+            if device_name not in SUPPORTED_WUJI_MODULES:
+                logger.warning("Skip unsupported enable refresh: device_name={}", device_name)
+                return
+            typed_module = self._typed_module(device_name)
+            self._start_worker(
+                _SdkRequest(
+                    action="get_enable",
+                    key=f"get_enable:{typed_module}",
+                    device_name=typed_module,
+                ),
+                lambda: self._with_client(
+                    lambda client: {
+                        "device_name": typed_module,
+                        "enabled": client.get_module_enable(typed_module),
+                    }
+                ),
+            )
             return
-        typed_device = self._typed_device(device_name)
+        typed_device = self._typed_arm_device(device_name)
         self._start_worker(
             _SdkRequest(
                 action="get_enable",
@@ -196,59 +216,93 @@ class WujiArmGrpcBackend(QObject):
         )
 
     def set_enable_state(self, device_name: str, enabled: bool) -> None:
-        """设置机械臂使能并读取真实回写状态。"""
+        """设置整机模块使能并读取真实回写状态。"""
 
-        if device_name not in SUPPORTED_ARM_DEVICES:
+        if device_name not in SUPPORTED_WUJI_MODULES:
             logger.warning("Reject unsupported enable request: device_name={}", device_name)
             self.requestFailed.emit(f"当前接口文档未提供 {device_name} 使能接口")
             return
-        typed_device = self._typed_device(device_name)
+        typed_module = self._typed_module(device_name)
         self._start_worker(
             _SdkRequest(
                 action="set_enable",
-                key=f"set_enable:{typed_device}",
-                device_name=typed_device,
+                key=f"set_enable:{typed_module}",
+                device_name=typed_module,
             ),
             lambda: self._with_client(
-                lambda client: self._set_enable_and_readback(client, typed_device, enabled)
+                lambda client: self._set_module_enable_and_readback(
+                    client,
+                    typed_module,
+                    enabled,
+                )
             ),
         )
 
     def refresh_dof_value(self, axis_name: str) -> None:
-        """读取某个机械臂轴所在整臂的真实关节角度。"""
+        """读取某个整机轴的真实反馈值。"""
 
-        parsed = parse_arm_axis_name(axis_name)
-        if parsed is None:
-            logger.warning("Skip unsupported DoF refresh: axis_name={}", axis_name)
+        parsed_arm = parse_arm_axis_name(axis_name)
+        if parsed_arm is not None:
+            device_name, _ = parsed_arm
+            self._start_joint_refresh(device_name, axis_name, action="get_joints")
             return
-        device_name, _ = parsed
-        self._start_joint_refresh(device_name, axis_name, action="get_joints")
 
-    def set_dof_target(self, axis_name: str, target_angle_deg: float) -> None:
-        """设置单个机械臂关节目标角度。"""
-
-        parsed = parse_arm_axis_name(axis_name)
-        if parsed is None:
-            logger.warning("Reject unsupported DoF target: axis_name={}", axis_name)
-            self.requestFailed.emit(f"当前接口文档未提供 {axis_name} 控制接口")
+        if parse_body_axis_name(axis_name) is not None:
+            self._start_worker(
+                _SdkRequest(action="get_body_axis", key=f"get_body_axis:{axis_name}", axis_name=axis_name),
+                lambda: self._with_client(lambda client: self._read_body_axis(client, axis_name)),
+            )
             return
-        device_name, joint_index = parsed
-        self._start_worker(
-            _SdkRequest(
-                action="set_joint",
-                key=f"set_joint:{device_name}:{joint_index}",
-                axis_name=axis_name,
-                device_name=device_name,
-            ),
-            lambda: self._with_client(
-                lambda client: self._set_joint_and_readback(
-                    client,
-                    device_name,
-                    joint_index,
-                    target_angle_deg,
-                )
-            ),
-        )
+
+        if parse_head_axis_name(axis_name) is not None:
+            self._start_worker(
+                _SdkRequest(action="get_head_axis", key=f"get_head_axis:{axis_name}", axis_name=axis_name),
+                lambda: self._with_client(lambda client: self._read_head_axis(client, axis_name)),
+            )
+            return
+
+        logger.warning("Skip unsupported DoF refresh: axis_name={}", axis_name)
+
+    def set_dof_target(self, axis_name: str, target_value: float) -> None:
+        """设置单个整机轴目标值。"""
+
+        parsed_arm = parse_arm_axis_name(axis_name)
+        if parsed_arm is not None:
+            device_name, joint_index = parsed_arm
+            self._start_worker(
+                _SdkRequest(
+                    action="set_joint",
+                    key=f"set_joint:{device_name}:{joint_index}",
+                    axis_name=axis_name,
+                    device_name=device_name,
+                ),
+                lambda: self._with_client(
+                    lambda client: self._set_joint_and_readback(
+                        client,
+                        device_name,
+                        joint_index,
+                        target_value,
+                    )
+                ),
+            )
+            return
+
+        if parse_body_axis_name(axis_name) is not None:
+            self._start_worker(
+                _SdkRequest(action="set_body_axis", key=f"set_body_axis:{axis_name}", axis_name=axis_name),
+                lambda: self._with_client(lambda client: self._set_body_axis_and_readback(client, axis_name, target_value)),
+            )
+            return
+
+        if parse_head_axis_name(axis_name) is not None:
+            self._start_worker(
+                _SdkRequest(action="set_head_axis", key=f"set_head_axis:{axis_name}", axis_name=axis_name),
+                lambda: self._with_client(lambda client: self._set_head_axis_and_readback(client, axis_name, target_value)),
+            )
+            return
+
+        logger.warning("Reject unsupported DoF target: axis_name={}", axis_name)
+        self.requestFailed.emit(f"当前接口文档未提供 {axis_name} 控制接口")
 
     def get_joint_states(self, device_name: ArmDeviceName) -> object:
         """同步读取机械臂关节状态，供非 GUI 自动化测试使用。"""
@@ -380,6 +434,18 @@ class WujiArmGrpcBackend(QObject):
             raise RuntimeError(f"qmlinker set enable failed: {device_name}")
         return {"device_name": device_name, "enabled": client.get_enable(device_name)}
 
+    def _set_module_enable_and_readback(
+        self,
+        client: WujiArmQmlinkerClient,
+        module_name: WujiModuleName,
+        enabled: bool,
+    ) -> dict[str, object]:
+        """设置模块使能并读取回写状态。"""
+
+        if not client.set_module_enable(module_name, enabled):
+            raise RuntimeError(f"qmlinker set enable failed: {module_name}")
+        return {"device_name": module_name, "enabled": client.get_module_enable(module_name)}
+
     def _read_joint_values(
         self,
         client: WujiArmQmlinkerClient,
@@ -412,6 +478,54 @@ class WujiArmGrpcBackend(QObject):
             raise RuntimeError(f"qmlinker set joint failed: {device_name} j{joint_index}")
         return self._read_joint_values(client, device_name)
 
+    def _read_body_axis(self, client: WujiArmQmlinkerClient, axis_name: str) -> dict[str, object]:
+        """读取身体单轴反馈值。"""
+
+        if axis_name == "body_z":
+            return {"values": {"body_z": client.get_body_z()}}
+        if axis_name == "body_ry":
+            return {"values": {"body_ry": client.get_body_ry()}}
+        raise ValueError(f"unsupported body axis: {axis_name}")
+
+    def _set_body_axis_and_readback(
+        self,
+        client: WujiArmQmlinkerClient,
+        axis_name: str,
+        target_value: float,
+    ) -> dict[str, object]:
+        """设置身体单轴目标并读取回写。"""
+
+        if axis_name == "body_z":
+            if not client.set_body_z(target_value):
+                raise RuntimeError("qmlinker set body_z failed")
+            return self._read_body_axis(client, axis_name)
+        if axis_name == "body_ry":
+            if not client.set_body_ry(target_value):
+                raise RuntimeError("qmlinker set body_ry failed")
+            return self._read_body_axis(client, axis_name)
+        raise ValueError(f"unsupported body axis: {axis_name}")
+
+    def _read_head_axis(self, client: WujiArmQmlinkerClient, axis_name: str) -> dict[str, object]:
+        """读取头部单轴反馈值。"""
+
+        if axis_name == "head_yaw":
+            return {"values": {"head_yaw": client.get_head_yaw()}}
+        raise ValueError(f"unsupported head axis: {axis_name}")
+
+    def _set_head_axis_and_readback(
+        self,
+        client: WujiArmQmlinkerClient,
+        axis_name: str,
+        target_value: float,
+    ) -> dict[str, object]:
+        """设置头部单轴目标并读取回写。"""
+
+        if axis_name == "head_yaw":
+            if not client.set_head_yaw(target_value):
+                raise RuntimeError("qmlinker set head_yaw failed")
+            return self._read_head_axis(client, axis_name)
+        raise ValueError(f"unsupported head axis: {axis_name}")
+
     @Slot(str, object)
     def _on_worker_finished(self, key: str, payload: object) -> None:
         """处理 qmlinker worker 成功结果。"""
@@ -424,7 +538,7 @@ class WujiArmGrpcBackend(QObject):
 
         logger.info("qmlinker request finished: action={} key={}", request.action, key)
         if request.action == "sdk_probe":
-            self.sshStateChanged.emit(True, "qmlinker connected")
+            self.serviceStateChanged.emit(True, "qmlinker connected")
             return
 
         if request.action in {"get_enable", "set_enable"}:
@@ -435,9 +549,16 @@ class WujiArmGrpcBackend(QObject):
             self.enableStateReceived.emit(device_name, bool(payload.get("enabled", False)))
             return
 
-        if request.action in {"get_joints", "set_joint"}:
+        if request.action in {
+            "get_joints",
+            "set_joint",
+            "get_body_axis",
+            "set_body_axis",
+            "get_head_axis",
+            "set_head_axis",
+        }:
             if not isinstance(payload, dict) or not isinstance(payload.get("values"), dict):
-                self.requestFailed.emit("qmlinker joint response format error")
+                self.requestFailed.emit("qmlinker axis response format error")
                 return
             self.dofValuesReceived.emit(payload["values"])
 
@@ -450,11 +571,11 @@ class WujiArmGrpcBackend(QObject):
         action = request.action if request is not None else "<unknown>"
         logger.error("qmlinker request failed: action={} key={} message={}", action, key, message)
         if action == "sdk_probe":
-            self.sshStateChanged.emit(False, message)
+            self.serviceStateChanged.emit(False, message)
             return
         self.requestFailed.emit(message)
 
-    def _typed_device(self, device_name: str) -> ArmDeviceName:
+    def _typed_arm_device(self, device_name: str) -> ArmDeviceName:
         """将字符串设备名收窄为机械臂设备字面量。"""
 
         if device_name == "left_arm":
@@ -462,6 +583,19 @@ class WujiArmGrpcBackend(QObject):
         if device_name == "right_arm":
             return "right_arm"
         raise ValueError(f"unsupported arm device: {device_name}")
+
+    def _typed_module(self, device_name: str) -> WujiModuleName:
+        """将字符串设备名收窄为整机模块字面量。"""
+
+        if device_name == "body":
+            return "body"
+        if device_name == "head":
+            return "head"
+        if device_name == "left_arm":
+            return "left_arm"
+        if device_name == "right_arm":
+            return "right_arm"
+        raise ValueError(f"unsupported module: {device_name}")
 
 
 # endregion

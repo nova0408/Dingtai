@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import cast
 
-from PySide6.QtCore import Signal, Slot
+from PySide6.QtCore import QTimer, Signal, Slot
 from PySide6.QtWidgets import QApplication, QWidget
 
 from gui.test_gui.uitl_dof_widget_controller import DoFWidgetController
@@ -42,6 +42,7 @@ class UtilDoFWidget(QWidget):
     valueChanged = Signal(str, float)
 
     _SLIDER_SCALE = 100
+    _HOLD_SEND_INTERVAL_MS = 250
 
     @classmethod
     def replace_placeholder(
@@ -73,6 +74,9 @@ class UtilDoFWidget(QWidget):
         self._replace_slider()
         self._controller = DoFWidgetController(model, self)
         self._syncing_slider = False
+        self._hold_direction = 0
+        self._hold_timer = QTimer(self)
+        self._hold_timer.setInterval(self._HOLD_SEND_INTERVAL_MS)
 
         self._setup_static_text()
         self._setup_slider_range()
@@ -118,10 +122,41 @@ class UtilDoFWidget(QWidget):
 
     def _connect_signals(self) -> None:
         self.value_slider.valueChanged.connect(self._on_slider_value_changed)
-        self.ui.forward_button.clicked.connect(self._controller.move_forward)
-        self.ui.backward_button.clicked.connect(self._controller.move_backward)
+        self.ui.forward_button.pressed.connect(lambda: self._start_hold(-1))
+        self.ui.forward_button.released.connect(self._stop_hold)
+        self.ui.backward_button.pressed.connect(lambda: self._start_hold(1))
+        self.ui.backward_button.released.connect(self._stop_hold)
+        self._hold_timer.timeout.connect(self._send_hold_step)
         self._controller.feedbackValueChanged.connect(self._refresh_feedback_value)
         self._controller.targetRequested.connect(self.targetRequested)
+
+    def _start_hold(self, direction: int) -> None:
+        """启动单个方向的连续关节目标发送。"""
+
+        self._hold_direction = direction
+        self._send_hold_step(first_step=True)
+        self._hold_timer.start()
+
+    def _stop_hold(self) -> None:
+        """停止长按连续发送，避免释放后继续产生控制指令。"""
+
+        self._hold_timer.stop()
+        self._hold_direction = 0
+
+    def _send_hold_step(self, first_step: bool = False) -> None:
+        """按固定节流周期发送一步目标值。"""
+
+        if self._hold_direction < 0:
+            if first_step:
+                self._controller.move_forward()
+            else:
+                self._controller.continue_forward()
+            return
+        if self._hold_direction > 0:
+            if first_step:
+                self._controller.move_backward()
+            else:
+                self._controller.continue_backward()
 
     @Slot(int)
     def _on_slider_value_changed(self, raw_value: int) -> None:

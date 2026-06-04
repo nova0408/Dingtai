@@ -63,9 +63,16 @@
 - 协议源文件放在 `resource/protos/`：
   - `resource/protos/common.proto`
   - `resource/protos/arm_service.proto`
+  - `resource/protos/head_service.proto`
+  - `resource/protos/lift_service.proto`
+  - `resource/protos/waist_service.proto`
 - 当前来源：`E:\DingTai\无际二次开发接口文档\protos\`
 - 当前实现不再生成项目内 gRPC stub，而是直接使用文档提供的 qmlinker wheel。
 - 网络地址配置放在 `config/robot_network.toml`：
   - `192.168.100.60`：基础控制工控机，qmlinker 二次开发接口连接该地址。
   - `192.168.100.70`：Orin 模组，用于 SSH 登录和边缘计算链路。
 - GUI 机械臂调试页默认使用 `config/robot_network.toml` 中的 qmlinker 地址创建 gRPC channel。
+- 当前 GUI 已接入 qmlinker 的臂、身体和头部控制：
+  - 身体：`body_z` 升降轴、`body_ry` 俯仰旋转轴。
+  - 头部：`head_yaw` 可动旋转轴。
+- AGV 底盘暂不接入当前 qmlinker 调试页；底盘使用另一套 SDK，后续有开发计划时再单独接入。
