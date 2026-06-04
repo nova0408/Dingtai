@@ -4,8 +4,6 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from src.utils.datas import Transform
-
 
 # region 相机标定数据结构
 @dataclass(frozen=True)
@@ -59,25 +57,39 @@ class CameraIntrinsics:
 class CameraExtrinsics:
     """两个相机流之间的外参
 
-    该结构封装 SDK 给出的流间刚体变换，用项目统一 `Transform` 表达 SE(3) 它只保存
-    源流、目标流和变换，不持有 SDK 原生外参对象
+    该结构封装 SDK 给出的流间刚体变换，用 NumPy 齐次矩阵表达 SE(3)。它只保存
+    源流、目标流和矩阵，不持有 SDK 原生外参对象。
 
     设计思想：
-    - 使用 `Transform` 作为唯一位姿数据源，避免外参同时保存旋转矩阵和平移数组两份状态
+    - 使用 4x4 `float64` 齐次矩阵作为唯一位姿数据源，便于在 Orin Linux 侧独立部署。
     - `source_stream` 与 `target_stream` 明确变换方向，减少深度到彩色、彩色到深度混用风险
-    - 按需通过属性返回矩阵、旋转和平移，所有派生结果都来自 `transform.as_SE3()`
+    - 按需通过属性返回矩阵、旋转和平移，所有派生结果都来自 `se3_matrix`
 
     继承关系：
     - 不继承业务基类
-    - 仅依赖 dataclass 与项目统一运动学数据结构
+    - 仅依赖 dataclass 与 NumPy
     """
 
     source_stream: str
     "源图像流名称，例如 `depth`"
     target_stream: str
     "目标图像流名称，例如 `color`"
-    transform: Transform
-    "从源流坐标系到目标流坐标系的 SE(3) 变换，平移单位 mm"
+    se3_matrix: np.ndarray
+    "从源流坐标系到目标流坐标系的 SE(3) 齐次矩阵，形状为 `(4, 4)`，dtype 为 `float64`，平移单位 mm"
+
+    def __post_init__(self) -> None:
+        """校验并规范化外参齐次矩阵。
+
+        Raises
+        ------
+        ValueError
+            `se3_matrix` 不能转换为 `(4, 4)` 矩阵时抛出。
+        """
+        # matrix: (4, 4) float64，冻结 dataclass 内部只允许在初始化阶段规范化。
+        matrix = np.asarray(self.se3_matrix, dtype=np.float64)
+        if matrix.shape != (4, 4):
+            raise ValueError(f"CameraExtrinsics.se3_matrix 需要形状 (4, 4)，当前为 {matrix.shape}")
+        object.__setattr__(self, "se3_matrix", matrix.copy())
 
     @property
     def matrix(self) -> np.ndarray:
@@ -88,7 +100,7 @@ class CameraExtrinsics:
         matrix:
             齐次矩阵，形状为 `(4, 4)`，dtype 为 `float64`，平移单位 mm
         """
-        return np.asarray(self.transform.as_SE3(), dtype=np.float64)
+        return self.se3_matrix.copy()
 
     @property
     def rotation(self) -> np.ndarray:

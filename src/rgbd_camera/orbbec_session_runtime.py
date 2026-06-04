@@ -27,8 +27,6 @@ from pyorbbecsdk import (
     PointCloudFilter,
 )
 
-from src.utils.datas import Transform
-
 from .orbbec_models import (
     CameraExtrinsics,
     CameraIntrinsics,
@@ -942,7 +940,7 @@ def _camera_extrinsics_from_sdk(
     Returns
     -------
     extrinsics:
-        项目统一 `CameraExtrinsics` 对象。内部 `Transform` 的平移单位沿用 SDK，项目内按 mm 处理。
+        项目统一 `CameraExtrinsics` 对象。内部 4x4 齐次矩阵的平移单位沿用 SDK，项目内按 mm 处理。
 
     Notes
     -----
@@ -955,7 +953,7 @@ def _camera_extrinsics_from_sdk(
     return CameraExtrinsics(
         source_stream=str(source_stream),
         target_stream=str(target_stream),
-        transform=Transform.from_SE3(se3),
+        se3_matrix=se3,
     )
 
 
