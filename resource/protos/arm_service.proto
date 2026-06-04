@@ -1,0 +1,113 @@
+syntax = "proto3";
+
+package robot.api.v1;
+
+import "common.proto";
+import "google/protobuf/empty.proto";
+import "google/protobuf/timestamp.proto";
+
+// 手臂标识
+enum ArmType {
+  ARM_UNSPECIFIED = 0;
+  ARM_LEFT = 1;
+  ARM_RIGHT = 2;
+}
+
+// 坐标系位姿表示（机器人本体坐标系，四元数姿态）
+// 坐标原点：机器人本体中心，X轴向前，Y轴向左，Z轴向上
+message Pose {
+  double x = 1;  // X轴坐标（单位：米）
+  double y = 2;  // Y轴坐标（单位：米）
+  double z = 3;  // Z轴坐标（单位：米）
+  double qx = 4; // 四元数x分量（姿态）
+  double qy = 5; // 四元数y分量
+  double qz = 6; // 四元数z分量
+  double qw = 7; // 四元数w分量（实部）
+}
+
+service ArmService {
+  // 流式获取关节状态（实时数据推送）
+  rpc StreamGetJointStates(GetJointStatesRequest) returns (stream JointStateResponse);
+  // 流式设置关节状态（实时数据发送，主要用于遥操作）
+  rpc StreamSetJointStates(stream SetJointStatesRequest) returns (google.protobuf.Empty);
+  // 设置目标关节角度
+  rpc SetJointStates(SetJointStatesRequest) returns (SetJointStatesResponse);
+
+  // 新增：设置手臂在本体坐标系下的目标位姿（四元数控制）
+  rpc SetArmPose(SetArmPoseRequest) returns (SetArmPoseResponse);
+  // 新增：流式获取手臂在本体坐标系下的实时位姿（含四元数）
+  rpc StreamGetArmPose(GetArmPoseRequest) returns (stream ArmPoseResponse);
+
+  rpc SetEnabled(ArmEnableRequest) returns (ModuleEnableResponse);
+  rpc GetEnabled(ArmRequest) returns (ModuleEnableResponse);
+}
+
+message GetJointStatesRequest {
+  ArmType arm_type = 1; 
+}
+
+message JointStateResponse {
+  ArmType arm_type = 1; 
+  repeated JointState joints = 2;  // 6个关节状态
+  google.protobuf.Timestamp timestamp = 3;
+}
+
+message JointState {
+  int32 joint_id = 1;    // 关节ID（1-6）
+  double angle_deg = 2;  // 当前角度（度）
+  double current_a = 3;  // 电流（安培）
+  double power_w = 4;    // 功率（瓦特）
+}
+
+message JointRequest {
+  int32 joint_id = 1;          // 关节ID（1-6，唯一标识）
+  double target_angle_deg = 2; // 该关节的目标角度
+  double speed_ratio = 3;       // 该关节的速度比例（0-1，可选，默认用全局值）
+}
+
+message SetJointStatesRequest {
+  ArmType arm_type = 1; 
+  repeated JointRequest joint_request = 2;  // 多个目标关节请求
+}
+
+message SetJointStatesResponse {
+  StatusResponse status = 1;
+}
+
+// 新增：获取手臂位姿请求
+message GetArmPoseRequest {
+  ArmType arm_type = 1;  // 指定手臂
+}
+
+// 新增：手臂位姿响应（实时数据）
+message ArmPoseResponse {
+  ArmType arm_type = 1;   // 手臂标识
+  Pose pose = 2;          // 本体坐标系下位姿（含四元数）
+  google.protobuf.Timestamp timestamp = 3;  // 时间戳
+  bool is_reachable = 4;  // 该位姿是否在可达范围内
+}
+
+// 新增：设置手臂位姿请求（四元数）
+message SetArmPoseRequest {
+  ArmType arm_type = 1;   // 手臂标识
+  Pose target_pose = 2;   // 目标位姿（本体坐标系，四元数）
+  double speed_ratio = 3; // 运动速度比例（0-1，可选，默认0.5）
+}
+
+// 新增：设置手臂位姿响应
+message SetArmPoseResponse {
+  StatusResponse status = 1;
+  bool is_reachable = 2;   // 目标位姿是否可达
+  Pose actual_pose = 3;    // 实际到达的位姿（若已完成运动）
+  string ik_error = 4;     // 逆运动学求解错误信息（若失败）
+}
+
+// 通用arm请求
+message ArmRequest {
+  ArmType arm_type = 1;   // 手臂标识
+}
+
+message ArmEnableRequest {
+  ArmType arm_type = 1;   // 手臂标识
+  bool enable = 2;        // true：使能，false：禁用（复用通用语义）
+}

@@ -9,9 +9,9 @@ from gui.test_gui.TestRobotTab_ui import Ui_Form
 from gui.test_gui.uitl_dof_widget_model import DoFWidgetModel
 from gui.test_gui.uitl_dof_widget_view import UtilDoFWidget
 from gui.util_components.casia_indicator_light import CasiaIndicatorLight
+from src.arm import SUPPORTED_ARM_DEVICES, parse_arm_axis_name
 from src.servers.common import JointLimit
 from src.servers.wuji_ind_casia_arm import WujiIndCasiaArmServer
-from src.simulation.qmlinker_arm_remote import SUPPORTED_ARM_DEVICES, parse_arm_axis_name
 
 
 @dataclass(frozen=True, slots=True)

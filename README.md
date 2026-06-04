@@ -40,8 +40,32 @@
   用于 用于 GUI 界面
   `pip install PySide6==6.11.0`
 
+- qmlinker 1.0.8
+  用于 无际二次开发接口，当前 GUI 机械臂调试页通过本机 DingTai 环境中的 qmlinker 连接基础控制工控机。
+  `pip install E:\DingTai\无际二次开发接口文档\api\qmlinker-1.0.8-py3-none-any.whl`
+
+- protobuf 6.33.6
+  qmlinker 与本项目静态工具链共用的 Protocol Buffers 运行库。
+  `pip install "protobuf<7.0.0,>=6.33.5"`
+
+- plyfile 1.0.3
+  qmlinker 间接依赖。当前项目固定 `numpy<2.0.0`，因此不要使用要求 `numpy>=2.0` 的新版 plyfile。
+  `pip install "plyfile<1.1.0"`
+
 - PyTorch 2.9.1 + Cuda 12.6
 
   PyPose 的基础库
 
   ```pip3 install torch torchvision --index-url https://download.pytorch.org/whl/cu126```
+
+## 无际二次开发接口
+
+- 协议源文件放在 `resource/protos/`：
+  - `resource/protos/common.proto`
+  - `resource/protos/arm_service.proto`
+- 当前来源：`E:\DingTai\无际二次开发接口文档\protos\`
+- 当前实现不再生成项目内 gRPC stub，而是直接使用文档提供的 qmlinker wheel。
+- 网络地址配置放在 `config/robot_network.toml`：
+  - `192.168.100.60`：基础控制工控机，qmlinker 二次开发接口连接该地址。
+  - `192.168.100.70`：Orin 模组，用于 SSH 登录和边缘计算链路。
+- GUI 机械臂调试页默认使用 `config/robot_network.toml` 中的 qmlinker 地址创建 gRPC channel。

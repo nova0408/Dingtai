@@ -1,0 +1,30 @@
+syntax = "proto3";
+
+package robot.api.v1;
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/empty.proto";
+
+// 通用状态响应
+message StatusResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+enum ModuleState {
+  MODULE_STATE_UNSPECIFIED = 0;
+  MODULE_ENABLED = 1;   // 已使能（正常工作）
+  MODULE_DISABLED = 2;  // 已禁用（停止工作）
+}
+
+// 使能控制请求（通用结构，所有模块的开关请求都用这个）
+message ModuleEnableRequest {
+  bool enable = 1;  // true：使能，false：禁用
+}
+
+// 使能控制响应（通用结构，返回当前状态）
+message ModuleEnableResponse {
+  StatusResponse status = 1;       // 操作结果（成功/失败原因）
+  ModuleState current_state = 2;   // 当前模块状态（使能/禁用）
+}
+

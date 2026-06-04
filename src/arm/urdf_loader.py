@@ -6,7 +6,6 @@ from pathlib import Path
 from src.robotics.urdf_interface import (
     UrdfConverter,
     UrdfModel,
-    UrdfValidationError,
     validate_joint_count,
     validate_joint_limits_present,
 )

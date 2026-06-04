@@ -4,6 +4,7 @@ import os
 import sys
 from pathlib import Path
 
+from loguru import logger
 from PySide6.QtWidgets import QApplication
 
 
@@ -24,9 +25,24 @@ def _setup_qt_plugin_path() -> None:
         os.environ.setdefault("QT_QPA_PLATFORM_PLUGIN_PATH", str(platform_dir))
 
 
+def _setup_loguru_file_sink() -> None:
+    project_root = Path(__file__).resolve().parents[1]
+    log_dir = project_root / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    logger.add(
+        log_dir / "test_gui_ssh.log",
+        level="DEBUG",
+        encoding="utf-8",
+        rotation="5 MB",
+        retention=5,
+    )
+    logger.info("Test GUI log file initialized: {}", log_dir / "test_gui_ssh.log")
+
+
 def main() -> int:
     _ensure_project_root_on_path()
     _setup_qt_plugin_path()
+    _setup_loguru_file_sink()
 
     from gui.test_gui.test_main_view import TestMainView
 
