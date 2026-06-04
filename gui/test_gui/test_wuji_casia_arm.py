@@ -3,24 +3,136 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from PySide6.QtCore import Signal, Slot
-from PySide6.QtWidgets import QApplication, QWidget
+from PySide6.QtWidgets import QApplication, QGroupBox, QHBoxLayout, QLabel, QScrollArea, QTabWidget, QVBoxLayout, QWidget
 
-from gui.test_gui.TestRobotTab_ui import Ui_Form
 from gui.test_gui.uitl_dof_widget_model import DoFWidgetModel
 from gui.test_gui.uitl_dof_widget_view import UtilDoFWidget
 from gui.util_components.casia_indicator_light import CasiaIndicatorLight
-from src.arm import SUPPORTED_WUJI_MODULES, WUJI_ARM_JOINT_LIMITS_DEG
+from src.agv import WUJI_AGV_STATUS_AXES
+from src.arm import WUJI_ARM_JOINT_LIMITS_DEG
+from src.hand import WUJI_HAND_SPECS, load_wuji_hand_instances
 from src.servers.common import JointLimit
 
 
 @dataclass(frozen=True, slots=True)
-class DebugAxisBinding:
-    """UI 占位控件与协议轴名的绑定关系。"""
+class DebugAxisSpec:
+    """单个可动轴在调试界面中的显示与控制规格。"""
 
-    placeholder_name: str
     axis_name: str
     limit: JointLimit
     step: float = 1.0
+    control_supported: bool = True
+    refresh_supported: bool = True
+
+
+@dataclass(frozen=True, slots=True)
+class DebugModuleSpec:
+    """单个可动模块在调试界面中的分组规格。"""
+
+    tab_name: str
+    title: str
+    device_name: str
+    axes: tuple[DebugAxisSpec, ...] = ()
+    enable_supported: bool = True
+    refresh_supported: bool = True
+
+
+class DebugModulePanel(QWidget):
+    """根据模块规格动态生成使能指示灯与 DoF 控件。"""
+
+    dofTargetRequested = Signal(str, float)
+    enableToggleRequested = Signal(str, bool)
+
+    def __init__(self, specs: tuple[DebugModuleSpec, ...], parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.dof_widgets_by_axis: dict[str, UtilDoFWidget] = {}
+        self.refresh_axis_names: list[str] = []
+        self.enable_indicators: dict[str, CasiaIndicatorLight] = {}
+        self.refresh_device_names: list[str] = []
+
+        self._main_layout = QVBoxLayout(self)
+        self._main_layout.setContentsMargins(0, 0, 0, 0)
+        self._build_modules(specs)
+        self._main_layout.addStretch(1)
+
+    def _build_modules(self, specs: tuple[DebugModuleSpec, ...]) -> None:
+        for spec in specs:
+            group = QGroupBox(spec.title, self)
+            group_layout = QVBoxLayout(group)
+            group_layout.addLayout(self._create_enable_row(group, spec))
+            self._add_axis_widgets(group_layout, group, spec.axes)
+            self._main_layout.addWidget(group)
+
+    def _create_enable_row(self, parent: QWidget, spec: DebugModuleSpec) -> QHBoxLayout:
+        layout = QHBoxLayout()
+        layout.addWidget(QLabel("使能:", parent))
+
+        indicator = CasiaIndicatorLight(
+            parent,
+            text=("使能", "禁用"),
+            font_size=12,
+            default_status=False,
+        )
+        indicator.setObjectName(f"{spec.device_name}_enable")
+        indicator.setEnabled(spec.enable_supported)
+        if spec.enable_supported:
+            indicator.clicked.connect(
+                lambda name=spec.device_name, light=indicator: self._request_enable_toggle(name, light)
+            )
+        layout.addWidget(indicator)
+        layout.addStretch(1)
+
+        if spec.enable_supported:
+            self.enable_indicators[spec.device_name] = indicator
+            if spec.refresh_supported:
+                self.refresh_device_names.append(spec.device_name)
+        return layout
+
+    def _add_axis_widgets(
+        self,
+        layout: QVBoxLayout,
+        parent: QWidget,
+        axes: tuple[DebugAxisSpec, ...],
+    ) -> None:
+        if not axes:
+            empty_label = QLabel("未配置可动轴", parent)
+            empty_label.setEnabled(False)
+            layout.addWidget(empty_label)
+            return
+
+        for axis in axes:
+            model = DoFWidgetModel(
+                name=axis.axis_name,
+                minimum=axis.limit.minimum,
+                maximum=axis.limit.maximum,
+                unit=axis.limit.unit,
+                step=axis.step,
+            )
+            widget = UtilDoFWidget(model=model, parent=parent)
+            widget.setObjectName(f"dof_{axis.axis_name}")
+            widget.setEnabled(axis.control_supported)
+            if axis.control_supported:
+                widget.targetRequested.connect(self.dofTargetRequested)
+            if axis.refresh_supported:
+                self.dof_widgets_by_axis[axis.axis_name] = widget
+                self.refresh_axis_names.append(axis.axis_name)
+            layout.addWidget(widget)
+
+    def update_dof_value(self, axis_name: str, value: float) -> None:
+        widget = self.dof_widgets_by_axis.get(axis_name)
+        if widget is None:
+            raise KeyError(f"未知 DoF 轴：{axis_name}")
+        widget.update_feedback_value(value)
+
+    def update_enable_state(self, device_name: str, enabled: bool) -> None:
+        indicator = self.enable_indicators.get(device_name)
+        if indicator is None:
+            raise KeyError(f"未知使能设备：{device_name}")
+        indicator.set_status(enabled)
+
+    def _request_enable_toggle(self, device_name: str, indicator: CasiaIndicatorLight) -> None:
+        requested_status = not bool(indicator.property("status"))
+        self.enableToggleRequested.emit(device_name, requested_status)
 
 
 class TestWujiCasiaArmWidget(QWidget):
@@ -33,51 +145,20 @@ class TestWujiCasiaArmWidget(QWidget):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.ui = Ui_Form()
-        self.ui.setupUi(self)
         self.dof_widgets: dict[str, UtilDoFWidget] = {}
         self.dof_widgets_by_axis: dict[str, UtilDoFWidget] = {}
         self.enable_indicators: dict[str, CasiaIndicatorLight] = {}
+        self._tab_panels: dict[str, DebugModulePanel] = {}
+        self._tab_panels_by_index: list[DebugModulePanel] = []
 
-        self._replace_dof_placeholders()
-        self._replace_enable_placeholders()
+        self._tab_widget = QTabWidget(self)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self._tab_widget)
 
-    def _replace_dof_placeholders(self) -> None:
-        for binding in self._build_axis_bindings():
-            placeholder = getattr(self.ui, binding.placeholder_name)
-            model = DoFWidgetModel(
-                name=binding.axis_name,
-                minimum=binding.limit.minimum,
-                maximum=binding.limit.maximum,
-                unit=binding.limit.unit,
-                step=binding.step,
-            )
-            widget = UtilDoFWidget.replace_placeholder(placeholder, model)
-            widget.targetRequested.connect(self._on_dof_target_requested)
-            self.dof_widgets[binding.placeholder_name] = widget
-            self.dof_widgets_by_axis[binding.axis_name] = widget
+        self._build_tabs()
 
-    def _replace_enable_placeholders(self) -> None:
-        enable_names = {
-            "body_enable": "body",
-            "head_enable": "head",
-            "left_enable": "left_arm",
-            "right_enable": "right_arm",
-        }
-        for placeholder_name, device_name in enable_names.items():
-            placeholder = getattr(self.ui, placeholder_name)
-            indicator = CasiaIndicatorLight.replace_placeholder(
-                placeholder,
-                text=("使能", "禁用"),
-                font_size=12,
-                default_status=False,
-            )
-            indicator.setObjectName(placeholder_name)
-            indicator.setEnabled(device_name in SUPPORTED_WUJI_MODULES)
-            indicator.clicked.connect(lambda name=device_name, light=indicator: self._request_enable_toggle(name, light))
-            self.enable_indicators[device_name] = indicator
-
-    def _build_axis_bindings(self) -> tuple[DebugAxisBinding, ...]:
+    def _build_module_specs(self) -> tuple[DebugModuleSpec, ...]:
         left_limits = tuple(
             JointLimit(item.name, item.minimum_deg, item.maximum_deg, item.unit)
             for item in WUJI_ARM_JOINT_LIMITS_DEG["left_arm"]
@@ -95,18 +176,100 @@ class TestWujiCasiaArmWidget(QWidget):
         )
 
         return (
-            DebugAxisBinding("dof_body_z", "body_z", body_limits[0], 10.0),
-            DebugAxisBinding("dof_body_ry", "body_ry", body_limits[1], 1.0),
-            DebugAxisBinding("dof_head_yaw", "head_yaw", head_limits[0], 1.0),
-            *(
-                DebugAxisBinding(f"dof_l_{idx}", f"left_{limit.name}", limit, 1.0)
-                for idx, limit in enumerate(left_limits, start=1)
+            DebugModuleSpec(
+                tab_name="body",
+                title="body",
+                device_name="body",
+                axes=(
+                    DebugAxisSpec("body_z", body_limits[0], 10.0),
+                    DebugAxisSpec("body_ry", body_limits[1], 1.0),
+                ),
             ),
-            *(
-                DebugAxisBinding(f"dof_r_{idx}", f"right_{limit.name}", limit, 1.0)
-                for idx, limit in enumerate(right_limits, start=1)
+            DebugModuleSpec(
+                tab_name="body",
+                title="head",
+                device_name="head",
+                axes=(DebugAxisSpec("head_yaw", head_limits[0], 1.0),),
             ),
+            DebugModuleSpec(
+                tab_name="arm",
+                title="left arm",
+                device_name="left_arm",
+                axes=tuple(
+                    DebugAxisSpec(f"left_{limit.name}", limit, 1.0) for limit in left_limits
+                ),
+            ),
+            DebugModuleSpec(
+                tab_name="arm",
+                title="right arm",
+                device_name="right_arm",
+                axes=tuple(
+                    DebugAxisSpec(f"right_{limit.name}", limit, 1.0) for limit in right_limits
+                ),
+            ),
+            DebugModuleSpec(
+                tab_name="agv",
+                title="AGV",
+                device_name="agv",
+                axes=tuple(
+                    DebugAxisSpec(
+                        axis.axis_name,
+                        JointLimit(axis.axis_name, axis.minimum, axis.maximum, axis.unit),
+                        1.0,
+                        control_supported=False,
+                    )
+                    for axis in WUJI_AGV_STATUS_AXES
+                ),
+                enable_supported=False,
+            ),
+            *self._build_hand_module_specs(),
         )
+
+    def _build_hand_module_specs(self) -> tuple[DebugModuleSpec, ...]:
+        return tuple(
+            DebugModuleSpec(
+                tab_name="hand",
+                title=f"{instance.title} ({instance.spec_name})",
+                device_name=instance.device_name,
+                axes=tuple(
+                    DebugAxisSpec(
+                        axis_name=f"{instance.device_name}_{limit.name}",
+                        limit=JointLimit(limit.name, limit.minimum, limit.maximum, limit.unit),
+                        step=0.05,
+                        control_supported=False,
+                    )
+                    for limit in WUJI_HAND_SPECS[instance.spec_name]
+                ),
+                enable_supported=False,
+            )
+            for instance in load_wuji_hand_instances()
+        )
+
+    def _build_tabs(self) -> None:
+        specs_by_tab: dict[str, list[DebugModuleSpec]] = {
+            "body": [],
+            "arm": [],
+            "hand": [],
+            "agv": [],
+        }
+        for spec in self._build_module_specs():
+            specs_by_tab.setdefault(spec.tab_name, []).append(spec)
+
+        for tab_name, title in (("body", "Body"), ("arm", "Arm"), ("hand", "Hand"), ("agv", "AGV")):
+            panel = DebugModulePanel(tuple(specs_by_tab[tab_name]), self._tab_widget)
+            panel.dofTargetRequested.connect(self._on_dof_target_requested)
+            panel.enableToggleRequested.connect(self._request_enable_toggle)
+            self.dof_widgets_by_axis.update(panel.dof_widgets_by_axis)
+            self.enable_indicators.update(panel.enable_indicators)
+            self._tab_panels[tab_name] = panel
+            self._tab_widget.addTab(self._wrap_scroll_area(panel), title)
+            self._tab_panels_by_index.append(panel)
+
+    def _wrap_scroll_area(self, widget: QWidget) -> QScrollArea:
+        scroll_area = QScrollArea(self._tab_widget)
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setWidget(widget)
+        return scroll_area
 
     @Slot(str, float)
     def _on_dof_target_requested(self, axis_name: str, value: float) -> None:
@@ -136,7 +299,7 @@ class TestWujiCasiaArmWidget(QWidget):
     def request_all_dof_values_refresh(self) -> None:
         """请求外层读取全部 DoF 真实反馈值。"""
 
-        for axis_name in self.dof_widgets_by_axis:
+        for axis_name in self.visible_refresh_axis_names():
             self.dofValueRefreshRequested.emit(axis_name)
 
     def update_enable_state(self, device_name: str, enabled: bool) -> None:
@@ -163,11 +326,33 @@ class TestWujiCasiaArmWidget(QWidget):
     def request_all_enable_states_refresh(self) -> None:
         """请求外层读取全部硬件使能状态。"""
 
-        for device_name in self.enable_indicators:
+        for device_name in self.visible_refresh_device_names():
             self.enableStateRefreshRequested.emit(device_name)
 
-    def _request_enable_toggle(self, device_name: str, indicator: CasiaIndicatorLight) -> None:
-        requested_status = not bool(indicator.property("status"))
+    def visible_refresh_axis_names(self) -> tuple[str, ...]:
+        """返回当前显示 tab 中需要刷新的轴名。"""
+
+        panel = self._current_panel()
+        if panel is None:
+            return ()
+        return tuple(panel.refresh_axis_names)
+
+    def visible_refresh_device_names(self) -> tuple[str, ...]:
+        """返回当前显示 tab 中需要刷新的使能设备名。"""
+
+        panel = self._current_panel()
+        if panel is None:
+            return ()
+        return tuple(panel.refresh_device_names)
+
+    def _current_panel(self) -> DebugModulePanel | None:
+        index = self._tab_widget.currentIndex()
+        if index < 0 or index >= len(self._tab_panels_by_index):
+            return None
+        return self._tab_panels_by_index[index]
+
+    @Slot(str, bool)
+    def _request_enable_toggle(self, device_name: str, requested_status: bool) -> None:
         self.enableToggleRequested.emit(device_name, requested_status)
 
 

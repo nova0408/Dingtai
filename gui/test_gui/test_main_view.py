@@ -11,7 +11,6 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMainWindow,
-    QMessageBox,
     QSpinBox,
     QWidget,
 )
@@ -65,7 +64,6 @@ class TestMainView(QMainWindow):
         self._state_refresh_timer.setInterval(500)
         self._service_status_timer = QTimer(self)
         self._service_status_timer.setInterval(1000)
-        self._last_warning_signature = ""
 
         self._setup_service_context_editor()
         self._setup_robot_tab()
@@ -219,34 +217,17 @@ class TestMainView(QMainWindow):
     def update_service_connection_state(self, connected: bool, message: str = "") -> None:
         """用 qmlinker 检测结果刷新连接状态。"""
 
-        logger.info(
-            "TestMainView qmlinker state received: connected={} message={}",
-            connected,
-            message,
-        )
         previous_state = self.context.connection_state
         self._set_service_connection_state("connected" if connected else "disconnected")
-        if connected:
-            self._last_warning_signature = ""
         if message:
             self.statusBar().showMessage(message)
         if not connected and previous_state in {"connecting", "connected"}:
-            self._show_warning_message("qmlinker 连接失败", message or "qmlinker 连接失败")
+            logger.error("qmlinker connection refresh failed: {}", message or "qmlinker 连接失败")
 
     @Slot(str)
     def _on_backend_request_failed(self, message: str) -> None:
         logger.error("TestMainView backend request failed: {}", message)
         self.statusBar().showMessage(message)
-        self._show_warning_message("接口请求失败", message)
-
-    def _show_warning_message(self, title: str, message: str) -> None:
-        signature = f"{title}\n{message}"
-        if signature == self._last_warning_signature:
-            logger.debug("Skip duplicated warning dialog: title={}", title)
-            return
-        self._last_warning_signature = signature
-        logger.warning("Show warning dialog: title={} message={}", title, message)
-        QMessageBox.warning(self, title, message)
 
     @Slot()
     def _on_state_refresh_timer_timeout(self) -> None:

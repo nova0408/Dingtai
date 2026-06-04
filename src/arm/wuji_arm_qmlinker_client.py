@@ -6,13 +6,14 @@ from collections.abc import Iterable, Iterator
 from typing import Any
 
 import numpy as np
-from qmlinker import QMArm, create_channel
+from qmlinker import QMArm, QMHand, QMMoveBase, create_channel
 from qmlinker.grpc_py import arm_pb2, common_pb2, head_pb2, head_pb2_grpc
 from qmlinker.grpc_py import lift_pb2, lift_pb2_grpc
 from qmlinker.grpc_py import waist_pb2, waist_pb2_grpc
 from google.protobuf import empty_pb2
 
 from src.arm.wuji_arm_protocol import ArmDeviceName, WujiArmQmlinkerConfig, WujiModuleName
+from src.hand import HandDeviceName
 
 # region 数据结构
 
@@ -87,7 +88,9 @@ class WujiArmQmlinkerClient:
         self._config = WujiArmQmlinkerConfig() if config is None else config
         self._channel = create_channel(self._config.target())
         self._arms: dict[ArmDeviceName, Any] = {}
+        self._hands: dict[HandDeviceName, Any] = {}
         self._default_channel = self._channel["DEFAULT"] if isinstance(self._channel, dict) else self._channel
+        self._move_base = QMMoveBase(self._channel)
         self._waist_stub = waist_pb2_grpc.WaistServiceStub(self._default_channel)
         self._lift_stub = lift_pb2_grpc.LiftServiceStub(self._default_channel)
         self._head_stub = head_pb2_grpc.HeadServiceStub(self._default_channel)
@@ -102,6 +105,7 @@ class WujiArmQmlinkerClient:
             if thread is not None:
                 thread.join(timeout=0.5)
         self._arms.clear()
+        self._hands.clear()
 
     def check_ready(self) -> None:
         """检查 qmlinker gRPC 通道是否可创建并进入 ready。
@@ -458,6 +462,35 @@ class WujiArmQmlinkerClient:
         )
         return bool(response.status.success)
 
+    def get_agv_status_values(self) -> dict[str, float]:
+        """读取 AGV 底盘基础状态值。"""
+
+        status = self._move_base.get_base_status()
+        if not isinstance(status, dict):
+            raise RuntimeError("qmlinker get base status failed")
+        return {
+            "agv_x": float(status.get("x", 0.0)),
+            "agv_y": float(status.get("y", 0.0)),
+            "agv_yaw": float(status.get("yaw", 0.0)),
+            "agv_battery": float(status.get("battery", 0.0)),
+        }
+
+    def get_hand_values(self, device_name: HandDeviceName) -> dict[str, float]:
+        """读取指定手部执行器位置。"""
+
+        state = self._hand(device_name).get_hand_state(include_tactile=False)
+        if not isinstance(state, dict) or not isinstance(state.get("actuators"), list):
+            raise RuntimeError(f"qmlinker get hand state failed: {device_name}")
+        values: dict[str, float] = {}
+        for actuator in state["actuators"]:
+            if not isinstance(actuator, dict):
+                continue
+            actuator_id = int(actuator.get("actuator_id", -1))
+            if actuator_id < 0:
+                continue
+            values[f"{device_name}_a{actuator_id}"] = float(actuator.get("position", 0.0))
+        return values
+
     def _arm(self, device_name: ArmDeviceName) -> Any:
         """返回指定机械臂的 qmlinker QMArm 实例。"""
 
@@ -468,6 +501,17 @@ class WujiArmQmlinkerClient:
         arm = QMArm(self._channel, arm_type)
         self._arms[device_name] = arm
         return arm
+
+    def _hand(self, device_name: HandDeviceName) -> Any:
+        """返回指定手部的 qmlinker QMHand 实例。"""
+
+        hand = self._hands.get(device_name)
+        if hand is not None:
+            return hand
+        hand_id: Any = QMHand.HAND_LEFT if device_name == "left_hand" else QMHand.HAND_RIGHT
+        hand = QMHand(self._channel, hand_id)
+        self._hands[device_name] = hand
+        return hand
 
     def _arm_pb_type(self, device_name: ArmDeviceName) -> Any:
         """返回 qmlinker proto 中的机械臂枚举值。"""

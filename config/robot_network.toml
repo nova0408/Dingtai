@@ -12,3 +12,9 @@ data_port = 50061
 default_speed_ratio = 0.3
 request_timeout_s = 3.0
 stream_first_timeout_s = 2.0
+
+[hand.left]
+spec = "hand_3"
+
+[hand.right]
+spec = "hand_3"

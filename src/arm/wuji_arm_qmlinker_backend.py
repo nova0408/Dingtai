@@ -21,6 +21,8 @@ from src.arm.wuji_arm_protocol import (
     parse_head_axis_name,
 )
 from src.arm.wuji_arm_qmlinker_client import WujiArmQmlinkerClient
+from src.agv import parse_agv_axis_name
+from src.hand import parse_hand_axis_name
 
 # region 数据结构
 
@@ -156,11 +158,6 @@ class WujiArmQmlinkerBackend(QObject):
     def connect_service(self) -> None:
         """检查 qmlinker 目标是否可读取机械臂状态。"""
 
-        logger.info(
-            "qmlinker connect requested: alias={} target={}",
-            self._service_host_alias,
-            self._config.target(),
-        )
         self._start_worker(
             _SdkRequest(action="sdk_probe", key="sdk_probe"),
             lambda: self._with_client(lambda client: client.check_ready()),
@@ -183,7 +180,7 @@ class WujiArmQmlinkerBackend(QObject):
 
         if device_name not in SUPPORTED_ARM_DEVICES:
             if device_name not in SUPPORTED_WUJI_MODULES:
-                logger.warning("Skip unsupported enable refresh: device_name={}", device_name)
+                logger.error("Skip unsupported enable refresh: device_name={}", device_name)
                 return
             typed_module = self._typed_module(device_name)
             self._start_worker(
@@ -219,7 +216,7 @@ class WujiArmQmlinkerBackend(QObject):
         """设置整机模块使能并读取真实回写状态。"""
 
         if device_name not in SUPPORTED_WUJI_MODULES:
-            logger.warning("Reject unsupported enable request: device_name={}", device_name)
+            logger.error("Reject unsupported enable request: device_name={}", device_name)
             self.requestFailed.emit(f"当前接口文档未提供 {device_name} 使能接口")
             return
         typed_module = self._typed_module(device_name)
@@ -261,7 +258,23 @@ class WujiArmQmlinkerBackend(QObject):
             )
             return
 
-        logger.warning("Skip unsupported DoF refresh: axis_name={}", axis_name)
+        parsed_hand = parse_hand_axis_name(axis_name)
+        if parsed_hand is not None:
+            device_name, _ = parsed_hand
+            self._start_worker(
+                _SdkRequest(action="get_hand_axis", key=f"get_hand_axis:{device_name}", axis_name=axis_name),
+                lambda: self._with_client(lambda client: {"values": client.get_hand_values(device_name)}),
+            )
+            return
+
+        if parse_agv_axis_name(axis_name) is not None:
+            self._start_worker(
+                _SdkRequest(action="get_agv_status", key="get_agv_status", axis_name=axis_name),
+                lambda: self._with_client(lambda client: {"values": client.get_agv_status_values()}),
+            )
+            return
+
+        logger.error("Skip unsupported DoF refresh: axis_name={}", axis_name)
 
     def set_dof_target(self, axis_name: str, target_value: float) -> None:
         """设置单个整机轴目标值。"""
@@ -301,7 +314,7 @@ class WujiArmQmlinkerBackend(QObject):
             )
             return
 
-        logger.warning("Reject unsupported DoF target: axis_name={}", axis_name)
+        logger.error("Reject unsupported DoF target: axis_name={}", axis_name)
         self.requestFailed.emit(f"当前接口文档未提供 {axis_name} 控制接口")
 
     def get_joint_states(self, device_name: ArmDeviceName) -> object:
@@ -391,14 +404,12 @@ class WujiArmQmlinkerBackend(QObject):
         """启动一个线程池 qmlinker 请求。"""
 
         if request.key in self._pending:
-            logger.debug("Skip duplicated qmlinker request: key={}", request.key)
             return
         worker = _SdkWorker(request.key, task)
         worker.signals.finished.connect(self._on_worker_finished)
         worker.signals.failed.connect(self._on_worker_failed)
         self._pending[request.key] = request
         self._workers[request.key] = worker
-        logger.info("Start qmlinker request: action={} key={}", request.action, request.key)
         self._thread_pool.start(worker)
 
     def _with_client(self, func: Callable[[WujiArmQmlinkerClient], object]) -> object:
@@ -536,7 +547,6 @@ class WujiArmQmlinkerBackend(QObject):
             logger.warning("qmlinker worker finished without pending request: key={}", key)
             return
 
-        logger.info("qmlinker request finished: action={} key={}", request.action, key)
         if request.action == "sdk_probe":
             self.serviceStateChanged.emit(True, "qmlinker connected")
             return
@@ -556,6 +566,8 @@ class WujiArmQmlinkerBackend(QObject):
             "set_body_axis",
             "get_head_axis",
             "set_head_axis",
+            "get_hand_axis",
+            "get_agv_status",
         }:
             if not isinstance(payload, dict) or not isinstance(payload.get("values"), dict):
                 self.requestFailed.emit("qmlinker axis response format error")
