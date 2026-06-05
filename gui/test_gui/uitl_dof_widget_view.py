@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 from typing import cast
 
 from PySide6.QtCore import QTimer, Qt, Signal, Slot
@@ -42,8 +41,8 @@ class UtilDoFWidget(QWidget):
     valueChanged = Signal(str, float)
 
     _SLIDER_SCALE = 100
-    _HOLD_INITIAL_DELAY_MS = 160
-    _HOLD_REPEAT_INTERVAL_MS = 60
+    _HOLD_START_DELAY_MS = 250
+    _HOLD_SEND_INTERVAL_MS = 50
 
     @classmethod
     def replace_placeholder(
@@ -76,9 +75,13 @@ class UtilDoFWidget(QWidget):
         self._controller = DoFWidgetController(model, self)
         self._syncing_slider = False
         self._hold_direction = 0
+        self._hold_start_timer = QTimer(self)
+        self._hold_start_timer.setSingleShot(True)
+        self._hold_start_timer.setTimerType(Qt.TimerType.PreciseTimer)
+        self._hold_start_timer.setInterval(self._HOLD_START_DELAY_MS)
         self._hold_timer = QTimer(self)
-        self._hold_timer.setSingleShot(True)
         self._hold_timer.setTimerType(Qt.TimerType.PreciseTimer)
+        self._hold_timer.setInterval(self._HOLD_SEND_INTERVAL_MS)
 
         self._setup_static_text()
         self._setup_slider_range()
@@ -128,42 +131,39 @@ class UtilDoFWidget(QWidget):
         self.ui.forward_button.released.connect(self._stop_hold)
         self.ui.backward_button.pressed.connect(lambda: self._start_hold(1))
         self.ui.backward_button.released.connect(self._stop_hold)
+        self._hold_start_timer.timeout.connect(self._start_hold_repeat)
         self._hold_timer.timeout.connect(self._send_hold_step)
         self._controller.feedbackValueChanged.connect(self._refresh_feedback_value)
         self._controller.targetRequested.connect(self.targetRequested)
 
     def _start_hold(self, direction: int) -> None:
-        """启动单个方向的连续关节目标发送。"""
+        """按下先发送一次单步，持续按住再进入循环增量。"""
 
-        if self._hold_direction == direction and self._hold_timer.isActive():
-            return
+        self._stop_hold()
         self._hold_direction = direction
-        self._send_hold_step(first_step=True)
-        self._hold_timer.start(self._HOLD_INITIAL_DELAY_MS)
+        self._controller.request_step_delta(self._hold_direction * self.model.step)
+        self._hold_start_timer.start()
 
     def _stop_hold(self) -> None:
         """停止长按连续发送，避免释放后继续产生控制指令。"""
 
+        self._hold_start_timer.stop()
         self._hold_timer.stop()
         self._hold_direction = 0
 
-    def _send_hold_step(self, first_step: bool = False) -> None:
-        """按固定节流周期发送一步目标值。"""
+    def _start_hold_repeat(self) -> None:
+        """只有持续按住超过阈值后才开始循环发送。"""
 
         if self._hold_direction == 0:
             return
-        if self._hold_direction < 0:
-            if first_step:
-                self._controller.move_forward()
-            else:
-                self._controller.continue_forward()
-        elif self._hold_direction > 0:
-            if first_step:
-                self._controller.move_backward()
-            else:
-                self._controller.continue_backward()
-        if self._hold_direction != 0:
-            self._hold_timer.start(self._HOLD_REPEAT_INTERVAL_MS)
+        self._hold_timer.start()
+
+    def _send_hold_step(self) -> None:
+        """按固定节流周期发送连续长按增量，并始终基于实时反馈纠偏。"""
+
+        if self._hold_direction == 0:
+            return
+        self._controller.request_step_delta(self._hold_direction * self.model.hold_step)
 
     @Slot(int)
     def _on_slider_value_changed(self, raw_value: int) -> None:

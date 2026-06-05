@@ -29,22 +29,9 @@ class DoFWidgetController(QObject):
         valid_value = self._model.set_command_value(value)
         self.targetRequested.emit(self._model.name, valid_value)
 
-    @Slot()
-    def move_forward(self) -> None:
-        valid_value = self._model.offset_command_from_feedback(-self._model.step)
-        self.targetRequested.emit(self._model.name, valid_value)
+    @Slot(float)
+    def request_step_delta(self, delta: float) -> None:
+        """按当前反馈值施加单次步进增量。"""
 
-    @Slot()
-    def move_backward(self) -> None:
-        valid_value = self._model.offset_command_from_feedback(self._model.step)
-        self.targetRequested.emit(self._model.name, valid_value)
-
-    @Slot()
-    def continue_forward(self) -> None:
-        valid_value = self._model.offset_command(-self._model.step)
-        self.targetRequested.emit(self._model.name, valid_value)
-
-    @Slot()
-    def continue_backward(self) -> None:
-        valid_value = self._model.offset_command(self._model.step)
+        valid_value = self._model.offset_command_from_feedback(delta)
         self.targetRequested.emit(self._model.name, valid_value)

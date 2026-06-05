@@ -43,6 +43,39 @@ class WujiArmJointLimit:
     "角度单位，当前固定为 deg。"
 
 
+@dataclass(frozen=True, slots=True)
+class WujiAxisLimit:
+    """无际单轴运动范围定义。
+
+    职责边界：
+    - 只描述单个身体或头部轴在 GUI 与协议层共享的显示范围。
+    - 不负责读取实时位置、发送控制命令或推断硬件限位。
+
+    设计思想：
+    - 机械臂关节范围优先来自 qmlinker FK/IK 模型；身体与头部当前 proto 未暴露动态限位接口，
+      因此将文档确认过的静态范围集中定义，避免散落硬编码。
+    - 保持字段命名与机械臂关节限位一致，便于 GUI 构造统一的 DoF 模型。
+
+    生命周期：
+    - 作为不可变配置常量长期存在，不持有网络连接或硬件资源。
+
+    继承关系：
+    - 不继承业务基类，作为协议与 GUI 共享的数据契约。
+    """
+
+    name: str
+    "轴名，例如 `body_ry` 或 `head_yaw`。"
+
+    minimum: float
+    "轴最小值，单位由 `unit` 指定。"
+
+    maximum: float
+    "轴最大值，单位由 `unit` 指定。"
+
+    unit: str
+    "显示单位，例如 `deg` 或 `mm`。"
+
+
 # endregion
 
 
@@ -70,6 +103,17 @@ WUJI_ARM_JOINT_LIMITS_DEG: dict[ArmDeviceName, tuple[WujiArmJointLimit, ...]] = 
     ),
 }
 "qmlinker SDK FK/IK 模型暴露的左右臂真实关节限位，角度单位 deg。"
+
+WUJI_BODY_AXIS_LIMITS: dict[WujiBodyAxisName, WujiAxisLimit] = {
+    "body_z": WujiAxisLimit("body_z", 0.0, 850.0, "mm"),
+    "body_ry": WujiAxisLimit("body_ry", -30.0, 30.0, "deg"),
+}
+"无际本体轴显示范围。当前 qmlinker proto 未提供动态限位查询接口，因此使用文档确认值。"
+
+WUJI_HEAD_AXIS_LIMITS: dict[WujiHeadAxisName, WujiAxisLimit] = {
+    "head_yaw": WujiAxisLimit("head_yaw", -90.0, 90.0, "deg"),
+}
+"无际头部轴显示范围。当前 qmlinker proto 未提供动态限位查询接口，因此使用文档确认值。"
 
 
 def parse_arm_axis_name(axis_name: str) -> tuple[ArmDeviceName, int] | None:

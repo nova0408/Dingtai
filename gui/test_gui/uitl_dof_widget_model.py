@@ -14,6 +14,7 @@ class DoFWidgetModel:
     feedback_value: float = 0.0
     command_value: float = 0.0
     step: float = 1.0
+    hold_step: float = 1.0
 
     def clamp(self, value: float) -> float:
         """将输入值限制在当前自由度范围内。"""
@@ -41,3 +42,8 @@ class DoFWidgetModel:
         """以上一次命令值为基准生成连续增量目标值。"""
 
         return self.set_command_value(self.command_value + float(delta))
+
+    def span(self) -> float:
+        """返回当前自由度的可动范围长度。"""
+
+        return max(0.0, float(self.maximum) - float(self.minimum))

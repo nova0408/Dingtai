@@ -20,7 +20,12 @@ from qmlinker.grpc_py import lift_pb2, lift_pb2_grpc
 from qmlinker.grpc_py import camera_pb2, camera_pb2_grpc
 from qmlinker.grpc_py import waist_pb2, waist_pb2_grpc
 
-from src.arm.wuji_arm_protocol import ArmDeviceName, WujiArmJointLimit
+from src.arm.wuji_arm_protocol import (
+    ArmDeviceName,
+    WUJI_BODY_AXIS_LIMITS,
+    WUJI_HEAD_AXIS_LIMITS,
+    WujiArmJointLimit,
+)
 from src.hand import HandDeviceName
 from src.hand.wuji_hand_protocol import WujiHandInstanceSpec
 from src.wuji.camera_protocol import (
@@ -687,14 +692,24 @@ class WujiQmlinkerClient:
         return len(self.get_joint_states(device_name))
 
     def get_arm_joint_limits(self, device_name: ArmDeviceName) -> tuple[WujiArmJointLimit, ...]:
-        """读取指定机械臂的运行时关节限位。"""
+        """读取指定机械臂的运行时关节限位。
+
+        Notes
+        -----
+        qmlinker `FKIKCalc.joint_min` 与 `joint_max` 在 wheel 中保存为弧度值；
+        GUI 与 arm gRPC 接口统一使用 deg，因此这里显式执行 `rad -> deg` 转换。
+        """
 
         arm = self._arm(device_name)
         joint_mins = list(getattr(arm.fkik, "joint_min", ()))
         joint_maxs = list(getattr(arm.fkik, "joint_max", ()))
         joint_count = min(len(joint_mins), len(joint_maxs))
         return tuple(
-            WujiArmJointLimit(f"j{index}", float(joint_mins[index - 1]), float(joint_maxs[index - 1]))
+            WujiArmJointLimit(
+                f"j{index}",
+                float(np.rad2deg(joint_mins[index - 1])),
+                float(np.rad2deg(joint_maxs[index - 1])),
+            )
             for index in range(1, joint_count + 1)
         )
 
@@ -869,15 +884,32 @@ class WujiQmlinkerClient:
                 title="body",
                 device_name="body",
                 axes=(
-                    WujiRuntimeAxisSpec("body_z", 0.0, 850.0, "mm"),
-                    WujiRuntimeAxisSpec("body_ry", -30.0, 30.0, "deg"),
+                    WujiRuntimeAxisSpec(
+                        "body_z",
+                        WUJI_BODY_AXIS_LIMITS["body_z"].minimum,
+                        WUJI_BODY_AXIS_LIMITS["body_z"].maximum,
+                        WUJI_BODY_AXIS_LIMITS["body_z"].unit,
+                    ),
+                    WujiRuntimeAxisSpec(
+                        "body_ry",
+                        WUJI_BODY_AXIS_LIMITS["body_ry"].minimum,
+                        WUJI_BODY_AXIS_LIMITS["body_ry"].maximum,
+                        WUJI_BODY_AXIS_LIMITS["body_ry"].unit,
+                    ),
                 ),
             ),
             WujiRuntimeModuleSpec(
                 tab_name="body",
                 title="head",
                 device_name="head",
-                axes=(WujiRuntimeAxisSpec("head_yaw", -90.0, 90.0, "deg"),),
+                axes=(
+                    WujiRuntimeAxisSpec(
+                        "head_yaw",
+                        WUJI_HEAD_AXIS_LIMITS["head_yaw"].minimum,
+                        WUJI_HEAD_AXIS_LIMITS["head_yaw"].maximum,
+                        WUJI_HEAD_AXIS_LIMITS["head_yaw"].unit,
+                    ),
+                ),
             ),
             WujiRuntimeModuleSpec(
                 tab_name="agv",
@@ -1251,4 +1283,3 @@ class WujiQmlinkerClient:
 
 
 # endregion
-

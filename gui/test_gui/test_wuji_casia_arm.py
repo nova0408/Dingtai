@@ -20,6 +20,7 @@ class DebugAxisSpec:
     axis_name: str
     limit: JointLimit
     step: float = 1.0
+    hold_step: float = 1.0
     control_supported: bool = True
     refresh_supported: bool = True
 
@@ -79,7 +80,14 @@ class DebugModulePanel(QWidget):
             layout.addWidget(label)
             return
         for axis in axes:
-            model = DoFWidgetModel(axis.axis_name, axis.limit.minimum, axis.limit.maximum, axis.limit.unit, step=axis.step)
+            model = DoFWidgetModel(
+                axis.axis_name,
+                axis.limit.minimum,
+                axis.limit.maximum,
+                axis.limit.unit,
+                step=axis.step,
+                hold_step=axis.hold_step,
+            )
             widget = UtilDoFWidget(model=model, parent=parent)
             widget.setObjectName(f"dof_{axis.axis_name}")
             widget.setEnabled(axis.control_supported)
@@ -143,6 +151,7 @@ class TestWujiCasiaArmWidget(QWidget):
                     axis_name=axis.axis_name,
                     limit=JointLimit(axis.axis_name, axis.minimum, axis.maximum, axis.unit),
                     step=self._resolve_axis_step(axis.axis_name, axis.unit),
+                    hold_step=self._resolve_axis_hold_step(axis.axis_name, axis.unit),
                     control_supported=axis.control_supported,
                     refresh_supported=axis.refresh_supported,
                 )
@@ -155,13 +164,20 @@ class TestWujiCasiaArmWidget(QWidget):
     def _resolve_axis_step(self, axis_name: str, unit: str) -> float:
         """返回调试界面单轴步进值。"""
 
-        if axis_name == "body_ry":
-            return 1.0
         if axis_name == "body_z":
             return 5.0
         if unit == "deg":
             return 1.0
         return 1.0
+
+    def _resolve_axis_hold_step(self, axis_name: str, unit: str) -> float:
+        """返回调试界面长按循环增量。"""
+
+        if axis_name == "body_z":
+            return 5.0
+        if unit == "deg":
+            return 1.0
+        return self._resolve_axis_step(axis_name, unit)
 
     def _build_tabs(self) -> None:
         specs_by_tab: dict[str, list[DebugModuleSpec]] = {"body": [], "arm": [], "hand": [], "agv": []}
