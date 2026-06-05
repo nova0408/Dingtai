@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from typing import Protocol, Self, runtime_checkable
+from typing import Protocol, runtime_checkable
 
+from typing_extensions import Self
 import numpy as np
 
 

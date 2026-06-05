@@ -139,7 +139,7 @@ def parse_head_axis_name(axis_name: str) -> WujiHeadAxisName | None:
     return None
 
 
-def axis_names_for_device(device_name: ArmDeviceName) -> tuple[str, ...]:
+def axis_names_for_device(device_name: ArmDeviceName, joint_count: int) -> tuple[str, ...]:
     """返回指定机械臂对应的 GUI 轴名序列。
 
     Parameters
@@ -150,11 +150,11 @@ def axis_names_for_device(device_name: ArmDeviceName) -> tuple[str, ...]:
     Returns
     -------
     tuple[str, ...]
-        GUI 轴名序列，长度为 6，单位语义为 deg。
+        GUI 轴名序列，长度由 `joint_count` 决定，单位语义为 deg。
     """
 
     prefix = "left" if device_name == "left_arm" else "right"
-    return tuple(f"{prefix}_j{idx}" for idx in range(1, 7))
+    return tuple(f"{prefix}_j{idx}" for idx in range(1, joint_count + 1))
 
 
 # endregion

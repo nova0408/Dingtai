@@ -32,6 +32,7 @@ description: 统一 Dingtai 仓库静态检查流程。用于在固定 DingTai c
    - 已验证：静态检查（ruff/pyright）结果。
    - 未验证：硬件行为、实时相机链路、GUI 交互行为。
 7. 不允许为了通过静态检查而随意更改业务默认行为或控制流程。
+8. 所有 `*_ui.py` 文件默认豁免静态检查与人工修改；这类文件视为 Qt 插件自动生成产物，只允许通过生成流程更新，不允许手工修补。
 
 ## 标准命令
 
@@ -54,6 +55,7 @@ powershell -ExecutionPolicy Bypass -File .\.agents\skills\dingtai-static-check-w
 2. 文件编辑后的 `PostToolUse` hook 会对被编辑的 Python 文件调用本 skill 的检查脚本。
 3. hook 中允许 `ruff --fix` 做确定性自动修复，不允许用模型猜测修复 pyright 类型错误。
 4. hook 检查失败时应阻断继续处理，并把失败原因返回给 Codex 继续显式处理。
+5. hook 与命令行脚本都必须自动跳过 `*_ui.py` 文件，避免对 Qt 自动生成代码做检查或改写。
 
 ## VSCode 对齐要求
 

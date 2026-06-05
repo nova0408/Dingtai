@@ -19,7 +19,7 @@ from src.arm.wuji_arm_protocol import (
     parse_head_axis_name,
 )
 from src.agv import parse_agv_axis_name
-from src.hand import DEFAULT_WUJI_HAND_INSTANCES, HandDeviceName, parse_hand_axis_name
+from src.hand import HandDeviceName, parse_hand_axis_name
 from src.wuji.camera_protocol import WujiCameraName, parse_wuji_camera_name
 from src.wuji.qmlinker_client import WujiQmlinkerClient
 from src.wuji.qmlinker_protocol import (
@@ -28,6 +28,7 @@ from src.wuji.qmlinker_protocol import (
     WujiQmlinkerEnableModuleName,
     load_wuji_robot_network_config,
 )
+from src.wuji.zmq_camera_client import WujiZmqCameraClient, WujiZmqCameraConfig
 
 # region 数据结构
 
@@ -141,7 +142,7 @@ class WujiQmlinkerSubscriptionContext:
         self._stop_event.clear()
         for device_name in ("left_arm", "right_arm"):
             self._start_thread(f"qmlinker-{device_name}-stream", lambda name=device_name: self._run_arm_stream(name))
-        for instance in DEFAULT_WUJI_HAND_INSTANCES:
+        for instance in self._client_getter().get_hand_instance_specs():
             self._start_thread(
                 f"qmlinker-{instance.device_name}-stream",
                 lambda name=instance.device_name: self._run_hand_stream(name),
@@ -185,7 +186,7 @@ class WujiQmlinkerSubscriptionContext:
         while not self._stop_event.is_set():
             try:
                 client = self._client_getter()
-                axis_names = axis_names_for_device(device_name)
+                axis_names = axis_names_for_device(device_name, client.get_arm_joint_count(device_name))
                 for joints in client.stream_get_joint_states(device_name, duration_s=0.0):
                     if self._stop_event.is_set():
                         return
@@ -341,7 +342,8 @@ class WujiQmlinkerBackend(QObject):
     serviceStateChanged = Signal(bool, str)
     enableStateReceived = Signal(str, bool)
     dofValuesReceived = Signal(dict)
-    cameraEnableStateReceived = Signal(str, bool)
+    cameraInventoryReceived = Signal(object)
+    cameraEnableStateReceived = Signal(object)
     cameraIntrinsicsReceived = Signal(object)
     cameraFrameReceived = Signal(object)
     requestFailed = Signal(str)
@@ -359,7 +361,9 @@ class WujiQmlinkerBackend(QObject):
         self._pending: dict[str, _SdkRequest] = {}
         self._workers: dict[str, _SdkWorker] = {}
         self._client: WujiQmlinkerClient | None = None
+        self._camera_client: WujiZmqCameraClient | None = None
         self._client_lock = Lock()
+        self._camera_client_lock = Lock()
         self._subscription_context: WujiQmlinkerSubscriptionContext | None = None
         self._camera_stream_stop_event: Event | None = None
         self._camera_stream_thread: Thread | None = None
@@ -404,7 +408,21 @@ class WujiQmlinkerBackend(QObject):
         typed_camera = self._typed_camera(camera_name)
         self._start_worker(
             _SdkRequest(action="get_camera_intrinsics", key=f"get_camera_intrinsics:{typed_camera}"),
-            lambda: self._with_client(lambda client: client.get_camera_intrinsics(typed_camera)),
+            lambda: self._with_camera_client(lambda client: client.get_camera_intrinsics(typed_camera)),
+        )
+
+    def refresh_camera_inventory(self) -> None:
+        """读取远端在线相机清单与序列号。
+
+        Notes
+        -----
+        该接口面向 GUI 相机页使用，返回结果来自远端 `ob_camera.yaml` 与 ZMQ
+        `get_status` 的组合，而不是本地硬编码的物理位置映射。
+        """
+
+        self._start_worker(
+            _SdkRequest(action="get_camera_inventory", key="get_camera_inventory"),
+            lambda: self._with_camera_client(lambda client: client.list_camera_runtime_infos(online_only=True)),
         )
 
     def refresh_camera_enable_state(self, camera_name: str) -> None:
@@ -413,12 +431,7 @@ class WujiQmlinkerBackend(QObject):
         typed_camera = self._typed_camera(camera_name)
         self._start_worker(
             _SdkRequest(action="get_camera_enable", key=f"get_camera_enable:{typed_camera}"),
-            lambda: self._with_client(
-                lambda client: {
-                    "camera_name": typed_camera,
-                    "enabled": client.get_camera_enable(typed_camera),
-                }
-            ),
+            lambda: self._with_camera_client(lambda client: self._get_camera_enable_payload(client, typed_camera)),
         )
 
     def set_camera_enable_state(self, camera_name: str, enabled: bool) -> None:
@@ -427,7 +440,7 @@ class WujiQmlinkerBackend(QObject):
         typed_camera = self._typed_camera(camera_name)
         self._start_worker(
             _SdkRequest(action="set_camera_enable", key=f"set_camera_enable:{typed_camera}"),
-            lambda: self._with_client(
+            lambda: self._with_camera_client(
                 lambda client: self._set_camera_enable_and_readback(client, typed_camera, enabled)
             ),
         )
@@ -454,7 +467,7 @@ class WujiQmlinkerBackend(QObject):
         self._camera_stream_name = None
         if camera_name is not None:
             try:
-                self._with_client(lambda client: client.stop_camera_depth_stream(camera_name))
+                self._with_camera_client(lambda client: client.stop_camera_depth_stream(camera_name))
             except Exception as exc:  # noqa: BLE001
                 logger.error("qmlinker stop camera depth stream failed: {}", exc)
 
@@ -736,6 +749,11 @@ class WujiQmlinkerBackend(QObject):
             self._client = None
         if client is not None:
             client.close()
+        with self._camera_client_lock:
+            camera_client = self._camera_client
+            self._camera_client = None
+        if camera_client is not None:
+            camera_client.close()
 
     def _client_for_subscription(self) -> WujiQmlinkerClient:
         client = self._with_client(lambda value: value)
@@ -780,15 +798,35 @@ class WujiQmlinkerBackend(QObject):
 
     def _set_camera_enable_and_readback(
         self,
-        client: WujiQmlinkerClient,
+        client: WujiZmqCameraClient,
         camera_name: WujiCameraName,
         enabled: bool,
-    ) -> dict[str, object]:
+    ) -> object:
         """设置相机使能并读取回写状态。"""
 
-        if not client.set_camera_enable(camera_name, enabled):
-            raise RuntimeError(f"qmlinker set camera enable failed: {camera_name}")
-        return {"camera_name": camera_name, "enabled": client.get_camera_enable(camera_name)}
+        return client.set_camera_color_enabled(camera_name, enabled)
+
+    def _get_camera_enable_payload(
+        self,
+        client: WujiZmqCameraClient,
+        camera_name: WujiCameraName,
+    ) -> object:
+        """读取相机使能状态并在接口缺失时降级。
+
+        Parameters
+        ----------
+        client:
+            当前 qmlinker 客户端。
+        camera_name:
+            相机逻辑名称。
+
+        Returns
+        -------
+        object
+            `WujiCameraEnableState` 结果对象。若服务端未实现相机使能接口，则标记
+            `api_available=False`。
+        """
+        return client.get_camera_enable_state(camera_name)
 
     def _start_camera_stream(self, camera_name: str, stream_mode: str) -> None:
         """启动相机流线程。
@@ -827,7 +865,7 @@ class WujiQmlinkerBackend(QObject):
         """在线程中消费 qmlinker 相机 Server Stream 并发回 GUI。"""
 
         try:
-            client = self._client_for_subscription()
+            client = self._camera_client_for_stream()
             frames = (
                 client.stream_camera_rgb_frames(camera_name)
                 if stream_mode == "rgb"
@@ -849,7 +887,7 @@ class WujiQmlinkerBackend(QObject):
         finally:
             if stream_mode == "rgbd":
                 try:
-                    self._with_client(lambda client: client.stop_camera_depth_stream(camera_name))
+                    self._with_camera_client(lambda client: client.stop_camera_depth_stream(camera_name))
                 except Exception as exc:  # noqa: BLE001
                     logger.error("qmlinker stop camera depth stream failed: {}", exc)
 
@@ -861,7 +899,7 @@ class WujiQmlinkerBackend(QObject):
         """读取整臂关节状态并转换为 GUI 轴名字典。"""
 
         joints = client.get_joint_states(device_name)
-        axis_names = axis_names_for_device(device_name)
+        axis_names = axis_names_for_device(device_name, len(joints))
         values = {
             axis_name: float(joint.angle_deg)
             for axis_name, joint in zip(
@@ -957,11 +995,14 @@ class WujiQmlinkerBackend(QObject):
             return
 
         if request.action in {"get_camera_enable", "set_camera_enable"}:
-            if not isinstance(payload, dict):
+            if not hasattr(payload, "camera_name") or not hasattr(payload, "enabled"):
                 self.requestFailed.emit("qmlinker camera enable response format error")
                 return
-            camera_name = str(payload.get("camera_name", ""))
-            self.cameraEnableStateReceived.emit(camera_name, bool(payload.get("enabled", False)))
+            self.cameraEnableStateReceived.emit(payload)
+            return
+
+        if request.action == "get_camera_inventory":
+            self.cameraInventoryReceived.emit(payload)
             return
 
         if request.action == "get_camera_intrinsics":
@@ -1025,6 +1066,30 @@ class WujiQmlinkerBackend(QObject):
         if parsed is None:
             raise ValueError(f"unsupported camera: {camera_name}")
         return parsed
+
+    def _with_camera_client(self, func: Callable[[WujiZmqCameraClient], object]) -> object:
+        """获取后端持有的 ZMQ 相机客户端并执行同步请求。"""
+
+        client = self._camera_client
+        if client is None:
+            with self._camera_client_lock:
+                client = self._camera_client
+                if client is None:
+                    client = WujiZmqCameraClient(
+                        WujiZmqCameraConfig(
+                            host=self._config.host,
+                            request_timeout_ms=max(500, int(self._config.request_timeout_s * 1000.0)),
+                            stream_timeout_ms=max(500, int(self._config.stream_first_timeout_s * 1000.0)),
+                        )
+                    )
+                    self._camera_client = client
+        return func(client)
+
+    def _camera_client_for_stream(self) -> WujiZmqCameraClient:
+        client = self._with_camera_client(lambda value: value)
+        if not isinstance(client, WujiZmqCameraClient):
+            raise TypeError("ZMQ camera client type error")
+        return client
 
 
 # endregion

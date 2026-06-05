@@ -3,8 +3,9 @@ from __future__ import annotations
 import math
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, replace
-from typing import Any, Self, final, overload
+from typing import Any, final, overload
 
+from typing_extensions import Self
 import numpy as np
 
 from ...protocol import MatrixSerializable

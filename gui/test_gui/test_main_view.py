@@ -159,6 +159,7 @@ class TestMainView(QMainWindow):
         self._arm_backend.serviceStateChanged.connect(self.update_service_connection_state)
         self._arm_backend.enableStateReceived.connect(self.update_enable_state)
         self._arm_backend.dofValuesReceived.connect(self.update_dof_values)
+        self._arm_backend.cameraInventoryReceived.connect(self.camera_widget.update_camera_inventory)
         self._arm_backend.cameraEnableStateReceived.connect(self.camera_widget.update_camera_enable_state)
         self._arm_backend.cameraIntrinsicsReceived.connect(self.camera_widget.update_intrinsics)
         self._arm_backend.cameraFrameReceived.connect(self.camera_widget.update_frame)
@@ -216,6 +217,7 @@ class TestMainView(QMainWindow):
     @Slot(int)
     def _on_main_tab_current_changed(self, index: int) -> None:
         if self.ui.tabWidget.widget(index) is self.ui.image_tab:
+            self._arm_backend.refresh_camera_inventory()
             self.camera_widget.activate_default_camera()
 
     @Slot(str)

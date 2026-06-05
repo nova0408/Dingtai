@@ -1,0 +1,59 @@
+name: DingTai
+channels:
+  - conda-forge
+  - defaults
+
+dependencies:
+  # Python runtime
+  - python=3.10
+
+  # Basic packaging/runtime tools
+  - pip
+  - setuptools
+  - wheel
+
+  # Core scientific stack
+  # README 里写 numpy<2.0.0；这里固定在 1.x，避免 qmlinker/plyfile/旧二进制包兼容问题。
+  - numpy<2.0.0
+  - scipy
+  - tomlkit
+
+  # GUI
+  # README 里记录 PySide6 6.11.0；Python 3.10 下优先让 conda-forge 求解可用的 PySide6 6.x。
+  # 如果必须严格 6.11.0，可在建好环境后再用 pip 单独固定。
+  - pyside6
+
+  # Logging
+  - loguru
+
+  # Point cloud / image processing
+  - open3d
+  - opencv
+
+  # General utilities used by qmlinker/gRPC-style SDKs
+  - protobuf>=6.33.5,<7.0.0
+  - plyfile<1.1.0
+
+  # ssh
+  - paramiko
+
+  # 读写配置文件
+  - tomlkit
+  # NOTE:
+  # - 已故意移除 pythonocc-core。
+  # - 不要手动添加 occt；它原来主要是 pythonocc-core 的重依赖链。
+  # - pyorbbecsdk2、qmlinker 本地 whl、torch/torchvision 建议放到 pip 阶段单独安装。
+
+  - pip:
+      # 奥比中光 Gemini 305 SDK；如果 PyPI 源不可用，则按厂商 wheel 路径手动安装。
+      - pyorbbecsdk2
+
+      # PySide6 如果你希望严格跟 README 一致，可以取消下一行注释，并删除上面的 conda pyside6。
+      # - PySide6==6.11.0
+
+      # PyTorch 建议单独执行官方 CUDA 源安装命令，不放进 environment.yml：
+      # python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126
+
+      # qmlinker 是本地 wheel，不适合写死进跨机器可用的 YAML。
+      # 建好环境后执行：
+      # python -m pip install "E:\DingTai\无际二次开发接口文档\api\qmlinker-1.0.8-py3-none-any.whl"

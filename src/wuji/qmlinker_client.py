@@ -10,21 +10,27 @@ from pathlib import Path
 from threading import Thread
 from typing import Any
 
+import cv2
 from google.protobuf import empty_pb2
+import grpc
 import numpy as np
 from qmlinker import QMArm, QMCamera, QMHand, QMMoveBase, create_channel
 from qmlinker.grpc_py import arm_pb2, common_pb2, hand_pb2, head_pb2, head_pb2_grpc
 from qmlinker.grpc_py import lift_pb2, lift_pb2_grpc
+from qmlinker.grpc_py import camera_pb2, camera_pb2_grpc
 from qmlinker.grpc_py import waist_pb2, waist_pb2_grpc
 
-from src.arm.wuji_arm_protocol import ArmDeviceName
+from src.arm.wuji_arm_protocol import ArmDeviceName, WujiArmJointLimit
 from src.hand import HandDeviceName
+from src.hand.wuji_hand_protocol import WujiHandInstanceSpec
 from src.wuji.camera_protocol import (
+    WujiCameraEnableState,
     WujiCameraFrame,
     WujiCameraIntrinsicsInfo,
     WujiCameraName,
 )
 from src.wuji.qmlinker_protocol import WujiQmlinkerConfig, WujiQmlinkerEnableModuleName
+from src.wuji.qmlinker_protocol import WujiRobotRuntimeStructure, WujiRuntimeAxisSpec, WujiRuntimeModuleSpec
 
 # region 数据结构
 
@@ -197,6 +203,131 @@ class _SshTcpForwarder:
 # endregion
 
 
+# region 相机 gRPC 适配
+
+
+class _WujiCameraServiceAdapter:
+    """无际相机 gRPC 适配器。
+
+    职责边界：
+    - 负责直接调用相机 proto 定义的 unary 与 stream RPC。
+    - 不负责 GUI 渲染、线程调度或相机名称解析。
+
+    设计思想：
+    - qmlinker wheel 中的 `QMCamera` 在 channel 为 dict 时固定使用 `DATA` 通道，这会让
+      `GetCameraIntrinsics` 等 unary RPC 落到错误端口并收到 `UNIMPLEMENTED`。
+    - 这里显式拆分 `DEFAULT` 与 `DATA` 通道：状态/内参/开关走 `DEFAULT`，图像流走 `DATA`。
+
+    生命周期：
+    - 随 `WujiQmlinkerClient` 构造。
+    - 不持有线程，仅持有 gRPC stub，可跨线程复用。
+
+    继承关系：
+    - 不继承业务基类，作为 qmlinker client 内部协议修正层使用。
+    """
+
+    def __init__(self, channel: Any, request_timeout_s: float) -> None:
+        """创建相机 gRPC 适配器。
+
+        Parameters
+        ----------
+        channel:
+            qmlinker `create_channel` 返回的 channel 或 channel dict。
+        request_timeout_s:
+            unary RPC 超时时间，单位 s。
+        """
+
+        if isinstance(channel, dict):
+            self._default_channel = channel["DEFAULT"]
+            self._data_channel = channel["DATA"]
+        else:
+            self._default_channel = channel
+            self._data_channel = channel
+        self._request_timeout_s = float(request_timeout_s)
+        self._default_stub = camera_pb2_grpc.CameraServiceStub(self._default_channel)
+        self._data_stub = camera_pb2_grpc.CameraServiceStub(self._data_channel)
+
+    def set_enable(self, camera_type: camera_pb2.CameraType, enable: bool) -> bool:
+        """设置相机使能状态。"""
+
+        request = camera_pb2.CameraEnableRequest(camera_type=camera_type, enable=bool(enable))
+        response = self._default_stub.SetEnabled(request, timeout=self._request_timeout_s)
+        return bool(response.status.success)
+
+    def get_enable(self, camera_type: camera_pb2.CameraType) -> bool:
+        """读取相机使能状态。"""
+
+        request = camera_pb2.CameraRequest(camera_type=camera_type)
+        response = self._default_stub.GetEnabled(request, timeout=self._request_timeout_s)
+        return bool(response.status.success and response.current_state == common_pb2.MODULE_ENABLED)
+
+    def get_camera_intrinsics(self, camera_type: camera_pb2.CameraType) -> dict[str, object]:
+        """读取相机内参与基准分辨率。"""
+
+        request = camera_pb2.CameraRequest(camera_type=camera_type)
+        response = self._default_stub.GetCameraIntrinsics(request, timeout=self._request_timeout_s)
+        if not response.status.success:
+            raise RuntimeError(f"camera intrinsics rpc failed: {response.status.message}")
+        return {
+            "fx": float(response.intrinsics.fx),
+            "fy": float(response.intrinsics.fy),
+            "cx": float(response.intrinsics.cx),
+            "cy": float(response.intrinsics.cy),
+            "distortion": tuple(float(value) for value in response.intrinsics.distortion),
+            "base_width": int(response.intrinsics.base_width),
+            "base_height": int(response.intrinsics.base_height),
+        }
+
+    def control_depth_stream(self, camera_type: camera_pb2.CameraType, control_enable: bool) -> bool:
+        """控制深度流开关。"""
+
+        request = camera_pb2.DepthStreamControlRequest(camera_type=camera_type, enable=bool(control_enable))
+        response = self._default_stub.ControlDepthStream(request, timeout=self._request_timeout_s)
+        return bool(response.status.success and response.current_state == bool(control_enable))
+
+    def stream_get_image_2d(self, camera_type: camera_pb2.CameraType) -> Iterator[tuple[np.ndarray, object]]:
+        """流式读取 2D 图像。"""
+
+        request = camera_pb2.CameraRequest(camera_type=camera_type)
+        for response in self._data_stub.StreamGetImage2D(request, timeout=None):
+            image = cv2.imdecode(np.frombuffer(response.jpeg_data, np.uint8), cv2.IMREAD_COLOR)
+            if image is None:
+                raise RuntimeError("camera jpeg decode failed")
+            yield image, response.timestamp
+
+    def stream_get_rgbd_image(
+        self,
+        camera_type: camera_pb2.CameraType,
+    ) -> Iterator[tuple[np.ndarray, object, np.ndarray]]:
+        """流式读取 RGBD 图像。"""
+
+        intrinsics = self.get_camera_intrinsics(camera_type)
+        width = self._require_int(intrinsics["base_width"], "base_width")
+        height = self._require_int(intrinsics["base_height"], "base_height")
+        request = camera_pb2.CameraRequest(camera_type=camera_type)
+        for response in self._data_stub.StreamGetRGBDImage(request, timeout=None):
+            color_bgr = cv2.imdecode(np.frombuffer(response.image_2d.jpeg_data, np.uint8), cv2.IMREAD_COLOR)
+            if color_bgr is None:
+                raise RuntimeError("camera rgbd jpeg decode failed")
+            # depth_data: (H * W * 2,) bytes，按 uint16 解码后重排为 (H, W) 深度矩阵。
+            depth_array = np.frombuffer(response.depth_data, dtype=np.uint16)
+            depth = depth_array.reshape((height, width))
+            yield color_bgr, response.image_2d.timestamp, depth
+
+    @staticmethod
+    def _require_int(value: object, field_name: str) -> int:
+        """将相机内参字段收窄为整数。"""
+
+        if isinstance(value, int):
+            return int(value)
+        if isinstance(value, float) and value.is_integer():
+            return int(value)
+        raise TypeError(f"qmlinker camera intrinsics field {field_name} is not integer-like: {value!r}")
+
+
+# endregion
+
+
 # region 主入口
 
 
@@ -235,7 +366,7 @@ class WujiQmlinkerClient:
         self._arms: dict[ArmDeviceName, Any] = {}
         self._hands: dict[HandDeviceName, Any] = {}
         self._default_channel = self._channel["DEFAULT"] if isinstance(self._channel, dict) else self._channel
-        self._camera = QMCamera(self._channel)
+        self._camera = _WujiCameraServiceAdapter(self._channel, request_timeout_s=self._config.request_timeout_s)
         self._move_base = QMMoveBase(self._channel)
         self._waist_stub = waist_pb2_grpc.WaistServiceStub(self._default_channel)
         self._lift_stub = lift_pb2_grpc.LiftServiceStub(self._default_channel)
@@ -550,6 +681,23 @@ class WujiQmlinkerClient:
         joint_angles_rad = [float(np.deg2rad(joint.angle_deg)) for joint in joints]
         return self.fk_fast(device_name, joint_angles_rad)
 
+    def get_arm_joint_count(self, device_name: ArmDeviceName) -> int:
+        """读取指定机械臂当前关节数量。"""
+
+        return len(self.get_joint_states(device_name))
+
+    def get_arm_joint_limits(self, device_name: ArmDeviceName) -> tuple[WujiArmJointLimit, ...]:
+        """读取指定机械臂的运行时关节限位。"""
+
+        arm = self._arm(device_name)
+        joint_mins = list(getattr(arm.fkik, "joint_min", ()))
+        joint_maxs = list(getattr(arm.fkik, "joint_max", ()))
+        joint_count = min(len(joint_mins), len(joint_maxs))
+        return tuple(
+            WujiArmJointLimit(f"j{index}", float(joint_mins[index - 1]), float(joint_maxs[index - 1]))
+            for index in range(1, joint_count + 1)
+        )
+
     def get_body_z(self) -> float:
         """读取身体 z 轴升降高度。
 
@@ -647,14 +795,113 @@ class WujiQmlinkerClient:
         )
         return self._coerce_hand_state_response(device_name, response)
 
+    def get_hand_actuator_count(self, device_name: HandDeviceName) -> int:
+        """读取指定手部当前执行器数量。"""
+
+        return len(self.get_hand_values(device_name))
+
+    def get_hand_instance_specs(self) -> tuple[WujiHandInstanceSpec, ...]:
+        """读取左右手当前执行器规格。"""
+
+        return (
+            WujiHandInstanceSpec("left_hand", "left hand", self.get_hand_actuator_count("left_hand")),
+            WujiHandInstanceSpec("right_hand", "right hand", self.get_hand_actuator_count("right_hand")),
+        )
+
+    def describe_robot_runtime_structure(self) -> WujiRobotRuntimeStructure:
+        """读取当前 qmlinker 连接对应的机器人结构快照。"""
+
+        left_arm_limits = self.get_arm_joint_limits("left_arm")
+        right_arm_limits = self.get_arm_joint_limits("right_arm")
+        left_hand_count = self.get_hand_actuator_count("left_hand")
+        right_hand_count = self.get_hand_actuator_count("right_hand")
+        modules = [
+            WujiRuntimeModuleSpec(
+                tab_name="arm",
+                title="left arm",
+                device_name="left_arm",
+                axes=tuple(
+                    WujiRuntimeAxisSpec(
+                        axis_name=f"left_j{index}",
+                        minimum=limit.minimum_deg,
+                        maximum=limit.maximum_deg,
+                        unit=limit.unit,
+                    )
+                    for index, limit in enumerate(left_arm_limits, start=1)
+                ),
+            ),
+            WujiRuntimeModuleSpec(
+                tab_name="arm",
+                title="right arm",
+                device_name="right_arm",
+                axes=tuple(
+                    WujiRuntimeAxisSpec(
+                        axis_name=f"right_j{index}",
+                        minimum=limit.minimum_deg,
+                        maximum=limit.maximum_deg,
+                        unit=limit.unit,
+                    )
+                    for index, limit in enumerate(right_arm_limits, start=1)
+                ),
+            ),
+            WujiRuntimeModuleSpec(
+                tab_name="hand",
+                title="left hand",
+                device_name="left_hand",
+                axes=tuple(
+                    WujiRuntimeAxisSpec(axis_name=f"left_hand_a{idx}", minimum=0.0, maximum=1.0, unit="", control_supported=False)
+                    for idx in range(left_hand_count)
+                ),
+                enable_supported=False,
+            ),
+            WujiRuntimeModuleSpec(
+                tab_name="hand",
+                title="right hand",
+                device_name="right_hand",
+                axes=tuple(
+                    WujiRuntimeAxisSpec(axis_name=f"right_hand_a{idx}", minimum=0.0, maximum=1.0, unit="", control_supported=False)
+                    for idx in range(right_hand_count)
+                ),
+                enable_supported=False,
+            ),
+            WujiRuntimeModuleSpec(
+                tab_name="body",
+                title="body",
+                device_name="body",
+                axes=(
+                    WujiRuntimeAxisSpec("body_z", 0.0, 850.0, "mm"),
+                    WujiRuntimeAxisSpec("body_ry", -30.0, 30.0, "deg"),
+                ),
+            ),
+            WujiRuntimeModuleSpec(
+                tab_name="body",
+                title="head",
+                device_name="head",
+                axes=(WujiRuntimeAxisSpec("head_yaw", -90.0, 90.0, "deg"),),
+            ),
+            WujiRuntimeModuleSpec(
+                tab_name="agv",
+                title="AGV",
+                device_name="agv",
+                axes=(
+                    WujiRuntimeAxisSpec("agv_x", -100.0, 100.0, "m", control_supported=False),
+                    WujiRuntimeAxisSpec("agv_y", -100.0, 100.0, "m", control_supported=False),
+                    WujiRuntimeAxisSpec("agv_yaw", -180.0, 180.0, "deg", control_supported=False),
+                    WujiRuntimeAxisSpec("agv_battery", 0.0, 100.0, "%", control_supported=False),
+                ),
+                enable_supported=False,
+            ),
+        ]
+        return WujiRobotRuntimeStructure(modules=tuple(modules))
+
     def stream_get_hand_values(self, device_name: HandDeviceName) -> Iterator[dict[str, float]]:
         """流式读取指定手部执行器位置。"""
 
         for state in self._hand(device_name).stream_get_hand_state(include_tactile=False):
             yield self._coerce_hand_state_values(device_name, state)
 
-    def get_camera_enable(self, camera_name: WujiCameraName) -> bool:
-        """读取指定相机使能状态。
+    def get_camera_enable_state(self, camera_name: WujiCameraName) -> WujiCameraEnableState:
+        """读取指定相机使能状态与接口可用性。
 
         Parameters
         ----------
@@ -663,11 +910,27 @@ class WujiQmlinkerClient:
 
         Returns
         -------
-        enabled:
-            `True` 表示相机模块已使能。
+        state:
+            相机使能状态结果；若服务端未实现该接口，则 `api_available=False`。
         """
 
-        return bool(self._camera.get_enable(self._camera_type(camera_name)))
+        try:
+            enabled = bool(self._camera.get_enable(self._camera_type(camera_name)))
+            return WujiCameraEnableState(
+                camera_name=camera_name,
+                enabled=enabled,
+                api_available=True,
+                message="qmlinker camera enable api available",
+            )
+        except grpc.RpcError as exc:
+            if exc.code() == grpc.StatusCode.UNIMPLEMENTED:
+                return WujiCameraEnableState(
+                    camera_name=camera_name,
+                    enabled=False,
+                    api_available=False,
+                    message=f"qmlinker camera enable api unavailable: {camera_name}",
+                )
+            raise
 
     def set_camera_enable(self, camera_name: WujiCameraName, enabled: bool) -> bool:
         """设置指定相机使能状态。
@@ -685,7 +948,12 @@ class WujiQmlinkerClient:
             `True` 表示 qmlinker 接口返回成功。
         """
 
-        return bool(self._camera.set_enable(self._camera_type(camera_name), bool(enabled)))
+        try:
+            return bool(self._camera.set_enable(self._camera_type(camera_name), bool(enabled)))
+        except grpc.RpcError as exc:
+            if exc.code() == grpc.StatusCode.UNIMPLEMENTED:
+                raise NotImplementedError(f"qmlinker camera enable api unavailable: {camera_name}") from exc
+            raise
 
     def get_camera_intrinsics(self, camera_name: WujiCameraName) -> WujiCameraIntrinsicsInfo:
         """读取指定相机内参与基准分辨率。
@@ -709,15 +977,22 @@ class WujiQmlinkerClient:
         raw = self._camera.get_camera_intrinsics(self._camera_type(camera_name))
         if not isinstance(raw, dict):
             raise RuntimeError(f"qmlinker get camera intrinsics failed: {camera_name}")
+        fx_value = self._require_float(raw.get("fx", 0.0), "fx")
+        fy_value = self._require_float(raw.get("fy", 0.0), "fy")
+        cx_value = self._require_float(raw.get("cx", 0.0), "cx")
+        cy_value = self._require_float(raw.get("cy", 0.0), "cy")
+        distortion_value = self._require_float_sequence(raw.get("distortion", ()), "distortion")
+        base_width_value = self._require_int(raw.get("base_width", 0), "base_width")
+        base_height_value = self._require_int(raw.get("base_height", 0), "base_height")
         return WujiCameraIntrinsicsInfo(
             camera_name=camera_name,
-            fx=float(raw.get("fx", 0.0)),
-            fy=float(raw.get("fy", 0.0)),
-            cx=float(raw.get("cx", 0.0)),
-            cy=float(raw.get("cy", 0.0)),
-            distortion=tuple(float(value) for value in raw.get("distortion", ())),
-            width=int(raw.get("base_width", 0)),
-            height=int(raw.get("base_height", 0)),
+            fx=fx_value,
+            fy=fy_value,
+            cx=cx_value,
+            cy=cy_value,
+            distortion=distortion_value,
+            width=base_width_value,
+            height=base_height_value,
         )
 
     def stream_camera_rgb_frames(self, camera_name: WujiCameraName) -> Iterator[WujiCameraFrame]:
@@ -934,6 +1209,32 @@ class WujiQmlinkerClient:
         if module_name == "right_arm":
             return "right_arm"
         raise ValueError(f"module is not an arm device: {module_name}")
+
+    @staticmethod
+    def _require_float(value: object, field_name: str) -> float:
+        """将 qmlinker 返回值收窄为浮点数。"""
+
+        if isinstance(value, (int, float)):
+            return float(value)
+        raise TypeError(f"qmlinker camera intrinsics field {field_name} is not numeric: {value!r}")
+
+    @staticmethod
+    def _require_int(value: object, field_name: str) -> int:
+        """将 qmlinker 返回值收窄为整数。"""
+
+        if isinstance(value, int):
+            return int(value)
+        if isinstance(value, float) and value.is_integer():
+            return int(value)
+        raise TypeError(f"qmlinker camera intrinsics field {field_name} is not integer-like: {value!r}")
+
+    @staticmethod
+    def _require_float_sequence(value: object, field_name: str) -> tuple[float, ...]:
+        """将 qmlinker 返回值收窄为浮点序列。"""
+
+        if isinstance(value, (list, tuple)):
+            return tuple(float(item) for item in value if isinstance(item, (int, float)))
+        raise TypeError(f"qmlinker camera intrinsics field {field_name} is not a sequence: {value!r}")
 
     def _get_stub_enable(self, stub: Any) -> bool:
         """读取通用模块 stub 的使能状态。"""

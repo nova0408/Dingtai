@@ -4,8 +4,9 @@ import math
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, replace
 from enum import Enum
-from typing import Any, Self, final, overload
+from typing import Any,  final, overload
 
+from typing_extensions import Self
 import numpy as np
 from numpy.typing import NDArray
 from scipy.spatial.transform import Rotation as R

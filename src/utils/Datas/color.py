@@ -4,13 +4,12 @@ from collections.abc import Iterator, Sequence
 from colorsys import rgb_to_hls
 from dataclasses import dataclass, replace
 from itertools import cycle
-from typing import TYPE_CHECKING, Any, Literal, Self, cast, overload
+from typing import TYPE_CHECKING, Any, Literal, cast, overload
 
+from typing_extensions import Self
 import numpy as np
 from numpy.typing import NDArray
 
-if TYPE_CHECKING:
-    from OCC.Core.Quantity import Quantity_Color
 
 
 def _normalize_channel(value: float | int, *, name: str) -> int:

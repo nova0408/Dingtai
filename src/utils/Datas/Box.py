@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Self, overload
+from typing import overload
+from typing_extensions import Self
 
 import numpy as np
 from numpy.typing import NDArray

@@ -627,10 +627,10 @@ def _build_agv_outline(template_root: ET.Element) -> tuple[ChainSnapshot, ...]:
         profile_path = RESOURCE_DIR / agv_node.attrib.get("profile", "woosh_agv.toml")
         agv_color = agv_node.attrib.get("color", "#6c757d")
     try:
-        import tomllib
+        import tomlkit
     except ModuleNotFoundError:  # pragma: no cover
-        import tomli as tomllib  # type: ignore[import-not-found]
-    profile = tomllib.loads(profile_path.read_text(encoding="utf-8"))
+        raise ImportError("tomlkit is required to load AGV profile, please install it via 'pip install tomlkit'")
+    profile = tomlkit.parse(profile_path.read_text(encoding="utf-8"))
     length = float(profile["size"]["length"])
     width = float(profile["size"]["width"])
     install_height = float(profile["mount"]["install_height"])

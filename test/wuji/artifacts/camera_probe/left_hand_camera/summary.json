@@ -1,0 +1,17 @@
+{
+  "camera_name": "left_hand_camera",
+  "enable_api_available": false,
+  "enable_state": false,
+  "enable_message": "qmlinker camera enable api unavailable: left_hand_camera",
+  "intrinsics_ok": false,
+  "intrinsics_summary": "_InactiveRpcError: <_InactiveRpcError of RPC that terminated with:\n\tstatus = StatusCode.UNIMPLEMENTED\n\tdetails = \"\"\n\tdebug_error_string = \"UNIMPLEMENTED\"\n>",
+  "rgb_ok": false,
+  "rgb_summary": "_MultiThreadedRendezvous: <_MultiThreadedRendezvous of RPC that terminated with:\n\tstatus = StatusCode.UNIMPLEMENTED\n\tdetails = \"\"\n\tdebug_error_string = \"UNIMPLEMENTED\"\n>",
+  "rgbd_ok": false,
+  "rgbd_summary": "_InactiveRpcError: <_InactiveRpcError of RPC that terminated with:\n\tstatus = StatusCode.UNIMPLEMENTED\n\tdetails = \"\"\n\tdebug_error_string = \"UNIMPLEMENTED\"\n>",
+  "artifacts": {
+    "rgb_path": null,
+    "depth_u16_path": null,
+    "depth_vis_path": null
+  }
+}

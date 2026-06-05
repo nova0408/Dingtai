@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from dataclasses import dataclass, field, replace
-from typing import TYPE_CHECKING, Self
+from typing import TYPE_CHECKING
 
+from typing_extensions import Self
 import numpy as np
 
 from ..point import Point

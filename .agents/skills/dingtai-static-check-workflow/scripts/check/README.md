@@ -8,6 +8,11 @@
 - `run_pyright.ps1`：运行 `pyright` 类型检查。
 - `run_all_checks.ps1`：先 `ruff` 后 `pyright`，任一失败即返回非 0。
 
+## 默认豁免
+
+- 所有 `*_ui.py` 文件都会被自动跳过。
+- 这类文件视为 Qt 插件自动生成代码，不做静态检查，也不做手工修改。
+
 ## 用法
 
 ```powershell

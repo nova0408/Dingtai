@@ -1,0 +1,77 @@
+{
+  "host": "192.168.100.60",
+  "port": 50062,
+  "request_timeout_s": 3.0,
+  "stream_timeout_s": 8.0,
+  "mapping_note": "请人工核对每路逻辑相机样张是否与真实安装位一致；当前仓库不能自动证明逻辑名与物理设备一一对应。",
+  "results": [
+    {
+      "camera_name": "head_camera",
+      "enable_api_available": false,
+      "enable_state": false,
+      "enable_message": "qmlinker camera enable api unavailable: head_camera",
+      "intrinsics_ok": false,
+      "intrinsics_summary": "_InactiveRpcError: <_InactiveRpcError of RPC that terminated with:\n\tstatus = StatusCode.UNIMPLEMENTED\n\tdetails = \"\"\n\tdebug_error_string = \"UNIMPLEMENTED\"\n>",
+      "rgb_ok": false,
+      "rgb_summary": "_MultiThreadedRendezvous: <_MultiThreadedRendezvous of RPC that terminated with:\n\tstatus = StatusCode.UNIMPLEMENTED\n\tdetails = \"\"\n\tdebug_error_string = \"UNIMPLEMENTED\"\n>",
+      "rgbd_ok": false,
+      "rgbd_summary": "_InactiveRpcError: <_InactiveRpcError of RPC that terminated with:\n\tstatus = StatusCode.UNIMPLEMENTED\n\tdetails = \"\"\n\tdebug_error_string = \"UNIMPLEMENTED\"\n>",
+      "artifacts": {
+        "rgb_path": null,
+        "depth_u16_path": null,
+        "depth_vis_path": null
+      }
+    },
+    {
+      "camera_name": "chest_camera",
+      "enable_api_available": false,
+      "enable_state": false,
+      "enable_message": "qmlinker camera enable api unavailable: chest_camera",
+      "intrinsics_ok": false,
+      "intrinsics_summary": "_InactiveRpcError: <_InactiveRpcError of RPC that terminated with:\n\tstatus = StatusCode.UNIMPLEMENTED\n\tdetails = \"\"\n\tdebug_error_string = \"UNIMPLEMENTED\"\n>",
+      "rgb_ok": false,
+      "rgb_summary": "_MultiThreadedRendezvous: <_MultiThreadedRendezvous of RPC that terminated with:\n\tstatus = StatusCode.UNIMPLEMENTED\n\tdetails = \"\"\n\tdebug_error_string = \"UNIMPLEMENTED\"\n>",
+      "rgbd_ok": false,
+      "rgbd_summary": "_InactiveRpcError: <_InactiveRpcError of RPC that terminated with:\n\tstatus = StatusCode.UNIMPLEMENTED\n\tdetails = \"\"\n\tdebug_error_string = \"UNIMPLEMENTED\"\n>",
+      "artifacts": {
+        "rgb_path": null,
+        "depth_u16_path": null,
+        "depth_vis_path": null
+      }
+    },
+    {
+      "camera_name": "left_hand_camera",
+      "enable_api_available": false,
+      "enable_state": false,
+      "enable_message": "qmlinker camera enable api unavailable: left_hand_camera",
+      "intrinsics_ok": false,
+      "intrinsics_summary": "_InactiveRpcError: <_InactiveRpcError of RPC that terminated with:\n\tstatus = StatusCode.UNIMPLEMENTED\n\tdetails = \"\"\n\tdebug_error_string = \"UNIMPLEMENTED\"\n>",
+      "rgb_ok": false,
+      "rgb_summary": "_MultiThreadedRendezvous: <_MultiThreadedRendezvous of RPC that terminated with:\n\tstatus = StatusCode.UNIMPLEMENTED\n\tdetails = \"\"\n\tdebug_error_string = \"UNIMPLEMENTED\"\n>",
+      "rgbd_ok": false,
+      "rgbd_summary": "_InactiveRpcError: <_InactiveRpcError of RPC that terminated with:\n\tstatus = StatusCode.UNIMPLEMENTED\n\tdetails = \"\"\n\tdebug_error_string = \"UNIMPLEMENTED\"\n>",
+      "artifacts": {
+        "rgb_path": null,
+        "depth_u16_path": null,
+        "depth_vis_path": null
+      }
+    },
+    {
+      "camera_name": "right_hand_camera",
+      "enable_api_available": false,
+      "enable_state": false,
+      "enable_message": "qmlinker camera enable api unavailable: right_hand_camera",
+      "intrinsics_ok": false,
+      "intrinsics_summary": "_InactiveRpcError: <_InactiveRpcError of RPC that terminated with:\n\tstatus = StatusCode.UNIMPLEMENTED\n\tdetails = \"\"\n\tdebug_error_string = \"UNIMPLEMENTED\"\n>",
+      "rgb_ok": false,
+      "rgb_summary": "_MultiThreadedRendezvous: <_MultiThreadedRendezvous of RPC that terminated with:\n\tstatus = StatusCode.UNIMPLEMENTED\n\tdetails = \"\"\n\tdebug_error_string = \"UNIMPLEMENTED\"\n>",
+      "rgbd_ok": false,
+      "rgbd_summary": "_InactiveRpcError: <_InactiveRpcError of RPC that terminated with:\n\tstatus = StatusCode.UNIMPLEMENTED\n\tdetails = \"\"\n\tdebug_error_string = \"UNIMPLEMENTED\"\n>",
+      "artifacts": {
+        "rgb_path": null,
+        "depth_u16_path": null,
+        "depth_vis_path": null
+      }
+    }
+  ]
+}

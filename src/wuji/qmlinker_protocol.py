@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
-import tomllib
+import tomlkit
 
 # region 数据结构
 
@@ -89,6 +89,37 @@ class WujiRobotNetworkConfig:
     "qmlinker SDK 连接配置。"
 
 
+@dataclass(frozen=True, slots=True)
+class WujiRuntimeAxisSpec:
+    """运行时发现的单轴规格。"""
+
+    axis_name: str
+    minimum: float
+    maximum: float
+    unit: str
+    control_supported: bool = True
+    refresh_supported: bool = True
+
+
+@dataclass(frozen=True, slots=True)
+class WujiRuntimeModuleSpec:
+    """运行时发现的模块规格。"""
+
+    tab_name: str
+    title: str
+    device_name: str
+    axes: tuple[WujiRuntimeAxisSpec, ...] = ()
+    enable_supported: bool = True
+    refresh_supported: bool = True
+
+
+@dataclass(frozen=True, slots=True)
+class WujiRobotRuntimeStructure:
+    """qmlinker 运行时机器人结构快照。"""
+
+    modules: tuple[WujiRuntimeModuleSpec, ...]
+
+
 # endregion
 
 
@@ -125,7 +156,7 @@ def load_wuji_robot_network_config(path: Path | None = None) -> WujiRobotNetwork
     config_path = ROBOT_NETWORK_CONFIG_PATH if path is None else path
     if not config_path.exists():
         return WujiRobotNetworkConfig()
-    data = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    data = tomlkit.parse(config_path.read_text(encoding="utf-8"))
     network = data.get("network", {})
     qmlinker_data = data.get("qmlinker", {})
     qmlinker_config = WujiQmlinkerConfig(

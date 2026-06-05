@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
-from typing import Self, final, overload
+from typing import final, overload
+from typing_extensions import Self
 
 import numpy as np
 from loguru import logger

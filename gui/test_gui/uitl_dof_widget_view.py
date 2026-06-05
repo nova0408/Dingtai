@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import cast
 
-from PySide6.QtCore import QTimer, Signal, Slot
+from PySide6.QtCore import QTimer, Qt, Signal, Slot
 from PySide6.QtWidgets import QApplication, QWidget
 
 from gui.test_gui.uitl_dof_widget_controller import DoFWidgetController
@@ -42,7 +42,8 @@ class UtilDoFWidget(QWidget):
     valueChanged = Signal(str, float)
 
     _SLIDER_SCALE = 100
-    _HOLD_SEND_INTERVAL_MS = 50
+    _HOLD_INITIAL_DELAY_MS = 160
+    _HOLD_REPEAT_INTERVAL_MS = 60
 
     @classmethod
     def replace_placeholder(
@@ -76,7 +77,8 @@ class UtilDoFWidget(QWidget):
         self._syncing_slider = False
         self._hold_direction = 0
         self._hold_timer = QTimer(self)
-        self._hold_timer.setInterval(self._HOLD_SEND_INTERVAL_MS)
+        self._hold_timer.setSingleShot(True)
+        self._hold_timer.setTimerType(Qt.TimerType.PreciseTimer)
 
         self._setup_static_text()
         self._setup_slider_range()
@@ -133,9 +135,11 @@ class UtilDoFWidget(QWidget):
     def _start_hold(self, direction: int) -> None:
         """启动单个方向的连续关节目标发送。"""
 
+        if self._hold_direction == direction and self._hold_timer.isActive():
+            return
         self._hold_direction = direction
         self._send_hold_step(first_step=True)
-        self._hold_timer.start()
+        self._hold_timer.start(self._HOLD_INITIAL_DELAY_MS)
 
     def _stop_hold(self) -> None:
         """停止长按连续发送，避免释放后继续产生控制指令。"""
@@ -146,17 +150,20 @@ class UtilDoFWidget(QWidget):
     def _send_hold_step(self, first_step: bool = False) -> None:
         """按固定节流周期发送一步目标值。"""
 
+        if self._hold_direction == 0:
+            return
         if self._hold_direction < 0:
             if first_step:
                 self._controller.move_forward()
             else:
                 self._controller.continue_forward()
-            return
-        if self._hold_direction > 0:
+        elif self._hold_direction > 0:
             if first_step:
                 self._controller.move_backward()
             else:
                 self._controller.continue_backward()
+        if self._hold_direction != 0:
+            self._hold_timer.start(self._HOLD_REPEAT_INTERVAL_MS)
 
     @Slot(int)
     def _on_slider_value_changed(self, raw_value: int) -> None:

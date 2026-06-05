@@ -37,6 +37,48 @@ class WujiCameraSpec:
 
 
 @dataclass(frozen=True, slots=True)
+class WujiCameraRuntimeInfo:
+    """无际现场相机运行时清单项。
+
+    职责边界：
+    - 只表达远端相机服务当前暴露的一路在线相机槽位信息。
+    - 不负责 SSH 读取、ZMQ 通信、图像拉流或 GUI 控件更新。
+
+    设计思想：
+    - 将逻辑相机名、远端槽位名与序列号放在同一结构中，避免 GUI 再做物理位置猜测。
+    - 保留在线与彩色/深度开关状态，便于界面直接展示“当前这一路是否真实可用”。
+    - 使用不可变 dataclass，确保后台线程查询结果可安全发回 GUI 线程。
+
+    生命周期：
+    - 每次远端清单刷新时构造；不持有外部资源。
+
+    继承关系：
+    - 不继承业务基类，作为相机运行时元数据使用。
+    """
+
+    camera_name: WujiCameraName
+    "项目内逻辑相机名，例如 `head_camera`。"
+
+    camera_id: str
+    "远端 ZMQ 控制槽位名，例如 `HEAD`、`CHEST`、`LEFT`、`RIGHT`。"
+
+    serial_number: str
+    "远端配置文件给出的可复制序列号。"
+
+    display_name: str
+    "供 GUI 展示的组合名称，通常包含槽位名与序列号。"
+
+    online: bool
+    "远端相机服务报告的在线状态。"
+
+    color_enabled: bool
+    "远端彩色流开关状态。"
+
+    depth_enabled: bool
+    "远端深度流开关状态。"
+
+
+@dataclass(frozen=True, slots=True)
 class WujiCameraIntrinsicsInfo:
     """无际 qmlinker 相机内参与基准分辨率。
 
@@ -81,6 +123,38 @@ class WujiCameraIntrinsicsInfo:
 
 
 @dataclass(frozen=True, slots=True)
+class WujiCameraEnableState:
+    """无际 qmlinker 相机使能状态结果。
+
+    职责边界：
+    - 只表达一次相机使能状态读取或设置回写的结果。
+    - 不负责实际 RPC 调用、GUI 渲染或错误弹窗。
+
+    设计思想：
+    - 将“当前使能值”和“接口是否可用”拆开表达，避免把 `UNIMPLEMENTED` 误显示成已禁用。
+    - 保留 message 文本，便于 GUI 和测试脚本给出可读诊断。
+
+    生命周期：
+    - 由后端 worker 在一次请求完成后构造，不持有外部资源。
+
+    继承关系：
+    - 不继承业务基类，作为相机状态协议结果数据使用。
+    """
+
+    camera_name: WujiCameraName
+    "相机逻辑名称。"
+
+    enabled: bool
+    "当前使能值；当接口不可用时仅作占位值使用。"
+
+    api_available: bool
+    "相机使能接口是否由当前 qmlinker 服务实现。"
+
+    message: str = ""
+    "附加诊断信息，例如未实现原因或回写摘要。"
+
+
+@dataclass(frozen=True, slots=True)
 class WujiCameraFrame:
     """无际 qmlinker 相机单帧图像数据。
 
@@ -121,10 +195,10 @@ class WujiCameraFrame:
 # region 配置
 
 SUPPORTED_WUJI_CAMERAS: tuple[WujiCameraSpec, ...] = (
-    WujiCameraSpec("head_camera", "头部相机"),
+    WujiCameraSpec("head_camera", "头部全景相机"),
     WujiCameraSpec("chest_camera", "胸部相机"),
-    WujiCameraSpec("left_hand_camera", "左手相机"),
-    WujiCameraSpec("right_hand_camera", "右手相机"),
+    WujiCameraSpec("left_hand_camera", "左手相机（Gemini 336/336L）"),
+    WujiCameraSpec("right_hand_camera", "右手相机（离线）"),
 )
 "当前 qmlinker 相机服务文档定义的相机安装位。"
 

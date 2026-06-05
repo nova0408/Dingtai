@@ -3,7 +3,8 @@ from __future__ import annotations
 import math
 import re
 from dataclasses import dataclass
-from typing import Self, final, overload
+from typing import final, overload
+from typing_extensions import Self
 
 import numpy as np
 

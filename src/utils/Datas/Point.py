@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Any, Self, overload
 
+from typing import TYPE_CHECKING, Any,final, overload
+from typing_extensions import Self
 import numpy as np
 from numpy.typing import NDArray
 
