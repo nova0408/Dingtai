@@ -1,19 +1,25 @@
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
 from collections.abc import Iterable, Iterator
+from dataclasses import dataclass
 from typing import Any
 
+from google.protobuf import empty_pb2
 import numpy as np
-from qmlinker import QMArm, QMHand, QMMoveBase, create_channel
+from qmlinker import QMArm, QMCamera, QMHand, QMMoveBase, create_channel
 from qmlinker.grpc_py import arm_pb2, common_pb2, head_pb2, head_pb2_grpc
 from qmlinker.grpc_py import lift_pb2, lift_pb2_grpc
 from qmlinker.grpc_py import waist_pb2, waist_pb2_grpc
-from google.protobuf import empty_pb2
 
-from src.arm.wuji_arm_protocol import ArmDeviceName, WujiArmQmlinkerConfig, WujiModuleName
+from src.arm.wuji_arm_protocol import ArmDeviceName
 from src.hand import HandDeviceName
+from src.wuji.camera_protocol import (
+    WujiCameraFrame,
+    WujiCameraIntrinsicsInfo,
+    WujiCameraName,
+)
+from src.wuji.qmlinker_protocol import WujiQmlinkerConfig, WujiQmlinkerEnableModuleName
 
 # region 数据结构
 
@@ -56,17 +62,17 @@ class WujiArmJointState:
 # region 主入口
 
 
-class WujiArmQmlinkerClient:
-    """无际机械臂 qmlinker 本机客户端。
+class WujiQmlinkerClient:
+    """无际 qmlinker 本机客户端。
 
     职责边界：
-    - 负责在 DingTai 环境中通过 qmlinker SDK 访问基础控制工控机 ArmService。
+    - 负责在 DingTai 环境中通过 qmlinker SDK 访问基础控制工控机 qmlinker 服务。
     - 不执行远端 Python，不修改远端环境。
     - 不持有 GUI 控件，不发 Qt 信号。
 
     设计思想：
     - 直接使用接口文档提供的 `qmlinker-1.0.8-py3-none-any.whl`，避免重复实现 SDK 内部逻辑。
-    - 客户端持有一个 channel 和左右臂 QMArm 实例，复用 SDK 内部状态更新线程。
+    - 客户端持有一个 channel，并集中管理臂、手、底盘、腰、升降和头部 SDK 对象。
 
     生命周期：
     - 随 GUI 后端创建和关闭。
@@ -76,8 +82,8 @@ class WujiArmQmlinkerClient:
     - 不继承业务基类，作为硬件协议适配器使用。
     """
 
-    def __init__(self, config: WujiArmQmlinkerConfig | None = None) -> None:
-        """初始化 qmlinker 机械臂客户端。
+    def __init__(self, config: WujiQmlinkerConfig | None = None) -> None:
+        """初始化无际 qmlinker 客户端。
 
         Parameters
         ----------
@@ -85,11 +91,12 @@ class WujiArmQmlinkerClient:
             qmlinker 连接配置，为 `None` 时使用默认配置。
         """
 
-        self._config = WujiArmQmlinkerConfig() if config is None else config
+        self._config = WujiQmlinkerConfig() if config is None else config
         self._channel = create_channel(self._config.target())
         self._arms: dict[ArmDeviceName, Any] = {}
         self._hands: dict[HandDeviceName, Any] = {}
         self._default_channel = self._channel["DEFAULT"] if isinstance(self._channel, dict) else self._channel
+        self._camera = QMCamera(self._channel)
         self._move_base = QMMoveBase(self._channel)
         self._waist_stub = waist_pb2_grpc.WaistServiceStub(self._default_channel)
         self._lift_stub = lift_pb2_grpc.LiftServiceStub(self._default_channel)
@@ -120,7 +127,7 @@ class WujiArmQmlinkerClient:
 
         grpc.channel_ready_future(self._default_channel).result(timeout=self._config.request_timeout_s)
 
-    def get_module_enable(self, module_name: WujiModuleName) -> bool:
+    def get_module_enable(self, module_name: WujiQmlinkerEnableModuleName) -> bool:
         """读取整机模块使能状态。
 
         Parameters
@@ -144,7 +151,7 @@ class WujiArmQmlinkerClient:
         )
         return bool(response.status.success and response.current_state == common_pb2.MODULE_ENABLED)
 
-    def set_module_enable(self, module_name: WujiModuleName, enabled: bool) -> bool:
+    def set_module_enable(self, module_name: WujiQmlinkerEnableModuleName, enabled: bool) -> bool:
         """设置整机模块使能状态。"""
 
         if module_name in {"left_arm", "right_arm"}:
@@ -303,11 +310,11 @@ class WujiArmQmlinkerClient:
             每帧关节状态，角度单位为 deg。
         """
 
-        deadline = time.time() + max(0.0, duration_s)
+        deadline = None if duration_s <= 0.0 else time.time() + float(duration_s)
         request = arm_pb2.GetJointStatesRequest()
         request.arm_type = self._arm_pb_type(device_name)
         for response in self._arm(device_name).stub.StreamGetJointStates(request):
-            if time.time() > deadline:
+            if deadline is not None and time.time() > deadline:
                 break
             yield tuple(
                 WujiArmJointState(
@@ -479,6 +486,140 @@ class WujiArmQmlinkerClient:
         """读取指定手部执行器位置。"""
 
         state = self._hand(device_name).get_hand_state(include_tactile=False)
+        return self._coerce_hand_state_values(device_name, state)
+
+    def stream_get_hand_values(self, device_name: HandDeviceName) -> Iterator[dict[str, float]]:
+        """流式读取指定手部执行器位置。"""
+
+        for state in self._hand(device_name).stream_get_hand_state(include_tactile=False):
+            yield self._coerce_hand_state_values(device_name, state)
+
+    def get_camera_enable(self, camera_name: WujiCameraName) -> bool:
+        """读取指定相机使能状态。
+
+        Parameters
+        ----------
+        camera_name:
+            无际相机逻辑名称。
+
+        Returns
+        -------
+        enabled:
+            `True` 表示相机模块已使能。
+        """
+
+        return bool(self._camera.get_enable(self._camera_type(camera_name)))
+
+    def set_camera_enable(self, camera_name: WujiCameraName, enabled: bool) -> bool:
+        """设置指定相机使能状态。
+
+        Parameters
+        ----------
+        camera_name:
+            无际相机逻辑名称。
+        enabled:
+            目标使能状态。
+
+        Returns
+        -------
+        success:
+            `True` 表示 qmlinker 接口返回成功。
+        """
+
+        return bool(self._camera.set_enable(self._camera_type(camera_name), bool(enabled)))
+
+    def get_camera_intrinsics(self, camera_name: WujiCameraName) -> WujiCameraIntrinsicsInfo:
+        """读取指定相机内参与基准分辨率。
+
+        Parameters
+        ----------
+        camera_name:
+            无际相机逻辑名称。
+
+        Returns
+        -------
+        intrinsics:
+            qmlinker 相机内参与基准分辨率。
+
+        Raises
+        ------
+        RuntimeError
+            qmlinker 未返回有效内参时抛出。
+        """
+
+        raw = self._camera.get_camera_intrinsics(self._camera_type(camera_name))
+        if not isinstance(raw, dict):
+            raise RuntimeError(f"qmlinker get camera intrinsics failed: {camera_name}")
+        return WujiCameraIntrinsicsInfo(
+            camera_name=camera_name,
+            fx=float(raw.get("fx", 0.0)),
+            fy=float(raw.get("fy", 0.0)),
+            cx=float(raw.get("cx", 0.0)),
+            cy=float(raw.get("cy", 0.0)),
+            distortion=tuple(float(value) for value in raw.get("distortion", ())),
+            width=int(raw.get("base_width", 0)),
+            height=int(raw.get("base_height", 0)),
+        )
+
+    def stream_camera_rgb_frames(self, camera_name: WujiCameraName) -> Iterator[WujiCameraFrame]:
+        """流式读取指定相机 2D 彩色图像。
+
+        Parameters
+        ----------
+        camera_name:
+            无际相机逻辑名称。
+
+        Yields
+        ------
+        frame:
+            qmlinker 2D 图像帧，depth 固定为 `None`。
+        """
+
+        for item in self._camera.stream_get_image_2d(self._camera_type(camera_name)):
+            if not isinstance(item, tuple) or len(item) != 2:
+                raise RuntimeError(f"qmlinker rgb stream failed: {camera_name}")
+            color_bgr, timestamp = item
+            yield WujiCameraFrame(
+                camera_name=camera_name,
+                color_bgr=np.asarray(color_bgr, dtype=np.uint8).copy(),
+                timestamp=timestamp,
+            )
+
+    def stream_camera_rgbd_frames(self, camera_name: WujiCameraName) -> Iterator[WujiCameraFrame]:
+        """流式读取指定相机 RGBD 图像。
+
+        Parameters
+        ----------
+        camera_name:
+            无际相机逻辑名称。
+
+        Yields
+        ------
+        frame:
+            qmlinker RGBD 图像帧，包含 BGR 彩色图和深度矩阵。
+        """
+
+        if not self._camera.control_depth_stream(self._camera_type(camera_name), True):
+            raise RuntimeError(f"qmlinker enable depth stream failed: {camera_name}")
+        for item in self._camera.stream_get_rgbd_image(self._camera_type(camera_name)):
+            if not isinstance(item, tuple) or len(item) != 3:
+                raise RuntimeError(f"qmlinker rgbd stream failed: {camera_name}")
+            color_bgr, timestamp, depth = item
+            yield WujiCameraFrame(
+                camera_name=camera_name,
+                color_bgr=np.asarray(color_bgr, dtype=np.uint8).copy(),
+                timestamp=timestamp,
+                depth=np.asarray(depth).copy(),
+            )
+
+    def stop_camera_depth_stream(self, camera_name: WujiCameraName) -> None:
+        """请求 qmlinker 停止指定相机深度流生成。"""
+
+        self._camera.control_depth_stream(self._camera_type(camera_name), False)
+
+    def _coerce_hand_state_values(self, device_name: HandDeviceName, state: object) -> dict[str, float]:
+        """将 qmlinker 手部状态转换为 GUI 轴值字典。"""
+
         if not isinstance(state, dict) or not isinstance(state.get("actuators"), list):
             raise RuntimeError(f"qmlinker get hand state failed: {device_name}")
         values: dict[str, float] = {}
@@ -513,6 +654,19 @@ class WujiArmQmlinkerClient:
         self._hands[device_name] = hand
         return hand
 
+    def _camera_type(self, camera_name: WujiCameraName) -> Any:
+        """将项目相机名称转换为 qmlinker 相机枚举。"""
+
+        if camera_name == "head_camera":
+            return QMCamera.CAM_HEAD
+        if camera_name == "chest_camera":
+            return QMCamera.CAM_CHEST
+        if camera_name == "left_hand_camera":
+            return QMCamera.CAM_LEFT_HAND
+        if camera_name == "right_hand_camera":
+            return QMCamera.CAM_RIGHT_HAND
+        raise ValueError(f"unsupported camera: {camera_name}")
+
     def _arm_pb_type(self, device_name: ArmDeviceName) -> Any:
         """返回 qmlinker proto 中的机械臂枚举值。"""
 
@@ -520,7 +674,7 @@ class WujiArmQmlinkerClient:
             return arm_pb2.ArmType.ARM_LEFT
         return arm_pb2.ArmType.ARM_RIGHT
 
-    def _module_stub(self, module_name: WujiModuleName) -> Any:
+    def _module_stub(self, module_name: WujiQmlinkerEnableModuleName) -> Any:
         """返回非机械臂模块的 qmlinker gRPC stub。"""
 
         if module_name == "body":
@@ -529,7 +683,7 @@ class WujiArmQmlinkerClient:
             return self._head_stub
         raise ValueError(f"unsupported non-arm module: {module_name}")
 
-    def _arm_device_name(self, module_name: WujiModuleName) -> ArmDeviceName:
+    def _arm_device_name(self, module_name: WujiQmlinkerEnableModuleName) -> ArmDeviceName:
         """将整机模块名收窄为机械臂设备名。"""
 
         if module_name == "left_arm":
@@ -553,3 +707,4 @@ class WujiArmQmlinkerClient:
 
 
 # endregion
+

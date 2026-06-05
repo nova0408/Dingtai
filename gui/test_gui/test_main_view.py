@@ -16,9 +16,10 @@ from PySide6.QtWidgets import (
 )
 
 from gui.test_gui.TestWujiCasiaArm_ui import Ui_MainWindow
+from gui.test_gui.test_wuji_camera_tab import WujiCameraTabWidget
 from gui.test_gui.test_wuji_casia_arm import TestWujiCasiaArmWidget
 from gui.util_components.casia_indicator_light import CasiaIndicatorLight
-from src.arm import WujiArmQmlinkerBackend, load_wuji_robot_network_config
+from src.wuji import WujiQmlinkerBackend, load_wuji_robot_network_config
 
 ServiceConnectionState = Literal["disconnected", "connecting", "connected", "disconnecting"]
 
@@ -43,7 +44,6 @@ class TestMainView(QMainWindow):
     serviceDisconnectRequested = Signal(object)
     serviceStateRefreshRequested = Signal(object)
     dofTargetRequested = Signal(object, str, float)
-    dofValueRefreshRequested = Signal(object, str)
     enableToggleRequested = Signal(object, str, bool)
     enableStateRefreshRequested = Signal(object, str)
 
@@ -56,17 +56,18 @@ class TestMainView(QMainWindow):
             host=network_config.qmlinker.host,
             port=network_config.qmlinker.port,
         )
-        self._arm_backend = WujiArmQmlinkerBackend(
+        self._arm_backend = WujiQmlinkerBackend(
             self,
             service_host_alias=self.context.host_alias,
         )
         self._state_refresh_timer = QTimer(self)
-        self._state_refresh_timer.setInterval(500)
+        self._state_refresh_timer.setInterval(50)
         self._service_status_timer = QTimer(self)
         self._service_status_timer.setInterval(1000)
 
         self._setup_service_context_editor()
         self._setup_robot_tab()
+        self._setup_camera_tab()
         self._connect_signals()
         self._refresh_service_status_ui()
         self._service_status_timer.start()
@@ -113,15 +114,27 @@ class TestMainView(QMainWindow):
         layout.addWidget(self.robot_widget)
         self.ui.tabWidget.setTabText(self.ui.tabWidget.indexOf(self.ui.robot_tab), "Wuji CASIA Arm")
 
+    def _setup_camera_tab(self) -> None:
+        self.camera_widget = WujiCameraTabWidget(self.ui.image_tab)
+        layout = QHBoxLayout(self.ui.image_tab)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self.camera_widget)
+        self.ui.tabWidget.setTabText(self.ui.tabWidget.indexOf(self.ui.image_tab), "Camera")
+
     def _connect_signals(self) -> None:
         self.ui.pushButton.clicked.connect(self._on_connect_button_clicked)
         self.ui.pushButton_2.clicked.connect(self._on_disconnect_button_clicked)
         self.robot_widget.dofTargetRequested.connect(self._on_dof_target_requested)
-        self.robot_widget.dofValueRefreshRequested.connect(self._on_dof_value_refresh_requested)
         self.robot_widget.enableToggleRequested.connect(self._on_enable_toggle_requested)
         self.robot_widget.enableStateRefreshRequested.connect(
             self._on_enable_state_refresh_requested
         )
+        self.camera_widget.cameraSelected.connect(self._on_camera_selected)
+        self.camera_widget.cameraEnableToggleRequested.connect(self._on_camera_enable_toggle_requested)
+        self.camera_widget.rgbStreamRequested.connect(self._on_camera_rgb_stream_requested)
+        self.camera_widget.rgbdStreamRequested.connect(self._on_camera_rgbd_stream_requested)
+        self.camera_widget.streamStopRequested.connect(self._arm_backend.stop_camera_stream)
+        self.ui.tabWidget.currentChanged.connect(self._on_main_tab_current_changed)
         self._state_refresh_timer.timeout.connect(self._on_state_refresh_timer_timeout)
         self._service_status_timer.timeout.connect(self._on_service_status_timer_timeout)
         self.serviceConnectRequested.connect(lambda _context: self._arm_backend.connect_service())
@@ -133,9 +146,6 @@ class TestMainView(QMainWindow):
         )
         self.dofTargetRequested.connect(
             lambda _context, axis, value: self._arm_backend.set_dof_target(axis, value)
-        )
-        self.dofValueRefreshRequested.connect(
-            lambda _context, axis: self._arm_backend.refresh_dof_value(axis)
         )
         self.enableToggleRequested.connect(
             lambda _context, device_name, enabled: self._arm_backend.set_enable_state(
@@ -149,6 +159,9 @@ class TestMainView(QMainWindow):
         self._arm_backend.serviceStateChanged.connect(self.update_service_connection_state)
         self._arm_backend.enableStateReceived.connect(self.update_enable_state)
         self._arm_backend.dofValuesReceived.connect(self.update_dof_values)
+        self._arm_backend.cameraEnableStateReceived.connect(self.camera_widget.update_camera_enable_state)
+        self._arm_backend.cameraIntrinsicsReceived.connect(self.camera_widget.update_intrinsics)
+        self._arm_backend.cameraFrameReceived.connect(self.camera_widget.update_frame)
         self._arm_backend.requestFailed.connect(self._on_backend_request_failed)
 
     def _sync_context_from_ui(self) -> None:
@@ -177,6 +190,8 @@ class TestMainView(QMainWindow):
     def _on_disconnect_button_clicked(self) -> None:
         logger.info("TestMainView qmlinker disconnect clicked: alias={}", self.context.host_alias)
         self._state_refresh_timer.stop()
+        self._arm_backend.stop_camera_stream()
+        self.camera_widget.clear_images()
         self._set_service_connection_state("disconnecting")
         self.serviceDisconnectRequested.emit(self.context)
         self.statusBar().showMessage("qmlinker disconnect requested")
@@ -185,10 +200,6 @@ class TestMainView(QMainWindow):
     def _on_dof_target_requested(self, axis_name: str, value: float) -> None:
         self.dofTargetRequested.emit(self.context, axis_name, value)
         self.statusBar().showMessage(f"DoF target requested: {axis_name} -> {value:.3f}")
-
-    @Slot(str)
-    def _on_dof_value_refresh_requested(self, axis_name: str) -> None:
-        self.dofValueRefreshRequested.emit(self.context, axis_name)
 
     @Slot(str, bool)
     def _on_enable_toggle_requested(self, device_name: str, requested_enabled: bool) -> None:
@@ -201,6 +212,32 @@ class TestMainView(QMainWindow):
     def _on_enable_state_refresh_requested(self, device_name: str) -> None:
         self.enableStateRefreshRequested.emit(self.context, device_name)
         self.statusBar().showMessage(f"Enable state refresh requested: {device_name}")
+
+    @Slot(int)
+    def _on_main_tab_current_changed(self, index: int) -> None:
+        if self.ui.tabWidget.widget(index) is self.ui.image_tab:
+            self.camera_widget.activate_default_camera()
+
+    @Slot(str)
+    def _on_camera_selected(self, camera_name: str) -> None:
+        self._arm_backend.refresh_camera_intrinsics(camera_name)
+        self._arm_backend.refresh_camera_enable_state(camera_name)
+        self.statusBar().showMessage(f"Camera selected: {camera_name}")
+
+    @Slot(str, bool)
+    def _on_camera_enable_toggle_requested(self, camera_name: str, requested_enabled: bool) -> None:
+        self._arm_backend.set_camera_enable_state(camera_name, requested_enabled)
+        self.statusBar().showMessage(f"Camera enable requested: {camera_name} -> {requested_enabled}")
+
+    @Slot(str)
+    def _on_camera_rgb_stream_requested(self, camera_name: str) -> None:
+        self._arm_backend.start_camera_rgb_stream(camera_name)
+        self.statusBar().showMessage(f"Camera RGB stream requested: {camera_name}")
+
+    @Slot(str)
+    def _on_camera_rgbd_stream_requested(self, camera_name: str) -> None:
+        self._arm_backend.start_camera_rgbd_stream(camera_name)
+        self.statusBar().showMessage(f"Camera RGBD stream requested: {camera_name}")
 
     def update_enable_state(self, device_name: str, enabled: bool) -> None:
         self.robot_widget.update_enable_state(device_name, enabled)
@@ -233,7 +270,8 @@ class TestMainView(QMainWindow):
     def _on_state_refresh_timer_timeout(self) -> None:
         if not self.context.connected:
             return
-        self.robot_widget.request_all_dof_values_refresh()
+        self.robot_widget.update_dof_values(self._arm_backend.snapshot_state_values())
+        self.robot_widget.update_enable_states(self._arm_backend.snapshot_enable_states())
 
     @Slot()
     def _on_service_status_timer_timeout(self) -> None:
@@ -255,8 +293,6 @@ class TestMainView(QMainWindow):
         self._refresh_service_status_ui()
 
         if self.context.connected and not previous_connected:
-            self.robot_widget.request_all_enable_states_refresh()
-            self.robot_widget.request_all_dof_values_refresh()
             self._state_refresh_timer.start()
         elif not self.context.connected:
             self._state_refresh_timer.stop()
@@ -285,3 +321,4 @@ if __name__ == "__main__":
     window = TestMainView()
     window.show()
     sys.exit(app.exec())
+

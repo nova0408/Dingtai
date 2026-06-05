@@ -42,7 +42,7 @@ class UtilDoFWidget(QWidget):
     valueChanged = Signal(str, float)
 
     _SLIDER_SCALE = 100
-    _HOLD_SEND_INTERVAL_MS = 250
+    _HOLD_SEND_INTERVAL_MS = 50
 
     @classmethod
     def replace_placeholder(
