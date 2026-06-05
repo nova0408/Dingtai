@@ -1,14 +1,19 @@
 from __future__ import annotations
 
+import select
+import socket
+import socketserver
 import time
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
+from pathlib import Path
+from threading import Thread
 from typing import Any
 
 from google.protobuf import empty_pb2
 import numpy as np
 from qmlinker import QMArm, QMCamera, QMHand, QMMoveBase, create_channel
-from qmlinker.grpc_py import arm_pb2, common_pb2, head_pb2, head_pb2_grpc
+from qmlinker.grpc_py import arm_pb2, common_pb2, hand_pb2, head_pb2, head_pb2_grpc
 from qmlinker.grpc_py import lift_pb2, lift_pb2_grpc
 from qmlinker.grpc_py import waist_pb2, waist_pb2_grpc
 
@@ -56,6 +61,139 @@ class WujiArmJointState:
     "当前关节功率，单位 W。"
 
 
+class _SshTcpForwarder:
+    """经 Orin 跳板访问工控机 qmlinker 端口的本地 TCP 转发器。
+
+    职责边界：
+    - 只负责在本机打开一个临时 localhost 端口，并通过 SSH direct-tcpip 转发到工控机。
+    - 不负责解释 qmlinker 协议，不创建 qmlinker SDK 对象，不修改远端服务。
+
+    设计思想：
+    - 当前调试网络中 Windows 主机只能访问 Orin 的 `192.168.1.x` 地址，不能直接访问
+      工控机 `192.168.100.x` 网段。
+    - Orin 同时连接两个网段，因此可作为只读/控制链路的 SSH 跳板。
+
+    生命周期：
+    - 随 `WujiQmlinkerClient` 创建和关闭。
+    - 后台 server 线程仅处理本客户端的 gRPC TCP 流量，`close()` 时停止。
+
+    继承关系：
+    - 不继承业务基类，作为 qmlinker client 内部网络适配工具使用。
+
+    线程/异步语义：
+    - 每个本地 TCP 连接由 `ThreadingTCPServer` 分配工作线程。
+    - 数据只在 socket 与 SSH channel 之间转发，不在 Python 层缓存业务数据。
+    """
+
+    def __init__(self, ssh_alias: str, remote_host: str, remote_port: int) -> None:
+        """创建 SSH TCP 转发器。
+
+        Parameters
+        ----------
+        ssh_alias:
+            本机 `~/.ssh/config` 中的 Orin Host 别名。
+        remote_host:
+            Orin 可访问的工控机地址。
+        remote_port:
+            工控机 qmlinker gRPC 端口，单位 TCP 端口号。
+        """
+
+        self._ssh_alias = ssh_alias
+        self._remote_host = remote_host
+        self._remote_port = int(remote_port)
+        self._ssh_client: Any | None = None
+        self._server: socketserver.ThreadingTCPServer | None = None
+        self._thread: Thread | None = None
+        self.local_port = 0
+
+    def start(self) -> str:
+        """启动本地转发并返回 qmlinker 可连接 target。
+
+        Returns
+        -------
+        str
+            本地 gRPC target，格式为 `127.0.0.1:port`。
+        """
+
+        try:
+            import paramiko
+        except ImportError as exc:
+            raise RuntimeError("paramiko is required for qmlinker SSH tunnel") from exc
+
+        ssh_config = paramiko.SSHConfig()
+        config_path = Path.home() / ".ssh" / "config"
+        with config_path.open("r", encoding="utf-8") as file:
+            ssh_config.parse(file)
+        info = ssh_config.lookup(self._ssh_alias)
+        hostname = str(info.get("hostname", self._ssh_alias))
+        username = str(info.get("user", self._ssh_alias))
+        identity_files = info.get("identityfile", [])
+        key_filename = str(identity_files[0]) if identity_files else None
+
+        ssh_client = paramiko.SSHClient()
+        ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        ssh_client.connect(
+            hostname,
+            username=username,
+            key_filename=key_filename,
+            timeout=8,
+            banner_timeout=8,
+            auth_timeout=8,
+            look_for_keys=key_filename is None,
+            allow_agent=key_filename is None,
+        )
+        self._ssh_client = ssh_client
+        transport = ssh_client.get_transport()
+        if transport is None:
+            raise RuntimeError("Orin SSH transport is not ready")
+
+        remote_host = self._remote_host
+        remote_port = self._remote_port
+
+        class _ForwardHandler(socketserver.BaseRequestHandler):
+            def handle(self) -> None:
+                channel = transport.open_channel(
+                    "direct-tcpip",
+                    (remote_host, remote_port),
+                    self.request.getpeername(),
+                )
+                try:
+                    while True:
+                        readable, _, _ = select.select([self.request, channel], [], [], 0.5)
+                        if self.request in readable:
+                            data = self.request.recv(65535)
+                            if not data:
+                                break
+                            channel.sendall(data)
+                        if channel in readable:
+                            data = channel.recv(65535)
+                            if not data:
+                                break
+                            self.request.sendall(data)
+                finally:
+                    channel.close()
+
+        server = socketserver.ThreadingTCPServer(("127.0.0.1", 0), _ForwardHandler)
+        server.daemon_threads = True
+        self.local_port = int(server.server_address[1])
+        thread = Thread(target=server.serve_forever, name="qmlinker-ssh-tunnel", daemon=True)
+        thread.start()
+        self._server = server
+        self._thread = thread
+        return f"127.0.0.1:{self.local_port}"
+
+    def close(self) -> None:
+        """停止本地转发并关闭 SSH 连接。"""
+
+        if self._server is not None:
+            self._server.shutdown()
+            self._server.server_close()
+            self._server = None
+        if self._ssh_client is not None:
+            self._ssh_client.close()
+            self._ssh_client = None
+
+
 # endregion
 
 
@@ -92,7 +230,8 @@ class WujiQmlinkerClient:
         """
 
         self._config = WujiQmlinkerConfig() if config is None else config
-        self._channel = create_channel(self._config.target())
+        self._forwarder: _SshTcpForwarder | None = None
+        self._channel = create_channel(self._connect_target())
         self._arms: dict[ArmDeviceName, Any] = {}
         self._hands: dict[HandDeviceName, Any] = {}
         self._default_channel = self._channel["DEFAULT"] if isinstance(self._channel, dict) else self._channel
@@ -111,8 +250,13 @@ class WujiQmlinkerClient:
             thread = getattr(arm, "thread_joint_states", None)
             if thread is not None:
                 thread.join(timeout=0.5)
+            if not hasattr(arm, "thread_arm_pose"):
+                arm.thread_arm_pose = thread
         self._arms.clear()
         self._hands.clear()
+        if self._forwarder is not None:
+            self._forwarder.close()
+            self._forwarder = None
 
     def check_ready(self) -> None:
         """检查 qmlinker gRPC 通道是否可创建并进入 ready。
@@ -472,8 +616,17 @@ class WujiQmlinkerClient:
     def get_agv_status_values(self) -> dict[str, float]:
         """读取 AGV 底盘基础状态值。"""
 
-        status = self._move_base.get_base_status()
-        if not isinstance(status, dict):
+        response = self._move_base.stub.GetBaseStatus(
+            empty_pb2.Empty(),
+            timeout=self._config.request_timeout_s,
+        )
+        status = {
+            "x": response.x,
+            "y": response.y,
+            "yaw": response.yaw,
+            "battery": response.battery,
+        }
+        if not status:
             raise RuntimeError("qmlinker get base status failed")
         return {
             "agv_x": float(status.get("x", 0.0)),
@@ -485,8 +638,14 @@ class WujiQmlinkerClient:
     def get_hand_values(self, device_name: HandDeviceName) -> dict[str, float]:
         """读取指定手部执行器位置。"""
 
-        state = self._hand(device_name).get_hand_state(include_tactile=False)
-        return self._coerce_hand_state_values(device_name, state)
+        request = hand_pb2.GetHandStateRequest()
+        request.hand_id = self._hand_pb_id(device_name)
+        request.include_tactile = False
+        response = self._hand(device_name).stub.GetHandState(
+            request,
+            timeout=self._config.request_timeout_s,
+        )
+        return self._coerce_hand_state_response(device_name, response)
 
     def stream_get_hand_values(self, device_name: HandDeviceName) -> Iterator[dict[str, float]]:
         """流式读取指定手部执行器位置。"""
@@ -632,6 +791,30 @@ class WujiQmlinkerClient:
             values[f"{device_name}_a{actuator_id}"] = float(actuator.get("position", 0.0))
         return values
 
+    def _coerce_hand_state_response(self, device_name: HandDeviceName, state: Any) -> dict[str, float]:
+        """将 qmlinker 手部 proto 状态转换为 GUI 轴值字典。
+
+        Parameters
+        ----------
+        device_name:
+            手部设备名，取值为 `left_hand` 或 `right_hand`。
+        state:
+            qmlinker `HandState` proto 响应，包含执行器状态序列。
+
+        Returns
+        -------
+        dict[str, float]
+            GUI 轴名到执行器位置的映射，位置单位沿用 qmlinker 归一化比例。
+        """
+
+        values: dict[str, float] = {}
+        for actuator in state.actuators:
+            actuator_id = int(actuator.actuator_id)
+            if actuator_id < 0:
+                continue
+            values[f"{device_name}_a{actuator_id}"] = float(actuator.position)
+        return values
+
     def _arm(self, device_name: ArmDeviceName) -> Any:
         """返回指定机械臂的 qmlinker QMArm 实例。"""
 
@@ -649,10 +832,70 @@ class WujiQmlinkerClient:
         hand = self._hands.get(device_name)
         if hand is not None:
             return hand
-        hand_id: Any = QMHand.HAND_LEFT if device_name == "left_hand" else QMHand.HAND_RIGHT
-        hand = QMHand(self._channel, hand_id)
+        hand = QMHand(self._channel, self._hand_pb_id(device_name))
         self._hands[device_name] = hand
         return hand
+
+    def _hand_pb_id(self, device_name: HandDeviceName) -> Any:
+        """返回 qmlinker proto 中的手部枚举值。"""
+
+        if device_name == "left_hand":
+            return QMHand.HAND_LEFT
+        return QMHand.HAND_RIGHT
+
+    def _channel_target(self) -> str:
+        """返回传给 qmlinker SDK 的 channel 目标。
+
+        Returns
+        -------
+        str
+            当配置使用 qmlinker 默认端口时返回纯 host，使 SDK 同时创建 `DEFAULT` 和 `DATA` 通道。
+            自定义端口或 host 已显式包含端口时返回完整 target。
+        """
+
+        if ":" not in self._config.host and self._config.port == 50062:
+            return self._config.host
+        return self._config.target()
+
+    def _connect_target(self) -> str:
+        """返回最终 qmlinker 连接目标。
+
+        Returns
+        -------
+        str
+            直连可达时返回配置目标。工控机网段直连不可达时返回经 Orin SSH 隧道的本地目标。
+        """
+
+        if self._can_connect_tcp(self._config.host, self._config.port):
+            return self._channel_target()
+        if not self._config.host.startswith("192.168.100."):
+            return self._channel_target()
+        self._forwarder = _SshTcpForwarder("orin", self._config.host, self._config.port)
+        return self._forwarder.start()
+
+    def _can_connect_tcp(self, host: str, port: int) -> bool:
+        """检查 qmlinker TCP 端口是否可直连。
+
+        Parameters
+        ----------
+        host:
+            qmlinker 目标主机名或 IPv4 地址。
+        port:
+            qmlinker gRPC 端口，单位 TCP 端口号。
+
+        Returns
+        -------
+        bool
+            `True` 表示本机可在短超时内建立 TCP 连接。
+        """
+
+        if ":" in host:
+            return True
+        try:
+            with socket.create_connection((host, int(port)), timeout=0.5):
+                return True
+        except OSError:
+            return False
 
     def _camera_type(self, camera_name: WujiCameraName) -> Any:
         """将项目相机名称转换为 qmlinker 相机枚举。"""

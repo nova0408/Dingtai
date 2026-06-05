@@ -12,7 +12,7 @@ from src.agv import WUJI_AGV_STATUS_AXES
 from src.arm import WUJI_ARM_JOINT_LIMITS_DEG
 from src.hand import WUJI_HAND_SPECS, load_wuji_hand_instances
 from src.servers.common import JointLimit
-
+from loguru import logger
 
 @dataclass(frozen=True, slots=True)
 class DebugAxisSpec:
@@ -280,7 +280,9 @@ class TestWujiCasiaArmWidget(QWidget):
 
         widget = self.dof_widgets_by_axis.get(axis_name)
         if widget is None:
-            raise KeyError(f"未知 DoF 轴：{axis_name}")
+            # raise KeyError(f"未知 DoF 轴：{axis_name}")
+            logger.warning(f"未知 DoF 轴：{axis_name}")
+            return
         widget.update_feedback_value(value)
 
     def update_dof_values(self, values: dict[str, float]) -> None:

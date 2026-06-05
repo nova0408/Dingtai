@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import time
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from threading import Event, Lock, Thread
 from typing import Any
 
+import grpc
 from loguru import logger
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal, Slot
 
@@ -113,6 +115,14 @@ class WujiQmlinkerSubscriptionContext:
     """
 
     _UNARY_REFRESH_INTERVAL_S = 0.05
+    _HAND_REFRESH_INTERVAL_S = 0.5
+    _UNARY_RPC_RETRY_INTERVAL_S = 5.0
+    _SKIPPABLE_RPC_CODES = {
+        grpc.StatusCode.CANCELLED,
+        grpc.StatusCode.DEADLINE_EXCEEDED,
+        grpc.StatusCode.UNIMPLEMENTED,
+        grpc.StatusCode.UNAVAILABLE,
+    }
 
     def __init__(self, client_getter: Callable[[], WujiQmlinkerClient]) -> None:
         self._client_getter = client_getter
@@ -121,6 +131,7 @@ class WujiQmlinkerSubscriptionContext:
         self._threads: list[Thread] = []
         self._values: dict[str, float] = {}
         self._enable_states: dict[str, bool] = {}
+        self._unary_rpc_retry_at: dict[str, float] = {}
 
     def start(self) -> None:
         """启动后台订阅与状态刷新线程。"""
@@ -195,37 +206,105 @@ class WujiQmlinkerSubscriptionContext:
         while not self._stop_event.is_set():
             try:
                 client = self._client_getter()
-                for values in client.stream_get_hand_values(device_name):
-                    if self._stop_event.is_set():
-                        return
-                    self._update_values(values)
+                self._update_values(client.get_hand_values(device_name))
             except Exception as exc:  # noqa: BLE001
                 logger.error("qmlinker hand stream failed: device={} error={}", device_name, exc)
-                self._stop_event.wait(self._UNARY_REFRESH_INTERVAL_S)
+            self._stop_event.wait(self._HAND_REFRESH_INTERVAL_S)
 
     def _run_unary_refresh(self) -> None:
         while not self._stop_event.is_set():
-            try:
-                client = self._client_getter()
-                self._update_values(
-                    {
-                        "body_z": client.get_body_z(),
-                        "body_ry": client.get_body_ry(),
-                        "head_yaw": client.get_head_yaw(),
-                        **client.get_agv_status_values(),
-                    }
-                )
-                self._update_enable_states(
-                    {
-                        "body": client.get_module_enable("body"),
-                        "head": client.get_module_enable("head"),
-                        "left_arm": client.get_enable("left_arm"),
-                        "right_arm": client.get_enable("right_arm"),
-                    }
-                )
-            except Exception as exc:  # noqa: BLE001
-                logger.error("qmlinker unary state refresh failed: {}", exc)
+            client = self._client_getter()
+            self._refresh_unary_values(client)
+            self._refresh_unary_enable_states(client)
             self._stop_event.wait(self._UNARY_REFRESH_INTERVAL_S)
+
+    def _refresh_unary_values(self, client: WujiQmlinkerClient) -> None:
+        """刷新非流式状态值。
+
+        Parameters
+        ----------
+        client:
+            当前 qmlinker 客户端，由后端持有并保证生命周期。
+
+        Notes
+        -----
+        当前机器人配置中部分 body/head RPC 会由服务端返回 `CANCELLED`。周期刷新只维护缓存，
+        因此单项失败不应阻断 AGV 等可用状态更新。
+        """
+
+        value_readers: tuple[tuple[str, Callable[[], float]], ...] = (
+            ("body_z", client.get_body_z),
+            ("body_ry", client.get_body_ry),
+            ("head_yaw", client.get_head_yaw),
+        )
+        values: dict[str, float] = {}
+        for key, reader in value_readers:
+            value = self._read_unary_item(f"value.{key}", reader)
+            if value is not None:
+                values[key] = float(value)
+        agv_values = self._read_unary_item("value.agv_status", client.get_agv_status_values)
+        if isinstance(agv_values, dict):
+            values.update({axis_name: float(axis_value) for axis_name, axis_value in agv_values.items()})
+        if values:
+            self._update_values(values)
+
+    def _refresh_unary_enable_states(self, client: WujiQmlinkerClient) -> None:
+        """刷新非流式使能状态缓存。
+
+        Parameters
+        ----------
+        client:
+            当前 qmlinker 客户端，由后端持有并保证生命周期。
+        """
+
+        enable_readers: tuple[tuple[str, Callable[[], bool]], ...] = (
+            ("body", lambda: client.get_module_enable("body")),
+            ("head", lambda: client.get_module_enable("head")),
+            ("left_arm", lambda: client.get_enable("left_arm")),
+            ("right_arm", lambda: client.get_enable("right_arm")),
+        )
+        states: dict[str, bool] = {}
+        for key, reader in enable_readers:
+            value = self._read_unary_item(f"enable.{key}", reader)
+            if value is not None:
+                states[key] = bool(value)
+        if states:
+            self._update_enable_states(states)
+
+    def _read_unary_item(self, key: str, reader: Callable[[], Any]) -> Any | None:
+        """读取单个周期性 unary 状态项。
+
+        Parameters
+        ----------
+        key:
+            状态项内部键，用于失败退避和日志定位。
+        reader:
+            实际 qmlinker 读取函数。
+
+        Returns
+        -------
+        object | None
+            读取成功时返回原始值。读取失败或处于退避期时返回 `None`。
+        """
+
+        now_s = time.monotonic()
+        retry_at_s = self._unary_rpc_retry_at.get(key, 0.0)
+        if now_s < retry_at_s:
+            return None
+        try:
+            return reader()
+        except grpc.RpcError as exc:
+            code = exc.code()
+            if code in self._SKIPPABLE_RPC_CODES:
+                self._unary_rpc_retry_at[key] = now_s + self._UNARY_RPC_RETRY_INTERVAL_S
+                logger.warning("qmlinker unary state item unavailable: key={} code={}", key, code.name)
+                return None
+            logger.error("qmlinker unary state item failed: key={} error={}", key, exc)
+            return None
+        except Exception as exc:  # noqa: BLE001
+            self._unary_rpc_retry_at[key] = now_s + self._UNARY_RPC_RETRY_INTERVAL_S
+            logger.warning("qmlinker unary state item unavailable: key={} error={}", key, exc)
+            return None
 
 
 # endregion
