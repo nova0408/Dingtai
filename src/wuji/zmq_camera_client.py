@@ -484,6 +484,7 @@ class WujiZmqCameraClient:
             camera_name=camera_name,
             color_bgr=np.asarray(color_bgr, dtype=np.uint8).copy(),
             timestamp=int(header.timestamp_us),
+            sequence_id=int(header.sequence),
             depth=depth_array,
         )
 

@@ -1049,6 +1049,7 @@ class WujiQmlinkerClient:
                 camera_name=camera_name,
                 color_bgr=np.asarray(color_bgr, dtype=np.uint8).copy(),
                 timestamp=timestamp,
+                sequence_id=None,
             )
 
     def stream_camera_rgbd_frames(self, camera_name: WujiCameraName) -> Iterator[WujiCameraFrame]:
@@ -1075,6 +1076,7 @@ class WujiQmlinkerClient:
                 camera_name=camera_name,
                 color_bgr=np.asarray(color_bgr, dtype=np.uint8).copy(),
                 timestamp=timestamp,
+                sequence_id=None,
                 depth=np.asarray(depth).copy(),
             )
 

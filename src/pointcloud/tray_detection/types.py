@@ -4,7 +4,6 @@ from dataclasses import dataclass
 
 import numpy as np
 
-
 # region 数据结构
 @dataclass(frozen=True)
 class TrayDetectionConfig:

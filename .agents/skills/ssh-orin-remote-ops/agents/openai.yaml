@@ -1,0 +1,4 @@
+interface:
+  display_name: "SSH Orin Remote Ops"
+  short_description: "Run and debug Orin SSH workflows safely."
+  default_prompt: "Use $ssh-orin-remote-ops to run or debug an Orin task over SSH from Windows PowerShell."

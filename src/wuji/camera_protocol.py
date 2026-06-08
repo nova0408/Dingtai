@@ -185,6 +185,9 @@ class WujiCameraFrame:
     timestamp: object | None
     "qmlinker 返回的帧时间戳，类型由 proto wrapper 决定。"
 
+    sequence_id: int | None = None
+    "流式相机帧序号。ZMQ 相机流可提供单调递增 sequence；qmlinker 无该字段时为 `None`。"
+
     depth: np.ndarray | None = None
     "深度图，形状为 `(H, W)`，dtype 通常为 `uint16`，单位由 qmlinker 服务定义。"
 

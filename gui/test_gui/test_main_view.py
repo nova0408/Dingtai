@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
 from gui.test_gui.TestWujiCasiaArm_ui import Ui_MainWindow
 from gui.test_gui.test_wuji_camera_tab import WujiCameraTabWidget
 from gui.test_gui.test_wuji_casia_arm import TestWujiCasiaArmWidget
+from gui.test_gui.test_wuji_pose_tab import LEFT_CAMERA_NAME, WujiPoseTabWidget
 from gui.util_components.casia_indicator_light import CasiaIndicatorLight
 from src.wuji import WujiQmlinkerBackend, load_wuji_robot_network_config
 
@@ -68,6 +69,7 @@ class TestMainView(QMainWindow):
         self._setup_service_context_editor()
         self._setup_robot_tab()
         self._setup_camera_tab()
+        self._setup_pose_tab()
         self._connect_signals()
         self._refresh_service_status_ui()
         self._service_status_timer.start()
@@ -120,6 +122,15 @@ class TestMainView(QMainWindow):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self.camera_widget)
         self.ui.tabWidget.setTabText(self.ui.tabWidget.indexOf(self.ui.image_tab), "Camera")
+
+    def _setup_pose_tab(self) -> None:
+        self.pose_tab = QWidget(self.ui.tabWidget)
+        orin_service_addr = "tcp://{0}:6200".format(load_wuji_robot_network_config().orin_ip)
+        self.pose_widget = WujiPoseTabWidget(self.pose_tab, service_addr=orin_service_addr)
+        layout = QHBoxLayout(self.pose_tab)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self.pose_widget)
+        self.ui.tabWidget.addTab(self.pose_tab, "pose")
 
     def _connect_signals(self) -> None:
         self.ui.pushButton.clicked.connect(self._on_connect_button_clicked)
@@ -216,9 +227,12 @@ class TestMainView(QMainWindow):
 
     @Slot(int)
     def _on_main_tab_current_changed(self, index: int) -> None:
+        self.pose_widget.set_active(self.ui.tabWidget.widget(index) is self.pose_tab)
         if self.ui.tabWidget.widget(index) is self.ui.image_tab:
             self._arm_backend.refresh_camera_inventory()
             self.camera_widget.activate_default_camera()
+        if self.ui.tabWidget.widget(index) is self.pose_tab:
+            self.statusBar().showMessage(f"Pose tab activated: {LEFT_CAMERA_NAME} via pose context")
 
     @Slot(str)
     def _on_camera_selected(self, camera_name: str) -> None:

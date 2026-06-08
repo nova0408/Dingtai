@@ -1,0 +1,15 @@
+[Unit]
+Description=Orin Tray Detection RPC Service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/wuji-brain/workspace
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/wuji-brain/miniconda3/envs/py38_tourch/bin/python -m orin.service tray_detection --bind-addr tcp://0.0.0.0:6210 --host 192.168.100.60 --control-port 5570 --stream-port 5562 --camera-id LEFT --camera-name left_hand_camera
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=default.target
