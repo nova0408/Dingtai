@@ -47,12 +47,31 @@ function Get-DingTaiEnvRoot {
         return $env:CONDA_PREFIX
     }
 
-    $defaultRoot = Join-Path $env:USERPROFILE "anaconda3\envs\DingTai"
-    if (Test-Path -LiteralPath $defaultRoot) {
-        return $defaultRoot
+    $condaExe = $env:CONDA_EXE
+    if (-not $condaExe) {
+        $condaCommand = Get-Command conda.exe -ErrorAction SilentlyContinue
+        if ($null -ne $condaCommand) {
+            $condaExe = $condaCommand.Source
+        }
     }
 
-    return "C:\Users\ICO\anaconda3\envs\DingTai"
+    if (-not $condaExe) {
+        throw "conda executable not found, cannot resolve environment by name: DingTai"
+    }
+
+    $envListJson = & $condaExe env list --json 2>$null
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($envListJson)) {
+        throw "failed to query conda environments via: $condaExe"
+    }
+
+    $envList = $envListJson | ConvertFrom-Json
+    foreach ($envPath in $envList.envs) {
+        if ((Split-Path -Leaf $envPath) -eq "DingTai") {
+            return $envPath
+        }
+    }
+
+    throw "conda environment not found by name: DingTai"
 }
 
 $EnvRoot = Get-DingTaiEnvRoot

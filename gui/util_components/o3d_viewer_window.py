@@ -3,6 +3,7 @@ import sys
 
 import numpy as np
 import open3d as o3d
+from loguru import logger
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QApplication,
@@ -15,6 +16,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from .open3d_geometry_utils import create_coordinate_axis_lines
 from .open3d_widget import O3DViewerWidget
 
 
@@ -23,21 +25,27 @@ class O3DViewerWindow(QWidget):
 
     def __init__(self, title="3D Viewer", size=(1024, 768), stay_on_top=False):
         super().__init__()
+        logger.info("O3DViewerWindow init start: title={} size={} stay_on_top={}", title, size, stay_on_top)
         self.setWindowTitle(title)
         self.resize(*size)
         if stay_on_top:
             self.setWindowFlags(Qt.WindowType.Window | Qt.WindowType.WindowStaysOnTopHint)
 
+        logger.info("O3DViewerWindow creating O3DViewerWidget")
         self.viewer = O3DViewerWidget(self)
+        logger.info("O3DViewerWindow O3DViewerWidget created")
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self.viewer)
+        logger.info("O3DViewerWindow init finish: title={}", title)
 
     def closeEvent(self, event):
+        logger.info("O3DViewerWindow closeEvent start")
         self.setVisible(False)
         self.viewer.cleanup()
         self.closed.emit()
         event.accept()
+        logger.info("O3DViewerWindow closeEvent finish")
 
 
 # ---------------------------------------------------------
@@ -128,13 +136,16 @@ class ListDemoWindow(QWidget):
         self.add_item_to_viewer("Golden_Sphere", sphere)
 
         # 2. 添加一个坐标轴
-        axes = o3d.geometry.TriangleMesh.create_coordinate_frame(size=2.0)
+        axes = create_coordinate_axis_lines(size=2.0)
         self.add_item_to_viewer("World_Axes", axes)
 
         # 3. 添加一个随机点云
         pts = np.random.uniform(-2, 2, (10000, 3))
         cols = np.random.uniform(0.4, 1, (10000, 3))
-        self.viewer.add_point_cloud("Random_Cloud", pts, cols)
+        cloud = o3d.geometry.PointCloud()
+        cloud.points = o3d.utility.Vector3dVector(pts)
+        cloud.colors = o3d.utility.Vector3dVector(cols)
+        self.viewer.add_point_cloud("Random_Cloud", cloud)
         self._create_list_widget("Random_Cloud")  # 手动补个列表项
 
     def add_item_to_viewer(self, name, geom):

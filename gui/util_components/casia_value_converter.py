@@ -90,7 +90,7 @@ class IntValueConverter:
 
 class CallableValueConverter:
     """
-    兼容旧接口的只读转换器。
+    旧接口风格的只读转换器。
 
     旧代码中传入的 ``Callable[[int], str]`` 只定义了显示转换，因此输入解析仍使用
     默认整数解析逻辑。

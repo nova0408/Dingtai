@@ -13,8 +13,9 @@ dependencies:
   - wheel
 
   # Core scientific stack
-  # README 里写 numpy<2.0.0；这里固定在 1.x，避免 qmlinker/plyfile/旧二进制包兼容问题。
-  - numpy<2.0.0
+  # 2026-06-09 实测：Qt 内嵌 Open3D 视图稳定组合为 numpy 1.26.4 + open3d 0.19.0。
+  # 同时 plyfile 1.0.x 仍要求保持在 numpy 1.x。
+  - numpy=1.26.4
   - scipy
   - tomlkit
 
@@ -27,7 +28,7 @@ dependencies:
   - loguru
 
   # Point cloud / image processing
-  - open3d
+  - open3d=0.19.0
   - opencv
 
   # General utilities used by qmlinker/gRPC-style SDKs
@@ -42,18 +43,4 @@ dependencies:
   # NOTE:
   # - 已故意移除 pythonocc-core。
   # - 不要手动添加 occt；它原来主要是 pythonocc-core 的重依赖链。
-  # - pyorbbecsdk2、qmlinker 本地 whl、torch/torchvision 建议放到 pip 阶段单独安装。
-
-  - pip:
-      # 奥比中光 Gemini 305 SDK；如果 PyPI 源不可用，则按厂商 wheel 路径手动安装。
-      - pyorbbecsdk2
-
-      # PySide6 如果你希望严格跟 README 一致，可以取消下一行注释，并删除上面的 conda pyside6。
-      # - PySide6==6.11.0
-
-      # PyTorch 建议单独执行官方 CUDA 源安装命令，不放进 environment.yml：
-      # python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126
-
-      # qmlinker 是本地 wheel，不适合写死进跨机器可用的 YAML。
-      # 建好环境后执行：
-      # python -m pip install "E:\DingTai\无际二次开发接口文档\api\qmlinker-1.0.8-py3-none-any.whl"
+  # - qmlinker 本地 whl、torch/torchvision 建议在环境创建后单独安装。

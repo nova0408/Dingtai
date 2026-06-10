@@ -85,6 +85,15 @@ class WujiRobotNetworkConfig:
     orin_ip: str = "192.168.100.70"
     "Orin 模组 IP，用于 SSH 登录与相机、边缘计算等非 qmlinker 控制链路。"
 
+    orin_ssh_alias: str = "orin"
+    "Orin SSH 别名，用于通过本机 `~/.ssh/config` 建立跳板连接。"
+
+    orin_python: str = "/home/wuji-brain/miniconda3/envs/wuji/bin/python3"
+    "Orin 侧用于执行夹爪脚本的 Python 解释器绝对路径。"
+
+    gripper_port: int = 50066
+    "大寰夹爪服务端口，单位为 TCP 端口号。"
+
     qmlinker: WujiQmlinkerConfig = WujiQmlinkerConfig()
     "qmlinker SDK 连接配置。"
 
@@ -158,18 +167,21 @@ def load_wuji_robot_network_config(path: Path | None = None) -> WujiRobotNetwork
         return WujiRobotNetworkConfig()
     data = tomlkit.parse(config_path.read_text(encoding="utf-8"))
     network = data.get("network", {})
-    qmlinker_data = data.get("qmlinker", {})
-    qmlinker_config = WujiQmlinkerConfig(
-        host=str(qmlinker_data.get("host", network.get("base_control_ip", "192.168.100.60"))),
-        port=int(qmlinker_data.get("port", 50062)),
-        default_speed_ratio=float(qmlinker_data.get("default_speed_ratio", 0.3)),
-        request_timeout_s=float(qmlinker_data.get("request_timeout_s", 3.0)),
-        stream_first_timeout_s=float(qmlinker_data.get("stream_first_timeout_s", 2.0)),
+    wuji_data = data.get("wuji", {})
+    wuji_config = WujiQmlinkerConfig(
+        host=str(wuji_data.get("host", network.get("base_control_ip", "192.168.100.60"))),
+        port=int(wuji_data.get("port", 50062)),
+        default_speed_ratio=float(wuji_data.get("default_speed_ratio", 0.3)),
+        request_timeout_s=float(wuji_data.get("request_timeout_s", 3.0)),
+        stream_first_timeout_s=float(wuji_data.get("stream_first_timeout_s", 2.0)),
     )
     return WujiRobotNetworkConfig(
-        base_control_ip=str(network.get("base_control_ip", qmlinker_config.host)),
+        base_control_ip=str(network.get("base_control_ip", wuji_config.host)),
         orin_ip=str(network.get("orin_ip", "192.168.100.70")),
-        qmlinker=qmlinker_config,
+        orin_ssh_alias=str(network.get("orin_ssh_alias", "orin")),
+        orin_python=str(network.get("orin_python", "/home/wuji-brain/miniconda3/envs/wuji/bin/python3")),
+        gripper_port=int(network.get("gripper_port", 50066)),
+        qmlinker=wuji_config,
     )
 
 

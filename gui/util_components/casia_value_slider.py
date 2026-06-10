@@ -362,7 +362,7 @@ class CasiaValueSlider(QSlider):
         Parameters
         ----------
         converter : CasiaValueConverter | Callable[[int], str] | None
-            转换器对象，或兼容旧接口的 ``Callable[[int], str]``。
+            转换器对象，或旧接口风格的 ``Callable[[int], str]``。
         """
         if converter is None:
             self._value_converter = IntValueConverter()

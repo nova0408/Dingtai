@@ -6,18 +6,19 @@ import time
 from dataclasses import dataclass
 from typing import Any, Optional
 
-import cv2
 import numpy as np
 from loguru import logger
 
-from orin.grasp_pose.protocol import GraspPoseRequest
-from orin.grasp_pose.transport import GraspPoseRpcClient, ZmqSocketOptions
-from src.wuji import WujiZmqCameraClient, WujiZmqCameraConfig, load_wuji_robot_network_config
+from orin.grasp_pose_pipeline.protocol import GraspPosePipelineRequest
+from orin.grasp_pose_pipeline.transport import GraspPosePipelineRpcClient, ZmqSocketOptions
+from src.wuji.protocol import load_wuji_robot_network_config
+from src.wuji.zmq_camera_client import WujiZmqCameraClient, WujiZmqCameraConfig
 from src.wuji.camera_protocol import WujiCameraFrame, WujiCameraIntrinsicsInfo, WujiCameraName
 
 # region 模块常量
 LEFT_CAMERA_NAME = "left_hand_camera"
 DEFAULT_RPC_TIMEOUT_MS = 60_000
+DEFAULT_ORIN_PIPELINE_SERVICE_PORT = 6220
 # endregion
 
 
@@ -29,7 +30,7 @@ class WujiPoseRequestBundle:
     frame_id: int
     frame: WujiCameraFrame
     intrinsics: WujiCameraIntrinsicsInfo
-    request: GraspPoseRequest
+    request: GraspPosePipelineRequest
 
 
 @dataclass(frozen=True)
@@ -39,7 +40,7 @@ class WujiPoseExecutionResult:
     frame_id: int
     frame: WujiCameraFrame
     intrinsics: WujiCameraIntrinsicsInfo
-    request: GraspPoseRequest
+    request: GraspPosePipelineRequest
     response: Any | None
     error: str | None
 
@@ -283,42 +284,27 @@ class WujiPoseExecutionContext:
         intrinsics: Any,
         target_tray_index: int,
         enable_debug: bool,
-    ) -> GraspPoseRequest:
-        """将相机帧和内参转换为 Orin RPC 使用的请求对象。"""
+    ) -> GraspPosePipelineRequest:
+        """将相机帧元信息转换为统一 pipeline RPC 请求对象。
 
-        depth = None if frame.depth is None else np.asarray(frame.depth)
-        if depth is None or depth.ndim != 2 or depth.size == 0:
-            raise RuntimeError("invalid RGBD frame depth")
-        color_bgr = np.asarray(frame.color_bgr, dtype=np.uint8)
-        image_h, image_w = depth.shape
-        if color_bgr.shape[:2] != (image_h, image_w):
-            color_bgr = cv2.resize(color_bgr, (image_w, image_h), interpolation=cv2.INTER_LINEAR)
-        timestamp_ms = float(time.time() * 1000.0)
-        timestamp = getattr(frame, "timestamp", None)
-        if timestamp is not None and hasattr(timestamp, "ToMilliseconds"):
-            try:
-                timestamp_ms = float(getattr(timestamp, "ToMilliseconds")())
-            except Exception:  # noqa: BLE001
-                timestamp_ms = float(time.time() * 1000.0)
-        return GraspPoseRequest(
+        Notes
+        -----
+        当前 GUI 只负责从本地相机链路抓取预览帧并取得 `frame_id`，真正的 RGBD 数据读取、
+        托盘检测与抓取位姿计算全部由 Orin 侧 `grasp_pose_pipeline` 主服务完成。
+        """
+
+        return GraspPosePipelineRequest(
+            request_id=int(frame_id),
             frame_id=int(frame_id),
             camera_name=str(frame.camera_name),
-            timestamp_ms=timestamp_ms,
-            source_meta={"source": "wuyou", "camera_stream": str(frame.camera_name), "viewer": "pose_context"},
             target_tray_index=int(target_tray_index),
             enable_debug=bool(enable_debug),
-            color_bgr=np.ascontiguousarray(color_bgr, dtype=np.uint8),
-            depth_mm=np.ascontiguousarray(depth),
-            fx=float(intrinsics.fx),
-            fy=float(intrinsics.fy),
-            cx=float(intrinsics.cx),
-            cy=float(intrinsics.cy),
         )
 
     def call_orin(self, bundle: WujiPoseRequestBundle) -> WujiPoseExecutionResult:
         """发送一次 RPC 请求，并将原始输入与响应打包成统一结果。"""
 
-        client = GraspPoseRpcClient(
+        client = GraspPosePipelineRpcClient(
             self._service_addr,
             options=ZmqSocketOptions(recv_timeout_ms=DEFAULT_RPC_TIMEOUT_MS, send_timeout_ms=DEFAULT_RPC_TIMEOUT_MS),
         )
@@ -603,22 +589,15 @@ class WujiPoseExecutionContext:
             except queue.Empty:
                 return
 
-    def _empty_request(self, frame_id: int, target_tray_index: int, enable_debug: bool) -> GraspPoseRequest:
+    def _empty_request(self, frame_id: int, target_tray_index: int, enable_debug: bool) -> GraspPosePipelineRequest:
         """构造最小空请求，用于异常兜底结果。"""
 
-        return GraspPoseRequest(
+        return GraspPosePipelineRequest(
+            request_id=int(frame_id),
             frame_id=int(frame_id),
             camera_name=str(self._camera_id),
-            timestamp_ms=float(time.time() * 1000.0),
-            source_meta={"source": "wuyou", "camera_stream": str(self._camera_id), "viewer": "pose_context"},
             target_tray_index=int(target_tray_index),
             enable_debug=bool(enable_debug),
-            color_bgr=np.zeros((1, 1, 3), dtype=np.uint8),
-            depth_mm=np.zeros((1, 1), dtype=np.uint16),
-            fx=1.0,
-            fy=1.0,
-            cx=0.0,
-            cy=0.0,
         )
 
     def _empty_frame(self) -> WujiCameraFrame:

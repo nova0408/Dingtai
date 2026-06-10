@@ -1,5 +1,30 @@
 # 东莞鼎泰项目
 
+## 推荐环境版本
+
+以下版本组合已在 2026-06-09 实测通过，可正常初始化 Qt 内嵌 Open3D 视图：
+
+- Python 3.10
+- numpy 1.26.4
+- open3d 0.19.0
+- PySide6 6.11.x
+- plyfile < 1.1.0
+
+如果把 `numpy` 升到 2.x，当前项目常用的 `plyfile 1.0.x` 约束会被破坏；如果回退到 `open3d 0.18.0`，在本机 `PySide6 6.11.x` 环境下又复现过嵌入窗口初始化崩溃，因此当前仓库统一按上述组合维护。
+
+## Open3D GUI 已知问题与修复
+
+2026-06-09 排查到 `gui/util_components/open3d_widget.py` 在 Windows + Qt 内嵌 Open3D 场景下有两类稳定复现的问题：
+
+1. `open3d 0.18.0 + numpy 2.2.6 + PySide6 6.11.1` 组合下，`Visualizer` 的 `ViewControl.set_lookat(...)` 会在窗口初始化阶段直接导致进程退出，没有 Python 异常栈。
+2. 同一环境下，`TriangleMesh.create_coordinate_frame(...)` 也会在部分初始化路径中触发进程级崩溃。
+
+当前修复方案：
+
+1. 环境固定为 `open3d==0.19.0` 与 `numpy==1.26.4`。
+2. GUI 中不再使用 `TriangleMesh.create_coordinate_frame(...)` 构造辅助坐标轴，统一改为 `LineSet` 实现，代码位于 `gui/util_components/open3d_geometry_utils.py`。
+3. `O3DViewerWidget` 内保留了 native window 嵌入路径与相机初始化日志，后续若再次出现无栈退出，优先从 `create_window -> get_view_control -> attach native window -> apply camera view` 这一链路复查。
+
 ## 第三方库
 
 - loguru
@@ -9,7 +34,8 @@
   
 - numpy
   用于 数组计算
-  `pip install numpy<2.0.0`
+  固定 `1.26.4`
+  `pip install numpy==1.26.4`
 
 - scipy
   用于 数学计算，主要是旋转矩阵的计算
@@ -19,19 +45,14 @@
   用于 解析 TOML 文件
   `pip install tomlkit`
 
-- pyorbbecsdk2
-
-奥比中光 SDK
-用于 奥比中光 Gemini 305 相机的控制
-`pip install pyorbbecsdk2`
-
 - opencv-python
   用于 图像处理
   `pip install opencv-python`
 
 - open3d
-  用于 3D 模型处理
-  `pip install open3d`
+  用于 3D 模型处理与 Qt 内嵌 3D 视图
+  固定 `0.19.0`
+  `pip install open3d==0.19.0`
 
 - PySide6 6.11.0  
   用于 用于 GUI 界面
@@ -46,7 +67,7 @@
   `pip install "protobuf<7.0.0,>=6.33.5"`
 
 - plyfile 1.0.3
-  qmlinker 间接依赖。当前项目固定 `numpy<2.0.0`，因此不要使用要求 `numpy>=2.0` 的新版 plyfile。
+  当前环境固定 `numpy==1.26.4`，因此不要安装要求 `numpy>=2.0` 的 `plyfile 1.1.x`。
   `pip install "plyfile<1.1.0"`
 
 - tomlkit

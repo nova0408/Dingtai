@@ -24,7 +24,7 @@ from src.wuji.camera_protocol import (
     WujiCameraName,
     WujiCameraRuntimeInfo,
 )
-from src.wuji.qmlinker_protocol import load_wuji_robot_network_config
+from src.wuji.protocol import load_wuji_robot_network_config
 
 # endregion
 

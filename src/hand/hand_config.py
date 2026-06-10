@@ -5,13 +5,14 @@ from typing import TYPE_CHECKING
 from src.hand.wuji_hand_protocol import WujiHandInstanceSpec
 
 if TYPE_CHECKING:
-    from src.wuji.qmlinker_client import WujiQmlinkerClient
+    from src.wuji.client_base import WujiQmlinkerBaseClient
+    from src.wuji.right_hand_client import WujiRightHandClient
 
 # region 主入口
 
 
-def load_wuji_hand_instances(client: WujiQmlinkerClient | None = None) -> tuple[WujiHandInstanceSpec, ...]:
-    """从 qmlinker 运行时读取左右手执行器规格。
+def load_wuji_hand_instances(client: WujiRightHandClient | None = None) -> tuple[WujiHandInstanceSpec, ...]:
+    """从 qmlinker 运行时读取右手执行器规格。
 
     Parameters
     ----------
@@ -21,29 +22,29 @@ def load_wuji_hand_instances(client: WujiQmlinkerClient | None = None) -> tuple[
     Returns
     -------
     tuple[WujiHandInstanceSpec, ...]
-        左右手实例规格。若 qmlinker 不可用，则返回空元组。
+        右手实例规格。若 qmlinker 不可用，则返回空元组。
 
     Notes
     -----
     该函数只读取当前连接的 qmlinker 设备状态，不再依赖本地 TOML 中的手型模板。
     """
 
-    from src.wuji.qmlinker_client import WujiQmlinkerClient
+    from src.wuji.client_base import WujiQmlinkerBaseClient
+    from src.wuji.right_hand_client import WujiRightHandClient
 
     owns_client = client is None
-    runtime_client = WujiQmlinkerClient() if owns_client else client
-    if runtime_client is None:
-        return ()
+    if owns_client:
+        runtime_base = WujiQmlinkerBaseClient()
+        runtime_client = WujiRightHandClient(runtime_base)
+    else:
+        runtime_client = client
     try:
-        return (
-            WujiHandInstanceSpec("left_hand", "left hand", len(runtime_client.get_hand_values("left_hand"))),
-            WujiHandInstanceSpec("right_hand", "right hand", len(runtime_client.get_hand_values("right_hand"))),
-        )
+        return runtime_client.get_hand_instance_specs()
     except Exception:
         return ()
     finally:
         if owns_client:
-            runtime_client.close()
+            runtime_client._base.close()
 
 
 # endregion

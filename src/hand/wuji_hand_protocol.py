@@ -5,7 +5,7 @@ from typing import Literal
 
 # region 数据结构
 
-HandDeviceName = Literal["left_hand", "right_hand"]
+HandDeviceName = Literal["right_hand"]
 HandAxisName = str
 
 
@@ -53,8 +53,8 @@ class WujiHandInstanceSpec:
     - 不负责选择 qmlinker 常量、创建 `QMHand`、发送控制命令或读取状态。
 
     设计思想：
-    - `device_name` 按硬件实例划分，对应 qmlinker 的 `HAND_LEFT` 与 `HAND_RIGHT`。
-    - `spec_name` 按可替换手部规格划分，便于后续把左右手替换为不同执行器数量。
+    - `device_name` 仅表示右手灵巧手，对应 qmlinker 的 `HAND_RIGHT`。
+    - 左手语义不再纳入通用 hand 协议，直接由 gripper 客户端处理。
 
     生命周期：
     - 不持有外部资源，可作为 GUI 与协议层之间的只读配置。
@@ -64,7 +64,7 @@ class WujiHandInstanceSpec:
     """
 
     device_name: HandDeviceName
-    "手部硬件实例名，取值为 `left_hand` 或 `right_hand`。"
+    "手部硬件实例名，当前仅取值为 `right_hand`。"
 
     title: str
     "GUI 分组标题。"
@@ -92,14 +92,11 @@ def parse_hand_axis_name(axis_name: str) -> tuple[HandDeviceName, int] | None:
         成功时返回手部实例名与 0 基执行器 ID；非手部轴返回 `None`。
     """
 
-    for device_name in ("left_hand", "right_hand"):
-        prefix = f"{device_name}_a"
-        if not axis_name.startswith(prefix):
-            continue
+    prefix = "right_hand_a"
+    if axis_name.startswith(prefix):
         index_text = axis_name.removeprefix(prefix)
         if index_text.isdigit():
-            return device_name, int(index_text)
-        return None
+            return "right_hand", int(index_text)
     return None
 
 

@@ -5,6 +5,9 @@ base_control_ip = "192.168.100.60"
 # Orin 模组。用于 SSH 登录、相机/边缘计算等非 qmlinker 控制链路。
 orin_ip = "192.168.100.70"
 
+# 大寰夹爪服务端口。
+gripper_port = 50066
+
 [qmlinker]
 host = "192.168.100.60"
 port = 50062

@@ -20,9 +20,10 @@ from PySide6.QtWidgets import (
 )
 
 from gui.test_gui.test_wuji_camera_tab import ImagePreviewLabel
+from gui.util_components.open3d_geometry_utils import create_coordinate_axis_lines
 from gui.wuji.pose_context import WujiPoseExecutionContext, WujiPoseExecutionResult
-from src.wuji import load_wuji_robot_network_config
 from src.wuji.camera_protocol import WujiCameraFrame, WujiCameraIntrinsicsInfo
+from src.wuji.protocol import load_wuji_robot_network_config
 
 POSE_DEPENDENCY_ERROR: str | None = None
 
@@ -40,14 +41,14 @@ except Exception as exc:  # noqa: BLE001
         POSE_DEPENDENCY_ERROR = f"o3d viewer unavailable: {type(exc).__name__}: {exc}"
 
 try:
-    from orin.grasp_pose.protocol import GraspPoseResponse
+    from orin.grasp_pose_pipeline.protocol import GraspPosePipelineResponse as GraspPoseResponse
 except Exception as exc:  # noqa: BLE001
     GraspPoseResponse = object
     if POSE_DEPENDENCY_ERROR is None:
         POSE_DEPENDENCY_ERROR = f"orin grasp rpc unavailable: {type(exc).__name__}: {exc}"
 
 LEFT_CAMERA_NAME = "left_hand_camera"
-DEFAULT_ORIN_SERVICE_ADDR = "tcp://{0}:6200".format(load_wuji_robot_network_config().orin_ip)
+DEFAULT_ORIN_SERVICE_ADDR = "tcp://{0}:6220".format(load_wuji_robot_network_config().orin_ip)
 DEFAULT_MAX_PREVIEW_POINTS = 100_000
 DEFAULT_POINT_SIZE = 1.5
 
@@ -112,7 +113,7 @@ class WujiPoseTabWidget(QWidget):
         self._o3d_error_label = QLabel(self)
         self._o3d_error_label.setWordWrap(True)
         self._o3d_error_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.o3d_window = None if O3DViewerWindow is None else O3DViewerWindow(title="pose o3d", size=(960, 720))
+        self.o3d_window = None
         self._raw_cloud = None if o3d is None else o3d.geometry.PointCloud()
         self._pose_line = None if o3d is None else o3d.geometry.LineSet()
         self._pose_axis_name = "pose_axis_frame"
@@ -233,6 +234,8 @@ class WujiPoseTabWidget(QWidget):
         o3d_page = QWidget(self)
         o3d_layout = QVBoxLayout(o3d_page)
         o3d_layout.setContentsMargins(0, 0, 0, 0)
+        if self.o3d_window is None:
+            self._ensure_o3d_window()
         if self.o3d_window is not None:
             o3d_layout.addWidget(self.o3d_window)
         else:
@@ -250,6 +253,17 @@ class WujiPoseTabWidget(QWidget):
     def _on_runtime_toggled(self, checked: bool) -> None:
         self.set_runtime_enabled(bool(checked))
 
+    def _ensure_o3d_window(self) -> None:
+        """延迟创建 Open3D 视图窗口。"""
+
+        if self.o3d_window is not None:
+            return
+        if O3DViewerWindow is None:
+            return
+        logger.info("pose tab 创建 Open3D 窗口: title=pose o3d size=(960, 720)")
+        self.o3d_window = O3DViewerWindow(title="pose o3d", size=(960, 720))
+        logger.info("pose tab Open3D 窗口创建完成: widget_id={}", id(self.o3d_window))
+
     def _init_o3d_scene(self) -> None:
         if not self._o3d_ready():
             return
@@ -260,11 +274,11 @@ class WujiPoseTabWidget(QWidget):
         viewer = self.o3d_window.viewer
         viewer.set_background_color(0.02, 0.02, 0.02)
         viewer.set_point_size(DEFAULT_POINT_SIZE)
-        axis = o3d.geometry.TriangleMesh.create_coordinate_frame(size=200.0, origin=[0.0, 0.0, 0.0])
+        axis = create_coordinate_axis_lines(size=200.0, origin=[0.0, 0.0, 0.0])
         viewer.add_helper_geometry("pose_world_axis", axis, helper_type="others")
         viewer.add_point_cloud("pose_raw_cloud", self._raw_cloud, reset_view=True)
         viewer.add_helper_geometry("pose_grasp_line", self._pose_line, helper_type="others")
-        viewer.add_helper_geometry(self._pose_axis_name, o3d.geometry.TriangleMesh.create_coordinate_frame(size=80.0), helper_type="others")
+        viewer.add_helper_geometry(self._pose_axis_name, create_coordinate_axis_lines(size=80.0), helper_type="others")
         QTimer.singleShot(200, self._apply_reference_view)
 
     def _apply_reference_view(self) -> None:

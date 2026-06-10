@@ -18,12 +18,7 @@ from PySide6.QtWidgets import (
 )
 
 from gui.util_components.casia_indicator_light import CasiaIndicatorLight
-from src.wuji import (
-    WujiCameraEnableState,
-    WujiCameraFrame,
-    WujiCameraIntrinsicsInfo,
-    WujiCameraRuntimeInfo,
-)
+from src.wuji.camera_protocol import WujiCameraEnableState, WujiCameraFrame, WujiCameraIntrinsicsInfo, WujiCameraRuntimeInfo
 
 
 class ImagePreviewLabel(QLabel):

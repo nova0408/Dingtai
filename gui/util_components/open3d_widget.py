@@ -1,7 +1,7 @@
 import uuid
 
 import numpy as np
-import open3d as o3d
+import open3d as o3d  # type: ignore[attr-defined]
 import win32api
 import win32con
 import win32gui
@@ -9,6 +9,8 @@ from loguru import logger
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QWindow
 from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
+
+from .open3d_geometry_utils import create_coordinate_axis_lines
 
 # ---------------------------------------------------------
 # 1. 核心渲染组件：O3DViewerWidget (API 承载体)
@@ -19,9 +21,13 @@ class O3DViewerWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.unique_name = f"O3D_{uuid.uuid4().hex[:8]}"
+        logger.info("O3DViewerWidget init start: unique_name={}", self.unique_name)
+        # 2026-06-09 已确认当前稳定组合为：
+        # open3d 0.19.0 + numpy 1.26.4 + PySide6 6.11.x。
+        # 旧组合 open3d 0.18.0 + numpy 2.x 在 Qt 嵌入场景里会出现无异常栈的进程级崩溃。
         # 关闭 o3d 警告
         o3d.utility.set_verbosity_level(o3d.utility.VerbosityLevel.Error)
-        self.vis: o3d.visualization.Visualizer | None = None
+        self.vis: o3d.visualization.Visualizer | None = None  # type: ignore[attr-defined]
         self.hwnd = 0
         self._is_cleaned = False
         self._is_open3d_initialized = False
@@ -38,9 +44,10 @@ class O3DViewerWidget(QWidget):
         self._helpers_data = {"bboxes": {}, "others": {}, "select_points": {}}
         self._select_points: list[np.ndarray] = []
         self._empty_grid_name = "__empty_scene_grid__"
-        self._origin_axis = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.5, origin=np.array([0, 0, 0]))
+        self._origin_axis = create_coordinate_axis_lines(size=0.5, origin=np.array([0.0, 0.0, 0.0], dtype=np.float64))
         self._setup_ui()
         self.destroyed.connect(self.cleanup)
+        logger.info("O3DViewerWidget init finish: unique_name={}", self.unique_name)
 
     @property
     def helpers(self):
@@ -61,13 +68,17 @@ class O3DViewerWidget(QWidget):
         if self._is_open3d_initialized or self._is_cleaned:
             return
         self._is_open3d_initialized = True
+        logger.info("O3DViewerWidget open3d init start: unique_name={}", self.unique_name)
         self._init_open3d()
+        logger.info("O3DViewerWidget open3d init finish: unique_name={} hwnd={}", self.unique_name, self.hwnd)
 
     def _init_open3d(self):
-        self.vis = o3d.visualization.Visualizer()
+        self.vis = o3d.visualization.Visualizer()  # type: ignore[attr-defined]
+        assert self.vis is not None
         # 【方案一：坐标放逐】
         # 在创建时就把它丢到屏幕外（-9999），防止在屏幕中心闪现
         logger.debug(f"创建 Open3D 窗口 {self.unique_name}")
+        logger.info("O3DViewerWidget create_window start: unique_name={}", self.unique_name)
         self.vis.create_window(
             window_name=self.unique_name,
             width=640,
@@ -76,15 +87,20 @@ class O3DViewerWidget(QWidget):
             left=-9999,
             top=-9999,  # 核心点：开在看不见的地方
         )
+        logger.info("O3DViewerWidget create_window finish: unique_name={}", self.unique_name)
         # 获取视图控制器
         view_ctl = self.vis.get_view_control()
+        logger.info("O3DViewerWidget get_view_control: unique_name={} view_ctl_is_none={}", self.unique_name, view_ctl is None)
         self._normalize_camera_projection(view_ctl)
 
+        logger.info("O3DViewerWidget FindWindowEx start: unique_name={}", self.unique_name)
         self.hwnd = win32gui.FindWindowEx(0, 0, None, self.unique_name)
+        logger.info("O3DViewerWidget FindWindowEx finish: unique_name={} hwnd={}", self.unique_name, self.hwnd)
 
         if self.hwnd:
             # 【方案二：强制抹除窗口样式】
             # 去掉标题栏、边框、系统菜单。这让它变成一个纯粹的“像素矩形”
+            logger.info("O3DViewerWidget attach native window start: unique_name={} hwnd={}", self.unique_name, self.hwnd)
             style = win32gui.GetWindowLong(self.hwnd, win32con.GWL_STYLE)
             style &= ~win32con.WS_CAPTION
             win32gui.SetWindowLong(self.hwnd, win32con.GWL_STYLE, style)
@@ -101,12 +117,20 @@ class O3DViewerWidget(QWidget):
             self.timer.timeout.connect(self._render_loop)
             self.timer.start(16)
             if self._pending_background_color is not None:
-                self.vis.get_render_option().background_color = self._pending_background_color
+                render_option = self.vis.get_render_option()
+                render_option.background_color = self._pending_background_color
             if self._pending_point_size is not None:
-                self.vis.get_render_option().point_size = self._pending_point_size
+                render_option = self.vis.get_render_option()
+                render_option.point_size = self._pending_point_size
             self._display_axis()
             self._sync_empty_scene_grid()
+            # 2026-06-09 排查记录：
+            # 当前环境升级到 open3d 0.19.0 前，默认相机初始化里的 set_lookat/set_front
+            # 会在这里导致整个进程直接退出。保留该调用，但不要轻易回退版本组合。
             self._apply_default_camera_view()
+            logger.info("O3DViewerWidget attach native window finish: unique_name={} hwnd={}", self.unique_name, self.hwnd)
+        else:
+            logger.warning("O3DViewerWidget FindWindowEx returned empty hwnd: unique_name={}", self.unique_name)
 
     def _render_loop(self):
         """渲染循环：Open3D 所有的 API 都在这里执行，确保线程安全"""
@@ -194,6 +218,7 @@ class O3DViewerWidget(QWidget):
             return
         self._is_cleaned = True
         logger.debug(f"清理 Open3D 窗口 {self.unique_name}")
+        logger.info("O3DViewerWidget cleanup start: unique_name={} hwnd={}", self.unique_name, self.hwnd)
         if hasattr(self, "timer") and self.timer:
             self.timer.stop()
 
@@ -213,6 +238,7 @@ class O3DViewerWidget(QWidget):
                 self.vis = None
         except Exception as e:
             logger.error(f"清理出错：{e}")
+        logger.info("O3DViewerWidget cleanup finish: unique_name={}", self.unique_name)
 
     # region 几何体操作 API (重构版)
 
@@ -452,7 +478,7 @@ class O3DViewerWidget(QWidget):
 
         # 4. 创建坐标轴
         # origin=[0, 0, 0] 确保坐标轴始终在世界坐标系的原点
-        return o3d.geometry.TriangleMesh.create_coordinate_frame(size=size, origin=np.array([0, 0, 0]))
+        return create_coordinate_axis_lines(size=size, origin=np.array([0.0, 0.0, 0.0], dtype=np.float64))
 
     @property
     def show_origin_axis(self):
@@ -549,6 +575,10 @@ class O3DViewerWidget(QWidget):
         view_ctl = self.vis.get_view_control()
         if view_ctl is None:
             return
+        # 注意：
+        # 在 open3d 0.18.0 + numpy 2.x 的历史环境中，
+        # 下述 ViewControl 调用曾触发无 Python 栈的进程崩溃。
+        # 当前实现默认依赖 open3d 0.19.0 + numpy 1.26.4。
         self._normalize_camera_projection(view_ctl)
         view_ctl.set_lookat(np.array([0.0, 0.0, 0.0], dtype=np.float64))
         view_ctl.set_front(np.array([-1.0, -1.0, -0.8], dtype=np.float64))
@@ -605,7 +635,7 @@ class O3DViewerWidget(QWidget):
         maxs = [obj.get_max_bound() for obj in all_objs]
         return (np.min(mins, axis=0) + np.max(maxs, axis=0)) / 2.0
 
-    def set_standard_view(self, view_name: str, zoom: float = None):
+    def set_standard_view(self, view_name: str, zoom: float | None = None):
         """设置标准化视角"""
         self._ensure_open3d_initialized()
         if self.vis is None:
