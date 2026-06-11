@@ -104,40 +104,7 @@ class WujiArmClient(QMArm):
 
         return self._read_joint_states()
 
-    def stream_get_joint_states(self, duration_s: float) -> Iterator[tuple[Any, ...]]:
-        """流式读取机械臂关节状态。
-
-        Parameters
-        ----------
-        duration_s:
-            流式读取时长，单位 s。`0.0` 表示只读取一帧当前状态。
-
-        Yields
-        ------
-        tuple[Any, ...]
-            每帧为按关节编号排序后的状态元组。
-
-        Notes
-        -----
-        该接口使用 `_read_joint_states()` 进行轮询读取。
-
-        - 当 `duration_s <= 0.0` 时，只读取一帧并返回；
-        - 当 `duration_s > 0.0` 时，以约 20 Hz 的频率读取状态；
-        - 这里不做额外缓存，只作为项目侧轻量流式读取工具。
-        """
-
-        duration_s = float(duration_s)
-        if duration_s <= 0.0:
-            yield self._read_joint_states()
-            return
-
-        start_s = monotonic()
-        while monotonic() - start_s <= duration_s:
-            yield self._read_joint_states()
-            sleep(0.05)
-
     # endregion
-
 
     # region 关节控制
 
@@ -282,7 +249,11 @@ class WujiArmClient(QMArm):
         `current_fk_xyzrpy()`，不要修改本方法的返回类型，以免破坏已有调用。
         """
 
-        joint_angles_rad = [float(np.deg2rad(joint.angle_deg)) for joint in self._read_joint_states()]
+        joint_states = self._read_joint_states()
+        if len(joint_states) != 6:
+            raise RuntimeError(f"机械臂关节状态尚未就绪，当前关节数={len(joint_states)}")
+
+        joint_angles_rad = [float(np.deg2rad(joint.angle_deg)) for joint in joint_states]
         return self.fkik.fk_fast(joint_angles_rad)
 
     def current_fk_xyzrpy(self, device_name: ArmDeviceName) -> tuple[float, float, float, float, float, float]:
@@ -471,37 +442,26 @@ class WujiArmClient(QMArm):
 
         Notes
         -----
-        这里每次都直接调用 `StreamGetJointStates` 向服务端读取最新状态，不再读取
-        `arm_info.joint_states` 里的本地缓存。
+        这里优先读取 `QMArm` 内部流式线程持续更新的 `arm_info.joint_states`。
 
         这样可以避免：
 
-        - 单轴控制时把旧关节值拼回整臂目标；
-        - CLI 显示的“当前值”滞后于实际机械臂状态；
-        - FK / IK 参考关节角来自过期快照。
+        - 反复创建和取消 `StreamGetJointStates` 流；
+        - GUI 高刷场景下重复建立 gRPC 流带来的抖动；
+        - 订阅能力已存在时又额外走主动拉取。
         """
-
-        request = arm_pb2.GetJointStatesRequest()
-        request.arm_type = arm_pb2.ArmType.ARM_LEFT if self._device_name == "left_arm" else arm_pb2.ArmType.ARM_RIGHT
-        stream = None
-
-        try:
-            stream = self.stub.StreamGetJointStates(request, timeout=self._base.config.request_timeout_s)
-            response = next(stream)
-        except StopIteration:
+        _ = arm_pb2
+        arm_info = getattr(self, "arm_info", None)
+        arm_info_lock = getattr(self, "arm_info_lock", None)
+        if arm_info is None or arm_info_lock is None:
             return tuple()
-        except Exception:
-            return tuple()
-        finally:
-            cancel = getattr(stream, "cancel", None)
-            if callable(cancel):
-                cancel()
 
-        joints = sorted(
-            response.joints,
-            key=lambda item: getattr(item, "joint_id", 0),
-        )
-        return tuple(joints)
+        with arm_info_lock:
+            if not bool(getattr(arm_info, "initialized", False)):
+                return tuple()
+            joint_states = tuple(getattr(arm_info, "joint_states", ()))
+
+        return joint_states
 
     def _build_joint_commands(self, joint_angles_deg: Sequence[float], start_joint_id: int = 1) -> list[dict[str, float | int]]:
         """将角度序列封装为 qmlinker 关节命令。

@@ -95,6 +95,12 @@ class WujiQmlinkerClientSet:
         arm_client = self.arm_left if device_name == "left_arm" else self.arm_right
         return bool(cast(Any, arm_client).get_enable())
 
+    def stop_arm(self, device_name: ArmDeviceName) -> None:
+        """停止指定机械臂客户端当前发送链路。"""
+
+        arm_client = self.arm_left if device_name == "left_arm" else self.arm_right
+        cast(Any, arm_client).stop()
+
     def get_body_z(self) -> float:
         """读取 body 升降高度。"""
 
@@ -130,6 +136,11 @@ class WujiQmlinkerClientSet:
 
         return self.right_hand.get_right_hand_values()
 
+    def stream_right_hand_values(self) -> Iterator[dict[str, float]]:
+        """流式读取右手执行器值。"""
+
+        return self.right_hand.stream_right_hand_values()
+
     def get_right_hand_actuator_count(self) -> int:
         """读取右手执行器数量。"""
 
@@ -146,12 +157,19 @@ class WujiQmlinkerClientSet:
         return bool(self.right_hand.set_enable(enabled))
 
     def set_right_hand_state(self, actuator_positions: Sequence[float]) -> bool:
-        """下发右手状态位置。"""
+        """下发右手状态位置。
+
+        调用方只需要提供 11 个归一化位置值，速度比例和力控上限都由
+        `WujiRightHandClient` 内部固定，不再向上层暴露。
+        """
 
         return bool(self.right_hand.set_hand_state(actuator_positions))
 
     def set_right_hand_axis(self, actuator_id: int, target_value: float) -> bool:
-        """设置右手单轴目标值。"""
+        """设置右手单轴目标值。
+
+        调用方只需要提供归一化目标值，速度比例和力控上限由右手 client 固化。
+        """
 
         return self.right_hand.set_right_hand_axis(actuator_id, target_value)
 

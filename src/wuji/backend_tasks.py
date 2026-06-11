@@ -5,15 +5,13 @@ from typing import Any
 
 from PySide6.QtCore import QObject, QRunnable, Signal, Slot
 
-from src.wuji.protocol import WujiQmlinkerEnableModuleName
-
 
 @dataclass(frozen=True, slots=True)
 class _SdkRequest:
     action: str
     key: str
     axis_name: str | None = None
-    device_name: WujiQmlinkerEnableModuleName | None = None
+    device_name: str | None = None
 
 
 class _SdkWorkerSignals(QObject):

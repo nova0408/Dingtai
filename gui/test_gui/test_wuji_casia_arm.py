@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
 
 from gui.test_gui.uitl_dof_widget_model import DoFWidgetModel
 from gui.test_gui.uitl_dof_widget_view import UtilDoFWidget
+from gui.test_gui.test_wuji_gripper_tab import WujiGripperTabWidget
 from gui.util_components.casia_indicator_light import CasiaIndicatorLight
 from src.servers.common import JointLimit
 from src.wuji.client_base import WujiQmlinkerBaseClient
@@ -216,6 +217,7 @@ class ArmModulePanel(QWidget):
             font_size=12,
             default_status=False,
         )
+        self.enable_indicator.clicked.connect(self._on_enable_indicator_clicked)
         self.axis_readout_labels: dict[str, QLabel] = {}
         self.axis_spin_boxes: dict[str, QDoubleSpinBox] = {}
         self.fk_value_labels: dict[str, QLabel] = {}
@@ -263,6 +265,9 @@ class ArmModulePanel(QWidget):
         self.enable_indicator.set_status(self._enabled)
         for widget in self.findChildren(QDoubleSpinBox):
             widget.setEnabled(self._enabled)
+
+    def _on_enable_indicator_clicked(self) -> None:
+        self.enableToggleRequested.emit(self._device_name, not self._enabled)
 
     def _build_axis_control_column(self, parent: QWidget) -> QWidget:
         container = QWidget(parent)
@@ -519,8 +524,14 @@ class RightHandControlPanel(StatusAxisPanel):
     setPoseRequested = Signal()
     axisTargetRequested = Signal(str, float)
 
-    def __init__(self, axis_names: tuple[str, ...], parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        axis_names: tuple[str, ...],
+        gripper_widget: QWidget | None = None,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__("右手灵巧手", axis_names, parent)
+        self.gripper_widget = gripper_widget
         self.axis_spin_boxes: dict[str, QDoubleSpinBox] = {}
         self.axis_current_labels: dict[str, QLabel] = {}
         self._axis_current_values: dict[str, float] = {}
@@ -557,7 +568,14 @@ class RightHandControlPanel(StatusAxisPanel):
         controls_layout.addStretch(1)
         layout = self.layout()
         assert isinstance(layout, QVBoxLayout)
-        layout.insertWidget(1, controls_group)
+        body_container = QWidget(self)
+        body_layout = QHBoxLayout(body_container)
+        body_layout.setContentsMargins(0, 0, 0, 0)
+        body_layout.setSpacing(8)
+        if self.gripper_widget is not None:
+            body_layout.addWidget(self.gripper_widget, 1)
+        body_layout.addWidget(controls_group, 1)
+        layout.insertWidget(1, body_container)
         self.enable_button.clicked.connect(lambda _checked=False: self.enableRequested.emit(True))
         self.pose_button.clicked.connect(lambda _checked=False: self.setPoseRequested.emit())
 
@@ -663,6 +681,7 @@ class TestWujiCasiaArmWidget(QWidget):
         layout.addWidget(self._tab_widget)
 
         self._build_tabs()
+        self._connect_signals()
 
     def _make_discovery_client(self) -> WujiQmlinkerBaseClient:
         return WujiQmlinkerBaseClient()
@@ -735,8 +754,6 @@ class TestWujiCasiaArmWidget(QWidget):
                 continue
 
         panel = DebugModulePanel(tuple(specs_by_tab["body"]), self._tab_widget)
-        panel.dofTargetRequested.connect(self._on_dof_target_requested)
-        panel.enableToggleRequested.connect(self._request_enable_toggle)
         self.dof_widgets_by_axis.update(panel.dof_widgets_by_axis)
         self.enable_indicators.update(panel.enable_indicators)
         self._tab_widget.addTab(self._wrap_scroll_area(panel), "Body")
@@ -744,30 +761,55 @@ class TestWujiCasiaArmWidget(QWidget):
 
         for device_name, title in (("left_arm", "Left Arm"), ("right_arm", "Right Arm")):
             arm_panel = ArmModulePanel(device_name, title, tuple(arm_specs_by_device.get(device_name, ())), self._tab_widget)
+            self.arm_panels_by_device[device_name] = arm_panel
+            self._tab_widget.addTab(self._wrap_scroll_area(arm_panel), title)
+
+        self.gripper_widget = WujiGripperTabWidget(self._tab_widget)
+        right_hand_panel = RightHandControlPanel(
+            tuple(right_hand_axis_names),
+            gripper_widget=self.gripper_widget,
+            parent=self._tab_widget,
+        )
+        self._read_only_panels_by_tab["right_hand"] = right_hand_panel
+        self._tab_widget.addTab(self._wrap_scroll_area(right_hand_panel), "Right Hand")
+
+        agv_panel = AgvControlPanel(tuple(agv_axis_names), self._tab_widget)
+        self._read_only_panels_by_tab["agv"] = agv_panel
+        self._tab_widget.addTab(self._wrap_scroll_area(agv_panel), "AGV")
+
+    def _connect_signals(self) -> None:
+        if self._tab_panels_by_index:
+            body_panel = self._tab_panels_by_index[0]
+            body_panel.dofTargetRequested.connect(self._on_dof_target_requested)
+            body_panel.enableToggleRequested.connect(self._request_enable_toggle)
+
+        for device_name, arm_panel in self.arm_panels_by_device.items():
             arm_panel.axisTargetRequested.connect(self._on_dof_target_requested)
             arm_panel.ikRequested.connect(self._on_arm_ik_requested)
             arm_panel.stopRequested.connect(self._on_arm_stop_requested)
             arm_panel.enableToggleRequested.connect(
                 lambda _arm_name, enabled, name=device_name: self.enableToggleRequested.emit(name, enabled)
             )
-            self.arm_panels_by_device[device_name] = arm_panel
-            self._tab_widget.addTab(self._wrap_scroll_area(arm_panel), title)
 
-        right_hand_panel = RightHandControlPanel(tuple(right_hand_axis_names), self._tab_widget)
-        right_hand_panel.enableRequested.connect(lambda enabled: self.rightHandEnableRequested.emit(enabled))
-        right_hand_panel.setPoseRequested.connect(lambda: self.rightHandPoseRequested.emit())
-        right_hand_panel.axisTargetRequested.connect(lambda axis_name, value: self.rightHandAxisTargetRequested.emit(axis_name, value))
-        self._read_only_panels_by_tab["right_hand"] = right_hand_panel
-        self._tab_widget.addTab(self._wrap_scroll_area(right_hand_panel), "Right Hand")
+        right_hand_panel = self._read_only_panels_by_tab.get("right_hand")
+        if isinstance(right_hand_panel, RightHandControlPanel):
+            right_hand_panel.enableRequested.connect(
+                lambda enabled: self.rightHandEnableRequested.emit(enabled)
+            )
+            right_hand_panel.setPoseRequested.connect(lambda: self.rightHandPoseRequested.emit())
+            right_hand_panel.axisTargetRequested.connect(
+                lambda axis_name, value: self.rightHandAxisTargetRequested.emit(axis_name, value)
+            )
 
-        agv_panel = AgvControlPanel(tuple(agv_axis_names), self._tab_widget)
-        agv_panel.enableRequested.connect(lambda enabled: self.agvEnableRequested.emit(enabled))
-        agv_panel.moveRequested.connect(lambda direction: self.agvMoveRequested.emit(direction))
-        agv_panel.navigateRequested.connect(lambda target_name: self.agvNavigateRequested.emit(target_name))
-        agv_panel.chargeRequested.connect(lambda: self.agvChargeRequested.emit())
-        agv_panel.stopRequested.connect(lambda: self.agvStopRequested.emit())
-        self._read_only_panels_by_tab["agv"] = agv_panel
-        self._tab_widget.addTab(self._wrap_scroll_area(agv_panel), "AGV")
+        agv_panel = self._read_only_panels_by_tab.get("agv")
+        if isinstance(agv_panel, AgvControlPanel):
+            agv_panel.enableRequested.connect(lambda enabled: self.agvEnableRequested.emit(enabled))
+            agv_panel.moveRequested.connect(lambda direction: self.agvMoveRequested.emit(direction))
+            agv_panel.navigateRequested.connect(
+                lambda target_name: self.agvNavigateRequested.emit(target_name)
+            )
+            agv_panel.chargeRequested.connect(lambda: self.agvChargeRequested.emit())
+            agv_panel.stopRequested.connect(lambda: self.agvStopRequested.emit())
 
     def ensure_extra_tab(self, tab_name: str, title: str, widget: QWidget) -> None:
         if tab_name in self._extra_tabs_by_name:

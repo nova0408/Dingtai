@@ -7,6 +7,7 @@ import socket
 import socketserver
 import subprocess
 import time
+from contextlib import redirect_stderr, redirect_stdout
 from collections.abc import Iterator
 from pathlib import Path
 from threading import Thread
@@ -16,7 +17,7 @@ import grpc
 import cv2
 from google.protobuf import empty_pb2
 import numpy as np
-from qmlinker import QMArm, QMCamera, QMHand, QMMoveBase, create_channel
+from qmlinker import QMCamera, QMHand, QMMoveBase, create_channel
 from qmlinker.grpc_py import arm_pb2, common_pb2, head_pb2_grpc
 from qmlinker.grpc_py import lift_pb2_grpc
 from qmlinker.grpc_py import hand_pb2
@@ -482,7 +483,11 @@ class WujiQmlinkerBaseClient:
 
         arms = list(self._arms.values())
         try:
-            self._move_base.stop()
+            # qmlinker 的 move_base.stop() 在通道关闭时会打印 CANCELLED 噪音日志。
+            # 这里把它静音掉，避免冒烟脚本在成功退出时额外冒出无关异常文本。
+            with open(os.devnull, "w", encoding="utf-8") as sink:
+                with redirect_stdout(sink), redirect_stderr(sink):
+                    self._move_base.stop()
         except Exception:  # noqa: BLE001
             pass
         for forwarder in self._forwarders:

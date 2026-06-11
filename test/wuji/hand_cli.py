@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import sys
 import time
 from dataclasses import dataclass
@@ -28,10 +29,10 @@ def _append_repo_root_to_sys_path() -> None:
 _append_repo_root_to_sys_path()
 
 
-from src.wuji.client_base import WujiQmlinkerBaseClient
-from src.wuji.protocol import WujiQmlinkerConfig
-from src.wuji.right_hand_client import WujiRightHandClient
-from src.wuji.right_hand_specs import RIGHT_HAND_ACTUATOR_SPECS, WujiRightHandActuatorSpec
+from src.wuji.client_base import WujiQmlinkerBaseClient  # noqa: E402
+from src.wuji.protocol import WujiQmlinkerConfig  # noqa: E402
+from src.wuji.right_hand_client import WujiRightHandClient  # noqa: E402
+from src.wuji.right_hand_specs import RIGHT_HAND_ACTUATOR_SPECS, WujiRightHandActuatorSpec  # noqa: E402
 
 
 # endregion
@@ -53,9 +54,6 @@ UNCHANGED_TIMEOUT_S = 1.0
 
 # 防止读数一直抖动导致死循环。正常情况下不会用到。
 HARD_POLL_TIMEOUT_S = 15.0
-
-DEFAULT_SPEED_RATIO = 0.5
-DEFAULT_FORCE_LIMIT = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -162,6 +160,35 @@ def _read_enable(hand: WujiRightHandClient, timeout_s: float) -> bool:
     return bool(response.status.success and response.current_state == common_pb2.MODULE_ENABLED)
 
 
+def _ensure_enabled(hand: WujiRightHandClient, config: HandCliConfig) -> None:
+    """确保右手已使能，避免下发后被 ROS 端直接拒绝。
+
+    Parameters
+    ----------
+    hand:
+        右手客户端。
+    config:
+        CLI 配置，用于请求超时。
+
+    Notes
+    -----
+    `wuyou` 上的 ROS 手节点会先检查使能状态，未使能时会直接拒绝执行。
+    这里在测试入口显式补上使能动作，避免把“未使能拒绝”误判成“指令无动作”。
+    """
+
+    enabled = _read_enable(hand, timeout_s=config.request_timeout_s)
+    if enabled:
+        return
+
+    print("右手当前未使能，先执行 enable 再下发动作。")
+    if not _set_enable(hand, enable=True, timeout_s=config.request_timeout_s):
+        raise RuntimeError("右手使能下发失败，拒绝继续控制。")
+
+    enabled_after = _read_enable(hand, timeout_s=config.request_timeout_s)
+    if not enabled_after:
+        raise RuntimeError("右手使能后仍未进入 enabled 状态。")
+
+
 def _set_enable(hand: WujiRightHandClient, enable: bool, timeout_s: float) -> bool:
     """设置右手使能状态。"""
 
@@ -236,50 +263,6 @@ def _read_snapshot(hand: WujiRightHandClient, timeout_s: float) -> HandSnapshot:
     )
 
 
-def _send_single_axis_target(
-    hand: WujiRightHandClient,
-    snapshot: HandSnapshot,
-    target_spec: WujiRightHandActuatorSpec,
-    target_value: float,
-    timeout_s: float,
-    speed_ratio: float = DEFAULT_SPEED_RATIO,
-    force_limit: float = DEFAULT_FORCE_LIMIT,
-) -> bool:
-    """只修改一个 actuator，其余 actuator 保持当前真实读数。"""
-
-    current_by_id = snapshot.axis_by_id()
-
-    request = hand_pb2.SetHandRequest()
-    request.hand_id = cast(Any, hand.hand_id)
-
-    for spec in RIGHT_HAND_ACTUATOR_SPECS:
-        actuator_id = int(spec.actuator_id)
-        current_axis = current_by_id.get(actuator_id)
-
-        if current_axis is None:
-            raise RuntimeError(
-                f"当前状态缺少 actuator_id={actuator_id}，拒绝下发，避免其它轴被错误覆盖。"
-            )
-
-        actuator_req = request.actuator_target_states.add()
-        actuator_req.actuator_id = actuator_id
-
-        if actuator_id == int(target_spec.actuator_id):
-            actuator_req.position = float(target_value)
-        else:
-            actuator_req.position = float(current_axis.position)
-
-        actuator_req.speed_ratio = max(0.0, min(float(speed_ratio), 1.0))
-        actuator_req.force_limit = float(force_limit)
-
-    try:
-        response = hand.stub.SetHandState(request, timeout=float(timeout_s))
-    except grpc.RpcError as error:
-        raise RuntimeError(f"SetHandState failed: {_format_rpc_error(error)}") from error
-
-    return bool(response.status.success)
-
-
 # endregion
 
 
@@ -336,22 +319,16 @@ def _resolve_axis_by_user_index(user_text: str) -> WujiRightHandActuatorSpec:
 
 
 def _validate_target(spec: WujiRightHandActuatorSpec, target_value: float) -> None:
-    """按项目侧规格检查目标值范围。"""
-
-    minimum = _minimum_from_spec(spec)
-    maximum = _maximum_from_spec(spec)
+    """检查右手控制目标必须是 0 到 1 的归一化值。"""
 
     axis_name = _axis_name_from_spec(spec)
+    value = float(target_value)
 
-    if minimum is not None and target_value < minimum:
-        raise ValueError(
-            f"{axis_name} 目标值过小：target={target_value:.6f}, minimum={minimum:.6f}"
-        )
+    if not math.isfinite(value):
+        raise ValueError(f"{axis_name} 目标值必须是有限数，当前为 {target_value!r}")
 
-    if maximum is not None and target_value > maximum:
-        raise ValueError(
-            f"{axis_name} 目标值过大：target={target_value:.6f}, maximum={maximum:.6f}"
-        )
+    if value < 0.0 or value > 1.0:
+        raise ValueError(f"{axis_name} 目标值必须在 0-1 之间，当前为 {value:.6f}")
 
 
 def _print_hand_info(hand: WujiRightHandClient, config: HandCliConfig) -> None:
@@ -517,6 +494,8 @@ def _run_single_axis_motion(
     actuator_id = int(spec.actuator_id)
     axis_name = _axis_name_from_spec(spec)
 
+    _ensure_enabled(hand, config)
+
     before_snapshot = _read_snapshot(hand, timeout_s=config.request_timeout_s)
     before_value = before_snapshot.position_of(actuator_id)
 
@@ -528,15 +507,13 @@ def _run_single_axis_motion(
         f"before={before_value:.6f}, target={target_value:.6f}"
     )
 
-    ok = _send_single_axis_target(
-        hand=hand,
-        snapshot=before_snapshot,
-        target_spec=spec,
-        target_value=target_value,
-        timeout_s=config.request_timeout_s,
-        speed_ratio=DEFAULT_SPEED_RATIO,
-        force_limit=DEFAULT_FORCE_LIMIT,
-    )
+    positions = [
+        before_snapshot.position_of(spec_item.actuator_id)
+        for spec_item in RIGHT_HAND_ACTUATOR_SPECS
+    ]
+    positions[int(spec.actuator_id)] = float(target_value)
+
+    ok = hand.set_hand_state(positions)
 
     print(f"下发结果：{ok}")
 

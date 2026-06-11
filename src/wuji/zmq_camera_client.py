@@ -26,6 +26,7 @@ from src.wuji.camera_protocol import (
 )
 from src.wuji.protocol import load_wuji_robot_network_config
 
+from qmlinker import QMCamera
 # endregion
 
 

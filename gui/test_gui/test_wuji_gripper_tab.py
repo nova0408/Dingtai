@@ -85,10 +85,18 @@ class WujiGripperTabWidget(QWidget):
 
         position_group = QGroupBox("目标位置", write_group)
         position_layout = QHBoxLayout(position_group)
+        self.pose_spinbox = QSpinBox(position_group)
+        self.pose_spinbox.setRange(0, 1000)
+        self.pose_spinbox.setSingleStep(1)
+        self.pose_spinbox.setValue(0)
         self.open_button = QPushButton("开", position_group)
         self.close_button = QPushButton("关", position_group)
+        self.pose_apply_button = QPushButton("发送Pose", position_group)
         self.open_button.setMinimumWidth(72)
         self.close_button.setMinimumWidth(72)
+        self.pose_apply_button.setMinimumWidth(88)
+        position_layout.addWidget(self.pose_spinbox)
+        position_layout.addWidget(self.pose_apply_button)
         position_layout.addWidget(self.open_button)
         position_layout.addWidget(self.close_button)
         write_layout.addWidget(position_group)
@@ -126,6 +134,7 @@ class WujiGripperTabWidget(QWidget):
         main_layout.addWidget(write_group, 1)
 
         self.enable_indicator.clicked.connect(self._on_enable_indicator_clicked)
+        self.pose_apply_button.clicked.connect(lambda _checked=False: self._emit_position_target(int(self.pose_spinbox.value())))
         self.open_button.clicked.connect(lambda _checked=False: self._emit_position_target(1000))
         self.close_button.clicked.connect(lambda _checked=False: self._emit_position_target(0))
         self.speed_apply_button.clicked.connect(lambda _checked=False: self._emit_speed_target())
@@ -145,6 +154,7 @@ class WujiGripperTabWidget(QWidget):
         self.force_label.setText(str(info.force))
         self.state_label.setText(str(info.grip_state))
         self.target_position_label.setText(str(info.position))
+        self.pose_spinbox.setValue(int(info.position))
         self.enable_indicator.setEnabled(bool(info.online))
         self.enable_indicator.set_status(bool(info.enabled) if info.enabled is not None else False)
         self._set_write_controls_enabled(bool(info.online))
@@ -160,12 +170,15 @@ class WujiGripperTabWidget(QWidget):
         self.force_label.setText("-")
         self.state_label.setText("-")
         self.target_position_label.setText("-")
+        self.pose_spinbox.setValue(0)
         self.speed_spinbox.setValue(-1)
         self.force_spinbox.setValue(-1)
         self.enable_indicator.setEnabled(False)
         self._set_write_controls_enabled(False)
 
     def _set_write_controls_enabled(self, enabled: bool) -> None:
+        self.pose_spinbox.setEnabled(enabled)
+        self.pose_apply_button.setEnabled(enabled)
         self.open_button.setEnabled(enabled)
         self.close_button.setEnabled(enabled)
         self.speed_spinbox.setEnabled(enabled)
@@ -185,6 +198,7 @@ class WujiGripperTabWidget(QWidget):
     def _emit_position_target(self, position: int) -> None:
         if position < 0:
             return
+        self.pose_spinbox.setValue(int(position))
         self.target_position_label.setText(str(int(position)))
         self.positionRequested.emit(int(position))
 

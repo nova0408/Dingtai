@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Iterator
+import time
 from threading import Event, Lock, Thread
 from typing import Any, cast
-
 from loguru import logger
 from PySide6.QtCore import QObject, QThreadPool, Signal
 from qmlinker import QMMoveBase
@@ -84,6 +84,16 @@ class WujiQmlinkerBackend(QObject):
 
     def refresh_enable_state(self, device_name: str) -> None:
         if device_name in {"left_arm", "right_arm"}:
+            typed_device = self._typed_arm_device(device_name)
+            self._start_worker(
+                _SdkRequest(action="get_enable", key=f"get_enable:{typed_device}", device_name=typed_device),
+                lambda: self._with_client(
+                    lambda client: {
+                        "device_name": typed_device,
+                        "enabled": client.get_enable(typed_device),
+                    }
+                ),
+            )
             return
         if device_name in {"right_hand", "agv"}:
             self._start_worker(
@@ -120,8 +130,20 @@ class WujiQmlinkerBackend(QObject):
         if device_name == "agv":
             self.set_agv_enable_state(enabled)
             return
+        if device_name in {"left_arm", "right_arm"}:
+            typed_device = self._typed_arm_device(device_name)
+            self._start_worker(
+                _SdkRequest(action="set_enable", key=f"set_enable:{typed_device}", device_name=typed_device),
+                lambda: self._with_client(
+                    lambda client: self._set_arm_enable_and_readback(client, typed_device, enabled)
+                ),
+            )
+            return
         typed_module = self._typed_module(device_name)
-        self._start_worker(_SdkRequest(action="set_enable", key=f"set_enable:{typed_module}", device_name=typed_module), lambda: self._with_client(lambda client: self._set_module_enable_and_readback(client, typed_module, enabled)))
+        self._start_worker(
+            _SdkRequest(action="set_enable", key=f"set_enable:{typed_module}", device_name=typed_module),
+            lambda: self._with_client(lambda client: self._set_module_enable_and_readback(client, typed_module, enabled)),
+        )
 
     def refresh_dof_value(self, axis_name: str) -> None:
         parsed_arm = parse_arm_axis_name(axis_name)
@@ -267,6 +289,9 @@ class WujiQmlinkerBackend(QObject):
     def get_joint_states(self, device_name: ArmDeviceName) -> object:
         return self._with_client(lambda client: client.get_joint_states(device_name))
 
+    def stop_arm(self, device_name: ArmDeviceName) -> None:
+        self._with_client(lambda client: client.stop_arm(device_name))
+
     def set_joints(self, device_name: ArmDeviceName, joint_angles_deg: Iterable[float], sync_threshold: float = 0.0) -> object:
         joint_angle_list = [float(angle) for angle in joint_angles_deg]
         return self._with_client(lambda client: client.set_joints(device_name, joint_angle_list, int(round(sync_threshold))))
@@ -344,6 +369,29 @@ class WujiQmlinkerBackend(QObject):
         if not client.set_module_enable(module_name, enabled):
             raise RuntimeError(f"qmlinker set enable failed: {module_name}")
         return {"device_name": module_name, "enabled": client.get_module_enable(module_name)}
+
+    def _set_arm_enable_and_readback(
+        self,
+        client: WujiQmlinkerClientSet,
+        device_name: ArmDeviceName,
+        enabled: bool,
+    ) -> dict[str, object]:
+        if not client.set_enable(device_name, enabled):
+            raise RuntimeError(f"qmlinker set enable failed: {device_name}")
+
+        last_error: Exception | None = None
+        for _ in range(5):
+            try:
+                actual_enabled = bool(client.get_enable(device_name))
+            except Exception as exc:  # noqa: BLE001
+                last_error = exc
+                time.sleep(0.05)
+                continue
+            return {"device_name": device_name, "enabled": actual_enabled}
+
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError(f"qmlinker get enable failed after set: {device_name}")
 
     def _set_camera_enable_and_readback(self, client: WujiZmqCameraClient, camera_name: WujiCameraName, enabled: bool) -> object:
         return client.set_camera_color_enabled(camera_name, enabled)
@@ -453,7 +501,15 @@ class WujiQmlinkerBackend(QObject):
         if request is not None and request.action == "sdk_probe":
             self.serviceStateChanged.emit(False, message)
             return
+        if request is not None and self._should_suppress_worker_error(request, message):
+            logger.debug("Suppress qmlinker worker error: action={} key={} message={}", request.action, request.key, message)
+            return
         self.requestFailed.emit(message)
+
+    def _should_suppress_worker_error(self, request: _SdkRequest, message: str) -> bool:
+        if "StatusCode.CANCELLED" not in message:
+            return False
+        return request.action in {"get_enable", "set_enable", "agv_stop"}
 
     def _typed_arm_device(self, device_name: str) -> ArmDeviceName:
         if device_name == "left_arm":

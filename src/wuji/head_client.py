@@ -33,20 +33,6 @@ class WujiHeadClient(QMHead):
         """创建头部客户端。"""
 
         super().__init__(base_client.channel)
-        self._base = base_client
-
-    def get_head_yaw(self) -> float:
-        """读取头部 yaw，单位 deg。"""
-
-        response = self.stub.GetHeadYaw(empty_pb2.Empty(), timeout=self._base.config.request_timeout_s)
-        return float(response.current_yaw_deg)
-
-    def set_head_yaw(self, yaw_angle_deg: float) -> bool:
-        """设置头部 yaw，单位 deg。"""
-
-        request = head_pb2.SetHeadYawRequest(yaw_angle_deg=float(yaw_angle_deg))
-        response = self.stub.SetHeadYaw(request, timeout=self._base.config.request_timeout_s)
-        return bool(response.status.success)
 
 
 # endregion

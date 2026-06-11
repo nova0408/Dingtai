@@ -7,13 +7,13 @@ from typing import cast
 import grpc
 from loguru import logger
 
-from src.arm.wuji_arm_protocol import ArmDeviceName, axis_names_for_device
+from src.arm.wuji_arm_protocol import axis_names_for_device
 from src.wuji.device_clients import WujiQmlinkerClientSet
 
 
 class WujiQmlinkerSubscriptionContext:
-    _UNARY_REFRESH_INTERVAL_S = 0.05
-    _HAND_REFRESH_INTERVAL_S = 0.5
+    _STREAM_REFRESH_INTERVAL_S = 0.05
+    _UNARY_REFRESH_INTERVAL_S = 1.0
     _UNARY_RPC_RETRY_INTERVAL_S = 5.0
     _SKIPPABLE_RPC_CODES = {
         grpc.StatusCode.CANCELLED,
@@ -77,23 +77,26 @@ class WujiQmlinkerSubscriptionContext:
                         axis_name: float(joint.angle_deg)
                         for axis_name, joint in zip(
                             axis_names,
-                            sorted(joints, key=lambda item: getattr(item, "joint_id", 0)),
+                            joints,
                             strict=False,
                         )
                     }
                     self._update_values(values)
             except Exception as exc:  # noqa: BLE001
                 logger.error("qmlinker arm refresh failed: {}", exc)
-                self._stop_event.wait(self._UNARY_REFRESH_INTERVAL_S)
+            self._stop_event.wait(self._STREAM_REFRESH_INTERVAL_S)
 
     def _run_right_hand_refresh(self) -> None:
         while not self._stop_event.is_set():
             try:
                 client = self._client_getter()
-                self._update_values(client.get_right_hand_values())
+                for values in client.stream_right_hand_values():
+                    if self._stop_event.is_set():
+                        break
+                    self._update_values(values)
             except Exception as exc:  # noqa: BLE001
                 logger.error("qmlinker right hand refresh failed: {}", exc)
-            self._stop_event.wait(self._HAND_REFRESH_INTERVAL_S)
+            self._stop_event.wait(self._UNARY_REFRESH_INTERVAL_S)
 
     def _run_unary_refresh(self) -> None:
         while not self._stop_event.is_set():

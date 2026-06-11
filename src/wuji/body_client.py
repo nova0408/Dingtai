@@ -34,42 +34,19 @@ class WujiBodyClient:
     def __init__(self, base_client: WujiQmlinkerBaseClient) -> None:
         """创建 body 客户端。"""
 
-        self._base = base_client
-        self._lift = QMLift(self._base.channel)
-        self._waist = QMWaist(self._base.channel)
+        self._lift = QMLift(base_client.channel)
+        self._waist = QMWaist(base_client.channel)
 
-    def get_body_z(self) -> float:
-        """读取升降高度，单位 mm。"""
+    @property
+    def lift(self) -> QMLift:
+        """底层升降 SDK 对象，提供更底层的接口访问。"""
 
-        response = self._lift.stub.GetCurrentLiftPhysicalHeight(empty_pb2.Empty(), timeout=self._base.config.request_timeout_s)
-        return float(response.current_height_mm)
+        return self._lift
+    @property
+    def waist(self) -> QMWaist:
+        """底层腰部 SDK 对象，提供更底层的接口访问。"""
 
-    def get_enable(self) -> bool:
-        """读取 body 使能状态。"""
-
-        lift_enable = bool(cast(Any, self._lift).get_enable())
-        waist_enable = bool(cast(Any, self._waist).get_enable())
-        return bool(lift_enable and waist_enable)
-
-    def set_body_z(self, height_mm: float) -> bool:
-        """设置升降高度，单位 mm。"""
-
-        request = lift_pb2.SetLiftPhysicalHeightRequest(height_mm=int(round(height_mm)))
-        response = self._lift.stub.SetLiftPhysicalHeight(request, timeout=self._base.config.request_timeout_s)
-        return bool(response.status.success)
-
-    def get_body_ry(self) -> float:
-        """读取腰部俯仰角，单位 deg。"""
-
-        response = self._waist.stub.GetCurrentPitch(empty_pb2.Empty(), timeout=self._base.config.request_timeout_s)
-        return float(response.current_pitch_deg)
-
-    def set_body_ry(self, pitch_deg: float) -> bool:
-        """设置腰部俯仰角，单位 deg。"""
-
-        request = waist_pb2.SetWaistPitchRequest(pitch_angle_deg=float(pitch_deg))
-        response = self._waist.stub.SetPitchAngle(request, timeout=self._base.config.request_timeout_s)
-        return bool(response.status.success)
+        return self._waist
 
 
 # endregion

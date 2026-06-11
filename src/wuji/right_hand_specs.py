@@ -55,5 +55,14 @@ RIGHT_HAND_ACTUATOR_SPECS: tuple[WujiRightHandActuatorSpec, ...] = (
     WujiRightHandActuatorSpec("right_hand_a10", 10, "小指末端"),
 )
 
+# 方便按“同一组四根手指一起动”的方式控制右手。
+# 第一组对应食指 / 中指 / 无名指 / 小指的近端关节。
+RIGHT_HAND_FOUR_FINGER_GROUP_A: tuple[int, ...] = (4, 6, 8, 10)
+"四根手指同组 A，按同一归一化目标值同时控制。"
+
+# 第二组对应食指 / 中指 / 无名指 / 小指的远端关节。
+RIGHT_HAND_FOUR_FINGER_GROUP_B: tuple[int, ...] = (3, 5, 7, 9)
+"四根手指同组 B，按同一归一化目标值同时控制。"
+
 
 # endregion
