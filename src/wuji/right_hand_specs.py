@@ -55,6 +55,13 @@ RIGHT_HAND_ACTUATOR_SPECS: tuple[WujiRightHandActuatorSpec, ...] = (
     WujiRightHandActuatorSpec("right_hand_a10", 10, "小指末端"),
 )
 
+FINGER_GROUPS: tuple[tuple[str, tuple[int, ...]], ...] = (
+    ("thumb", (0, 1, 2)),
+    ("index", (3, 4)),
+    ("middle", (5, 6)),
+    ("ring", (7, 8)),
+    ("little", (9, 10)),
+)
 # 方便按“同一组四根手指一起动”的方式控制右手。
 # 第一组对应食指 / 中指 / 无名指 / 小指的近端关节。
 RIGHT_HAND_FOUR_FINGER_GROUP_A: tuple[int, ...] = (4, 6, 8, 10)

@@ -137,7 +137,7 @@ class WujiZmqCameraConfig:
     ssh_alias: str = "orin"
     "SSH 跳板别名，对应用户本机 `~/.ssh/config` 中的 Orin 配置。"
 
-    remote_service_alias: str = "wuyou-x1-via-orin"
+    remote_service_alias: str = "wuyou"
     "用于读取 `wuyou` 相机配置文件的 SSH 别名。"
 
     remote_camera_config_path: str = "/home/wuyou/.zkgj_libs/casia_config/ob_camera/ob_camera.yaml"

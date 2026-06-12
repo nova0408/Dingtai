@@ -396,6 +396,12 @@ class WujiQmlinkerBaseClient:
 
         return self._move_base
 
+    @property
+    def move_base_target(self) -> str:
+        """返回 AGV 底盘专用 qmlinker 连接目标。"""
+
+        return self._move_base_target
+
     def hand(self, device_name: HandDeviceName) -> Any:
         """返回指定手部对象。"""
 
@@ -658,6 +664,41 @@ except ImportError:
                     raise
                 time.sleep(0.5)
         raise RuntimeError("qmlinker get base status failed") from last_error
+
+    def get_agv_runtime_info(self) -> dict[str, object]:
+        """读取 AGV 底盘运行时信息。
+
+        Returns
+        -------
+        dict[str, object]
+            返回 AGV 当前导航状态与基础位姿、电量信息。
+            `agv_navi_status` 为字符串，其余 `agv_*` 数值字段为浮点数。
+        """
+
+        last_error: Exception | None = None
+        for _ in range(10):
+            try:
+                response = self._move_base.stub.GetBaseStatus(
+                    empty_pb2.Empty(),
+                    timeout=self._config.request_timeout_s,
+                )
+                return {
+                    "agv_navi_status": str(getattr(response, "navi_status", "")),
+                    "agv_x": float(getattr(response, "x", 0.0)),
+                    "agv_y": float(getattr(response, "y", 0.0)),
+                    "agv_yaw": float(getattr(response, "yaw", 0.0)),
+                    "agv_battery": float(getattr(response, "battery", 0.0)),
+                }
+            except grpc.RpcError as exc:
+                last_error = exc
+                if exc.code() not in {
+                    grpc.StatusCode.CANCELLED,
+                    grpc.StatusCode.UNAVAILABLE,
+                    grpc.StatusCode.DEADLINE_EXCEEDED,
+                }:
+                    raise
+                time.sleep(0.5)
+        raise RuntimeError("qmlinker get agv runtime info failed") from last_error
 
     def get_agv_base_status(self) -> Any:
         """读取 AGV 底盘原始状态。"""

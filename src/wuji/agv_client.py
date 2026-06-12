@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from qmlinker import QMMoveBase
+from qmlinker import QMMoveBase, create_channel
 
 from src.wuji.client_base import WujiQmlinkerBaseClient
 
@@ -30,7 +30,7 @@ class WujiAgvClient(QMMoveBase):
     def __init__(self, base_client: WujiQmlinkerBaseClient) -> None:
         """创建 AGV 客户端。"""
 
-        super().__init__(base_client.channel)
+        super().__init__(create_channel(base_client.move_base_target))
 
 
 # endregion

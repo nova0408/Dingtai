@@ -2,210 +2,139 @@ from __future__ import annotations
 
 import argparse
 import sys
-import time
-from dataclasses import dataclass
 from pathlib import Path
 
 from loguru import logger
 
-DEFAULT_HOST = "192.168.100.60"
-"默认基础控制工控机地址。"
 
-DEFAULT_PORT = 50062
-"默认 qmlinker 端口。"
-
-DEFAULT_REQUEST_TIMEOUT_S = 10.0
-"夹爪冒烟超时，单位 s。"
-
-DEFAULT_POSITION_DELTA = 100
-"夹爪位置小幅运动幅度，单位原始位置计数。"
-
-POSITION_POLL_INTERVAL_S = 0.2
-"夹爪位置轮询间隔，单位 s。"
-
-POSITION_STABLE_CONFIRM_S = 2.0
-"夹爪位置稳定后的确认等待时长，单位 s。"
-
-POSITION_HARD_TIMEOUT_S = 20.0
-"夹爪位置轮询硬超时，单位 s。"
+# region 路径初始化
 
 
-@dataclass(frozen=True, slots=True)
-class GripperSmokeConfig:
-    """大寰夹爪冒烟测试配置。"""
-
-    host: str = DEFAULT_HOST
-    "基础控制工控机地址。"
-
-    port: int = DEFAULT_PORT
-    "qmlinker 端口。"
-
-    request_timeout_s: float = DEFAULT_REQUEST_TIMEOUT_S
-    "单次远端命令超时时间，单位 s。"
-
-    position_delta: int = DEFAULT_POSITION_DELTA
-    "夹爪位置小幅运动幅度，单位原始位置计数。"
-
-    def target(self) -> str:
-        """返回 qmlinker 连接目标。"""
-
-        return f"{self.host}:{self.port}"
+current_file = Path(__file__).resolve()
+script_dir = current_file.parent
+for parent in current_file.parents:
+    if (parent / "src").is_dir():
+        if str(parent) not in sys.path:
+            sys.path.insert(0, str(parent))
+        break
+if str(script_dir) not in sys.path:
+    sys.path.insert(0, str(script_dir))
 
 
-def _clamp_position(value: int) -> int:
-    """将夹爪位置限制到常见的原始位置区间。"""
-
-    return max(0, min(1000, int(value)))
-
-
-def _wait_for_stable_position(
-    gripper: DahuanGripperClient,
-    target_position: int,
-    *,
-    timeout_s: float,
-) -> int:
-    """轮询夹爪位置，直到读数稳定后再额外确认。"""
-
-    deadline = time.monotonic() + max(float(timeout_s), 0.0, POSITION_HARD_TIMEOUT_S)
-    last_position: int | None = None
-    stable_since: float | None = None
-
-    while True:
-        info = gripper.get_status()
-        if info is None:
-            logger.warning("failed to get gripper status, retrying...")
-            time.sleep(POSITION_POLL_INTERVAL_S)
-            continue
-        current_position = info.position
-        logger.info(
-            "gripper polling position={} speed={} force={} state={}",
-            current_position,
-            info.speed,
-            info.force,
-            info.grip_state,
-        )
-
-        if current_position != last_position:
-            last_position = current_position
-            stable_since = None
-        elif stable_since is None:
-            stable_since = time.monotonic()
-        elif time.monotonic() - stable_since >= POSITION_STABLE_CONFIRM_S:
-            if current_position != int(target_position):
-                raise RuntimeError(
-                    f"gripper position stable at {current_position}, expected {target_position}"
-                )
-            logger.info("gripper position stable, confirm wait -> {}s", POSITION_STABLE_CONFIRM_S)
-            time.sleep(POSITION_STABLE_CONFIRM_S)
-            final_info = gripper.get_gripper_info()
-            if int(final_info.position) != int(target_position):
-                raise RuntimeError(
-                    f"gripper final position mismatch: expected {target_position}, actual {final_info.position}"
-                )
-            return current_position
-
-        if time.monotonic() >= deadline:
-            raise TimeoutError(
-                f"gripper position did not stabilize within {max(float(timeout_s), POSITION_HARD_TIMEOUT_S):.1f}s"
-            )
-        time.sleep(POSITION_POLL_INTERVAL_S)
+from gripper_common import (  # noqa: E402
+    DEFAULT_HOST,
+    DEFAULT_REQUEST_TIMEOUT_S,
+    DEFAULT_TEST_POSITION,
+    DahuanGripperInfo,
+    GripperSmokeConfig,
+    build_gripper_client,
+    choose_test_position,
+    ensure_success,
+    read_status,
+    wait_for_stable_position,
+)
 
 
-def _append_repo_root_to_sys_path() -> None:
-    """允许直接运行 test 下的脚本。"""
-
-    current_file = Path(__file__).resolve()
-    for parent in current_file.parents:
-        if (parent / "src").is_dir():
-            if str(parent) not in sys.path:
-                sys.path.insert(0, str(parent))
-            return
+# endregion
 
 
-_append_repo_root_to_sys_path()
+# region 辅助输出
 
 
-from src.wuji.client_base import WujiQmlinkerBaseClient  # noqa: E402
-from src.wuji.dahuan_gripper_client import DahuanGripperClient  # noqa: E402
-from src.wuji.protocol import WujiQmlinkerConfig  # noqa: E402
+def _print_status(title: str, status: DahuanGripperInfo) -> None:
+    """中文打印夹爪状态。"""
+
+    print("")
+    print(f"========== {title} ==========")
+    print(f"在线状态      : {status.online}")
+    print(f"校准状态      : {status.calibrated}")
+    print(f"使能状态      : {status.enable}")
+    print(f"当前位置      : {status.position}")
+    print(f"夹持状态码    : {status.state}")
+    print("", flush=True)
 
 
-# region 主入口
+# endregion
+
+
+# region 冒烟测试
 
 
 def run_gripper_smoke(config: GripperSmokeConfig) -> None:
-    """按新 qmlinker SDK 读取并控制左手夹爪。
+    """读取并控制左手大寰夹爪。"""
 
-    这次冒烟验证只做夹爪位置的小幅往返运动，避免长时间保持极限状态。
-    """
-
-    base_client = WujiQmlinkerBaseClient(
-        WujiQmlinkerConfig(
-            host=config.host,
-            port=config.port,
-            request_timeout_s=float(config.request_timeout_s),
-        )
-    )
+    base_client, client = build_gripper_client(config.host, config.request_timeout_s)
     try:
-        gripper = DahuanGripperClient(base_client)
+        print("")
+        print("========== 大寰夹爪冒烟测试开始 ==========")
+        print(f"目标主机      : {config.host}")
+        print(f"请求超时      : {config.request_timeout_s} s")
+        print(f"测试位置      : {config.test_position}", flush=True)
 
-        logger.info("gripper smoke ready: target={}", config.target())
-        info = gripper.get_gripper_info()
-        logger.info("gripper online={} calibrated={} enabled={}", info.online, info.calibrated, info.enabled)
-        logger.info("gripper position={} speed={} force={} state={}", info.position, info.speed, info.force, info.grip_state)
+        status = read_status(client)
+        _print_status("初始夹爪状态", status)
+        if not bool(status.online):
+            raise RuntimeError("状态测试失败：夹爪不在线。")
+        logger.info("状态读取测试通过")
 
-        if not bool(info.enabled):
-            logger.info("gripper enable -> True")
-            gripper.set_enable(True)
-            time.sleep(0.2)
+        print("")
+        print("========== 测试夹爪使能 ==========", flush=True)
+        ensure_success(client.set_enable(True), "设置夹爪使能")
+        enabled_status = read_status(client)
+        _print_status("使能后的夹爪状态", enabled_status)
+        if enabled_status.enable is None:
+            logger.info("夹爪使能回读字段不可用，已确认设置调用成功")
+        elif enabled_status.enable:
+            logger.info("夹爪使能测试通过")
+        else:
+            logger.warning("夹爪使能回读仍为 False，继续执行位置测试")
 
-        current_info = gripper.get_gripper_info()
-        current_position = int(current_info.position)
-        delta = abs(int(config.position_delta))
-        if delta <= 0:
-            raise ValueError(f"position_delta 必须是正整数，当前为 {config.position_delta!r}")
+        current_status = read_status(client)
+        current_position = current_status.position
+        target_position = choose_test_position(current_position, config.test_position)
 
-        target_position = _clamp_position(current_position + delta)
-        if target_position == current_position:
-            target_position = _clamp_position(current_position - delta)
-
-        logger.info("gripper position before={} target={}", current_position, target_position)
-        logger.info("gripper speed -> 10")
-        gripper.set_speed(10)
-        logger.info("gripper force -> 10")
-        gripper.set_force(10)
-        logger.info("gripper position -> {}", target_position)
-        gripper.set_pos(target_position)
-        moved_position = _wait_for_stable_position(
-            gripper,
+        print("")
+        print("========== 测试夹爪位置设置 ==========", flush=True)
+        print(f"设置位置：{current_position} -> {target_position}", flush=True)
+        status = read_status(client)
+        _print_status("夹爪状态", status)
+        ensure_success(client.set_pos(target_position), "设置夹爪位置")
+        stable_result = wait_for_stable_position(
+            client,
+            current_position,
             target_position,
-            timeout_s=float(config.request_timeout_s),
+            timeout_s=config.request_timeout_s,
         )
-        logger.info("gripper after move position={}", moved_position)
+        logger.info(
+            "夹爪位置设置测试通过 position={} elapsed_s={:.3f} sample_count={} stable_s={:.3f}",
+            stable_result.final_position,
+            stable_result.elapsed_s,
+            stable_result.sample_count,
+            stable_result.stable_duration_s,
+        )
 
-        if target_position != current_position:
-            logger.info("gripper position restore -> {}", current_position)
-            gripper.set_pos(current_position)
-            restored_position = _wait_for_stable_position(
-                gripper,
-                current_position,
-                timeout_s=float(config.request_timeout_s),
-            )
-            logger.info("gripper restored position={}", restored_position)
-
-        logger.info("gripper calibrate -> {}", gripper.calibrate())
-        logger.success("gripper smoke passed")
+        final_status = read_status(client)
+        _print_status("测试完成时夹爪状态", final_status)
+        logger.success("大寰夹爪冒烟测试通过")
     finally:
         base_client.close()
 
+    print("")
+    print("========== 大寰夹爪冒烟测试结束 ==========", flush=True)
 
-def main(request_timeout_s: float = DEFAULT_REQUEST_TIMEOUT_S, position_delta: int = DEFAULT_POSITION_DELTA) -> None:
+
+def main(
+    host: str = DEFAULT_HOST,
+    request_timeout_s: float = DEFAULT_REQUEST_TIMEOUT_S,
+    test_position: int = DEFAULT_TEST_POSITION,
+) -> None:
     """读取夹爪当前状态并验证基础控制链路。"""
 
-    repo_root = Path(__file__).resolve().parents[2]
-    if str(repo_root) not in sys.path:
-        sys.path.insert(0, str(repo_root))
-    config = GripperSmokeConfig(request_timeout_s=float(request_timeout_s), position_delta=int(position_delta))
+    config = GripperSmokeConfig(
+        host=host,
+        request_timeout_s=request_timeout_s,
+        test_position=test_position,
+    )
     run_gripper_smoke(config)
 
 
@@ -215,20 +144,34 @@ def main(request_timeout_s: float = DEFAULT_REQUEST_TIMEOUT_S, position_delta: i
 # region CLI
 
 
-def _parse_cli() -> tuple[float, int]:
+def _parse_cli() -> tuple[str, float, int]:
     """解析 CLI 覆盖参数。"""
 
-    parser = argparse.ArgumentParser(description="读取并控制无际夹爪")
-    parser.add_argument("--request-timeout-s", type=float, default=DEFAULT_REQUEST_TIMEOUT_S)
-    parser.add_argument("--position-delta", type=int, default=DEFAULT_POSITION_DELTA)
+    parser = argparse.ArgumentParser(description="读取并控制无际左手大寰夹爪")
+    parser.add_argument("--host", type=str, default=DEFAULT_HOST)
+    parser.add_argument(
+        "--request-timeout-s",
+        type=float,
+        default=DEFAULT_REQUEST_TIMEOUT_S,
+    )
+    parser.add_argument("--test-position", type=int, default=DEFAULT_TEST_POSITION)
     args = parser.parse_args()
-    return float(args.request_timeout_s), int(args.position_delta)
+
+    return (
+        str(args.host),
+        float(args.request_timeout_s),
+        int(args.test_position),
+    )
 
 
 if __name__ == "__main__":
     if len(sys.argv) > 1:
-        request_timeout_s, position_delta = _parse_cli()
-        main(request_timeout_s=request_timeout_s, position_delta=position_delta)
+        host, request_timeout_s, test_position = _parse_cli()
+        main(
+            host=host,
+            request_timeout_s=request_timeout_s,
+            test_position=test_position,
+        )
     else:
         main()
 

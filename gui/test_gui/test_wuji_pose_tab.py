@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from gui.test_gui.test_wuji_camera_tab import ImagePreviewLabel
+from gui.test.camera_tab import ImagePreviewLabel
 from gui.util_components.open3d_geometry_utils import create_coordinate_axis_lines
 from gui.wuji.pose_context import WujiPoseExecutionContext, WujiPoseExecutionResult
 from src.wuji.camera_protocol import WujiCameraFrame, WujiCameraIntrinsicsInfo

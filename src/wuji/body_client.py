@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-from typing import Any, cast
+from typing import cast
 
-from google.protobuf import empty_pb2
 from qmlinker import QMLift, QMWaist
-from qmlinker.grpc_py import lift_pb2, waist_pb2
+from src.arm.wuji_arm_protocol import WUJI_BODY_AXIS_LIMITS
 
 from src.wuji.client_base import WujiQmlinkerBaseClient
 
@@ -32,21 +31,43 @@ class WujiBodyClient:
     """
 
     def __init__(self, base_client: WujiQmlinkerBaseClient) -> None:
-        """创建 body 客户端。"""
+        """创建 body 客户端。
+
+        Parameters
+        ----------
+        base_client:
+            qmlinker 基础客户端，负责提供底层 gRPC channel。
+
+        Notes
+        -----
+        本类不拥有 channel 生命周期，关闭连接仍由 `base_client` 调用方负责。
+        """
 
         self._lift = QMLift(base_client.channel)
         self._waist = QMWaist(base_client.channel)
 
     @property
     def lift(self) -> QMLift:
-        """底层升降 SDK 对象，提供更底层的接口访问。"""
+        """返回底层升降 SDK 对象。
+
+        Returns
+        -------
+        QMLift
+            qmlinker 升降执行器对象，暴露 SDK 原始接口。
+        """
 
         return self._lift
+
     @property
     def waist(self) -> QMWaist:
-        """底层腰部 SDK 对象，提供更底层的接口访问。"""
+        """返回底层腰部 SDK 对象。
+
+        Returns
+        -------
+        QMWaist
+            qmlinker 腰部执行器对象，暴露 SDK 原始接口。
+        """
 
         return self._waist
-
 
 # endregion

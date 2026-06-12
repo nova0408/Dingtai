@@ -44,10 +44,10 @@ def main() -> int:
     _setup_qt_plugin_path()
     _setup_loguru_file_sink()
 
-    from gui.test_gui.test_main_view import TestMainView
+    from gui.test.main_window import TestGuiMainWindow
 
     app = QApplication.instance() or QApplication(sys.argv)
-    window = TestMainView()
+    window = TestGuiMainWindow()
     window.resize(1388, 894)
     window.show()
     return int(app.exec())

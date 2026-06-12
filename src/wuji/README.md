@@ -40,7 +40,7 @@
 
 ### 左手夹爪
 
-`GUI / smoke -> DahuanGripperClient -> QMGripper -> 夹爪 RPC`
+`GUI / smoke -> DahuanGripperClient -> Orin-side qmlinker script -> QMGripper -> 夹爪 RPC`
 
 用于：
 
@@ -84,6 +84,41 @@ AGV 当前可稳定完成：
 ### 相机
 
 当前 GUI 使用 ZMQ 相机客户端读取信息与流，不再回退到旧 qmlinker 相机封装。
+
+## 当前存在问题
+
+### 左手夹爪的 `QMGripper` 直连封装不可用
+
+问题现象：
+
+- 冒烟测试与 GUI 早期实现直接把 `DahuanGripperClient` 做成 `QMGripper` 的薄封装时，`get_status()` 会返回 `None`
+- 夹爪控制会报 `Gripper control (type 6) failed: ... UNIMPLEMENTED`
+- 这说明 GUI 侧直连的 `QMGripper` 路径并没有落到可用的 gripper 服务实现上
+
+问题原因：
+
+- 本机侧直接复用 `QMGripper` 的路径，实际上走到了不稳定的夹爪服务暴露面，而不是 Orin 上已验证可用的脚本执行路径
+- `QMGripper` 读写接口和现场夹爪链路的实际语义并不完全一致，尤其是状态读取字段与位置回读行为，容易造成“接口调用成功但位置没动”的假象
+- 早期烟测还把“稳定后必须等于目标值”作为硬条件，但这条夹爪链路的真实表现是“位置会变化并稳定”，不保证最终回读严格等于写入目标
+- 因此，直连封装看起来像是“接口可调用”，但无法证明硬件真的按预期动作
+
+定位结果：
+
+- `grpc_bridge_v2` 本身是启动的，但它依赖的夹爪链路没有稳定提供可用的 `type 6` 状态与控制返回
+- 直接把 `QMGripper` 当作 GUI 侧唯一入口，无法稳定完成状态读取、位置设置和回读确认
+
+解决方式：
+
+- 恢复为显式封装版 `DahuanGripperClient`
+- GUI / smoke 不再直接依赖 `QMGripper` 作为对外接口，而是统一调用 `DahuanGripperClient`
+- `DahuanGripperClient` 通过 Orin SSH 执行远端脚本，在 Orin 侧调用 `create_channel(base_control_ip:gripper_port)` 直连 `50066` 的夹爪服务，再用 `QMGripper` 发送 `set_enable`、`set_speed`、`set_force`、`set_pos` 与 `get_status`
+- 冒烟测试继续保留“发送后轮询当前 position，直到稳定后再额外等待 1 秒确认”的策略
+
+当前结论：
+
+- `QMGripper` 只能作为远端脚本里的协议实现细节使用
+- 项目侧对外必须保留 `DahuanGripperClient` 显式封装，不再把 `QMGripper` 暴露成 GUI 的直接依赖
+- 这次能跑通的关键，不是改成“更宽松地承认接口成功”，而是把控制落回到 Orin 上已验证的链路，并按“位置变化 + 稳定”来判断动作是否真的生效
 
 ## 模块职责
 
