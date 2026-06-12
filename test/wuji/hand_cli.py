@@ -620,7 +620,6 @@ def _axis_mode(hand: WujiRightHandClient, config: HandCliConfig) -> None:
                 logger.exception("单轴控制失败")
                 print(f"单轴控制失败：{error}")
 
-            # 执行完后回到 axis 模式，而不是继续问同一个轴 target。
             break
 
 

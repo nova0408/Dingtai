@@ -14,24 +14,10 @@ WujiHeadAxisName = Literal["head_yaw"]
 @dataclass(frozen=True, slots=True)
 class WujiArmJointLimit:
     """qmlinker 机械臂单关节真实限位。
-
-    职责边界：
-    - 只描述 qmlinker SDK 内置 FK/IK 模型暴露的关节角度限位。
-    - 不负责 GUI 控件创建、运动命令发送或硬件状态刷新。
-
-    设计思想：
-    - 以 qmlinker 中 `fkik.joint_min/joint_max` 的真实值为准，避免 GUI 使用占位范围。
-    - 左右臂分开保存，因为右臂安装与模型限位并不是左臂简单复制。
-
-    生命周期：
-    - 不持有网络连接，可作为配置常量跨线程读取。
-
-    继承关系：
-    - 不继承业务基类，作为机械臂 UI 与协议层共享的数据契约。
     """
 
     name: str
-    "关节名，格式为 `j1` 到 `j6`。"
+    "关节名，从 `j1` 开始递增。"
 
     minimum_deg: float
     "关节最小角度，单位 deg。"
@@ -39,8 +25,6 @@ class WujiArmJointLimit:
     maximum_deg: float
     "关节最大角度，单位 deg。"
 
-    unit: str = "deg"
-    "角度单位，当前固定为 deg。"
 
 
 @dataclass(frozen=True, slots=True)

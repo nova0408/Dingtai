@@ -1,17 +1,32 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
+from dataclasses import dataclass
 from math import atan2, pi, sqrt
-from time import monotonic, sleep
-from typing import Any, Iterator, cast
+from typing import Any, cast
 
 import numpy as np
 from qmlinker import QMArm
 from qmlinker.grpc_py import arm_pb2
 
-from src.arm.wuji_arm_protocol import ArmDeviceName, WujiArmJointLimit
-from src.wuji.client_base import WujiQmlinkerBaseClient
+from src.arm.wuji_arm_protocol import ArmDeviceName
 
+# region 数据结构
+@dataclass(frozen=True, slots=True)
+class WujiArmJointLimit:
+    """qmlinker 机械臂单关节真实限位。
+    """
+
+    name: str
+    "关节名，从 `j1` 开始递增。"
+
+    minimum_deg: float
+    "关节最小角度，单位 deg。"
+
+    maximum_deg: float
+    "关节最大角度，单位 deg。"
+    
+# endregion
 
 # region 机械臂客户端
 
@@ -31,7 +46,7 @@ class WujiArmClient(QMArm):
     - 只保存必要的 base 引用，用于读取统一超时和默认速度比例。
 
     生命周期：
-    - 随 `WujiQmlinkerBaseClient` 的 channel 生命周期创建和关闭。
+    - 依赖外部传入的 qmlinker channel 生命周期创建和关闭。
     - 不额外持有线程或后台任务，可跨调用复用。
 
     继承关系：
@@ -40,29 +55,31 @@ class WujiArmClient(QMArm):
 
     # region 初始化
 
-    def __init__(self, base_client: WujiQmlinkerBaseClient, device_name: ArmDeviceName) -> None:
+    def __init__(self, channel: Any, device_name: ArmDeviceName, default_speed_ratio: float = 0.3) -> None:
         """创建机械臂客户端。
 
         Parameters
         ----------
-        base_client:
-            提供 `qmlinker` channel 和统一配置的基础客户端。
+        channel:
+            qmlinker `create_channel()` 返回的基础 channel 或 channel dict。
         device_name:
             机械臂设备名，当前仅支持 `left_arm` 和 `right_arm`。
+        default_speed_ratio:
+            下发关节命令时使用的默认速度比例。
         """
 
         super().__init__(
-            base_client.channel,
-            cast(str, QMArm.ARM_LEFT if device_name == "left_arm" else QMArm.ARM_RIGHT),
+            channel,
+            arm_type=cast(str, QMArm.ARM_LEFT if device_name == "left_arm" else QMArm.ARM_RIGHT),
         )
-        self._base = base_client
+        self._default_speed_ratio = float(default_speed_ratio)
         self._device_name = device_name
 
     # endregion
 
     # region 关节状态读取
 
-    def get_arm_joint_count(self, device_name: ArmDeviceName) -> int:
+    def get_arm_joint_count(self) -> int:
         """返回机械臂关节数。
 
         Parameters
@@ -78,7 +95,7 @@ class WujiArmClient(QMArm):
 
         return len(self._read_joint_states())
 
-    def get_joint_states(self, device_name: ArmDeviceName) -> tuple[Any, ...]:
+    def get_joint_states(self) -> tuple[Any, ...]:
         """返回当前关节状态。
 
         Parameters
@@ -108,7 +125,7 @@ class WujiArmClient(QMArm):
 
     # region 关节控制
 
-    def set_joint(self, device_name: ArmDeviceName, joint_index: int, target_angle_deg: float) -> bool:
+    def set_joint(self, joint_index: int, target_angle_deg: float) -> bool:
         """设置单个关节目标角度。
 
         Parameters
@@ -167,7 +184,7 @@ class WujiArmClient(QMArm):
                     "target_angle_deg": float(target_angle_deg)
                     if current_joint_id == target_joint_id
                     else float(getattr(joint, "angle_deg", 0.0)),
-                    "speed_ratio": float(self._base.config.default_speed_ratio),
+                    "speed_ratio": float(self._default_speed_ratio),
                 }
             )
 
@@ -219,7 +236,7 @@ class WujiArmClient(QMArm):
 
     # region 运动学计算
 
-    def current_fk_fast(self, device_name: ArmDeviceName) -> Any:
+    def current_fk_fast(self) -> Any:
         """基于当前关节角快速计算正运动学。
 
         Parameters
@@ -256,7 +273,7 @@ class WujiArmClient(QMArm):
         joint_angles_rad = [float(np.deg2rad(joint.angle_deg)) for joint in joint_states]
         return self.fkik.fk_fast(joint_angles_rad)
 
-    def current_fk_xyzrpy(self, device_name: ArmDeviceName) -> tuple[float, float, float, float, float, float]:
+    def current_fk_xyzrpy(self) -> tuple[float, float, float, float, float, float]:
         """基于当前关节角计算末端 xyzrpy。
 
         Parameters
@@ -277,7 +294,7 @@ class WujiArmClient(QMArm):
             - `roll_deg` / `pitch_deg` / `yaw_deg` 单位为 deg；
             - RPY 使用 ZYX 欧拉角约定；
             - 对应旋转矩阵关系为
-              `R = Rz(yaw) @ Ry(pitch) @ Rx(roll)`。
+                `R = Rz(yaw) @ Ry(pitch) @ Rx(roll)`。
 
         Raises
         ------
@@ -289,8 +306,8 @@ class WujiArmClient(QMArm):
         该方法是 `current_fk_fast()` 的便捷封装，不改变底层 FK 的计算逻辑。
         """
 
-        transform = self.current_fk_fast(device_name)
-        return self._pose_matrix_to_xyzrpy_deg(transform)
+        se3 = self.current_fk_fast()
+        return self._pose_matrix_to_xyzrpy_deg(se3)
 
     def fk(self, joint_angles_rad: Iterable[float]) -> Any:
         """计算机械臂正运动学。
@@ -354,7 +371,7 @@ class WujiArmClient(QMArm):
 
     # region 关节限位
 
-    def get_arm_joint_limits(self, device_name: ArmDeviceName) -> tuple[WujiArmJointLimit, ...]:
+    def get_arm_joint_limits(self) -> tuple[WujiArmJointLimit, ...]:
         """返回机械臂关节限位。
 
         Parameters
@@ -492,12 +509,12 @@ class WujiArmClient(QMArm):
             {
                 "joint_id": start_joint_id + index,
                 "target_angle_deg": float(angle_deg),
-                "speed_ratio": float(self._base.config.default_speed_ratio),
+                "speed_ratio": float(self._default_speed_ratio),
             }
             for index, angle_deg in enumerate(joint_angles_deg)
         ]
 
-    def _pose_matrix_to_xyzrpy_deg(self, transform: Any) -> tuple[float, float, float, float, float, float]:
+    def _pose_matrix_to_xyzrpy_deg(self, se3: Any) -> tuple[float, float, float, float, float, float]:
         """将 4x4 齐次变换矩阵转换为 xyzrpy。
 
         Parameters
@@ -548,7 +565,7 @@ class WujiArmClient(QMArm):
         不再唯一。这里采用固定 `roll=0` 的稳定输出策略。
         """
 
-        matrix = np.asarray(transform, dtype=float)
+        matrix = np.asarray(se3, dtype=float)
 
         if matrix.shape != (4, 4):
             raise RuntimeError(f"FK 位姿矩阵尺寸异常：shape={matrix.shape}")

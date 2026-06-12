@@ -5,6 +5,11 @@ from threading import Event, Thread
 from PySide6.QtCore import QObject, Signal
 
 from src.wuji.camera_protocol import WujiCameraEnableState, WujiCameraName, WujiCameraRuntimeInfo, parse_wuji_camera_name
+from src.wuji.zmq_camera_catalog import (
+    SUPPORTED_WUJI_ZMQ_CAMERAS_LOCAL,
+    WujiZmqCameraStatus,
+    list_wuji_zmq_camera_runtime_infos,
+)
 from src.wuji.zmq_camera_client import WujiZmqCameraClient
 
 
@@ -34,7 +39,11 @@ class CameraBridge(QObject):
         if client is None:
             return
         try:
-            runtime_infos: tuple[WujiCameraRuntimeInfo, ...] = client.list_camera_runtime_infos(online_only=False)
+            runtime_infos: tuple[WujiCameraRuntimeInfo, ...] = list_wuji_zmq_camera_runtime_infos(
+                client,
+                online_only=False,
+                supported_endpoints=SUPPORTED_WUJI_ZMQ_CAMERAS_LOCAL,
+            )
             self.inventoryReady.emit(runtime_infos)
         except Exception as exc:  # noqa: BLE001
             self.errorRaised.emit(f"相机清单刷新失败: {exc}")
@@ -48,7 +57,7 @@ class CameraBridge(QObject):
             self.errorRaised.emit(f"未知相机名: {camera_name}")
             return
         try:
-            self.enableStateReady.emit(client.get_camera_enable_state(typed_name))
+            self.enableStateReady.emit(self._to_enable_state(client.get_camera_status(typed_name)))
             self.intrinsicsReady.emit(client.get_camera_intrinsics(typed_name))
         except Exception as exc:  # noqa: BLE001
             self.errorRaised.emit(f"相机状态刷新失败: {exc}")
@@ -62,7 +71,8 @@ class CameraBridge(QObject):
             self.errorRaised.emit(f"未知相机名: {camera_name}")
             return
         try:
-            state: WujiCameraEnableState = client.set_camera_color_enabled(typed_name, enabled)
+            status = client.set_camera_color_enabled(typed_name, enabled)
+            state: WujiCameraEnableState = self._to_enable_state(status)
             self.enableStateReady.emit(state)
         except Exception as exc:  # noqa: BLE001
             self.errorRaised.emit(f"相机使能切换失败: {exc}")
@@ -107,3 +117,16 @@ class CameraBridge(QObject):
     @staticmethod
     def _parse_camera_name(camera_name: str) -> WujiCameraName | None:
         return parse_wuji_camera_name(camera_name)
+
+    @staticmethod
+    def _to_enable_state(status: WujiZmqCameraStatus) -> WujiCameraEnableState:
+        return WujiCameraEnableState(
+            camera_name=status.camera_name,
+            enabled=bool(status.color_enabled),
+            api_available=True,
+            message=(
+                f"online={bool(status.online)}, "
+                f"color_enabled={bool(status.color_enabled)}, "
+                f"depth_enabled={bool(status.depth_enabled)}"
+            ),
+        )

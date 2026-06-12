@@ -3,7 +3,7 @@ from __future__ import annotations
 from PySide6.QtCore import QTimer, Slot
 from PySide6.QtWidgets import QGroupBox, QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
-from gui.test.common import ActivatableTab, AxisControlConfig, AxisControlRow, HoldRepeatController
+from gui.test.common import ActivatableTab, AxisControlConfig, AxisControlRow, BackgroundCall, HoldRepeatController
 from gui.util_components.casia_indicator_light import CasiaIndicatorLight
 from src.arm.wuji_arm_protocol import WUJI_HEAD_AXIS_LIMITS
 from src.wuji.head_client import WujiHeadClient
@@ -19,6 +19,7 @@ class HeadTabWidget(QWidget, ActivatableTab):
         self._client: WujiHeadClient |None= None
         self._active = False
         self._refresh_timer = QTimer(self)
+        self._refresh_call = BackgroundCall(self)
         self._yaw_repeat = HoldRepeatController(self)
         self._pitch_repeat = HoldRepeatController(self)
 
@@ -30,11 +31,12 @@ class HeadTabWidget(QWidget, ActivatableTab):
         self._setup_timer()
         self._setup_ui()
         self._connect_signals()
+        self._connect_background_signals()
         self.set_connection_ready(False)
 
     def _setup_timer(self) -> None:
         self._refresh_timer.setInterval(100)
-        self._refresh_timer.timeout.connect(self._refresh_state)
+        self._refresh_timer.timeout.connect(self._request_refresh)
 
     def _setup_ui(self) -> None:
         self.enable_indicator = self._build_enable_indicator()
@@ -101,6 +103,10 @@ class HeadTabWidget(QWidget, ActivatableTab):
         self.pitch_row.setRequested.connect(self._on_axis_target_requested)
         self.pitch_row.nudgeRequested.connect(self._on_axis_target_requested)
 
+    def _connect_background_signals(self) -> None:
+        self._refresh_call.succeeded.connect(self._on_refresh_succeeded)
+        self._refresh_call.failed.connect(self._on_refresh_failed)
+
     # endregion
 
     # region 生命周期
@@ -119,9 +125,8 @@ class HeadTabWidget(QWidget, ActivatableTab):
         if self._client is None:
             self.info_label.setText("head 未连接")
             return
-        self._try_enable_on_activate()
         self._refresh_timer.start()
-        self._refresh_state()
+        self._request_refresh()
 
     def set_connection_ready(self, ready: bool) -> None:
         self.enable_indicator.setEnabled(ready)
@@ -139,24 +144,13 @@ class HeadTabWidget(QWidget, ActivatableTab):
     def _try_enable_on_activate(self) -> None:
         if not self._client:
             return
-        try:
-            if not self._client.get_enable():
-                self._client.set_enable(True)
-            self.enable_indicator.set_status(self._client.get_enable())
-            self.info_label.setText(f"head enable={self._client.get_enable()}")
-        except Exception as exc:  # noqa: BLE001
-            self.info_label.setText(f"head enable 失败: {exc}")
+        self._refresh_call.start(self._ensure_enable)
 
     @Slot()
     def _on_enable_clicked(self) -> None:
         if not self._client:
             return
-        try:
-            current_enabled = self._client.get_enable()
-            self._client.set_enable(not current_enabled)
-            self._refresh_state()
-        except Exception as exc:  # noqa: BLE001
-            self.info_label.setText(f"head 使能切换失败: {exc}")
+        self._refresh_call.start(self._toggle_enable)
 
     # endregion
 
@@ -165,16 +159,55 @@ class HeadTabWidget(QWidget, ActivatableTab):
     def _refresh_state(self) -> None:
         if not self._client:
             return
-        try:
-            enabled = self._client.get_enable()
-            yaw_value = float(self._client.get_head_yaw())
-            pitch_value = float(self._client.get_head_pitch())
-            self.enable_indicator.set_status(enabled)
-            self.yaw_row.set_current_value(yaw_value, suffix="deg")
-            self.pitch_row.set_current_value(pitch_value, suffix="deg")
-            self.info_label.setText(f"head enable={enabled} yaw={yaw_value:.1f} pitch={pitch_value:.1f}")
-        except Exception as exc:  # noqa: BLE001
-            self.info_label.setText(f"head 刷新失败: {exc}")
+        self._refresh_call.start(self._read_state)
+
+    def _request_refresh(self) -> None:
+        if self._client is None:
+            return
+        self._refresh_call.start(self._read_state)
+
+    def _read_state(self) -> tuple[bool, float, float]:
+        if self._client is None:
+            raise RuntimeError("head 未连接")
+        return bool(self._client.get_enable()), self._as_float(self._client.get_head_yaw()), self._as_float(
+            self._client.get_head_pitch()
+        )
+
+    @Slot(object)
+    def _on_refresh_succeeded(self, payload: object) -> None:
+        if not isinstance(payload, tuple) or len(payload) != 3:
+            return
+        enabled, yaw_value, pitch_value = payload
+        if not isinstance(enabled, bool):
+            return
+        yaw_number = self._as_float(yaw_value)
+        pitch_number = self._as_float(pitch_value)
+        self.enable_indicator.set_status(enabled)
+        self.yaw_row.set_current_value(yaw_number, suffix="deg")
+        self.pitch_row.set_current_value(pitch_number, suffix="deg")
+        self.info_label.setText(f"head enable={enabled} yaw={yaw_number:.1f} pitch={pitch_number:.1f}")
+
+    @Slot(str)
+    def _on_refresh_failed(self, message: str) -> None:
+        self.info_label.setText(f"head 刷新失败: {message}")
+
+    def _ensure_enable(self) -> None:
+        if self._client is None:
+            return
+        if not self._client.get_enable():
+            self._client.set_enable(True)
+
+    def _toggle_enable(self) -> None:
+        if self._client is None:
+            return
+        current_enabled = self._client.get_enable()
+        self._client.set_enable(not current_enabled)
+
+    @staticmethod
+    def _as_float(value: object) -> float:
+        if isinstance(value, (int, float)):
+            return float(value)
+        return 0.0
 
     # endregion
 
@@ -194,4 +227,3 @@ class HeadTabWidget(QWidget, ActivatableTab):
             self.info_label.setText(f"{axis_key} 设置失败: {exc}")
 
     # endregion
-

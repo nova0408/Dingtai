@@ -11,12 +11,13 @@ from loguru import logger
 
 from orin.grasp_pose_pipeline.protocol import GraspPosePipelineRequest
 from orin.grasp_pose_pipeline.transport import GraspPosePipelineRpcClient, ZmqSocketOptions
-from src.wuji.protocol import load_wuji_robot_network_config
-from src.wuji.zmq_camera_client import WujiZmqCameraClient, WujiZmqCameraConfig
 from src.wuji.camera_protocol import WujiCameraFrame, WujiCameraIntrinsicsInfo, WujiCameraName
+from src.wuji.zmq_camera_catalog import SUPPORTED_WUJI_ZMQ_CAMERAS_LOCAL
+from src.wuji.zmq_camera_client import WujiZmqCameraClient
 
 # region 模块常量
 LEFT_CAMERA_NAME = "left_hand_camera"
+DEFAULT_WUJI_CAMERA_HOST = "192.168.100.60"
 DEFAULT_RPC_TIMEOUT_MS = 60_000
 DEFAULT_ORIN_PIPELINE_SERVICE_PORT = 6220
 # endregion
@@ -86,9 +87,8 @@ class WujiPoseExecutionContext:
         camera_stream_port: int = 5562,
         camera_id: WujiCameraName = "left_hand_camera",
     ) -> None:
-        network = load_wuji_robot_network_config()
         self._service_addr = str(service_addr)
-        self._camera_host = str(network.base_control_ip if camera_host is None else camera_host)
+        self._camera_host = str(DEFAULT_WUJI_CAMERA_HOST if camera_host is None else camera_host)
         self._camera_control_port = int(camera_control_port)
         self._camera_stream_port = int(camera_stream_port)
         self._camera_id: WujiCameraName = camera_id
@@ -249,11 +249,11 @@ class WujiPoseExecutionContext:
         """主动抓取一帧 RGBD 数据，并构造一次 RPC 请求包。"""
 
         client = WujiZmqCameraClient(
-            WujiZmqCameraConfig(
-                host=self._camera_host,
-                request_timeout_ms=3000,
-                stream_timeout_ms=8000,
-            )
+            host=self._camera_host,
+            control_port=self._camera_control_port,
+            request_timeout_ms=3000,
+            stream_timeout_ms=8000,
+            camera_endpoints=SUPPORTED_WUJI_ZMQ_CAMERAS_LOCAL,
         )
         try:
             intrinsics = client.get_camera_intrinsics(self._camera_id)
@@ -354,11 +354,11 @@ class WujiPoseExecutionContext:
         """持续读取相机流，并按节拍把最新帧投递给后台 RPC 线程。"""
 
         client = WujiZmqCameraClient(
-            WujiZmqCameraConfig(
-                host=self._camera_host,
-                request_timeout_ms=3000,
-                stream_timeout_ms=8000,
-            )
+            host=self._camera_host,
+            control_port=self._camera_control_port,
+            request_timeout_ms=3000,
+            stream_timeout_ms=8000,
+            camera_endpoints=SUPPORTED_WUJI_ZMQ_CAMERAS_LOCAL,
         )
         try:
             intrinsics = self._to_gui_intrinsics(client.get_camera_intrinsics(self._camera_id))

@@ -1,11 +1,6 @@
 from __future__ import annotations
 
-from google.protobuf import empty_pb2
 from qmlinker import QMHead
-from qmlinker.grpc_py import head_pb2
-
-from src.wuji.client_base import WujiQmlinkerBaseClient
-
 
 # region head 客户端
 
@@ -22,17 +17,17 @@ class WujiHeadClient(QMHead):
     - 只保留必要的统一超时控制和项目语义方法名。
 
     生命周期：
-    - 依赖基础客户端的 channel。
+    - 依赖外部传入的 qmlinker channel。
     - 不额外持有后台资源。
 
     继承关系：
     - 直接继承 `QMHead`。
     """
 
-    def __init__(self, base_client: WujiQmlinkerBaseClient) -> None:
+    def __init__(self, channel: object) -> None:
         """创建头部客户端。"""
 
-        super().__init__(base_client.channel)
+        super().__init__(channel)
 
 
 # endregion

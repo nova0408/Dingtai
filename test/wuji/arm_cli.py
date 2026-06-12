@@ -213,24 +213,6 @@ def main() -> None:
                 logger.info("关闭使能结果：实际={}，返回={}", actual_enable, set_result)
                 continue
 
-            # -----------------------------------------------------------------
-            # joint 模式：
-            # 进入后停留在 joint 模式。
-            #
-            # 输入流程：
-            #   1. 每轮先显示最新 6 个 axis 当前角度；
-            #   2. 输入 axis index；
-            #   3. 再次读取最新角度，并显示该 axis 当前值；
-            #   4. 输入真实目标角度 deg；
-            #   5. 调用 arm_client.set_joint(...) 执行单轴控制；
-            #   6. 下发后轮询状态，直到关节角稳定或 1 秒超时；
-            #   7. 再输出目标、实际、误差。
-            #
-            # 注意：
-            #   CLI 中 axis_index 是 0 开始；
-            #   WujiArmClient.set_joint() 的 joint_index 是 1 开始；
-            #   所以调用 set_joint 时传 axis_index + 1。
-            # -----------------------------------------------------------------
             if mode == "joint":
                 while True:
                     current_angles = _read_angles(arm_client, arm_name)
@@ -354,28 +336,6 @@ def main() -> None:
 
                 continue
 
-            # -----------------------------------------------------------------
-            # fk 模式：
-            # 这里保留模式名 fk，但实际是 xyzrpy 末端位姿控制。
-            #
-            # 输入流程：
-            #   1. 每轮先读取并显示最新关节角；
-            #   2. 每轮先读取并显示最新 FK 正解 xyzrpy；
-            #   3. 输入 x y z roll pitch yaw；
-            #   4. 输入后重新读取最新关节角作为 IK 参考值；
-            #   5. xyzrpy -> 4x4 位姿矩阵；
-            #   6. IK 求解目标关节角；
-            #   7. set_joints 下发；
-            #   8. 下发后轮询状态，直到关节角稳定或 1 秒超时；
-            #   9. 执行后重新读取最新 FK 做对比。
-            #
-            # 单位：
-            #   x / y / z 使用 m；
-            #   roll / pitch / yaw 使用 deg。
-            #
-            # RPY 约定：
-            #   R = Rz(yaw) @ Ry(pitch) @ Rx(roll)
-            # -----------------------------------------------------------------
             if mode == "fk":
                 while True:
                     current_angles = _read_angles(arm_client, arm_name)
@@ -439,8 +399,6 @@ def main() -> None:
                         logger.warning("输入格式错误：x y z roll pitch yaw 都必须是数字")
                         continue
 
-                    # 用户输入完成后，再重新读取一次最新关节角。
-                    # 这组角度用于 IK 参考值，不能直接使用输入前显示用的 current_angles。
                     latest_angles = _read_angles(arm_client, arm_name)
 
                     if latest_angles is None:
@@ -517,8 +475,6 @@ def main() -> None:
                         )
                     )
 
-                    # 角度误差 wrap 到 [-180, 180]。
-                    # 避免 179 deg 和 -181 deg 这种等价角被误判为 360 deg。
                     roll_error = abs((actual_roll - target_roll_deg + 180.0) % 360.0 - 180.0)
                     pitch_error = abs((actual_pitch - target_pitch_deg + 180.0) % 360.0 - 180.0)
                     yaw_error = abs((actual_yaw - target_yaw_deg + 180.0) % 360.0 - 180.0)

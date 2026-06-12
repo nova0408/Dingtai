@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import time
+from typing import Any, cast
 
 import numpy as np
 from PySide6.QtCore import QTimer, Slot
@@ -16,7 +17,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from gui.test.common import ActivatableTab, HoldRepeatController, gui_pose_to_matrix_m
+from gui.test.common import ActivatableTab, BackgroundCall, HoldRepeatController, gui_pose_to_matrix_m
 from gui.util_components.casia_indicator_light import CasiaIndicatorLight
 from src.arm.wuji_arm_protocol import ArmDeviceName, WUJI_ARM_JOINT_LIMITS_DEG
 from src.wuji.arm_client import WujiArmClient
@@ -45,6 +46,7 @@ class ArmTabWidget(QWidget, ActivatableTab):
         self._client: WujiArmClient | None = None
         self._active = False
         self._refresh_timer = QTimer(self)
+        self._refresh_call = BackgroundCall(self)
         self._joint_widgets: list[ArmJointWidgets] = []
         self._joint_current_values: list[float | None] = [None] * 6
         self._pose_current_labels: dict[str, QLabel] = {}
@@ -60,11 +62,12 @@ class ArmTabWidget(QWidget, ActivatableTab):
         self._setup_timer()
         self._setup_ui()
         self._connect_signals()
+        self._connect_background_signals()
         self.set_connection_ready(False)
 
     def _setup_timer(self) -> None:
         self._refresh_timer.setInterval(100)
-        self._refresh_timer.timeout.connect(self._refresh_state)
+        self._refresh_timer.timeout.connect(self._request_refresh)
 
     def _setup_ui(self) -> None:
         self.enable_indicator = CasiaIndicatorLight(
@@ -175,6 +178,10 @@ class ArmTabWidget(QWidget, ActivatableTab):
         self.enable_indicator.clicked.connect(self._on_enable_clicked)
         self.apply_button.clicked.connect(self._apply_pose_target)
 
+    def _connect_background_signals(self) -> None:
+        self._refresh_call.succeeded.connect(self._on_refresh_succeeded)
+        self._refresh_call.failed.connect(self._on_refresh_failed)
+
     # endregion
 
     # region 生命周期
@@ -198,7 +205,7 @@ class ArmTabWidget(QWidget, ActivatableTab):
             return
         self._try_enable()
         self._refresh_timer.start()
-        self._refresh_state()
+        self._request_refresh()
 
     def set_connection_ready(self, ready: bool) -> None:
         enabled = bool(ready)
@@ -222,23 +229,13 @@ class ArmTabWidget(QWidget, ActivatableTab):
     def _try_enable(self) -> None:
         if self._client is None:
             return
-        try:
-            if not self._client.get_enable():
-                self._client.set_enable(True)
-            self.enable_indicator.set_status(bool(self._client.get_enable()))
-        except Exception as exc:  # noqa: BLE001
-            self.info_label.setText(f"{self.title} 使能失败: {exc}")
+        self._refresh_call.start(self._ensure_enable)
 
     @Slot()
     def _on_enable_clicked(self) -> None:
         if self._client is None:
             return
-        try:
-            current_enabled = bool(self._client.get_enable())
-            self._client.set_enable(not current_enabled)
-            self._refresh_state()
-        except Exception as exc:  # noqa: BLE001
-            self.info_label.setText(f"{self.title} 切换使能失败: {exc}")
+        self._refresh_call.start(self._toggle_enable)
 
     # endregion
 
@@ -247,28 +244,60 @@ class ArmTabWidget(QWidget, ActivatableTab):
     def _refresh_state(self) -> None:
         if self._client is None:
             return
-        try:
-            enabled = bool(self._client.get_enable())
-            joint_states = tuple(self._client.get_joint_states(self.device_name))
-            timestamp_ms = self._read_joint_timestamp_ms()
-            self.enable_indicator.set_status(enabled)
-            if len(joint_states) != 6:
-                self._handle_missing_joint_state(joint_count=len(joint_states))
-                return
+        self._request_refresh()
 
-            current_angles_deg = [float(joint.angle_deg) for joint in joint_states]
-            if self._is_new_joint_state(tuple(current_angles_deg), timestamp_ms):
-                self._last_joint_state_received_monotonic_s = time.monotonic()
+    def _request_refresh(self) -> None:
+        if self._client is None:
+            return
+        self._refresh_call.start(self._read_state)
 
-            self._joint_current_values = list(current_angles_deg)
-            for index, angle_deg in enumerate(current_angles_deg):
-                self._joint_widgets[index].current_label.setText(f"{angle_deg:.1f} deg")
+    def _read_state(self) -> tuple[bool, tuple[float, ...], tuple[float, ...], int]:
+        if self._client is None:
+            raise RuntimeError(f"{self.title} 未连接")
+        enabled = bool(self._client.get_enable())
+        joint_states = tuple(self._client.get_joint_states())
+        timestamp_ms = self._read_joint_timestamp_ms()
+        if len(joint_states) != 6:
+            raise RuntimeError(f"joint_count={len(joint_states)}")
+        current_angles_deg = tuple(float(joint.angle_deg) for joint in joint_states)
+        pose_values = tuple(float(value) for value in self._client.current_fk_xyzrpy())
+        return enabled, current_angles_deg, pose_values, timestamp_ms
 
-            pose_values = tuple(float(value) for value in self._client.current_fk_xyzrpy(self.device_name))
-            self._update_pose_labels(pose_values)
-            self.info_label.setText(f"{self.title} enable={enabled} ts={timestamp_ms}")
-        except Exception as exc:  # noqa: BLE001
-            self.info_label.setText(f"{self.title} 刷新失败: {exc}")
+    @Slot(object)
+    def _on_refresh_succeeded(self, payload: object) -> None:
+        if not isinstance(payload, tuple) or len(payload) != 4:
+            return
+        enabled, current_angles_deg, pose_values, timestamp_ms = payload
+        if not isinstance(enabled, bool):
+            return
+        if not isinstance(current_angles_deg, tuple) or not isinstance(pose_values, tuple):
+            return
+        self.enable_indicator.set_status(enabled)
+        if self._is_new_joint_state(tuple(float(value) for value in current_angles_deg), int(timestamp_ms)):
+            self._last_joint_state_received_monotonic_s = time.monotonic()
+        self._joint_current_values = [float(value) for value in current_angles_deg]
+        for index, angle_deg in enumerate(current_angles_deg):
+            self._joint_widgets[index].current_label.setText(f"{float(angle_deg):.1f} deg")
+        self._update_pose_labels(tuple(float(value) for value in pose_values))
+        self.info_label.setText(f"{self.title} enable={enabled} ts={int(timestamp_ms)}")
+
+    @Slot(str)
+    def _on_refresh_failed(self, message: str) -> None:
+        self.info_label.setText(f"{self.title} 刷新失败: {message}")
+
+    def _ensure_enable(self) -> bool:
+        if self._client is None:
+            raise RuntimeError(f"{self.title} 未连接")
+        if not self._client.get_enable():
+            self._client.set_enable(True)
+        return bool(self._client.get_enable())
+
+    def _toggle_enable(self) -> bool:
+        if self._client is None:
+            raise RuntimeError(f"{self.title} 未连接")
+        current_enabled = bool(self._client.get_enable())
+        self._client.set_enable(not current_enabled)
+        return bool(self._client.get_enable())
 
     def _show_stale_state(self, reason: str) -> None:
         self._joint_current_values = [None] * 6
@@ -322,41 +351,39 @@ class ArmTabWidget(QWidget, ActivatableTab):
     def _send_joint_target(self, joint_index: int, target_angle_deg: float) -> None:
         if self._client is None:
             return
-        try:
-            self._client.set_joint(self.device_name, joint_index + 1, float(target_angle_deg))
-            self._refresh_state()
-        except Exception as exc:  # noqa: BLE001
-            self.info_label.setText(f"J{joint_index + 1} 设置失败: {exc}")
+        self._refresh_call.start(lambda: self._send_joint_target_async(joint_index, target_angle_deg))
 
     @Slot()
     def _apply_pose_target(self) -> None:
         if self._client is None:
             return
-        try:
-            reference_angles_deg = self._require_current_joint_values()
-            pose_values = tuple(
-                float(self._pose_input_boxes[name].value()) for name in ("x", "y", "z", "r", "p", "yaw")
-            )
-            pose_matrix = gui_pose_to_matrix_m(pose_values)
-            ik_solution_rad = self._client.ik(
-                pose_matrix,
-                [float(np.deg2rad(value)) for value in reference_angles_deg],
-            )
-            raw_target_deg = [float(np.rad2deg(value)) for value in ik_solution_rad]
-            aligned_target_deg = self._align_ik_solution(raw_target_deg, reference_angles_deg)
-            self._client.set_joints(aligned_target_deg)
-            self.info_label.setText(
-                f"{self.title} IK 已发送: "
-                + ", ".join(f"J{index + 1}={value:.1f}" for index, value in enumerate(aligned_target_deg))
-            )
-            self._refresh_state()
-        except Exception as exc:  # noqa: BLE001
-            self.info_label.setText(f"{self.title} IK 失败: {exc}")
+        self._refresh_call.start(self._apply_pose_target_async)
 
     def _require_current_joint_values(self) -> list[float]:
         if any(value is None for value in self._joint_current_values):
             raise RuntimeError("当前 joint state 不可用，拒绝执行 IK")
         return [float(value) for value in self._joint_current_values if value is not None]
+
+    def _send_joint_target_async(self, joint_index: int, target_angle_deg: float) -> tuple[bool, tuple[float, ...], tuple[float, ...], int]:
+        if self._client is None:
+            raise RuntimeError(f"{self.title} 未连接")
+        self._client.set_joint(joint_index + 1, float(target_angle_deg))
+        return self._read_state()
+
+    def _apply_pose_target_async(self) -> tuple[bool, tuple[float, ...], tuple[float, ...], int]:
+        if self._client is None:
+            raise RuntimeError(f"{self.title} 未连接")
+        reference_angles_deg = self._require_current_joint_values()
+        pose_values = tuple(float(self._pose_input_boxes[name].value()) for name in ("x", "y", "z", "r", "p", "yaw"))
+        pose_matrix = gui_pose_to_matrix_m(pose_values)
+        ik_solution_rad = self._client.ik(
+            pose_matrix,
+            [float(np.deg2rad(value)) for value in reference_angles_deg],
+        )
+        raw_target_deg = [float(np.rad2deg(value)) for value in ik_solution_rad]
+        aligned_target_deg = self._align_ik_solution(raw_target_deg, reference_angles_deg)
+        self._client.set_joints(aligned_target_deg)
+        return self._read_state()
 
     def _align_ik_solution(self, raw_target_deg: list[float], current_angles_deg: list[float]) -> list[float]:
         aligned: list[float] = []
@@ -381,7 +408,8 @@ class ArmTabWidget(QWidget, ActivatableTab):
         if self._client is None:
             return 0
         try:
-            timestamp_ms = int(self._client.thread_joint_states.joint_states_timestamp_ms)
+            client = cast(Any, self._client)
+            timestamp_ms = int(client.thread_joint_states.joint_states_timestamp_ms)
             return timestamp_ms
         except Exception:
             return 0

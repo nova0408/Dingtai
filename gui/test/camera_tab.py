@@ -94,6 +94,9 @@ class WujiCameraTabWidget(QWidget):
 
         self._build_layout()
         self._connect_signals()
+        self.rgb_button.setEnabled(False)
+        self.rgbd_button.setEnabled(False)
+        self.enable_indicator.setEnabled(False)
 
     def activate_default_camera(self) -> None:
         """首次打开 tab 时请求远端在线相机清单。"""
@@ -101,7 +104,9 @@ class WujiCameraTabWidget(QWidget):
         if not self._activated_once:
             self._activated_once = True
         if self._current_camera_name:
+            self.clear_images()
             self.cameraSelected.emit(self._current_camera_name)
+            self.rgbdStreamRequested.emit(self._current_camera_name)
 
     def set_current_camera(self, camera_name: str) -> None:
         """更新下拉框当前相机。"""
@@ -150,7 +155,7 @@ class WujiCameraTabWidget(QWidget):
         if state.camera_name != self._current_camera_name:
             return
         self.enable_indicator.set_status(state.enabled)
-        self.enable_indicator.setEnabled(state.api_available)
+        self.enable_indicator.setEnabled(False)
         if state.api_available:
             self.enable_status_label.setText("使能接口: 可用")
         else:
@@ -220,9 +225,6 @@ class WujiCameraTabWidget(QWidget):
 
     def _connect_signals(self) -> None:
         self.camera_combo.currentIndexChanged.connect(self._on_camera_combo_current_index_changed)
-        self.enable_indicator.clicked.connect(self._on_enable_indicator_clicked)
-        self.rgb_button.clicked.connect(self._on_rgb_button_clicked)
-        self.rgbd_button.clicked.connect(self._on_rgbd_button_clicked)
 
     @Slot(int)
     def _on_camera_combo_current_index_changed(self, index: int) -> None:
@@ -232,23 +234,10 @@ class WujiCameraTabWidget(QWidget):
         self._current_camera_name = camera_name
         self._refresh_current_camera_labels()
         self.clear_images()
-        self.enable_indicator.setEnabled(True)
+        self.enable_indicator.setEnabled(False)
         self.enable_status_label.setText("使能接口: -")
         self.streamStopRequested.emit()
         self.cameraSelected.emit(camera_name)
-
-    @Slot()
-    def _on_enable_indicator_clicked(self) -> None:
-        requested_status = not bool(self.enable_indicator.property("status"))
-        self.cameraEnableToggleRequested.emit(self._current_camera_name, requested_status)
-
-    @Slot()
-    def _on_rgb_button_clicked(self) -> None:
-        self.depth_preview.clear_preview("Depth 图像")
-        self.rgbStreamRequested.emit(self._current_camera_name)
-
-    @Slot()
-    def _on_rgbd_button_clicked(self) -> None:
         self.rgbdStreamRequested.emit(self._current_camera_name)
 
     def _format_distortion(self, values: tuple[float, ...]) -> str:

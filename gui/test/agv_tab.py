@@ -12,9 +12,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from gui.test.common import ActivatableTab
+from gui.test.common import ActivatableTab, BackgroundCall
 from gui.util_components.casia_indicator_light import CasiaIndicatorLight
-from src.wuji.client_base import WujiQmlinkerBaseClient
+from src.wuji.agv_client import WujiAgvClient
 
 
 class AgvTabWidget(QWidget, ActivatableTab):
@@ -26,9 +26,11 @@ class AgvTabWidget(QWidget, ActivatableTab):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self._client: WujiQmlinkerBaseClient | None = None
+        self._client: WujiAgvClient | None = None
         self._active = False
+        self._refresh_in_flight = False
         self._refresh_timer = QTimer(self)
+        self._refresh_call = BackgroundCall(self)
 
         self.enable_indicator: CasiaIndicatorLight
         self.info_label: QLabel
@@ -47,11 +49,12 @@ class AgvTabWidget(QWidget, ActivatableTab):
         self._setup_timer()
         self._setup_ui()
         self._connect_signals()
+        self._connect_background_signals()
         self.set_connection_ready(False)
 
     def _setup_timer(self) -> None:
-        self._refresh_timer.setInterval(100)
-        self._refresh_timer.timeout.connect(self._refresh_state)
+        self._refresh_timer.setInterval(300)
+        self._refresh_timer.timeout.connect(self._request_refresh)
 
     def _setup_ui(self) -> None:
         self.enable_indicator = CasiaIndicatorLight(
@@ -69,7 +72,7 @@ class AgvTabWidget(QWidget, ActivatableTab):
         self.target_combo = QComboBox(self)
         self.target_combo.setEditable(True)
         self.target_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
-        self.target_combo.addItem("charge")
+        self.target_combo.setPlaceholderText("未读取到目标点")
         self.navigate_button = QPushButton("导航到目标点", self)
         self.forward_button = QPushButton("前进", self)
         self.backward_button = QPushButton("后退", self)
@@ -132,12 +135,19 @@ class AgvTabWidget(QWidget, ActivatableTab):
         self.left_button.clicked.connect(lambda: self._move_direction(90))
         self.right_button.clicked.connect(lambda: self._move_direction(270))
 
+    def _connect_background_signals(self) -> None:
+        self._refresh_call.succeeded.connect(self._on_refresh_succeeded)
+        self._refresh_call.failed.connect(self._on_refresh_failed)
+        self._refresh_call.finished.connect(self._on_refresh_finished)
+
     # endregion
 
     # region 生命周期
 
-    def set_client(self, client: WujiQmlinkerBaseClient | None) -> None:
+    def set_client(self, client: WujiAgvClient | None) -> None:
         self._client = client
+        self._refresh_in_flight = False
+        self._reload_navigation_targets()
         self.set_connection_ready(client is not None)
         if client is None:
             self._refresh_timer.stop()
@@ -150,9 +160,8 @@ class AgvTabWidget(QWidget, ActivatableTab):
         if self._client is None:
             self.info_label.setText("AGV 未连接")
             return
-        self._try_enable_on_activate()
         self._refresh_timer.start()
-        self._refresh_state()
+        self._request_refresh()
 
     def set_connection_ready(self, ready: bool) -> None:
         enabled = bool(ready)
@@ -173,57 +182,71 @@ class AgvTabWidget(QWidget, ActivatableTab):
 
     # endregion
 
-    # region 使能
+    # region 刷新
 
-    def _try_enable_on_activate(self) -> None:
-        if self._client is None:
+    def _request_refresh(self) -> None:
+        if self._client is None or self._refresh_in_flight:
             return
-        try:
-            if not self._client.get_agv_enable():
-                self._client.set_agv_enable(True)
-        except Exception:
-            pass
+        self._refresh_in_flight = True
+        self._refresh_call.start(self._read_runtime_state)
+
+    def _read_runtime_state(self) -> dict[str, object]:
+        if self._client is None:
+            raise RuntimeError("AGV 未连接")
+        runtime_info = dict(self._client.get_runtime_info())
+        runtime_info["agv_enabled"] = self._client.try_get_enable()
+        return runtime_info
+
+    @Slot(object)
+    def _on_refresh_succeeded(self, payload: object) -> None:
+        if not isinstance(payload, dict):
+            return
+        runtime_info = payload
+        navi_status = str(runtime_info.get("agv_navi_status", ""))
+        agv_x = self._as_float(runtime_info.get("agv_x"))
+        agv_y = self._as_float(runtime_info.get("agv_y"))
+        agv_yaw = self._as_float(runtime_info.get("agv_yaw"))
+        agv_battery = self._as_float(runtime_info.get("agv_battery"))
+        enabled_state = runtime_info.get("agv_enabled")
+
+        if isinstance(enabled_state, bool):
+            self.enable_indicator.set_status(enabled_state)
+        self.navi_status_label.setText(navi_status or "-")
+        self.x_label.setText(f"{agv_x:.3f} m")
+        self.y_label.setText(f"{agv_y:.3f} m")
+        self.yaw_label.setText(f"{agv_yaw:.1f} deg")
+        self.battery_label.setText(f"{agv_battery:.0f}%")
+        self.info_label.setText("AGV 状态刷新成功")
+
+    @Slot(str)
+    def _on_refresh_failed(self, message: str) -> None:
+        self.info_label.setText(f"AGV 刷新失败: {message}")
+
+    @Slot()
+    def _on_refresh_finished(self) -> None:
+        self._refresh_in_flight = False
+
+    # endregion
+
+    # region 控制
 
     @Slot()
     def _on_enable_clicked(self) -> None:
         if self._client is None:
             return
-        try:
-            current_enabled = self._client.get_agv_enable()
-            self._client.set_agv_enable(not current_enabled)
-            self._refresh_state()
-        except Exception as exc:  # noqa: BLE001
-            self.info_label.setText(f"AGV 使能切换失败: {exc}")
+        self._refresh_call.start(self._toggle_enable)
 
-    # endregion
-
-    # region 刷新
-
-    def _refresh_state(self) -> None:
+    def _toggle_enable(self) -> None:
         if self._client is None:
-            return
-        try:
-            enabled = self._client.get_agv_enable()
-            runtime_info = self._client.get_agv_runtime_info()
-            navi_status = str(runtime_info.get("agv_navi_status", ""))
-            agv_x = self._as_float(runtime_info.get("agv_x"))
-            agv_y = self._as_float(runtime_info.get("agv_y"))
-            agv_yaw = self._as_float(runtime_info.get("agv_yaw"))
-            agv_battery = self._as_float(runtime_info.get("agv_battery"))
-
-            self.enable_indicator.set_status(enabled)
-            self.navi_status_label.setText(navi_status or "-")
-            self.x_label.setText(f"{agv_x:.3f} m")
-            self.y_label.setText(f"{agv_y:.3f} m")
-            self.yaw_label.setText(f"{agv_yaw:.1f} deg")
-            self.battery_label.setText(f"{agv_battery:.0f}%")
-            self.info_label.setText(f"AGV enable={enabled}")
-        except Exception as exc:  # noqa: BLE001
-            self.info_label.setText(f"AGV 刷新失败: {exc}")
-
-    # endregion
-
-    # region 控制
+            raise RuntimeError("AGV 未连接")
+        current_enabled = self._client.try_get_enable()
+        if current_enabled is None:
+            raise RuntimeError("AGV 使能状态不可读取")
+        changed = bool(self._client.set_enable(not current_enabled))
+        if not changed:
+            raise RuntimeError("AGV 使能切换失败")
+        self.enable_indicator.set_status(not current_enabled)
+        return None
 
     @Slot()
     def _on_navigate_clicked(self) -> None:
@@ -233,20 +256,18 @@ class AgvTabWidget(QWidget, ActivatableTab):
         if not target_name:
             self.info_label.setText("AGV 导航目标不能为空")
             return
-        try:
-            self._client.agv_navigate_to(target_name)
-            self.info_label.setText(f"AGV 导航请求已发送: {target_name}")
-        except Exception as exc:  # noqa: BLE001
-            self.info_label.setText(f"AGV 导航失败: {exc}")
+        client = self._client
+        self._refresh_call.start(lambda: client.navigate_to(target_name))
+        self.info_label.setText(f"AGV 导航请求已发送: {target_name}")
 
     def _move_direction(self, direction_deg: int) -> None:
         if self._client is None:
             return
-        try:
-            self._client.agv_real_time_translate(self._MOVE_SPEED_MPS, direction_deg)
-            self._refresh_state()
-        except Exception as exc:  # noqa: BLE001
-            self.info_label.setText(f"AGV 平移失败: {exc}")
+        client = self._client
+        self._refresh_call.start(
+            lambda: client.real_time_translate(self._MOVE_SPEED_MPS, direction_deg)
+        )
+        self._request_refresh()
 
     # endregion
 
@@ -257,5 +278,18 @@ class AgvTabWidget(QWidget, ActivatableTab):
         if isinstance(value, (int, float)):
             return float(value)
         return 0.0
+
+    def _reload_navigation_targets(self) -> None:
+        self.target_combo.clear()
+        client = self._client
+        if client is None:
+            self.target_combo.setPlaceholderText("未读取到目标点")
+            return
+        target_names = client.get_navigation_targets()
+        if target_names:
+            self.target_combo.addItems(target_names)
+            self.target_combo.setCurrentIndex(0)
+            return
+        self.target_combo.setPlaceholderText("未读取到目标点")
 
     # endregion

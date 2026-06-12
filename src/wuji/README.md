@@ -7,7 +7,7 @@
 当前原则：
 
 - 直接复用 `qmlinker` 的原生对象能力，不再额外包一层 facade
-- `base` 只负责 `channel`、连接与必要的 SSH 转发
+- `session` 只负责 `channel`、连接与必要的 SSH 转发
 - 机械臂、头部、底盘、右手、左手夹爪、相机分别独立代码页实现
 - GUI 与 smoke 只依赖当前真实链路
 - 远端 Orin 若缺少新版 `qmlinker`，会先同步本地 `env/qmlinker-1.0.15-py3-none-any.whl` 再执行
@@ -84,6 +84,7 @@ AGV 当前可稳定完成：
 ### 相机
 
 当前 GUI 使用 ZMQ 相机客户端读取信息与流，不再回退到旧 qmlinker 相机封装。
+如需通过 `orin` 做本地端口转发，请单独使用 `zmq_camera_forwarder.py`，不要把转发逻辑塞进客户端。
 
 ## 当前存在问题
 
@@ -122,7 +123,7 @@ AGV 当前可稳定完成：
 
 ## 模块职责
 
-### `client_base.py`
+### `qmlinker_session.py`
 
 只保留基础连接、channel、SSH 转发和底层对象创建，不再承担上层 GUI 逻辑。
 

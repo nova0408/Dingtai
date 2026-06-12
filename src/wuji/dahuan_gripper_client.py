@@ -2,10 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from qmlinker import GripperInfo, QMGripper, create_channel
-
-from src.wuji.client_base import WujiQmlinkerBaseClient, _SshTcpForwarder
-
+from qmlinker import GripperInfo, QMGripper
 
 # region 主入口
 
@@ -14,7 +11,7 @@ class DahuanGripperClient(QMGripper):
     """大寰夹爪客户端。
 
     职责边界：
-    - 初始化时建立经 `orin` 的 SSH 端口转发。
+    - 直接绑定已准备好的夹爪 channel。
     - 继承 `QMGripper` 复用已有使能、校准与位置控制接口。
     - 只重写 `get_status()`，不走原始 `QMGripper.get_status()`。
 
@@ -24,7 +21,7 @@ class DahuanGripperClient(QMGripper):
       直接调用 `_send_control(QMGripper.STATUS)` 读取原始字典，再手动封装为 `GripperInfo`。
 
     生命周期：
-    - SSH 转发器挂到 `base_client` 的 `_forwarders` 中，由 `base_client.close()` 统一释放。
+    - 本类不拥有 tunnel 生命周期；若调用方通过 SSH 转发暴露本地端口，应由调用方释放。
 
     继承关系：
     - 直接继承 `QMGripper`，不再额外包装控制接口。
@@ -32,38 +29,18 @@ class DahuanGripperClient(QMGripper):
 
     def __init__(
         self,
-        base_client: WujiQmlinkerBaseClient,
-        ssh_alias: str | None = None,
-        remote_host: str | None = None,
-        remote_port: int | None = None,
+        channel: object,
     ) -> None:
-        """初始化夹爪客户端并建立 SSH 转发。
+        """初始化夹爪客户端。
 
         Parameters
         ----------
-        base_client:
-            共享机器人网络配置与生命周期的基础客户端。
-        ssh_alias:
-            可选 SSH 别名。为 `None` 时使用机器人网络配置中的 `orin_ssh_alias`。
-        remote_host:
-            可选远端夹爪地址。为 `None` 时使用机器人网络配置中的 `base_control_ip`。
-        remote_port:
-            可选远端夹爪端口。为 `None` 时使用机器人网络配置中的 `gripper_port`。
+        channel:
+            已准备好的夹爪 qmlinker channel。可为直连 channel，也可为调用方基于本地
+            SSH 转发目标创建的 channel。
         """
 
-        network = base_client.robot_network_config
-        resolved_ssh_alias = network.orin_ssh_alias if ssh_alias is None else str(ssh_alias)
-        resolved_remote_host = network.base_control_ip if remote_host is None else str(remote_host)
-        resolved_remote_port = network.gripper_port if remote_port is None else int(remote_port)
-
-        forwarder = _SshTcpForwarder(
-            resolved_ssh_alias,
-            resolved_remote_host,
-            resolved_remote_port,
-        )
-        base_client._forwarders.append(forwarder)
-        local_target = forwarder.start()
-        super().__init__(create_channel(local_target))
+        super().__init__(channel)
 
     def get_status(self) -> GripperInfo:
         """读取夹爪状态并封装为 `GripperInfo`。
@@ -81,7 +58,7 @@ class DahuanGripperClient(QMGripper):
 
         payload = self._send_control(QMGripper.STATUS)
         if not isinstance(payload, dict):
-            raise RuntimeError(f"gripper status payload is invalid: {payload!r}")
+            raise RuntimeError(f"状态读取失败: {payload!r}")
 
         info = GripperInfo()
         self._assign_int_field(info, "position", payload, "position", 0)

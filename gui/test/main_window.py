@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from urllib.parse import urlsplit
 
 from loguru import logger
+from PySide6.QtCore import QObject, Signal, Slot
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -14,32 +16,43 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from qmlinker import create_channel
 
 from gui.test.algo_tab import AlgoPlaceholderTabWidget
 from gui.test.agv_tab import AgvTabWidget
 from gui.test.arm_tab import ArmTabWidget
 from gui.test.body_tab import BodyTabWidget
 from gui.test.camera_bridge import CameraBridge
-from gui.test.common import ActivatableTab
+from gui.test.common import ActivatableTab, BackgroundCall
 from gui.test.gripper_tab import GripperTabWidget
 from gui.test.hand_tab import M11HandTabWidget
 from gui.test.head_tab import HeadTabWidget
 from gui.test.camera_tab import WujiCameraTabWidget
 from gui.util_components.casia_indicator_light import CasiaIndicatorLight
+from src.wuji.agv_client import WujiAgvClient
 from src.wuji.camera_protocol import WujiCameraFrame
 from src.wuji.arm_client import WujiArmClient
 from src.wuji.body_client import WujiBodyClient
-from src.wuji.client_base import WujiQmlinkerBaseClient
 from src.wuji.dahuan_gripper_client import DahuanGripperClient
 from src.wuji.head_client import WujiHeadClient
-from src.wuji.protocol import WujiQmlinkerConfig, load_wuji_robot_network_config
+from src.wuji.qmlinker_session import WujiQmlinkerSession
 from src.wuji.right_hand_client import WujiRightHandClient
-from src.wuji.zmq_camera_client import WujiZmqCameraClient, WujiZmqCameraConfig
+from src.wuji.zmq_camera_catalog import SUPPORTED_WUJI_ZMQ_CAMERAS_LOCAL, WujiZmqCameraEndpoint
+from src.wuji.zmq_camera_client import WujiZmqCameraClient
+
+DEFAULT_WUJI_QMLINKER_HOST = "192.168.100.60"
+DEFAULT_WUJI_QMLINKER_PORT = 50062
+DEFAULT_WUJI_CAMERA_STREAM_TIMEOUT_MS = 2000
+DEFAULT_WUJI_BASE_CONTROL_IP = "192.168.100.60"
+DEFAULT_WUJI_CAMERA_CONTROL_PORT = 5570
+DEFAULT_WUJI_GRIPPER_PORT = 50066
+DEFAULT_WUJI_SSH_ALIAS = "orin"
 
 
 @dataclass(slots=True)
 class ConnectionBundle:
-    base: WujiQmlinkerBaseClient
+    session: WujiQmlinkerSession
+    agv: WujiAgvClient
     head: WujiHeadClient
     body: WujiBodyClient
     left_arm: WujiArmClient
@@ -61,7 +74,21 @@ class ConnectionBundle:
             self.camera.close()
         except Exception:
             pass
-        self.base.close()
+        self.session.close()
+
+
+class _ConnectionWorker(QObject):
+    succeeded = Signal(object)
+    failed = Signal(str)
+
+    def __init__(self, parent: QObject | None = None) -> None:
+        super().__init__(parent)
+        self._call = BackgroundCall(self)
+        self._call.succeeded.connect(self.succeeded)
+        self._call.failed.connect(self.failed)
+
+    def start(self, callback) -> None:  # noqa: ANN001
+        self._call.start(callback)
 
 
 class TestGuiMainWindow(QMainWindow):
@@ -70,6 +97,7 @@ class TestGuiMainWindow(QMainWindow):
         self._bundle: ConnectionBundle | None = None
         self._tabs: list[ActivatableTab] = []
         self._camera_bridge = CameraBridge(self)
+        self._connection_worker = _ConnectionWorker(self)
         self._build_ui()
         self._connect_signals()
         self._load_default_network_config()
@@ -144,8 +172,6 @@ class TestGuiMainWindow(QMainWindow):
         self.disconnect_button.clicked.connect(self._disconnect_requested)
         self.tab_widget.currentChanged.connect(self._on_current_tab_changed)
         self.camera_tab.cameraSelected.connect(self._camera_bridge.refresh_camera)
-        self.camera_tab.cameraEnableToggleRequested.connect(self._camera_bridge.set_enable)
-        self.camera_tab.rgbStreamRequested.connect(self._camera_bridge.start_rgb_stream)
         self.camera_tab.rgbdStreamRequested.connect(self._camera_bridge.start_rgbd_stream)
         self.camera_tab.streamStopRequested.connect(self._camera_bridge.stop_stream)
         self._camera_bridge.inventoryReady.connect(self.camera_tab.update_camera_inventory)
@@ -153,32 +179,40 @@ class TestGuiMainWindow(QMainWindow):
         self._camera_bridge.intrinsicsReady.connect(self.camera_tab.update_intrinsics)
         self._camera_bridge.frameReady.connect(self._on_camera_frame_ready)
         self._camera_bridge.errorRaised.connect(self._show_status_message)
+        self._connection_worker.succeeded.connect(self._on_bundle_ready)
+        self._connection_worker.failed.connect(self._on_bundle_failed)
 
     def _load_default_network_config(self) -> None:
-        config = load_wuji_robot_network_config().qmlinker
-        self.host_edit.setText(config.host)
-        self.port_spin.setValue(int(config.port))
+        self.host_edit.setText(DEFAULT_WUJI_QMLINKER_HOST)
+        self.port_spin.setValue(int(DEFAULT_WUJI_QMLINKER_PORT))
 
     def _connect_requested(self) -> None:
         self._disconnect_requested()
-        try:
-            bundle = self._create_connection_bundle()
-            self._bundle = bundle
-            self.agv_tab.set_client(bundle.base)
-            self.head_tab.set_client(bundle.head)
-            self.body_tab.set_client(bundle.body)
-            self.left_arm_tab.set_client(bundle.left_arm)
-            self.right_arm_tab.set_client(bundle.right_arm)
-            self.gripper_tab.set_client(bundle.gripper)
-            self.hand_tab.set_client(bundle.hand)
-            self._camera_bridge.set_client(bundle.camera)
-            self._apply_connection_state(True, "qmlinker connected")
-            self._on_current_tab_changed(self.tab_widget.currentIndex())
-            logger.info("new test gui connected: host={} port={}", self.host_edit.text().strip(), self.port_spin.value())
-        except Exception as exc:  # noqa: BLE001
-            logger.error("new test gui connect failed: {}", exc)
-            self._disconnect_requested()
-            self._apply_connection_state(False, f"连接失败: {exc}")
+        self._apply_connection_state(False, "连接中")
+        self._connection_worker.start(self._create_connection_bundle)
+
+    @Slot(object)
+    def _on_bundle_ready(self, payload: object) -> None:
+        if not isinstance(payload, ConnectionBundle):
+            return
+        self._bundle = payload
+        self.agv_tab.set_client(payload.agv)
+        self.head_tab.set_client(payload.head)
+        self.body_tab.set_client(payload.body)
+        self.left_arm_tab.set_client(payload.left_arm)
+        self.right_arm_tab.set_client(payload.right_arm)
+        self.gripper_tab.set_client(payload.gripper)
+        self.hand_tab.set_client(payload.hand)
+        self._camera_bridge.set_client(payload.camera)
+        self._apply_connection_state(True, "qmlinker connected")
+        self._on_current_tab_changed(self.tab_widget.currentIndex())
+        logger.info("new test gui connected: host={} port={}", self.host_edit.text().strip(), self.port_spin.value())
+
+    @Slot(str)
+    def _on_bundle_failed(self, message: str) -> None:
+        logger.error("new test gui connect failed: {}", message)
+        self._disconnect_requested()
+        self._apply_connection_state(False, f"连接失败: {message}")
 
     def _disconnect_requested(self) -> None:
         for tab in self._tabs:
@@ -202,31 +236,52 @@ class TestGuiMainWindow(QMainWindow):
         self._apply_connection_state(False, "已断开")
 
     def _create_connection_bundle(self) -> ConnectionBundle:
-        runtime_config = load_wuji_robot_network_config()
-        qmlinker_config = WujiQmlinkerConfig(
+        session = WujiQmlinkerSession(
             host=self.host_edit.text().strip(),
             port=int(self.port_spin.value()),
-            default_speed_ratio=runtime_config.qmlinker.default_speed_ratio,
-            request_timeout_s=runtime_config.qmlinker.request_timeout_s,
-            stream_first_timeout_s=runtime_config.qmlinker.stream_first_timeout_s,
+            ssh_alias=DEFAULT_WUJI_SSH_ALIAS,
         )
-        base_client = WujiQmlinkerBaseClient(qmlinker_config)
-        base_client.check_ready()
+        session.check_ready()
+        camera_target = session.open_ssh_tunnel(
+            DEFAULT_WUJI_BASE_CONTROL_IP,
+            DEFAULT_WUJI_CAMERA_CONTROL_PORT,
+        )
+        for camera_endpoint in SUPPORTED_WUJI_ZMQ_CAMERAS_LOCAL:
+            self._open_camera_stream_tunnel(session, camera_endpoint)
+        parsed_camera_target = urlsplit(f"tcp://{camera_target}")
+        camera_host = parsed_camera_target.hostname
+        camera_port = parsed_camera_target.port
+        if camera_host is None or camera_port is None:
+            raise RuntimeError(f"invalid camera target: {camera_target}")
         camera_client = WujiZmqCameraClient(
-            WujiZmqCameraConfig(
-                host=qmlinker_config.host,
-                request_timeout_ms=max(500, int(qmlinker_config.request_timeout_s * 1000.0)),
-                stream_timeout_ms=max(500, int(qmlinker_config.stream_first_timeout_s * 1000.0)),
-            )
+            host=camera_host,
+            control_port=int(camera_port),
+            request_timeout_ms=max(500, int(session.request_timeout_s * 1000.0)),
+            stream_timeout_ms=max(500, int(DEFAULT_WUJI_CAMERA_STREAM_TIMEOUT_MS)),
+            camera_endpoints=SUPPORTED_WUJI_ZMQ_CAMERAS_LOCAL,
+        )
+        gripper_target = session.open_ssh_tunnel(
+            DEFAULT_WUJI_BASE_CONTROL_IP,
+            DEFAULT_WUJI_GRIPPER_PORT,
         )
         return ConnectionBundle(
-            base=base_client,
-            head=WujiHeadClient(base_client),
-            body=WujiBodyClient(base_client),
-            left_arm=WujiArmClient(base_client, "left_arm"),
-            right_arm=WujiArmClient(base_client, "right_arm"),
-            gripper=DahuanGripperClient(base_client),
-            hand=WujiRightHandClient(base_client),
+            session=session,
+            agv=WujiAgvClient(
+                create_channel(session.move_base_target),
+                request_timeout_s=session.request_timeout_s,
+            ),
+            head=WujiHeadClient(session.channel),
+            body=WujiBodyClient(session.channel),
+            left_arm=WujiArmClient(
+                session.channel,
+                "left_arm"
+            ),
+            right_arm=WujiArmClient(
+                session.channel,
+                "right_arm"
+            ),
+            gripper=DahuanGripperClient(create_channel(gripper_target)),
+            hand=WujiRightHandClient(session.channel, request_timeout_s=session.request_timeout_s),
             camera=camera_client,
         )
 
@@ -256,3 +311,15 @@ class TestGuiMainWindow(QMainWindow):
     def _show_status_message(self, message: str) -> None:
         self.connection_label.setText(message)
         self.statusBar().showMessage(message)
+
+    def _open_camera_stream_tunnel(
+        self,
+        session: WujiQmlinkerSession,
+        camera_endpoint: WujiZmqCameraEndpoint,
+    ) -> None:
+        """为本机 GUI 调试预先打开相机数据流 SSH 转发。"""
+
+        session.open_ssh_tunnel(
+            DEFAULT_WUJI_BASE_CONTROL_IP,
+            int(camera_endpoint.stream_port) + 1,
+        )

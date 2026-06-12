@@ -28,6 +28,7 @@
 - 修改代码前先定位最小归属模块，再在正确层级做最小范围修改。
 - 读取和写入文本文件必须显式使用 UTF-8。
 - 修改文件前必须在 `.archive/` 下生成快照。
+- 任何删除、移动、重命名、批量清理操作前，必须先在 `.archive/` 下生成快照；不能先删后补，也不能假设 hook 一定会兜底。
 - 文件编辑后优先运行最小静态检查；Python 文件默认走 `ruff` 后 `pyright`。
 - 涉及硬件、GUI 或实时相机链路时，明确说明哪些只是语法/静态验证，哪些没有实际连接硬件验证。
 - `src/` 下 Python 代码必须遵循 `.agents/skills/dingtai-src-python-style/SKILL.md`。
@@ -74,6 +75,7 @@ powershell -ExecutionPolicy Bypass -File .\.agents\skills\windows-powershell-utf
 
 - `.codex/hooks.json` 是项目级 hooks 入口。
 - `PreToolUse` 在 `apply_patch` 前解析补丁路径，并为已有文件生成 `.archive` 快照。
+- 删除类操作不能只依赖 hook；在模型决策层也必须先确认快照已存在，再执行删除、移动或重命名。
 - `PostToolUse` 在 `apply_patch` 后扫描 UTF-8、字面量 ``
  ``、字面量 `
 `、替换字符和 NUL。

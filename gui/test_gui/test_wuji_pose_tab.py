@@ -23,7 +23,6 @@ from gui.test.camera_tab import ImagePreviewLabel
 from gui.util_components.open3d_geometry_utils import create_coordinate_axis_lines
 from gui.wuji.pose_context import WujiPoseExecutionContext, WujiPoseExecutionResult
 from src.wuji.camera_protocol import WujiCameraFrame, WujiCameraIntrinsicsInfo
-from src.wuji.protocol import load_wuji_robot_network_config
 
 POSE_DEPENDENCY_ERROR: str | None = None
 
@@ -48,7 +47,7 @@ except Exception as exc:  # noqa: BLE001
         POSE_DEPENDENCY_ERROR = f"orin grasp rpc unavailable: {type(exc).__name__}: {exc}"
 
 LEFT_CAMERA_NAME = "left_hand_camera"
-DEFAULT_ORIN_SERVICE_ADDR = "tcp://{0}:6220".format(load_wuji_robot_network_config().orin_ip)
+DEFAULT_ORIN_SERVICE_ADDR = "tcp://192.168.100.70:6220"
 DEFAULT_MAX_PREVIEW_POINTS = 100_000
 DEFAULT_POINT_SIZE = 1.5
 

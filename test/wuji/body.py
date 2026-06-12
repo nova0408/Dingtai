@@ -1,80 +1,47 @@
 from __future__ import annotations
 
-import argparse
-import logging
-import os
 import sys
 from pathlib import Path
 
-from flask.cli import F
 from loguru import logger
-DEFAULT_REQUEST_TIMEOUT_S = 3.0
-"身体和头部信息读取超时，单位 s。"
 
-repo_root = Path(__file__).resolve().parents[2]
-if str(repo_root) not in sys.path:
-    sys.path.insert(0, str(repo_root))
-    
-from src.wuji.body_client import WujiBodyClient
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
-
-from src.wuji.client_base import WujiQmlinkerBaseClient  
-from src.wuji.protocol import WujiQmlinkerConfig  
-# region 主入口
+from common import DEFAULT_PORT, create_orin_channel, stop_ssh_process  # noqa: E402
+from src.wuji.body_client import WujiBodyClient  # noqa: E402
 
 
-def main(request_timeout_s: float = DEFAULT_REQUEST_TIMEOUT_S) -> None:
+def main() -> None:
     """读取身体当前状态。"""
 
-    
-    base = WujiQmlinkerBaseClient(WujiQmlinkerConfig(host="192.168.100.60", port=50062))
-    body_client = WujiBodyClient(base)
-    
+    ssh_process, qmlinker_channel = create_orin_channel(DEFAULT_PORT)
+    body_client = WujiBodyClient(qmlinker_channel)
     try:
         logger.info("身体冒烟测试")
-        lift=body_client.lift
-        logger.info(f"开始测试 lift")
-        logger.info(f"初始 enable: {lift.get_enable()}")
+
+        lift = body_client.lift
+        logger.info("lift 初始使能 {}", lift.get_enable())
         lift.set_enable(False)
-        logger.info(f"disable : {lift.get_enable()}")
+        logger.info("lift 关闭后使能 {}", lift.get_enable())
         lift.set_enable(True)
-        logger.info(f"enable: {lift.get_enable()}")
-        logger.info(f"lift height: {lift.get_lift_height()}")
-        
-        logger.info(f"开始测试 waist")
-        waist=body_client.waist
-        logger.info(f"初始 enable: {waist.get_enable()}")
+        logger.info("lift 打开后使能 {}", lift.get_enable())
+        logger.info("lift 当前高度 {} mm", lift.get_lift_height())
+
+        waist = body_client.waist
+        logger.info("waist 初始使能 {}", waist.get_enable())
         waist.set_enable(False)
-        logger.info(f"disable : {waist.get_enable()}")
+        logger.info("waist 关闭后使能 {}", waist.get_enable())
         waist.set_enable(True)
-        logger.info(f"enable: {waist.get_enable()}")
-        logger.info(f"waist pitch: {waist.get_waist_pitch()}")
+        logger.info("waist 打开后使能 {}", waist.get_enable())
+        logger.info("waist 当前俯仰 {} deg", waist.get_waist_pitch())
+
         logger.success("无际身体信息冒烟通过")
     finally:
+        stop_ssh_process(ssh_process)
         logger.info("无际身体信息冒烟结束")
-    os._exit(0)
-
-
-# endregion
-
-
-# region CLI
-
-
-def _parse_cli() -> float:
-    """解析 CLI 覆盖参数。"""
-
-    parser = argparse.ArgumentParser(description="读取无际身体和头部状态信息")
-    parser.add_argument("--request-timeout-s", type=float, default=DEFAULT_REQUEST_TIMEOUT_S)
-    args = parser.parse_args()
-    return float(args.request_timeout_s)
 
 
 if __name__ == "__main__":
-    if len(sys.argv) > 1:
-        main(request_timeout_s=_parse_cli())
-    else:
-        main()
-
-
-# endregion
+    main()

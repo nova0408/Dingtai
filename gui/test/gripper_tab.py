@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from gui.test.common import ActivatableTab, HoldRepeatController
+from gui.test.common import ActivatableTab, BackgroundCall, HoldRepeatController
 from gui.util_components.casia_indicator_light import CasiaIndicatorLight
 from qmlinker import GripperInfo
 from src.wuji.dahuan_gripper_client import DahuanGripperClient
@@ -28,6 +28,7 @@ class GripperTabWidget(QWidget, ActivatableTab):
         self._client: DahuanGripperClient | None = None
         self._active = False
         self._status_timer = QTimer(self)
+        self._refresh_call = BackgroundCall(self)
         self._position_repeat = HoldRepeatController(self)
         self._current_position = 0
 
@@ -46,11 +47,12 @@ class GripperTabWidget(QWidget, ActivatableTab):
         self._setup_timer()
         self._setup_ui()
         self._connect_signals()
+        self._connect_background_signals()
         self.set_connection_ready(False)
 
     def _setup_timer(self) -> None:
         self._status_timer.setInterval(1000)
-        self._status_timer.timeout.connect(self._refresh_status)
+        self._status_timer.timeout.connect(self._request_refresh)
 
     def _setup_ui(self) -> None:
         self.enable_indicator = CasiaIndicatorLight(
@@ -126,6 +128,10 @@ class GripperTabWidget(QWidget, ActivatableTab):
         self.position_plus_button.released.connect(self._position_repeat.stop)
         self.calibrate_button.clicked.connect(self._calibrate)
 
+    def _connect_background_signals(self) -> None:
+        self._refresh_call.succeeded.connect(self._on_refresh_succeeded)
+        self._refresh_call.failed.connect(self._on_refresh_failed)
+
     # endregion
 
     # region 生命周期
@@ -146,7 +152,7 @@ class GripperTabWidget(QWidget, ActivatableTab):
             return
         self._try_enable()
         self._status_timer.start()
-        self._refresh_status()
+        self._request_refresh()
 
     def set_connection_ready(self, ready: bool) -> None:
         enabled = bool(ready)
@@ -169,23 +175,13 @@ class GripperTabWidget(QWidget, ActivatableTab):
     def _try_enable(self) -> None:
         if self._client is None:
             return
-        try:
-            if not bool(self._client.get_status().enable):
-                self._client.set_enable(True)
-        except Exception:
-            pass
+        self._refresh_call.start(self._ensure_enable)
 
     @Slot()
     def _on_enable_clicked(self) -> None:
         if self._client is None:
             return
-        try:
-            current_status = self._client.get_status()
-            current_enabled = bool(current_status.enable)
-            self._client.set_enable(not current_enabled)
-            self._refresh_status()
-        except Exception as exc:  # noqa: BLE001
-            self._set_status_error(f"夹爪切换使能失败: {exc}")
+        self._refresh_call.start(self._toggle_enable)
 
     # endregion
 
@@ -194,12 +190,28 @@ class GripperTabWidget(QWidget, ActivatableTab):
     def _refresh_status(self) -> None:
         if self._client is None:
             return
-        try:
-            status = self._client.get_status()
-            self._current_position = int(status.position or 0)
-            self._apply_status(status)
-        except Exception as exc:  # noqa: BLE001
-            self._set_status_error(f"夹爪状态刷新失败: {exc}")
+        self._request_refresh()
+
+    def _request_refresh(self) -> None:
+        if self._client is None:
+            return
+        self._refresh_call.start(self._read_status)
+
+    def _read_status(self) -> GripperInfo:
+        if self._client is None:
+            raise RuntimeError("夹爪未连接")
+        return self._client.get_status()
+
+    @Slot(object)
+    def _on_refresh_succeeded(self, payload: object) -> None:
+        if not isinstance(payload, GripperInfo):
+            return
+        self._current_position = int(payload.position or 0)
+        self._apply_status(payload)
+
+    @Slot(str)
+    def _on_refresh_failed(self, message: str) -> None:
+        self._set_status_error(f"夹爪状态刷新失败: {message}")
 
     # endregion
 
@@ -221,20 +233,12 @@ class GripperTabWidget(QWidget, ActivatableTab):
     def _calibrate(self) -> None:
         if self._client is None:
             return
-        try:
-            self._client.calibrate()
-            self._refresh_status()
-        except Exception as exc:  # noqa: BLE001
-            self._set_status_error(f"校准失败: {exc}")
+        self._refresh_call.start(self._calibrate_async)
 
     def _set_position(self, position: int) -> None:
         if self._client is None:
             return
-        try:
-            self._client.set_pos(int(position))
-            self._refresh_status()
-        except Exception as exc:  # noqa: BLE001
-            self._set_status_error(f"位置设置失败: {exc}")
+        self._refresh_call.start(lambda: self._set_position_async(int(position)))
 
     def _nudge_position(self, direction: int) -> None:
         target = min(max(self._current_position + direction * self.HOLD_STEP, 0), 1000)
@@ -261,5 +265,33 @@ class GripperTabWidget(QWidget, ActivatableTab):
         self.enable_label.setText("-")
         self.position_label.setText("-")
         self.state_label.setText("-")
+
+    def _ensure_enable(self) -> GripperInfo:
+        if self._client is None:
+            raise RuntimeError("夹爪未连接")
+        status = self._client.get_status()
+        if not bool(status.enable):
+            self._client.set_enable(True)
+            status = self._client.get_status()
+        return status
+
+    def _toggle_enable(self) -> GripperInfo:
+        if self._client is None:
+            raise RuntimeError("夹爪未连接")
+        status = self._client.get_status()
+        self._client.set_enable(not bool(status.enable))
+        return self._client.get_status()
+
+    def _calibrate_async(self) -> GripperInfo:
+        if self._client is None:
+            raise RuntimeError("夹爪未连接")
+        self._client.calibrate()
+        return self._client.get_status()
+
+    def _set_position_async(self, position: int) -> GripperInfo:
+        if self._client is None:
+            raise RuntimeError("夹爪未连接")
+        self._client.set_pos(int(position))
+        return self._client.get_status()
 
     # endregion

@@ -115,6 +115,39 @@ class StreamReaderWorker(QObject):
                 self.finished.emit(run_id)
 
 
+class BackgroundCall(QObject):
+    """在后台线程执行单次阻塞调用。"""
+
+    succeeded = Signal(object)
+    failed = Signal(str)
+    finished = Signal()
+
+    def __init__(self, parent: QObject | None = None) -> None:
+        super().__init__(parent)
+        self._run_id = 0
+        self._thread: Thread | None = None
+
+    def start(self, callback: Callable[[], Any]) -> int:
+        self._run_id += 1
+        run_id = self._run_id
+        thread = Thread(target=self._run, args=(run_id, callback), daemon=True)
+        self._thread = thread
+        thread.start()
+        return run_id
+
+    def _run(self, run_id: int, callback: Callable[[], Any]) -> None:
+        try:
+            result = callback()
+        except Exception as exc:  # noqa: BLE001
+            self.failed.emit(str(exc))
+        else:
+            if run_id == self._run_id:
+                self.succeeded.emit(result)
+        finally:
+            if run_id == self._run_id:
+                self.finished.emit()
+
+
 @dataclass(frozen=True, slots=True)
 class AxisControlConfig:
     axis_key: str

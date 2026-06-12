@@ -229,6 +229,7 @@ def _cv_window_closed(window_name: str) -> bool:
     except cv2.error:
         return True
 
+
 # endregion
 
 

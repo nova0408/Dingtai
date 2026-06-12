@@ -7,7 +7,6 @@ from typing import Any, cast
 from qmlinker import QMHand
 from qmlinker.grpc_py import hand_pb2
 
-from src.wuji.client_base import WujiQmlinkerBaseClient
 from src.wuji.right_hand_specs import RIGHT_HAND_ACTUATOR_SPECS, WujiRightHandActuatorSpec
 
 DEFAULT_RIGHT_HAND_SPEED_RATIO = 0.5
@@ -36,18 +35,26 @@ class WujiRightHandClient(QMHand):
     - 仅保留右手语义，不再支持左手作为通用 hand。
 
     生命周期：
-    - 依赖 `WujiQmlinkerBaseClient` 的 channel。
+    - 依赖外部传入的 qmlinker channel。
     - 不持有线程或任务队列。
 
     继承关系：
     - 直接继承 `QMHand`。
     """
 
-    def __init__(self, base_client: WujiQmlinkerBaseClient) -> None:
-        """创建右手客户端。"""
+    def __init__(self, channel: object, request_timeout_s: float = 3.0) -> None:
+        """创建右手客户端。
 
-        super().__init__(base_client.channel, cast(str, QMHand.HAND_RIGHT))
-        self._base = base_client
+        Parameters
+        ----------
+        channel:
+            qmlinker `create_channel()` 返回的基础 channel 或 channel dict。
+        request_timeout_s:
+            单次 unary 请求超时时间，单位 s。
+        """
+
+        super().__init__(channel, cast(str, QMHand.HAND_RIGHT))
+        self._request_timeout_s = float(request_timeout_s)
 
     def get_right_hand_values(self) -> dict[str, float]:
         """读取右手执行器位置。"""
@@ -55,7 +62,7 @@ class WujiRightHandClient(QMHand):
         request = hand_pb2.GetHandStateRequest()
         request.hand_id = cast(Any, self.hand_id)
         request.include_tactile = False
-        response = self.stub.GetHandState(request, timeout=self._base.config.request_timeout_s)
+        response = self.stub.GetHandState(request, timeout=self._request_timeout_s)
         values: dict[str, float] = {}
         for actuator in response.actuators:
             axis_name = f"right_hand_a{int(actuator.actuator_id)}"

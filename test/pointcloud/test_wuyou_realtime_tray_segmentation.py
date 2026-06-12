@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import argparse
 import sys
 import time
 from pathlib import Path
@@ -14,12 +13,12 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.pointcloud.tray_detection import TrayDetectionPipeline, TrayRuntimeState  # noqa: E402
-from src.wuji import WujiZmqCameraClient, WujiZmqCameraConfig, load_wuji_robot_network_config  # noqa: E402
+from src.wuji import WujiZmqCameraClient  # noqa: E402
 from src.wuji.camera_protocol import WujiCameraName  # noqa: E402
 
 # region 默认参数
 DEFAULT_CAMERA_NAME = "left_hand_camera"  # 默认测试相机名
-DEFAULT_HOST = load_wuji_robot_network_config().base_control_ip  # wuyou 相机服务主机
+DEFAULT_HOST = "192.168.100.60"  # wuyou 相机服务主机
 DEFAULT_REQUEST_TIMEOUT_MS = 3000  # 控制命令超时，单位 ms
 DEFAULT_STREAM_TIMEOUT_MS = 8000  # 图像流超时，单位 ms
 DEFAULT_MIN_2D_WINDOW_LONG_SIDE = 800  # 2D 窗口最小长边，单位 像素
@@ -64,11 +63,9 @@ def main(
     pipeline = TrayDetectionPipeline(TrayDetectionPipeline.build_default_detector())
     state = TrayRuntimeState()
     client = WujiZmqCameraClient(
-        WujiZmqCameraConfig(
-            host=str(host),
-            request_timeout_ms=int(request_timeout_ms),
-            stream_timeout_ms=int(stream_timeout_ms),
-        )
+        host=str(host),
+        request_timeout_ms=int(request_timeout_ms),
+        stream_timeout_ms=int(stream_timeout_ms),
     )
 
     cv2.namedWindow(DEFAULT_2D_WINDOW_NAME, cv2.WINDOW_NORMAL)
@@ -129,25 +126,6 @@ def main(
             logger.warning("关闭深度流失败：{}", exc)
         client.close()
         _safe_destroy_cv_window(DEFAULT_2D_WINDOW_NAME)
-
-
-def _parse_cli(argv: list[str]) -> tuple[str, str, int, int, int]:
-    """解析 CLI 覆盖参数。"""
-
-    parser = argparse.ArgumentParser(description="测试来自 wuyou 相机流数据的实时托盘分割")
-    parser.add_argument("--camera-name", type=str, default=DEFAULT_CAMERA_NAME)
-    parser.add_argument("--host", type=str, default=DEFAULT_HOST)
-    parser.add_argument("--request-timeout-ms", type=int, default=DEFAULT_REQUEST_TIMEOUT_MS)
-    parser.add_argument("--stream-timeout-ms", type=int, default=DEFAULT_STREAM_TIMEOUT_MS)
-    parser.add_argument("--max-frames", type=int, default=DEFAULT_MAX_FRAMES)
-    args = parser.parse_args(argv)
-    return (
-        str(args.camera_name),
-        str(args.host),
-        int(args.request_timeout_ms),
-        int(args.stream_timeout_ms),
-        int(args.max_frames),
-    )
 
 
 # endregion
@@ -287,14 +265,4 @@ def _cv_window_closed(window_name: str) -> bool:
 
 
 if __name__ == "__main__":
-    if len(sys.argv) > 1:
-        camera_name_arg, host_arg, request_timeout_arg, stream_timeout_arg, max_frames_arg = _parse_cli(sys.argv[1:])
-        main(
-            camera_name=camera_name_arg,
-            host=host_arg,
-            request_timeout_ms=request_timeout_arg,
-            stream_timeout_ms=stream_timeout_arg,
-            max_frames=max_frames_arg,
-        )
-    else:
-        main()
+    main()
