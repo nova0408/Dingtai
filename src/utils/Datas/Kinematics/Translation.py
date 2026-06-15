@@ -5,8 +5,8 @@ from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, replace
 from typing import Any, final, overload
 
-from typing_extensions import Self
 import numpy as np
+from typing_extensions import Self
 
 from ...protocol import MatrixSerializable
 
