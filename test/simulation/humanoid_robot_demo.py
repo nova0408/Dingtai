@@ -159,7 +159,14 @@ def _joint_motion_transform(joint: UrdfJoint, joint_value: float) -> Transform:
 
 
 def _load_urdf_model(urdf_name: str) -> UrdfModel:
-    urdf_path = RESOURCE_DIR / urdf_name
+    urdf_path = Path(urdf_name)
+    if not urdf_path.is_absolute():
+        if not urdf_path.exists():
+            resource_candidate = RESOURCE_DIR / urdf_name
+            if resource_candidate.exists():
+                urdf_path = resource_candidate
+            else:
+                urdf_path = PROJECT_ROOT / urdf_name
     if urdf_path.suffix == ".xacro":
         urdf_text = _expand_xacro_to_urdf_text(urdf_path)
         return UrdfConverter().from_xml_text(urdf_text)
@@ -569,6 +576,42 @@ def _build_runtime(cfg: ChainConfig, runtimes: dict[str, ChainRuntime]) -> Chain
             points.append(Point(b.x, b.y, b.z))
         return tuple(points)
 
+    def fixed_chain_link_point_solver(_: tuple[float, ...]) -> tuple[Point, ...]:
+        """为零可动关节链提供基于固定拓扑的绘制点。"""
+
+        base = _binding_base_transform(binding)
+        fixed_transforms: dict[str, Transform] = {root: Transform.Identity() for root in root_links}
+        stack: list[str] = list(root_links)
+        while stack:
+            parent_link = stack.pop()
+            parent_tf = fixed_transforms[parent_link]
+            for joint in children_by_parent.get(parent_link, ()):
+                child_tf = parent_tf @ _urdf_origin_transform(joint)
+                fixed_transforms[joint.child_link] = child_tf
+                stack.append(joint.child_link)
+
+        points: list[Point] = []
+
+        def append_tree(parent_link: str) -> None:
+            parent_local = fixed_transforms[parent_link]
+            parent_world = base @ parent_local
+            parent_point = parent_world.translation
+            for child_joint in children_by_parent.get(parent_link, ()):
+                child_local = fixed_transforms[child_joint.child_link]
+                child_world = base @ child_local
+                child_point = child_world.translation
+                points.append(Point(parent_point.x, parent_point.y, parent_point.z))
+                points.append(Point(child_point.x, child_point.y, child_point.z))
+                points.append(Point(float("nan"), float("nan"), float("nan")))
+                append_tree(child_joint.child_link)
+
+        for root in root_links:
+            append_tree(root)
+        if not points:
+            b = base.translation
+            points.append(Point(b.x, b.y, b.z))
+        return tuple(points)
+
     cached_positions: tuple[float, ...] | None = None
     cached_local_transforms: dict[str, Transform] | None = None
 
@@ -606,6 +649,8 @@ def _build_runtime(cfg: ChainConfig, runtimes: dict[str, ChainRuntime]) -> Chain
 
     binding.link_point_solver = link_point_solver
     binding.joint_axis_solver = joint_axis_solver
+    if not joints:
+        binding.link_point_solver = fixed_chain_link_point_solver
 
     return ChainRuntime(
         config=cfg,

@@ -1,0 +1,27 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="left_hand">
+  <link name="left_base_link"/>
+  <link name="left_palm_link">
+    <visual>
+      <geometry>
+        <cylinder length="0.05" radius="0.006"/>
+      </geometry>
+      <origin xyz="0 0 0" rpy="1.57079632679 0 0"/>
+      <material name="hand_color">
+        <color rgba="0.9058823529 0.4352941176 0.3176470588 1"/>
+      </material>
+    </visual>
+    <collision>
+      <geometry>
+        <cylinder length="0.05" radius="0.006"/>
+      </geometry>
+      <origin xyz="0 0 0" rpy="1.57079632679 0 0"/>
+    </collision>
+  </link>
+
+  <joint name="left_mount" type="fixed">
+    <parent link="left_base_link"/>
+    <child link="left_palm_link"/>
+    <origin xyz="0 0 0.025" rpy="0 0 0"/>
+  </joint>
+</robot>

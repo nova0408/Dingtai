@@ -65,8 +65,6 @@ class SpatialArmKinematics:
         """构造后一致性校验"""
 
         count = len(self.link_vectors)
-        if count == 0:
-            raise ValueError("至少需要 1 个关节")
         if len(self.joint_axes_local) != count or len(self.joint_limits) != count:
             raise ValueError("link_vectors / joint_axes_local / joint_limits 长度必须一致")
         if self.joint_types is None:
@@ -80,6 +78,10 @@ class SpatialArmKinematics:
     def _clamp(self, joint_positions: tuple[float, ...]) -> tuple[float, ...]:
         """按关节限制裁剪输入关节值"""
 
+        if len(self.link_vectors) == 0:
+            if joint_positions:
+                raise ValueError(f"关节数量不匹配：expected=0, actual={len(joint_positions)}")
+            return ()
         if len(joint_positions) != len(self.link_vectors):
             raise ValueError(f"关节数量不匹配：expected={len(self.link_vectors)}, actual={len(joint_positions)}")
         values: list[float] = []
@@ -105,6 +107,9 @@ class SpatialArmKinematics:
         """
 
         joints = self._clamp(joint_positions)
+        if len(self.link_vectors) == 0:
+            origin = np.array(Point.Zero().to_tuple(), dtype=np.float64)
+            return [], [], np.array([origin], dtype=np.float64)
         pos = Point.Zero()
         rot = Quaternion.Identity()
 
@@ -137,6 +142,8 @@ class SpatialArmKinematics:
     def solve_tcp(self, joint_positions: tuple[float, ...]) -> Transform:
         """正解：关节值 -> TCP 位姿"""
 
+        if len(self.link_vectors) == 0:
+            return Transform.Identity()
         _, _, points = self._forward_kinematics(joint_positions)
         x, y, z = points[-1]
         return Transform(translation=Translation(float(x), float(y), float(z)), rotation=Quaternion.Identity())
@@ -146,6 +153,10 @@ class SpatialArmKinematics:
     ) -> tuple[Degree | float, ...]:
         """逆解：目标位姿 -> 关节值（CCD 迭代）"""
 
+        if len(self.link_vectors) == 0:
+            if reference_joints:
+                raise ValueError(f"关节数量不匹配：expected=0, actual={len(reference_joints)}")
+            return ()
         raw_reference: list[float] = []
         for value in reference_joints:
             raw_reference.append(_as_float_joint(value))
@@ -200,12 +211,16 @@ class SpatialArmKinematics:
     def forward_points_local(self, joint_positions: tuple[float, ...]) -> tuple[tuple[float, float, float], ...]:
         """返回链节点局部坐标序列（用于渲染）"""
 
+        if len(self.link_vectors) == 0:
+            return ((0.0, 0.0, 0.0),)
         _, _, points = self._forward_kinematics(joint_positions)
         return tuple((float(x), float(y), float(z)) for x, y, z in points)
 
     def forward_joint_axes_local(self, joint_positions: tuple[float, ...]) -> tuple[JointAxisGlyph, ...]:
         """返回关节轴可视化信息"""
 
+        if len(self.link_vectors) == 0:
+            return ()
         origins, axes, _ = self._forward_kinematics(joint_positions)
         output: list[JointAxisGlyph] = []
         for idx, (origin, axis) in enumerate(zip(origins, axes, strict=True)):

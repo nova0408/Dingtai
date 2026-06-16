@@ -1,0 +1,37 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+  <xacro:macro name="left_hand_module" params="prefix parent_link xyz:='0 0 0' rpy:='0 0 0' chain_name:='' color:='' urdf_source:=''">
+    <link name="${prefix}base_link"/>
+    <link name="${prefix}palm_link"/>
+
+    <joint name="${prefix}mount" type="fixed">
+      <parent link="${parent_link}"/>
+      <child link="${prefix}base_link"/>
+      <origin xyz="${xyz}" rpy="${rpy}"/>
+    </joint>
+
+    <joint name="${prefix}palm_fixed" type="fixed">
+      <parent link="${prefix}base_link"/>
+      <child link="${prefix}palm_link"/>
+      <origin xyz="0 0 0.025" rpy="0 0 0"/>
+    </joint>
+
+    <link name="${prefix}palm_link">
+      <visual>
+        <geometry>
+          <cylinder length="0.05" radius="0.006"/>
+        </geometry>
+        <origin xyz="0 0 0" rpy="1.57079632679 0 0"/>
+        <material name="hand_color">
+          <color rgba="${color} 1"/>
+        </material>
+      </visual>
+      <collision>
+        <geometry>
+          <cylinder length="0.05" radius="0.006"/>
+        </geometry>
+        <origin xyz="0 0 0" rpy="1.57079632679 0 0"/>
+      </collision>
+    </link>
+  </xacro:macro>
+</robot>

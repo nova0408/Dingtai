@@ -1,0 +1,11 @@
+<launch>
+  <param name="robot_description"
+    command="$(find xacro)/xacro.py '$(find AR5-5_07R-W4C4A2-S1_description)/urdf/AR5-5_07R-W4C4A2-S1.xacro'" />
+   <node name="joint_state_publisher" pkg="joint_state_publisher" type="joint_state_publisher" >
+    <param name="use_gui" value="FALSE"/>
+  </node> 
+  <node name="robot_state_publisher" pkg="robot_state_publisher" type="state_publisher" />
+  
+  <node name="rviz" pkg="rviz" type="rviz" args="-d $(find AR5-5_07R-W4C4A2-S1_description)/launch/AR5-5_07R-W4C4A2-S1.rviz"/>
+
+</launch>

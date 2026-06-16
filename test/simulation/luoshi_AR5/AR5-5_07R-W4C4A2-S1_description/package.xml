@@ -1,0 +1,16 @@
+<?xml version="1.0"?>
+<package>
+  <name>AR5-5_07R-W4C4A2-S1_description</name>
+  <version>0.0.1</version>
+  <description>The AR5-5_07R-W4C4A2-S1_description package</description>
+
+  <maintainer email="zhangbiao@rokae.com">Biao Zhang</maintainer>
+
+  <license>BSD</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <export>
+  </export>
+</package>
+
