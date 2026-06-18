@@ -21,11 +21,15 @@ if str(PROJECT_ROOT) not in sys.path:
 if str(SDK_ROOT) not in sys.path:
     sys.path.insert(0, str(SDK_ROOT))
     
-ROBOT_IP = "192.168.0.160"
-LOCAL_IP = "192.168.0.1"
+LOCAL_IP = "192.168.1.116"
 MM_PER_M = 1000.0
 DEFAULT_CARTESIAN_SPEED = 50.0
 DEFAULT_CARTESIAN_ZONE = 1.0
+DEFAULT_POWER_ON_TIMEOUT_S = 3.0
+EXPECTED_ARM_TYPES = {
+    "left": "AR5-5_0.8L-W4C1C9-ZY2",
+    "right": "AR5-5_0.8R-W4C1C9-ZY2",
+}
 
 from sdk.xcoresdk import xCoreSDK_python  # noqa: E402
 
@@ -50,6 +54,29 @@ class RobotConnectionConfig:
 
     local_ip: str | None
     "本机网卡 IP 地址，未提供时保持 `None`。"
+
+
+@dataclass(slots=True)
+class ConnectedArm:
+    """单台已连接机械臂的运行上下文。"""
+
+    arm_side: str
+    "机械臂侧别，取值为 `left` 或 `right`。"
+
+    config: RobotConnectionConfig
+    "创建连接时使用的网络配置。"
+
+    robot: xCoreSDK_python.xMateErProRobot
+    "SDK 机器人对象。"
+
+    robot_type: str
+    "控制器上报的机器人型号。"
+
+    robot_uid: str
+    "控制器上报的机器人唯一标识。"
+
+    ec: dict[str, object]
+    "该机械臂独立复用的 SDK 错误码字典。"
 
 
 # endregion
@@ -198,6 +225,10 @@ def _copy_cartesian_pose_context(
 def _ensure_nrt_motion_ready(robot: xCoreSDK_python.xMateErProRobot, ec: dict[str, object]) -> bool:
     """确保非实时运动指令满足执行前提。"""
 
+    robot.stop(ec)
+    _print_sdk_result("stop", ec)
+    if ec.get("ec", 0) != 0:
+        return False
     robot.setMotionControlMode(xCoreSDK_python.MotionControlMode.NrtCommandMode, ec)
     _print_sdk_result("setMotionControlMode(NrtCommandMode)", ec)
     if ec.get("ec", 0) != 0:
@@ -209,6 +240,9 @@ def _ensure_nrt_motion_ready(robot: xCoreSDK_python.xMateErProRobot, ec: dict[st
     robot.setPowerState(True, ec)
     _print_sdk_result("setPowerState(True)", ec)
     if ec.get("ec", 0) != 0:
+        return False
+    if not _wait_for_power_on(robot, ec):
+        print("上电状态未在超时内确认完成，请检查现场使能、急停和安全门")
         return False
     robot.setDefaultConfOpt(False, ec)
     _print_sdk_result("setDefaultConfOpt(False)", ec)
@@ -225,6 +259,23 @@ def _ensure_nrt_motion_ready(robot: xCoreSDK_python.xMateErProRobot, ec: dict[st
     current_power_state = robot.powerState(ec)
     print(f"当前电机状态: {current_power_state} ({_describe_power_state(current_power_state)})")
     return current_power_state == xCoreSDK_python.PowerState.on
+
+
+def _wait_for_power_on(
+    robot: xCoreSDK_python.xMateErProRobot,
+    ec: dict[str, object],
+    timeout_s: float = DEFAULT_POWER_ON_TIMEOUT_S,
+) -> bool:
+    """等待机器人确认进入上电状态。"""
+
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        power_state = robot.powerState(ec)
+        print(f"当前电机状态: {power_state} ({_describe_power_state(power_state)})")
+        if power_state == xCoreSDK_python.PowerState.on:
+            return True
+        time.sleep(0.1)
+    return False
 
 
 def _validate_cartesian_target(
@@ -404,7 +455,7 @@ def _recover_estop(robot: xCoreSDK_python.xMateErProRobot, ec: dict[str, object]
 
 def _toggle_soft_limit(robot: xCoreSDK_python.xMateErProRobot, ec: dict[str, object]) -> None:
     """打开或关闭软限位，使用官方示例中的硬编码值。"""
-
+    return
     soft_limits = [
         [-2.0543261909900767, 2.0543261909900767],
         [-1.356194490192345, 1.356194490192345],
@@ -473,6 +524,16 @@ def _print_robot_snapshot(robot: xCoreSDK_python.xMateErProRobot, ec: dict[str, 
     )
 
 
+def _print_connected_arm_snapshot(connected_arm: ConnectedArm) -> None:
+    """打印当前选中机械臂的连接信息与状态快照。"""
+
+    print(
+        f"当前机械臂: {connected_arm.arm_side} "
+        f"(ip={connected_arm.config.robot_ip}, type={connected_arm.robot_type}, uid={connected_arm.robot_uid})"
+    )
+    _print_robot_snapshot(connected_arm.robot, connected_arm.ec)
+
+
 def _print_cartesian_pose(robot: xCoreSDK_python.xMateErProRobot, ec: dict[str, object]) -> None:
     """打印当前笛卡尔空间位姿。"""
 
@@ -496,12 +557,15 @@ def _wait_until_idle(robot: xCoreSDK_python.xMateErProRobot, ec: dict[str, objec
         轮询期间显示的提示文本。
     """
 
+    has_observed_active_state = False
     while True:
         state = robot.operationState(ec)
-        if state in (xCoreSDK_python.OperationState.idle, xCoreSDK_python.OperationState.unknown):
+        if state == xCoreSDK_python.OperationState.idle and has_observed_active_state:
             print("运动已结束")
             return
-        print(f"{prompt}: {state}")
+        if state not in (xCoreSDK_python.OperationState.idle, xCoreSDK_python.OperationState.unknown):
+            has_observed_active_state = True
+        print(f"{prompt}: {state}", end="\r")
         time.sleep(0.2)
 
 
@@ -520,6 +584,26 @@ def _wait_for_power_off(
             return True
         time.sleep(0.2)
     return False
+
+
+def _prepare_predefined_joint_motion_loop(
+    robot: xCoreSDK_python.xMateErProRobot,
+    ec: dict[str, object],
+) -> bool:
+    """在进入硬编码关节循环前，一次性准备好所需运动状态。"""
+
+    if not _ensure_nrt_motion_ready(robot, ec):
+        return False
+    robot.moveReset(ec)
+    _print_sdk_result("moveReset(pre-loop)", ec)
+    if ec.get("ec", 0) != 0:
+        return False
+    operation_state = robot.operationState(ec)
+    print(f"循环开始前操作状态: {operation_state}")
+    return operation_state in (
+        xCoreSDK_python.OperationState.idle,
+        xCoreSDK_python.OperationState.unknown,
+    )
 
 
 def _ensure_drag_prerequisites(robot: xCoreSDK_python.xMateErProRobot, ec: dict[str, object]) -> bool:
@@ -604,10 +688,64 @@ def _connect_robot(config: RobotConnectionConfig) -> xCoreSDK_python.xMateErProR
     return robot
 
 
-def _default_connection_config() -> RobotConnectionConfig:
-    """返回脚本内置的默认连接配置。"""
+def _default_connection_configs() -> list[RobotConnectionConfig]:
+    """返回脚本内置的候选机器人连接配置。"""
 
-    return RobotConnectionConfig(robot_ip=ROBOT_IP, local_ip=LOCAL_IP)
+    return [
+        RobotConnectionConfig(robot_ip="192.168.1.161", local_ip=LOCAL_IP),
+        RobotConnectionConfig(robot_ip="192.168.1.160", local_ip=LOCAL_IP),
+    ]
+
+
+def _detect_arm_side(robot_type: str) -> str:
+    """根据控制器上报的机型名称判断左右臂。"""
+
+    for arm_side, expected_robot_type in EXPECTED_ARM_TYPES.items():
+        if robot_type == expected_robot_type:
+            return arm_side
+    raise ValueError(f"未识别的机器人型号: {robot_type}")
+
+
+def _connect_arms(configs: list[RobotConnectionConfig]) -> dict[str, ConnectedArm]:
+    """连接多台机械臂，并按控制器上报的型号归类左右臂。"""
+
+    connected_arms: dict[str, ConnectedArm] = {}
+    try:
+        for config in configs:
+            ec: dict[str, object] = {}
+            robot = _connect_robot(config)
+            robot_info = robot.robotInfo(ec)
+            _print_sdk_result(f"robotInfo({config.robot_ip})", ec)
+            if ec.get("ec", 0) != 0:
+                raise RuntimeError(f"读取机器人信息失败: ip={config.robot_ip}")
+            arm_side = _detect_arm_side(robot_info.type)
+            if arm_side in connected_arms:
+                raise RuntimeError(
+                    f"检测到重复的 {arm_side} 机械臂: "
+                    f"existing={connected_arms[arm_side].config.robot_ip}, current={config.robot_ip}"
+                )
+            connected_arm = ConnectedArm(
+                arm_side=arm_side,
+                config=config,
+                robot=robot,
+                robot_type=robot_info.type,
+                robot_uid=robot_info.id,
+                ec=ec,
+            )
+            _prepare_robot(robot, ec)
+            connected_arms[arm_side] = connected_arm
+            print(
+                f"已连接 {arm_side} arm: ip={config.robot_ip}, "
+                f"type={robot_info.type}, uid={robot_info.id}"
+            )
+        missing_arm_sides = [arm_side for arm_side in EXPECTED_ARM_TYPES if arm_side not in connected_arms]
+        if missing_arm_sides:
+            raise RuntimeError(f"缺少目标机械臂连接: {', '.join(missing_arm_sides)}")
+        return connected_arms
+    except Exception:
+        for connected_arm in connected_arms.values():
+            _shutdown_robot(connected_arm.robot, connected_arm.ec)
+        raise
 
 
 def _prepare_robot(robot: xCoreSDK_python.xMateErProRobot, ec: dict[str, object]) -> None:
@@ -616,6 +754,27 @@ def _prepare_robot(robot: xCoreSDK_python.xMateErProRobot, ec: dict[str, object]
     robot.setMotionControlMode(xCoreSDK_python.MotionControlMode.NrtCommandMode, ec)
     robot.setOperateMode(xCoreSDK_python.OperateMode.manual, ec)
     robot.setPowerState(False, ec)
+
+
+def _shutdown_robot(robot: xCoreSDK_python.xMateErProRobot, ec: dict[str, object]) -> None:
+    """安全停止并断开单台机械臂连接。"""
+
+    try:
+        robot.stop(ec)
+    except Exception:
+        pass
+    try:
+        robot.disableDrag(ec)
+    except Exception:
+        pass
+    try:
+        robot.setPowerState(False, ec)
+    except Exception:
+        pass
+    try:
+        robot.disconnectFromRobot(ec)
+    except Exception:
+        pass
 
 
 def _set_motor_state(robot: xCoreSDK_python.xMateErProRobot, ec: dict[str, object], on: bool) -> None:
@@ -778,6 +937,10 @@ def _cartesian_control_loop(robot: xCoreSDK_python.xMateErProRobot, ec: dict[str
 def _joint_control_loop(robot: xCoreSDK_python.xMateErProRobot, ec: dict[str, object]) -> None:
     """关节空间控制循环。"""
 
+    if not _prepare_predefined_joint_motion_loop(robot, ec):
+        print("关节运动前置状态未准备完成，请先检查控制器状态")
+        return
+
     while True:
         joint_values = robot.jointPos(ec)
         print(f"当前关节值(deg): {_format_sequence(_rad_to_deg(joint_values))}")
@@ -794,14 +957,33 @@ def _joint_control_loop(robot: xCoreSDK_python.xMateErProRobot, ec: dict[str, ob
         target_joint = _make_joint_position(_deg_to_rad(target_values))
         cmd_id = xCoreSDK_python.PyString()
         robot.moveReset(ec)
+        _print_sdk_result("moveReset", ec)
+        if ec.get("ec", 0) != 0:
+            return
         robot.moveAppend([xCoreSDK_python.MoveAbsJCommand(target_joint, 1000, 10)], cmd_id, ec)
+        _print_sdk_result("moveAppend(MoveAbsJ)", ec)
+        if ec.get("ec", 0) != 0:
+            return
         robot.moveStart(ec)
+        _print_sdk_result("moveStart", ec)
+        if ec.get("ec", 0) != 0:
+            current_power_state = robot.powerState(ec)
+            current_operate_mode = robot.operateMode(ec)
+            current_operation_state = robot.operationState(ec)
+            print(f"moveStart 失败时电机状态: {current_power_state} ({_describe_power_state(current_power_state)})")
+            print(f"moveStart 失败时模式: {current_operate_mode}")
+            print(f"moveStart 失败时操作状态: {current_operation_state}")
+            return
         print(f"已下发关节运动，cmd_id={cmd_id.content()}")
         _wait_until_idle(robot, ec, "等待关节运动")
 
 
 def _single_joint_control_loop(robot: xCoreSDK_python.xMateErProRobot, ec: dict[str, object]) -> None:
     """单关节控制循环。"""
+
+    if not _prepare_predefined_joint_motion_loop(robot, ec):
+        print("单关节运动前置状态未准备完成，请先检查控制器状态")
+        return
 
     while True:
         joint_values = robot.jointPos(ec)
@@ -835,8 +1017,23 @@ def _single_joint_control_loop(robot: xCoreSDK_python.xMateErProRobot, ec: dict[
             target_joint = _make_joint_position(target_joint_values)
             cmd_id = xCoreSDK_python.PyString()
             robot.moveReset(ec)
+            _print_sdk_result("moveReset", ec)
+            if ec.get("ec", 0) != 0:
+                return
             robot.moveAppend([xCoreSDK_python.MoveAbsJCommand(target_joint, 1000, 10)], cmd_id, ec)
+            _print_sdk_result("moveAppend(MoveAbsJ)", ec)
+            if ec.get("ec", 0) != 0:
+                return
             robot.moveStart(ec)
+            _print_sdk_result("moveStart", ec)
+            if ec.get("ec", 0) != 0:
+                current_power_state = robot.powerState(ec)
+                current_operate_mode = robot.operateMode(ec)
+                current_operation_state = robot.operationState(ec)
+                print(f"moveStart 失败时电机状态: {current_power_state} ({_describe_power_state(current_power_state)})")
+                print(f"moveStart 失败时模式: {current_operate_mode}")
+                print(f"moveStart 失败时操作状态: {current_operation_state}")
+                return
             print(f"已下发单关节运动，cmd_id={cmd_id.content()}")
             _wait_until_idle(robot, ec, "等待单关节运动")
             joint_values = robot.jointPos(ec)
@@ -846,11 +1043,27 @@ def _single_joint_control_loop(robot: xCoreSDK_python.xMateErProRobot, ec: dict[
 def _loop_predefined_joint_motion(robot: xCoreSDK_python.xMateErProRobot, ec: dict[str, object]) -> None:
     """按硬编码关节值循环移动，直到用户中断。"""
 
-    waypoints = (
-        [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-        [11.4591559, -11.4591559, 17.1887339, -22.9183118, 28.6478898, -34.3774677],
-        [-5.72957795, 17.1887339, -11.4591559, 22.9183118, -28.6478898, 34.3774677],
-    )
+    waypoints = [
+        [23.14, -14.05, -6.15, -18.01, -5.38, -14.87, 9.22],
+        [131.17, -12.99, -6.15, -24.95, -116.70, -8.74, 5.25],
+        [147.30, -24.60, -6.15, -13.24, -130.37, 15.81, -12.85],
+        [177.45, -36.53, -6.15, -10.04, -120.67, 17.51, 2.21],
+        [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
+    ]
+
+    if not _prepare_predefined_joint_motion_loop(robot, ec):
+        print("循环关节运动前置状态未准备完成，请先检查控制器状态")
+        return
+
+    joint_count = len(robot.jointPos(ec))
+    for index, target_values in enumerate(waypoints, start=1):
+        if len(target_values) != joint_count:
+            print(
+                f"第 {index} 个 waypoint 关节数不匹配，"
+                f"expected={joint_count}, actual={len(target_values)}"
+            )
+            return
+
     print("开始循环移动。按 Ctrl+C 中断并退出。")
     try:
         while True:
@@ -859,8 +1072,23 @@ def _loop_predefined_joint_motion(robot: xCoreSDK_python.xMateErProRobot, ec: di
                 target_joint = _make_joint_position(_deg_to_rad(list(target_values)))
                 cmd_id = xCoreSDK_python.PyString()
                 robot.moveReset(ec)
-                robot.moveAppend([xCoreSDK_python.MoveAbsJCommand(target_joint, 1000, 10)], cmd_id, ec)
+                _print_sdk_result("moveReset", ec)
+                if ec.get("ec", 0) != 0:
+                    return
+                robot.moveAppend([xCoreSDK_python.MoveAbsJCommand(target_joint, 500, 10)], cmd_id, ec)
+                _print_sdk_result("moveAppend(MoveAbsJ)", ec)
+                if ec.get("ec", 0) != 0:
+                    return
                 robot.moveStart(ec)
+                _print_sdk_result("moveStart", ec)
+                if ec.get("ec", 0) != 0:
+                    current_power_state = robot.powerState(ec)
+                    current_operate_mode = robot.operateMode(ec)
+                    current_operation_state = robot.operationState(ec)
+                    print(f"moveStart 失败时电机状态: {current_power_state} ({_describe_power_state(current_power_state)})")
+                    print(f"moveStart 失败时模式: {current_operate_mode}")
+                    print(f"moveStart 失败时操作状态: {current_operation_state}")
+                    return
                 print(f"已下发循环关节运动，cmd_id={cmd_id.content()}")
                 _wait_until_idle(robot, ec, "等待循环关节运动")
     except KeyboardInterrupt:
@@ -871,11 +1099,38 @@ def _loop_predefined_joint_motion(robot: xCoreSDK_python.xMateErProRobot, ec: di
 
 
 # region 主菜单
-def _main_menu(robot: xCoreSDK_python.xMateErProRobot, ec: dict[str, object]) -> None:
+def _select_active_arm(connected_arms: dict[str, ConnectedArm], current_arm_side: str) -> str:
+    """在主菜单中切换当前控制的机械臂。"""
+
+    print("可选机械臂:")
+    print("  1. left")
+    print("  2. right")
+    print("  q. 返回主菜单")
+    choice = input("请选择机械臂: ").strip().lower()
+    if choice == "1":
+        return "left"
+    if choice == "2":
+        return "right"
+    if choice == "q":
+        return current_arm_side
+    print("无效选择，保持当前机械臂不变")
+    return current_arm_side
+
+
+def _main_menu(connected_arms: dict[str, ConnectedArm]) -> None:
     """主菜单循环。"""
 
+    current_arm_side = "left"
     while True:
-        print("\n可选操作:")
+        connected_arm = connected_arms[current_arm_side]
+        robot = connected_arm.robot
+        ec = connected_arm.ec
+        print(
+            f"\n当前机械臂: {current_arm_side} "
+            f"(ip={connected_arm.config.robot_ip}, type={connected_arm.robot_type})"
+        )
+        print("可选操作:")
+        print("  0. 切换机械臂")
         print("  1. 打开电机")
         print("  2. 关闭电机")
         print("  3. 切换模式")
@@ -888,9 +1143,12 @@ def _main_menu(robot: xCoreSDK_python.xMateErProRobot, ec: dict[str, object]) ->
         print("  10. 急停复位")
         print("  11. 软限位开关")
         print("  12. 查询工具列表")
+        print("  13. 打印当前机械臂状态")
         print("  q. 退出")
         choice = input("请选择: ").strip().lower()
-        if choice == "1":
+        if choice == "0":
+            current_arm_side = _select_active_arm(connected_arms, current_arm_side)
+        elif choice == "1":
             _set_motor_state(robot, ec, True)
         elif choice == "2":
             _set_motor_state(robot, ec, False)
@@ -914,6 +1172,8 @@ def _main_menu(robot: xCoreSDK_python.xMateErProRobot, ec: dict[str, object]) ->
             _toggle_soft_limit(robot, ec)
         elif choice == "12":
             _list_tools(robot, ec)
+        elif choice == "13":
+            _print_connected_arm_snapshot(connected_arm)
         elif choice == "q":
             return
         else:
@@ -923,31 +1183,14 @@ def _main_menu(robot: xCoreSDK_python.xMateErProRobot, ec: dict[str, object]) ->
 def main() -> int:
     """程序入口。"""
 
-    config = _default_connection_config()
-    ec: dict[str, object] = {}
-    robot = _connect_robot(config)
+    connected_arms = _connect_arms(_default_connection_configs())
     try:
-        _prepare_robot(robot, ec)
-        _print_robot_snapshot(robot, ec)
-        _main_menu(robot, ec)
+        _print_connected_arm_snapshot(connected_arms["left"])
+        _main_menu(connected_arms)
         return 0
     finally:
-        try:
-            robot.stop(ec)
-        except Exception:
-            pass
-        try:
-            robot.disableDrag(ec)
-        except Exception:
-            pass
-        try:
-            robot.setPowerState(False, ec)
-        except Exception:
-            pass
-        try:
-            robot.disconnectFromRobot(ec)
-        except Exception:
-            pass
+        for connected_arm in connected_arms.values():
+            _shutdown_robot(connected_arm.robot, connected_arm.ec)
 
 
 if __name__ == "__main__":

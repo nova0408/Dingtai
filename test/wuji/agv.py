@@ -16,6 +16,7 @@ from src.wuji.qmlinker_session import WujiQmlinkerSession  # noqa: E402
 
 SSH_ALIAS = "orin"
 QMLINKER_HOST = "192.168.100.60"
+# QMLINKER_HOST = "192.168.1.102"
 
 
 def _smoke_direct_channel() -> None:
