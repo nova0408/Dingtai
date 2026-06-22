@@ -1,6 +1,6 @@
 {
   "schema_version": "rect_marker_prior.v1",
-  "created_at": "20260615_174138",
+  "created_at": "20260622_100252",
   "source_image": "color_undistorted.png",
   "camera": {
     "image_width": 848,
@@ -27,41 +27,41 @@
       "marker_id": "marker_1",
       "corners_px": [
         [
-          339.0,
-          345.0
+          380.0,
+          357.0
         ],
         [
-          406.0,
-          344.0
+          449.0,
+          368.0
         ],
         [
-          408.0,
-          364.0
+          447.0,
+          390.0
         ],
         [
-          340.0,
-          366.0
+          377.0,
+          379.0
         ]
       ],
       "corner_order": "top_left,top_right,bottom_right,bottom_left",
       "rgb_prior": [
-        255,
-        87,
-        62
+        254,
+        66,
+        28
       ],
       "rgb_median": [
-        255,
-        87,
-        62
+        254,
+        66,
+        28
       ],
       "rgb_mad": [
-        0.0,
         1.0,
+        2.0,
         3.0
       ],
-      "expected_area_px": 1386.0,
-      "expected_angle_deg": -0.855,
-      "expected_aspect_ratio": 3.283687,
+      "expected_area_px": 1556.5,
+      "expected_angle_deg": 9.058,
+      "expected_aspect_ratio": 3.177164,
       "max_center_shift_px": 12.0,
       "max_angle_delta_deg": 12.0,
       "min_area_ratio": 0.55,

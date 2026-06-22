@@ -1,0 +1,46 @@
+name: DingTai
+channels:
+  - conda-forge
+  - defaults
+
+dependencies:
+  # Python runtime
+  - python=3.12
+
+  # Basic packaging/runtime tools
+  - pip
+  - setuptools
+  - wheel
+
+  # Core scientific stack
+  # 2026-06-09 实测：Qt 内嵌 Open3D 视图稳定组合为 numpy 1.26.4 + open3d 0.19.0。
+  # 同时 plyfile 1.0.x 仍要求保持在 numpy 1.x。
+  - numpy=1.26.4
+  - scipy
+  - tomlkit
+
+  # GUI
+  # README 里记录 PySide6 6.11.0；Python 3.12 下优先让 conda-forge 求解可用的 PySide6 6.x。
+  # 如果必须严格 6.11.0，可在建好环境后再用 pip 单独固定。
+  - pyside6
+
+  # Logging
+  - loguru
+
+  # Point cloud / image processing
+  - open3d=0.19.0
+  - opencv
+
+  # General utilities used by qmlinker/gRPC-style SDKs
+  - protobuf>=6.33.5,<7.0.0
+  - plyfile<1.1.0
+
+  # ssh
+  - paramiko
+
+  # 读写配置文件
+  - tomlkit
+  # NOTE:
+  # - 已故意移除 pythonocc-core。
+  # - 不要手动添加 occt；它原来主要是 pythonocc-core 的重依赖链。
+  # - qmlinker 本地 whl、torch/torchvision 建议在环境创建后单独安装。

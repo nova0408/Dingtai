@@ -1,9 +1,9 @@
 [network]
 # 基础控制工控机。qmlinker 二次开发接口连接该地址。
-base_control_ip = "192.168.100.60"
+base_control_ip = "192.168.100.50"
 
 # Orin 模组。用于 SSH 登录、相机/边缘计算等非 qmlinker 控制链路。
-orin_ip = "192.168.100.70"
+orin_ip = "192.168.100.60"
 
 # 大寰夹爪服务端口。
 gripper_port = 50066
