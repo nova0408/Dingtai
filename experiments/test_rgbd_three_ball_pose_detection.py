@@ -306,11 +306,6 @@ def _run_realtime_detection(
 
             frame_idx += 1
             preview_frames += 1
-            if points is not None and points.size > 0:
-                preview_points = _downsample_points(points, DEFAULT_MAX_PREVIEW_POINTS)
-                _update_raw_cloud(raw_pcd, preview_points)
-                vis.update_geometry(raw_pcd)
-
             while True:
                 try:
                     result = result_queue.get_nowait()
@@ -318,6 +313,7 @@ def _run_realtime_detection(
                     break
                 completed += 1
                 last_overlay = result.overlay_bgr
+                _update_raw_cloud(raw_pcd, result.preview_points)
                 _update_detection_3d(
                     ball_mesh=ball_mesh,
                     center_frame_mesh=center_frame_mesh,
@@ -325,6 +321,7 @@ def _run_realtime_detection(
                     line_set=line_set,
                     result=result,
                 )
+                vis.update_geometry(raw_pcd)
                 vis.update_geometry(ball_mesh)
                 vis.update_geometry(center_frame_mesh)
                 vis.update_geometry(pose_frame_mesh)
@@ -1384,9 +1381,9 @@ def _update_detection_3d(
     result: DetectionResult,
 ) -> None:
     centers = _collect_visual_centers(result.detections)
-    _replace_mesh(ball_mesh, _build_ball_marker_mesh(result.detections))
-    _replace_mesh(center_frame_mesh, _build_center_frame_mesh(centers, result.pose))
-    _replace_mesh(pose_frame_mesh, _build_pose_frame_mesh(result.pose, result.reference_pose))
+    _replace_mesh(ball_mesh, _empty_mesh())
+    _replace_mesh(center_frame_mesh, _build_center_cross_mesh(centers))
+    _replace_mesh(pose_frame_mesh, _build_pose_frame_mesh(result.pose))
     _update_line_set(line_set, centers)
 
 
@@ -1398,48 +1395,50 @@ def _collect_visual_centers(detections: dict[str, BallDetection]) -> dict[str, n
     return centers
 
 
-def _build_ball_marker_mesh(detections: dict[str, BallDetection]) -> o3d.geometry.TriangleMesh:
+def _build_center_cross_mesh(centers: dict[str, np.ndarray]) -> o3d.geometry.TriangleMesh:
     merged = o3d.geometry.TriangleMesh()
     for color_name in BALL_ORDER:
-        detection = detections[color_name]
-        if detection.center_mm is None:
+        center = centers.get(color_name)
+        if center is None:
             continue
-        radius = max(2.0, min(12.0, detection.physical_radius_mm or DEFAULT_BALL_DIAMETER_MM * 0.5))
-        mesh = o3d.geometry.TriangleMesh.create_sphere(radius=float(radius), resolution=16)
-        mesh.translate(np.asarray(detection.center_mm, dtype=np.float64))
-        mesh.paint_uniform_color(BALL_DRAW_RGB_FLOAT[color_name])
-        mesh.compute_vertex_normals()
-        merged += mesh
-    return merged if len(merged.vertices) > 0 else _empty_mesh()
-
-
-def _build_center_frame_mesh(
-    centers: dict[str, np.ndarray],
-    pose: PoseEstimate | None,
-) -> o3d.geometry.TriangleMesh:
-    merged = o3d.geometry.TriangleMesh()
-    rotation = np.eye(3, dtype=np.float64) if pose is None else pose.rotation
-    for center in centers.values():
-        frame = o3d.geometry.TriangleMesh.create_coordinate_frame(size=30.0, origin=[0.0, 0.0, 0.0])
-        frame.transform(_make_transform(origin=center, rotation=rotation))
-        merged += frame
+        merged += _make_cross_marker(
+            center=np.asarray(center, dtype=np.float64),
+            color=BALL_DRAW_RGB_FLOAT[color_name],
+        )
     return merged if len(merged.vertices) > 0 else _empty_mesh()
 
 
 def _build_pose_frame_mesh(
     pose: PoseEstimate | None,
-    reference_pose: PoseEstimate | None,
 ) -> o3d.geometry.TriangleMesh:
-    merged = o3d.geometry.TriangleMesh()
-    if reference_pose is not None:
-        reference_frame = o3d.geometry.TriangleMesh.create_coordinate_frame(size=70.0, origin=[0.0, 0.0, 0.0])
-        reference_frame.transform(reference_pose.transform)
-        merged += reference_frame
     if pose is not None:
         pose_frame = o3d.geometry.TriangleMesh.create_coordinate_frame(size=105.0, origin=[0.0, 0.0, 0.0])
         pose_frame.transform(pose.transform)
-        merged += pose_frame
-    return merged if len(merged.vertices) > 0 else _empty_mesh()
+        return pose_frame
+    return _empty_mesh()
+
+
+def _make_cross_marker(
+    center: np.ndarray,
+    color: tuple[float, float, float],
+    size_mm: float = 18.0,
+    bar_mm: float = 1.8,
+) -> o3d.geometry.TriangleMesh:
+    merged = o3d.geometry.TriangleMesh()
+    half_size = float(size_mm) * 0.5
+    half_bar = float(bar_mm) * 0.5
+    specs = (
+        (size_mm, bar_mm, bar_mm, np.asarray([-half_size, -half_bar, -half_bar], dtype=np.float64)),
+        (bar_mm, size_mm, bar_mm, np.asarray([-half_bar, -half_size, -half_bar], dtype=np.float64)),
+        (bar_mm, bar_mm, size_mm, np.asarray([-half_bar, -half_bar, -half_size], dtype=np.float64)),
+    )
+    for width, height, depth, offset in specs:
+        bar = o3d.geometry.TriangleMesh.create_box(width=float(width), height=float(height), depth=float(depth))
+        bar.translate(center + offset)
+        bar.paint_uniform_color(color)
+        bar.compute_vertex_normals()
+        merged += bar
+    return merged
 
 
 def _update_line_set(line_set: o3d.geometry.LineSet, centers: dict[str, np.ndarray]) -> None:
