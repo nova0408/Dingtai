@@ -9,37 +9,45 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from common import DEFAULT_PORT, create_orin_channel, stop_ssh_process  # noqa: E402
+from common import create_wuyou_channel, stop_ssh_process  # noqa: E402
 from src.wuji.head_client import WujiHeadClient  # noqa: E402
 
 
-def main() -> None:
-    """读取头部当前状态。"""
+def _require_bool_true(value: object, label: str) -> None:
+    """校验布尔结果必须为真。"""
 
-    ssh_process, qmlinker_channel = create_orin_channel(DEFAULT_PORT)
+    if bool(value):
+        return
+    raise RuntimeError(f"{label} failed: {value!r}")
+
+
+def _require_float_value(value: object, label: str) -> float:
+    """校验头部角度读取成功。"""
+
+    if value is None:
+        raise RuntimeError(f"{label} returned None")
+    return float(value)
+
+
+def main() -> None:
+    """按官方 head 示例验证 wuyou qmlinker 头部链路。"""
+
+    ssh_process, qmlinker_channel = create_wuyou_channel()
     head_client = WujiHeadClient(qmlinker_channel)
     try:
         logger.info("头部冒烟测试")
-        logger.info("头部初始使能 {}", head_client.get_enable())
-        head_client.set_enable(False)
-        logger.info("头部关闭后使能 {}", head_client.get_enable())
-        head_client.set_enable(True)
-        logger.info("头部打开后使能 {}", head_client.get_enable())
+        set_enable_result = head_client.set_enable(True)
+        logger.info("头部打开使能返回 {}", set_enable_result)
+        _require_bool_true(set_enable_result, "head.set_enable(True)")
 
-        yaw = float(head_client.get_head_yaw() or 0.0)
-        pitch = float(head_client.get_head_pitch() or 0.0)
-        logger.info("头部初始 yaw {} deg", yaw)
-        logger.info("头部初始 pitch {} deg", pitch)
+        enabled = head_client.get_enable()
+        logger.info("头部当前使能 {}", enabled)
+        _require_bool_true(enabled, "head.get_enable()")
 
-        head_client.set_head_yaw(yaw + 1.0)
-        head_client.set_head_pitch(pitch + 1.0)
-        logger.info("头部调整后 yaw {} deg", head_client.get_head_yaw())
-        logger.info("头部调整后 pitch {} deg", head_client.get_head_pitch())
-
-        head_client.set_head_yaw(yaw)
-        head_client.set_head_pitch(pitch)
-        logger.info("头部恢复后 yaw {} deg", head_client.get_head_yaw())
-        logger.info("头部恢复后 pitch {} deg", head_client.get_head_pitch())
+        pitch = _require_float_value(head_client.get_head_pitch(), "head.get_head_pitch()")
+        yaw = _require_float_value(head_client.get_head_yaw(), "head.get_head_yaw()")
+        logger.info("头部当前 pitch {:.3f} deg", pitch)
+        logger.info("头部当前 yaw {:.3f} deg", yaw)
         logger.success("无际头部信息冒烟通过")
     finally:
         stop_ssh_process(ssh_process)

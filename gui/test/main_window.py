@@ -39,11 +39,20 @@ from src.wuji.qmlinker_session import WujiQmlinkerSession
 from src.wuji.right_hand_client import WujiRightHandClient
 from src.wuji.zmq_camera_catalog import SUPPORTED_WUJI_ZMQ_CAMERAS_LOCAL, WujiZmqCameraEndpoint
 from src.wuji.zmq_camera_client import WujiZmqCameraClient
+from test.wuji.network_discovery import (
+    DEFAULT_ORIN_FALLBACKS,
+    DEFAULT_ORIN_SSH_ALIAS,
+    DEFAULT_WUYOU_FALLBACKS,
+    get_cached_orin_host,
+    get_cached_wuyou_host,
+    iter_candidate_hosts,
+    remember_host,
+)
 
-DEFAULT_WUJI_QMLINKER_HOST = "192.168.100.60"
+DEFAULT_WUJI_QMLINKER_HOST = get_cached_orin_host()
 DEFAULT_WUJI_QMLINKER_PORT = 50062
 DEFAULT_WUJI_CAMERA_STREAM_TIMEOUT_MS = 2000
-DEFAULT_WUJI_BASE_CONTROL_IP = "192.168.100.60"
+DEFAULT_WUJI_BASE_CONTROL_IP = get_cached_wuyou_host()
 DEFAULT_WUJI_CAMERA_CONTROL_PORT = 5570
 DEFAULT_WUJI_GRIPPER_PORT = 50066
 DEFAULT_WUJI_SSH_ALIAS = "orin"
@@ -236,54 +245,85 @@ class TestGuiMainWindow(QMainWindow):
         self._apply_connection_state(False, "已断开")
 
     def _create_connection_bundle(self) -> ConnectionBundle:
+        requested_host = self.host_edit.text().strip()
+        candidate_hosts = (requested_host,)
+        if requested_host == DEFAULT_WUJI_QMLINKER_HOST:
+            candidate_hosts = iter_candidate_hosts(
+                DEFAULT_ORIN_SSH_ALIAS,
+                DEFAULT_ORIN_FALLBACKS,
+                preferred_host=requested_host,
+            )
+
+        last_error: Exception | None = None
+        for qmlinker_host in candidate_hosts:
+            try:
+                bundle = self._create_connection_bundle_for_host(qmlinker_host)
+            except Exception as exc:  # noqa: BLE001
+                last_error = exc
+                logger.warning("GUI 连接候选失败 host={} error={}", qmlinker_host, exc)
+                continue
+            remember_host(DEFAULT_ORIN_SSH_ALIAS, qmlinker_host)
+            return bundle
+
+        if last_error is None:
+            raise RuntimeError("gui connection bundle create failed without error")
+        raise last_error
+
+    def _create_connection_bundle_for_host(self, qmlinker_host: str) -> ConnectionBundle:
+        """按单个 qmlinker 主机创建 GUI 连接包。"""
+
         session = WujiQmlinkerSession(
-            host=self.host_edit.text().strip(),
+            host=qmlinker_host,
             port=int(self.port_spin.value()),
             ssh_alias=DEFAULT_WUJI_SSH_ALIAS,
         )
-        session.check_ready()
-        camera_target = session.open_ssh_tunnel(
-            DEFAULT_WUJI_BASE_CONTROL_IP,
-            DEFAULT_WUJI_CAMERA_CONTROL_PORT,
-        )
-        for camera_endpoint in SUPPORTED_WUJI_ZMQ_CAMERAS_LOCAL:
-            self._open_camera_stream_tunnel(session, camera_endpoint)
-        parsed_camera_target = urlsplit(f"tcp://{camera_target}")
-        camera_host = parsed_camera_target.hostname
-        camera_port = parsed_camera_target.port
-        if camera_host is None or camera_port is None:
-            raise RuntimeError(f"invalid camera target: {camera_target}")
-        camera_client = WujiZmqCameraClient(
-            host=camera_host,
-            control_port=int(camera_port),
-            request_timeout_ms=max(500, int(session.request_timeout_s * 1000.0)),
-            stream_timeout_ms=max(500, int(DEFAULT_WUJI_CAMERA_STREAM_TIMEOUT_MS)),
-            camera_endpoints=SUPPORTED_WUJI_ZMQ_CAMERAS_LOCAL,
-        )
-        gripper_target = session.open_ssh_tunnel(
-            DEFAULT_WUJI_BASE_CONTROL_IP,
-            DEFAULT_WUJI_GRIPPER_PORT,
-        )
-        return ConnectionBundle(
-            session=session,
-            agv=WujiAgvClient(
-                create_channel(session.move_base_target),
-                request_timeout_s=session.request_timeout_s,
-            ),
-            head=WujiHeadClient(session.channel),
-            body=WujiBodyClient(session.channel),
-            left_arm=WujiArmClient(
-                session.channel,
-                "left_arm"
-            ),
-            right_arm=WujiArmClient(
-                session.channel,
-                "right_arm"
-            ),
-            gripper=DahuanGripperClient(create_channel(gripper_target)),
-            hand=WujiRightHandClient(session.channel, request_timeout_s=session.request_timeout_s),
-            camera=camera_client,
-        )
+        try:
+            session.check_ready()
+            camera_target = self._open_wuyou_service_tunnel_with_retry(
+                session=session,
+                remote_port=DEFAULT_WUJI_CAMERA_CONTROL_PORT,
+            )
+            for camera_endpoint in SUPPORTED_WUJI_ZMQ_CAMERAS_LOCAL:
+                self._open_camera_stream_tunnel(session, camera_endpoint)
+            parsed_camera_target = urlsplit(f"tcp://{camera_target}")
+            camera_host = parsed_camera_target.hostname
+            camera_port = parsed_camera_target.port
+            if camera_host is None or camera_port is None:
+                raise RuntimeError(f"invalid camera target: {camera_target}")
+            camera_client = WujiZmqCameraClient(
+                host=camera_host,
+                control_port=int(camera_port),
+                request_timeout_ms=max(500, int(session.request_timeout_s * 1000.0)),
+                stream_timeout_ms=max(500, int(DEFAULT_WUJI_CAMERA_STREAM_TIMEOUT_MS)),
+                camera_endpoints=SUPPORTED_WUJI_ZMQ_CAMERAS_LOCAL,
+            )
+            gripper_target = self._open_wuyou_service_tunnel_with_retry(
+                session=session,
+                remote_port=DEFAULT_WUJI_GRIPPER_PORT,
+            )
+            return ConnectionBundle(
+                session=session,
+                agv=WujiAgvClient(
+                    create_channel(session.move_base_target),
+                    request_timeout_s=session.request_timeout_s,
+                ),
+                head=WujiHeadClient(session.channel),
+                body=WujiBodyClient(session.channel),
+                left_arm=WujiArmClient(
+                    session.channel,
+                    "left_arm"
+                ),
+                right_arm=WujiArmClient(
+                    session.channel,
+                    "right_arm"
+                ),
+                gripper=DahuanGripperClient(create_channel(gripper_target)),
+                hand=WujiRightHandClient(session.channel, request_timeout_s=session.request_timeout_s),
+                camera=camera_client,
+            )
+        except Exception:
+            session.close()
+            raise
 
     def _apply_connection_state(self, connected: bool, message: str) -> None:
         self.connection_indicator.set_status(bool(connected))
@@ -320,6 +360,32 @@ class TestGuiMainWindow(QMainWindow):
         """为本机 GUI 调试预先打开相机数据流 SSH 转发。"""
 
         session.open_ssh_tunnel(
-            DEFAULT_WUJI_BASE_CONTROL_IP,
+            self._get_cached_wuyou_host(),
             int(camera_endpoint.stream_port) + 1,
         )
+
+    def _open_wuyou_service_tunnel_with_retry(self, session: WujiQmlinkerSession, remote_port: int) -> str:
+        """仅在首选 wuyou 主机失败时轮询候选并回写缓存。"""
+
+        last_error: Exception | None = None
+        for wuyou_host in iter_candidate_hosts(
+            "wuyou",
+            DEFAULT_WUYOU_FALLBACKS,
+            preferred_host=self._get_cached_wuyou_host(),
+        ):
+            try:
+                local_target = session.open_ssh_tunnel(wuyou_host, int(remote_port))
+            except Exception as exc:  # noqa: BLE001
+                last_error = exc
+                logger.warning("GUI wuyou 隧道候选失败 host={} port={} error={}", wuyou_host, remote_port, exc)
+                continue
+            remember_host("wuyou", wuyou_host)
+            return local_target
+        if last_error is None:
+            raise RuntimeError(f"wuyou tunnel create failed: port={remote_port}")
+        raise last_error
+
+    def _get_cached_wuyou_host(self) -> str:
+        """读取当前缓存的 wuyou 主机。"""
+
+        return get_cached_wuyou_host()

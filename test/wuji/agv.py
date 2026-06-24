@@ -13,9 +13,10 @@ if str(PROJECT_ROOT) not in sys.path:
 from common import AGV_HOST, DEFAULT_PORT, create_orin_channel, stop_ssh_process  # noqa: E402
 from src.wuji.agv_client import WujiAgvClient  # noqa: E402
 from src.wuji.qmlinker_session import WujiQmlinkerSession  # noqa: E402
+from network_discovery import get_cached_orin_host  # noqa: E402
 
 SSH_ALIAS = "orin"
-QMLINKER_HOST = "192.168.100.60"
+QMLINKER_HOST = get_cached_orin_host()
 # QMLINKER_HOST = "192.168.1.102"
 
 

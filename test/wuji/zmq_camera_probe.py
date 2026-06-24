@@ -15,8 +15,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.wuji import SUPPORTED_WUJI_CAMERAS, WujiCameraFrame, WujiCameraName, WujiZmqCameraClient
-from common import ORIN_HOST  # noqa: E402
+from common import WUYOU_HOST  # noqa: E402
+from src.wuji import SUPPORTED_WUJI_CAMERAS, WujiCameraFrame, WujiCameraName, WujiZmqCameraClient  # noqa: E402
 
 # endregion
 
@@ -25,7 +25,7 @@ from common import ORIN_HOST  # noqa: E402
 
 DEFAULT_CAMERA_NAME = "all"  # 默认探测全部逻辑相机；可改为单个逻辑相机名
 DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "test" / "wuji" / "artifacts" / "zmq_camera_probe"  # 结果输出目录
-DEFAULT_HOST = ORIN_HOST  # ZMQ 相机服务主机
+DEFAULT_HOST = WUYOU_HOST  # ZMQ 相机服务主机
 DEFAULT_CAPTURE_RGB = True  # 是否采集 RGB 首帧
 DEFAULT_CAPTURE_RGBD = True  # 是否采集 RGBD 首帧
 DEFAULT_REQUEST_TIMEOUT_MS = 3000  # 控制命令超时，单位 ms

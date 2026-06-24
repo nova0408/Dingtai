@@ -28,6 +28,7 @@ from src.wuji import WujiZmqCameraClient  # noqa: E402
 # region 默认参数
 
 DEFAULT_CAMERA_NAME: WujiCameraName = "left_hand_camera"  # 默认采样相机名
+DEFAULT_ZMQ_HOST = WUYOU_HOST  # ZMQ 相机服务主机地址
 DEFAULT_CONTROL_PORT = 5570  # ZMQ 控制口端口，单位 端口号
 DEFAULT_LEFT_HAND_STREAM_PORT = 5562  # 左手相机数据口端口，单位 端口号
 DEFAULT_REQUEST_TIMEOUT_MS = 3000  # 控制命令超时，单位 ms
@@ -49,7 +50,7 @@ def main() -> None:
 
     logger.info("硬件测试脚本：未连通 wuyou 或真实左手相机时会失败")
     logger.info("测试相机 {}", DEFAULT_CAMERA_NAME)
-    logger.info("相机服务远端地址 {}", WUYOU_HOST)
+    logger.info("相机服务远端地址 {}", DEFAULT_ZMQ_HOST)
 
     session_dir = DEFAULT_ROOT_DIR / datetime.now().strftime("%m%d-%H%M")
     session_dir.mkdir(parents=True, exist_ok=True)
@@ -57,12 +58,12 @@ def main() -> None:
 
     control_tunnel_process = start_ssh_tunnel(
         DEFAULT_CONTROL_PORT,
-        remote_host=WUYOU_HOST,
+        remote_host=DEFAULT_ZMQ_HOST,
         ssh_alias=WUYOU_SSH_ALIAS,
     )
     stream_tunnel_process = start_ssh_tunnel(
         DEFAULT_LEFT_HAND_STREAM_PORT,
-        remote_host=WUYOU_HOST,
+        remote_host=DEFAULT_ZMQ_HOST,
         ssh_alias=WUYOU_SSH_ALIAS,
     )
     time.sleep(DEFAULT_FORWARD_WAIT_S)
@@ -108,7 +109,7 @@ def _run_interactive_capture(client: WujiZmqCameraClient, camera_name: WujiCamer
     intrinsics_path = session_dir / "intrinsics.json"
     intrinsics_payload = {
         "camera_name": camera_name,
-        "host": WUYOU_HOST,
+        "host": DEFAULT_ZMQ_HOST,
         "capture_started_at": datetime.now().isoformat(timespec="seconds"),
         "intrinsics": asdict(intrinsics),
     }

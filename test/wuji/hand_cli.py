@@ -33,12 +33,13 @@ from src.wuji.client_base import WujiQmlinkerBaseClient  # noqa: E402
 from src.wuji.protocol import WujiQmlinkerConfig  # noqa: E402
 from src.wuji.right_hand_client import WujiRightHandClient  # noqa: E402
 from src.wuji.right_hand_specs import RIGHT_HAND_ACTUATOR_SPECS, WujiRightHandActuatorSpec  # noqa: E402
+from network_discovery import get_cached_orin_host  # noqa: E402
 
 
 # endregion
 
 
-DEFAULT_HOST = "192.168.100.60"
+DEFAULT_HOST = get_cached_orin_host()
 DEFAULT_PORT = 50062
 
 REQUEST_TIMEOUT_S = 3.0

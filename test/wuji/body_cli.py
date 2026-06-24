@@ -12,8 +12,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from common import DEFAULT_PORT, create_orin_channel, stop_ssh_process
-from src.wuji.body_client import WujiBodyClient
+from common import DEFAULT_PORT, create_orin_channel, stop_ssh_process  # noqa: E402
+from src.wuji.body_client import WujiBodyClient  # noqa: E402
 
 # endregion
 

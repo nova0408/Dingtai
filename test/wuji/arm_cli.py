@@ -16,9 +16,10 @@ if str(PROJECT_ROOT) not in sys.path:
 from src.wuji.arm_client import WujiArmClient  # noqa: E402
 from src.wuji.client_base import WujiQmlinkerBaseClient  # noqa: E402
 from src.wuji.protocol import WujiQmlinkerConfig  # noqa: E402
+from network_discovery import get_cached_orin_host  # noqa: E402
 
 
-DEFAULT_HOST = "192.168.100.60"
+DEFAULT_HOST = get_cached_orin_host()
 DEFAULT_PORT = 50062
 
 # 指令下发后最多等待 1 秒。

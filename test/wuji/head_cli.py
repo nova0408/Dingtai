@@ -12,7 +12,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from common import DEFAULT_PORT, create_orin_channel, stop_ssh_process  # noqa: E402
+from common import create_wuyou_channel, stop_ssh_process  # noqa: E402
 from src.wuji.head_client import WujiHeadClient  # noqa: E402
 
 DEFAULT_REQUEST_TIMEOUT_S = 3.0  # 请求超时时间，单位 s
@@ -80,10 +80,10 @@ def _control_head(head: WujiHeadClient) -> None:
 def main(request_timeout_s: float = DEFAULT_REQUEST_TIMEOUT_S) -> None:
     """头部交互式 CLI。"""
 
-    logger.info("头部控制脚本启动，请先确认 Orin 连接正常。")
+    logger.info("头部控制脚本启动，请先确认 wuyou qmlinker 连接正常。")
     logger.info("请求超时 {} s", request_timeout_s)
 
-    ssh_process, qmlinker_channel = create_orin_channel(DEFAULT_PORT)
+    ssh_process, qmlinker_channel = create_wuyou_channel()
     head_client = WujiHeadClient(qmlinker_channel)
     try:
         _control_head(head_client)

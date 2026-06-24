@@ -6,7 +6,6 @@ import time
 from pathlib import Path
 
 from loguru import logger
-from google.protobuf import empty_pb2
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
