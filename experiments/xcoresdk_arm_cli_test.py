@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import csv
 import math
-import select
 import sys
 import time
+from datetime import datetime
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -330,122 +331,6 @@ def _select_cartesian_motion_type() -> str | None:
     raise ValueError("无效运动方式")
 
 
-def _set_toolset_load(robot: xCoreSDK_python.xMateErProRobot, ec: dict[str, object]) -> bool:
-    """设置拖动前置所需的工具负载参数。"""
-
-    print("请输入工具负载参数，单位分别为 kg、m、kg*m^2")
-    print("输入 q 返回上一级")
-    try:
-        mass_values = _input_optional_float_list("负载质量 mass: ", expected_len=1)
-        if mass_values is None:
-            return False
-        cog_values = _input_optional_float_list("负载重心 cog(x y z): ", expected_len=3)
-        if cog_values is None:
-            return False
-        inertia_values = _input_optional_float_list("负载惯量 inertia(ix iy iz): ", expected_len=3)
-        if inertia_values is None:
-            return False
-    except ValueError as exc:
-        print(f"输入格式错误: {exc}")
-        return False
-
-    toolset = xCoreSDK_python.Toolset()
-    toolset.load.mass = mass_values[0]
-    toolset.load.cog = cog_values
-    toolset.load.inertia = inertia_values
-    robot.setToolset(toolset, ec)
-    _print_sdk_result("setToolset(load)", ec)
-    return bool(ec.get("ec", 0) == 0)
-
-
-def _apply_named_toolset(robot: xCoreSDK_python.xMateErProRobot, ec: dict[str, object], tool_name: str) -> bool:
-    """按控制器里已有的工具名称设置工具工件组。"""
-
-    print(f"正在尝试使用工具 {tool_name}")
-    try:
-        toolset = robot.setToolset(tool_name, "g_wobj_0", ec)
-    except Exception as exc:
-        print(f"读取工具失败: {exc}")
-        return False
-    _print_sdk_result(f"setToolset('{tool_name}', 'g_wobj_0')", ec)
-    if ec.get("ec", 0) != 0:
-        return False
-    print(
-        "已读取工具工件组: "
-        f"load.mass={toolset.load.mass}, "
-        f"load.cog={_format_sequence(toolset.load.cog)}, "
-        f"load.inertia={_format_sequence(toolset.load.inertia)}, "
-        f"end.trans={_format_sequence(toolset.end.trans)}, "
-        f"end.rpy={_format_sequence(toolset.end.rpy)}"
-    )
-    return True
-
-
-def _list_tools(robot: xCoreSDK_python.xMateErProRobot, ec: dict[str, object]) -> list[xCoreSDK_python.WorkToolInfo]:
-    """查询并打印当前控制器中的工具列表。"""
-
-    tools = robot.toolsInfo(ec)
-    _print_sdk_result("toolsInfo", ec)
-    if ec.get("ec", 0) != 0:
-        return []
-    if not tools:
-        print("当前没有查询到工具")
-        return []
-    for tool in tools:
-        print(f"工具: {tool.name}, 质量: {tool.load.mass}, 是否手持: {tool.robotHeld}")
-    return tools
-
-
-def _calibrate_force_sensor(robot: xCoreSDK_python.xMateErProRobot, ec: dict[str, object]) -> bool:
-    """执行力矩传感器全轴标定，并恢复到拖动前推荐状态。"""
-
-    print("开始力矩传感器标定。请确保机械臂静止、现场安全，并已设置正确负载。")
-    robot.setOperateMode(xCoreSDK_python.OperateMode.automatic, ec)
-    _print_sdk_result("setOperateMode(automatic)", ec)
-    if ec.get("ec", 0) != 0:
-        return False
-    robot.setPowerState(True, ec)
-    _print_sdk_result("setPowerState(True)", ec)
-    if ec.get("ec", 0) != 0:
-        return False
-    robot.calibrateForceSensor(True, 0, ec)
-    _print_sdk_result("calibrateForceSensor(all_axes=True)", ec)
-    success = bool(ec.get("ec", 0) == 0)
-    robot.setPowerState(False, ec)
-    _print_sdk_result("setPowerState(False)", ec)
-    robot.setOperateMode(xCoreSDK_python.OperateMode.manual, ec)
-    _print_sdk_result("setOperateMode(manual)", ec)
-    return success
-
-
-def _drag_prerequisites(robot: xCoreSDK_python.xMateErProRobot, ec: dict[str, object]) -> None:
-    """拖动前置准备：设置负载并执行力矩传感器标定。"""
-
-    print("拖动前置准备:")
-    print("  0. 查询工具列表")
-    print("  1. 使用 tool1")
-    print("  2. 仅设置工具负载")
-    print("  3. 仅标定力矩传感器")
-    print("  4. 一键执行负载设置 + 标定")
-    print("  q. 返回主菜单")
-    choice = input("请选择: ").strip().lower()
-    if choice == "0":
-        _list_tools(robot, ec)
-    elif choice == "1":
-        _apply_named_toolset(robot, ec, "tool1")
-    elif choice == "2":
-        _set_toolset_load(robot, ec)
-    elif choice == "3":
-        _calibrate_force_sensor(robot, ec)
-    elif choice == "4":
-        if _set_toolset_load(robot, ec):
-            _calibrate_force_sensor(robot, ec)
-    elif choice == "q":
-        return
-    else:
-        print("无效选择")
-
-
 def _recover_estop(robot: xCoreSDK_python.xMateErProRobot, ec: dict[str, object]) -> None:
     """执行急停复位。"""
 
@@ -632,46 +517,70 @@ def _ensure_drag_prerequisites(robot: xCoreSDK_python.xMateErProRobot, ec: dict[
     return True
 
 
-def _poll_record_command() -> str | None:
-    """非阻塞轮询记录模式下的控制输入。"""
-
-    if sys.platform == "win32":
-        if not msvcrt.kbhit():
-            return None
-        key = msvcrt.getwch()
-        if key in ("\x00", "\xe0") and msvcrt.kbhit():
-            msvcrt.getwch()
-            return None
-        return key.lower()
-
-    readable, _, _ = select.select([sys.stdin], [], [], 0.0)
-    if not readable:
-        return None
-    return sys.stdin.readline().strip().lower()
-
-
-def _drag_record_loop(robot: xCoreSDK_python.xMateErProRobot, ec: dict[str, object]) -> None:
+def _drag_record_loop(
+    connected_arm: ConnectedArm,
+) -> list[dict[str, str]]:
     """拖动开启后的记录模式。"""
 
-    print("已进入记录模式，实时显示当前关节值。")
-    print("按 s 打印当前关节值，按 q 退出记录模式。")
+    robot = connected_arm.robot
+    ec = connected_arm.ec
+    records: list[dict[str, str]] = []
+    print("已进入记录模式。")
+    print("直接回车记录当前信息，输入 q 退出并保存。")
     try:
         while True:
-            joint_values_deg = _rad_to_deg(robot.jointPos(ec))
-            sys.stdout.write(f"\r当前关节值(deg): {_format_sequence(joint_values_deg)}")
-            sys.stdout.flush()
-            command = _poll_record_command()
-            if command == "s":
-                print()
-                print(f"记录关节值(deg): {_format_sequence(joint_values_deg)}")
-            elif command == "q":
-                print()
+            raw_text = input("请输入: ").strip().lower()
+            if raw_text == "q":
                 print("退出记录模式")
-                return
-            time.sleep(0.1)
+                return records
+            if raw_text != "":
+                print("无效输入，请直接回车或输入 q")
+                continue
+            joint_values = robot.jointPos(ec)
+            cart_pose = robot.cartPosture(xCoreSDK_python.endInRef, ec)
+            _print_sdk_result("jointPos", ec)
+            _print_sdk_result("cartPosture(endInRef)", ec)
+            record: dict[str, str] = {
+                "timestamp": datetime.now().isoformat(timespec="seconds"),
+                "arm_side": connected_arm.arm_side,
+                "robot_ip": connected_arm.config.robot_ip,
+                "robot_type": connected_arm.robot_type,
+                "robot_uid": connected_arm.robot_uid,
+                "joint_1_deg": f"{math.degrees(joint_values[0]):.6f}",
+                "joint_2_deg": f"{math.degrees(joint_values[1]):.6f}",
+                "joint_3_deg": f"{math.degrees(joint_values[2]):.6f}",
+                "joint_4_deg": f"{math.degrees(joint_values[3]):.6f}",
+                "joint_5_deg": f"{math.degrees(joint_values[4]):.6f}",
+                "joint_6_deg": f"{math.degrees(joint_values[5]):.6f}",
+                "joint_7_deg": f"{math.degrees(joint_values[6]):.6f}",
+                "x_mm": f"{float(cart_pose.trans[0]) * 1000.0:.6f}",
+                "y_mm": f"{float(cart_pose.trans[1]) * 1000.0:.6f}",
+                "z_mm": f"{float(cart_pose.trans[2]) * 1000.0:.6f}",
+                "rx_deg": f"{math.degrees(float(cart_pose.rpy[0])):.6f}",
+                "ry_deg": f"{math.degrees(float(cart_pose.rpy[1])):.6f}",
+                "rz_deg": f"{math.degrees(float(cart_pose.rpy[2])):.6f}",
+                "has_elbow": str(bool(cart_pose.hasElbow)),
+                "elbow_deg": f"{math.degrees(float(cart_pose.elbow)):.6f}",
+                "conf_data": str(list(cart_pose.confData)),
+            }
+            records.append(record)
+            print(f"已记录第 {len(records)} 条")
     except KeyboardInterrupt:
         print()
         print("用户中断，退出记录模式")
+        return records
+
+
+def _write_drag_records_csv(records: list[dict[str, str]], arm_side: str) -> Path | None:
+    if not records:
+        return None
+    csv_path = Path.cwd() / f"xcoresdk_drag_records_{arm_side}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+    fieldnames = list(records[0].keys())
+    with csv_path.open("w", encoding="utf-8-sig", newline="") as file:
+        writer = csv.DictWriter(file, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(records)
+    return csv_path
 
 
 # endregion
@@ -796,58 +705,47 @@ def _switch_mode(robot: xCoreSDK_python.xMateErProRobot, ec: dict[str, object]) 
     print("模式切换完成")
 
 
-def _toggle_drag(robot: xCoreSDK_python.xMateErProRobot, ec: dict[str, object]) -> None:
+def _toggle_drag(connected_arm: ConnectedArm) -> None:
+    robot = connected_arm.robot
+    ec = connected_arm.ec
     print("可选拖动开关:")
     print("  1. 打开拖动")
     print("  2. 关闭拖动")
     choice = input("请选择: ").strip()
     if choice == "1":
-        if not _ensure_drag_prerequisites(robot, ec):
-            return
-        print("拖动空间:")
-        print("  1. 轴空间")
-        print("  2. 笛卡尔空间")
-        space_choice = input("请选择拖动空间: ").strip()
-        print("拖动类型:")
-        print("  1. 仅平移")
-        print("  2. 仅旋转")
-        print("  3. 自由拖拽")
-        type_choice = input("请选择拖动类型: ").strip()
-        if space_choice == "1":
-            space = int(xCoreSDK_python.DragParameterSpace.jointSpace)
-            if type_choice != "3":
-                raise ValueError("轴空间拖动仅支持自由拖拽，请选择拖动类型 3")
-        elif space_choice == "2":
-            space = int(xCoreSDK_python.DragParameterSpace.cartesianSpace)
-        else:
-            raise ValueError("无效拖动空间")
-        if type_choice == "1":
-            drag_type = int(xCoreSDK_python.DragParameterType.translationOnly)
-        elif type_choice == "2":
-            drag_type = int(xCoreSDK_python.DragParameterType.rotationOnly)
-        elif type_choice == "3":
-            drag_type = int(xCoreSDK_python.DragParameterType.freely)
-        else:
-            raise ValueError("无效拖动类型")
-        # 在真正打开拖动前再确认一次，避免用户选择期间状态被现场条件改写。
-        if not _ensure_drag_prerequisites(robot, ec):
-            return
-        enable_drag = robot.enableDrag
-        enable_drag_any: Any = enable_drag
+        csv_path: Path | None = None
         try:
-            # 优先按照官方示例调用三参版本。
-            enable_drag_any(space, drag_type, ec)
-            _print_sdk_result("enableDrag(space, type, ec)", ec)
-        except TypeError:
-            enable_drag_any(space, drag_type, ec, True)
-            _print_sdk_result("enableDrag(space, type, ec, True)", ec)
-        operation_state = robot.operationState(ec)
-        print("当前操作状态:", operation_state)
-        if operation_state == xCoreSDK_python.OperationState.drag:
-            print("已确认进入拖动状态")
-            _drag_record_loop(robot, ec)
-            return
-        print("当前未进入拖动状态，请检查上述错误码、控制器安全状态，或尝试按住末端拖动按键后再操作")
+            if not _ensure_drag_prerequisites(robot, ec):
+                return
+            enable_drag = robot.enableDrag
+            enable_drag_any: Any = enable_drag
+            try:
+                enable_drag_any(
+                    int(xCoreSDK_python.DragParameterSpace.cartesianSpace),
+                    int(xCoreSDK_python.DragParameterType.freely),
+                    ec,
+                )
+                _print_sdk_result("enableDrag(cartesianSpace, freely, ec)", ec)
+            except TypeError:
+                enable_drag_any(
+                    int(xCoreSDK_python.DragParameterSpace.cartesianSpace),
+                    int(xCoreSDK_python.DragParameterType.freely),
+                    ec,
+                    True,
+                )
+                _print_sdk_result("enableDrag(cartesianSpace, freely, ec, True)", ec)
+            if ec.get("ec", 0) != 0:
+                return
+            records = _drag_record_loop(connected_arm)
+            csv_path = _write_drag_records_csv(records, connected_arm.arm_side)
+        finally:
+            robot.disableDrag(ec)
+            _print_sdk_result("disableDrag", ec)
+        if csv_path is None:
+            print("没有记录到任何数据，已关闭拖动")
+        else:
+            print(f"已保存到: {csv_path}")
+            print("拖动已关闭")
     elif choice == "2":
         robot.disableDrag(ec)
         _print_sdk_result("disableDrag", ec)
@@ -1139,10 +1037,8 @@ def _main_menu(connected_arms: dict[str, ConnectedArm]) -> None:
         print("  6. 关节空间控制")
         print("  7. 单关节控制")
         print("  8. 硬编码关节值循环移动")
-        print("  9. 拖动前置准备")
         print("  10. 急停复位")
         print("  11. 软限位开关")
-        print("  12. 查询工具列表")
         print("  13. 打印当前机械臂状态")
         print("  q. 退出")
         choice = input("请选择: ").strip().lower()
@@ -1155,7 +1051,7 @@ def _main_menu(connected_arms: dict[str, ConnectedArm]) -> None:
         elif choice == "3":
             _switch_mode(robot, ec)
         elif choice == "4":
-            _toggle_drag(robot, ec)
+            _toggle_drag(connected_arm)
         elif choice == "5":
             _cartesian_control_loop(robot, ec)
         elif choice == "6":
@@ -1164,14 +1060,10 @@ def _main_menu(connected_arms: dict[str, ConnectedArm]) -> None:
             _single_joint_control_loop(robot, ec)
         elif choice == "8":
             _loop_predefined_joint_motion(robot, ec)
-        elif choice == "9":
-            _drag_prerequisites(robot, ec)
         elif choice == "10":
             _recover_estop(robot, ec)
         elif choice == "11":
             _toggle_soft_limit(robot, ec)
-        elif choice == "12":
-            _list_tools(robot, ec)
         elif choice == "13":
             _print_connected_arm_snapshot(connected_arm)
         elif choice == "q":
