@@ -10,7 +10,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from common import ORIN_HOST, start_ssh_tunnel, stop_ssh_process  # noqa: E402
+from common import WUYOU_HOST, WUYOU_SSH_ALIAS, start_ssh_tunnel, stop_ssh_process  # noqa: E402
 from src.wuji import SUPPORTED_WUJI_ZMQ_CAMERAS_LOCAL, WujiCameraName, WujiZmqCameraClient  # noqa: E402
 
 # endregion
@@ -36,10 +36,18 @@ def main() -> None:
 
     logger.info("硬件测试脚本：未连通 orin 或真实左手相机时会失败")
     logger.info("测试相机 {}", DEFAULT_CAMERA_NAME)
-    logger.info("相机服务远端地址 {}", ORIN_HOST)
+    logger.info("相机服务远端地址 {}", WUYOU_HOST)
 
-    control_tunnel_process = start_ssh_tunnel(DEFAULT_CONTROL_PORT)
-    stream_tunnel_process = start_ssh_tunnel(DEFAULT_LEFT_HAND_STREAM_PORT)
+    control_tunnel_process = start_ssh_tunnel(
+        DEFAULT_CONTROL_PORT,
+        remote_host=WUYOU_HOST,
+        ssh_alias=WUYOU_SSH_ALIAS,
+    )
+    stream_tunnel_process = start_ssh_tunnel(
+        DEFAULT_LEFT_HAND_STREAM_PORT,
+        remote_host=WUYOU_HOST,
+        ssh_alias=WUYOU_SSH_ALIAS,
+    )
     time.sleep(DEFAULT_FORWARD_WAIT_S)
 
     client = WujiZmqCameraClient(

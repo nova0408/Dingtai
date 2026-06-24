@@ -9,10 +9,11 @@ from qmlinker import create_channel
 GRIPPER_PORT = 50066
 DEFAULT_PORT = 50062
 DATA_PORT = 50061
-ORIN_HOST = "192.168.1.108"
-# ORIN_HOST = "192.168.100.60"
+ORIN_HOST = "192.168.100.60"
+WUYOU_HOST = "192.168.1.114"
 AGV_HOST = "192.168.100.70"
 SSH_ALIAS = "orin"
+WUYOU_SSH_ALIAS = "wuyou"
 TUNNEL_WAIT_S = 1.0
 
 
@@ -37,7 +38,11 @@ def stop_ssh_process(process: subprocess.Popen[bytes]) -> None:
         process.wait(timeout=3.0)
 
 
-def start_ssh_tunnel(remote_port: int, remote_host: str = ORIN_HOST) -> subprocess.Popen[bytes]:
+def start_ssh_tunnel(
+    remote_port: int,
+    remote_host: str = ORIN_HOST,
+    ssh_alias: str = SSH_ALIAS,
+) -> subprocess.Popen[bytes]:
     """启动固定端口 SSH 本地转发。"""
 
     command = [
@@ -45,12 +50,13 @@ def start_ssh_tunnel(remote_port: int, remote_host: str = ORIN_HOST) -> subproce
         "-N",
         "-L",
         f"127.0.0.1:{int(remote_port) - 1}:{remote_host}:{int(remote_port)}",
-        SSH_ALIAS,
+        ssh_alias,
     ]
     logger.info(
-        "启动 SSH 隧道-本地 127.0.0.1:{} | 远端 {}:{}",
+        "启动 SSH 隧道-本地 127.0.0.1:{} | 远端 {}:{} | 跳板 {}",
         int(remote_port) - 1,
         remote_host,
         int(remote_port),
+        ssh_alias,
     )
     return subprocess.Popen(command)

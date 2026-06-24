@@ -258,8 +258,7 @@ class BodyTabWidget(QWidget, ActivatableTab):
         result = self._client.lift.get_lift_height()
         if result is None:
             raise RuntimeError("lift height unavailable")
-        height_scale, _timestamp = result
-        return float(height_scale) * float(self.LIFT_MAX_HEIGHT_MM)
+        return float(result[0])
 
     def _read_waist_pitch_deg(self) -> float:
         if self._client is None:
@@ -279,8 +278,7 @@ class BodyTabWidget(QWidget, ActivatableTab):
             return
         try:
             if axis_key == "lift":
-                target_scale = float(value) / float(self.LIFT_MAX_HEIGHT_MM)
-                self._client.lift.set_lift_height_sync(target_scale)
+                self._client.lift.set_lift_physical_height(int(round(float(value))))
             else:
                 self._client.waist.set_waist_pitch(float(value))
             self._request_refresh()
