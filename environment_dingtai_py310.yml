@@ -29,7 +29,8 @@ dependencies:
 
   # Point cloud / image processing
   - open3d=0.19.0
-  - opencv
+  - pip:
+      - opencv-contrib-python==4.10.0.84
 
   # General utilities used by qmlinker/gRPC-style SDKs
   - protobuf>=6.33.5,<7.0.0

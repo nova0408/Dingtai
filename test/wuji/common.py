@@ -10,6 +10,7 @@ GRIPPER_PORT = 50066
 DEFAULT_PORT = 50062
 DATA_PORT = 50061
 ORIN_HOST = "192.168.1.108"
+WUYOU_HOST = "192.168.10.37"
 # ORIN_HOST = "192.168.100.60"
 AGV_HOST = "192.168.100.70"
 SSH_ALIAS = "orin"
@@ -48,7 +49,7 @@ def start_ssh_tunnel(remote_port: int, remote_host: str = ORIN_HOST) -> subproce
         SSH_ALIAS,
     ]
     logger.info(
-        "启动 SSH 隧道-本地 127.0.0.1:{} | 远端 {}:{}",
+        "启动 SSH 隧道 - 本地 127.0.0.1:{} | 远端 {}:{}",
         int(remote_port) - 1,
         remote_host,
         int(remote_port),

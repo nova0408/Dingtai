@@ -742,9 +742,18 @@ class OrbbecSession:
                 color_profile = _select_profile_with_preferred_fps(
                     profile_list=color_profile_list,
                     preferred_fps=self.options.preferred_capture_fps,
-                    preferred_format=OBFormat.YUYV,
+                    preferred_format=_resolve_color_preferred_format(
+                        self.options.preferred_color_format_name
+                    ),
+                    preferred_width=self.options.preferred_color_width,
+                    preferred_height=self.options.preferred_color_height,
                 )
                 self.config.enable_stream(color_profile)
+                logger.info(
+                    "Orbbec color profile selected: "
+                    f"{color_profile.get_width()}x{color_profile.get_height()} "
+                    f"{color_profile.get_format()} @{_safe_profile_fps(color_profile, fallback=0.0):.0f}fps"
+                )
                 if self.options.require_full_frame_when_color:
                     self.config.set_frame_aggregate_output_mode(OBFrameAggregateOutputMode.FULL_FRAME_REQUIRE)
                 self.has_color_sensor = True
@@ -1002,11 +1011,15 @@ def _timestamp_us_from_frame(frame) -> int | None:
             return None
 
 
-def _select_profile_with_preferred_fps(profile_list, preferred_fps: int | None, preferred_format: OBFormat):
-    """按“格式优先 + 帧率优先”策略选择流 profile。"""
+def _select_profile_with_preferred_fps(
+    profile_list,
+    preferred_fps: int | None,
+    preferred_format: OBFormat | None,
+    preferred_width: int | None = None,
+    preferred_height: int | None = None,
+):
+    """按“分辨率/格式优先 + 帧率优先”策略选择流 profile。"""
     default_profile = profile_list.get_default_video_stream_profile()
-    if preferred_fps is None:
-        return default_profile
 
     count = int(profile_list.get_count())
     candidates: list = []
@@ -1018,15 +1031,86 @@ def _select_profile_with_preferred_fps(profile_list, preferred_fps: int | None, 
     if not candidates:
         return default_profile
 
-    for profile in candidates:
-        if int(profile.get_fps()) == int(preferred_fps) and profile.get_format() == preferred_format:
-            return profile
-
-    for profile in candidates:
-        if int(profile.get_fps()) == int(preferred_fps):
-            return profile
+    target_width = None if preferred_width is None else int(preferred_width)
+    target_height = None if preferred_height is None else int(preferred_height)
+    ranked_candidates = sorted(
+        candidates,
+        key=lambda profile: _profile_sort_key(
+            profile=profile,
+            preferred_fps=preferred_fps,
+            preferred_format=preferred_format,
+            preferred_width=target_width,
+            preferred_height=target_height,
+        ),
+    )
+    if ranked_candidates:
+        return ranked_candidates[0]
 
     return default_profile
+
+
+def _profile_sort_key(
+    profile,
+    preferred_fps: int | None,
+    preferred_format: OBFormat | None,
+    preferred_width: int | None,
+    preferred_height: int | None,
+) -> tuple[int, int, int, int, int, int]:
+    width = _safe_profile_width(profile)
+    height = _safe_profile_height(profile)
+    fps = int(round(_safe_profile_fps(profile, fallback=0.0)))
+    fmt = profile.get_format()
+    area = width * height
+
+    format_mismatch = 0 if preferred_format is None or fmt == preferred_format else 1
+    width_mismatch = 0 if preferred_width is None or width == preferred_width else 1
+    height_mismatch = 0 if preferred_height is None or height == preferred_height else 1
+    fps_mismatch = 0 if preferred_fps is None or fps == int(preferred_fps) else 1
+    fps_distance = 0 if preferred_fps is None else abs(fps - int(preferred_fps))
+    return (
+        format_mismatch,
+        width_mismatch,
+        height_mismatch,
+        fps_mismatch,
+        fps_distance,
+        -area,
+    )
+
+
+def _safe_profile_width(profile) -> int:
+    try:
+        return int(profile.get_width())
+    except Exception:
+        return 0
+
+
+def _safe_profile_height(profile) -> int:
+    try:
+        return int(profile.get_height())
+    except Exception:
+        return 0
+
+
+def _resolve_color_preferred_format(format_name: str | None) -> OBFormat | None:
+    if format_name is None:
+        return OBFormat.YUYV
+    token = str(format_name).strip().upper()
+    mapping = {
+        "YUYV": OBFormat.YUYV,
+        "YUY2": OBFormat.YUY2,
+        "BGR": OBFormat.BGR,
+        "BGRA": OBFormat.BGRA,
+        "RGB": OBFormat.RGB,
+        "RGBA": OBFormat.RGBA,
+        "MJPG": OBFormat.MJPG,
+        "Y8": OBFormat.Y8,
+        "Y16": OBFormat.Y16,
+        "UYVY": OBFormat.UYVY,
+        "NV12": OBFormat.NV12,
+        "NV21": OBFormat.NV21,
+        "I420": OBFormat.I420,
+    }
+    return mapping.get(token, OBFormat.YUYV)
 
 
 # endregion

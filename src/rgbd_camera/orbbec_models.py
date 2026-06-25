@@ -167,6 +167,12 @@ class SessionOptions:
     "启用彩色流时是否要求 FULL_FRAME 聚合输出"
     preferred_capture_fps: int | None = None
     "期望采集帧率，单位 fps`None` 表示使用 SDK 默认 profile"
+    preferred_color_width: int | None = None
+    "期望彩色流宽度，单位 像素。`None` 表示不限制"
+    preferred_color_height: int | None = None
+    "期望彩色流高度，单位 像素。`None` 表示不限制"
+    preferred_color_format_name: str | None = None
+    "期望彩色流格式名，例如 `BGR`、`RGB`、`MJPG`。`None` 表示沿用默认偏好"
     enable_imu: bool = False
     "是否尝试启用设备 IMU`True` 启用，`False` 禁用"
     require_full_frame_when_imu: bool = True
