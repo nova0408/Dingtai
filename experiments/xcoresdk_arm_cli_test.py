@@ -32,8 +32,9 @@ EXPECTED_ARM_TYPES = {
     "right": "AR5-5_0.8R-W4C1C9-ZY2",
 }
 
-from sdk.xcoresdk import xCoreSDK_python  # noqa: E402
-
+from sdk.xcoresdk import xCoreSDK_python 
+DEFAULT_LEFT_ANGLE=[-85.00, -100.00, 45.00, -50.00, -10.00, -15.00, -5.00]
+DEFAULT_RIGHT_ANGLE=[-100.00, 100.00, 135.00, -55.00, 0.00, -15.00, 10.00]
 
 # region 数据结构
 @dataclass(frozen=True, slots=True)
@@ -429,7 +430,12 @@ def _print_cartesian_pose(robot: xCoreSDK_python.xMateErProRobot, ec: dict[str, 
     print(f"  hasElbow: {pose.hasElbow}, elbow(deg): {math.degrees(pose.elbow):.2f}, confData: {pose.confData}")
 
 
-def _wait_until_idle(robot: xCoreSDK_python.xMateErProRobot, ec: dict[str, object], prompt: str) -> None:
+def _wait_until_idle(
+    robot: xCoreSDK_python.xMateErProRobot,
+    ec: dict[str, object],
+    prompt: str,
+    timeout_s: float = 15.0,
+) -> bool:
     """轮询等待机器人运动结束。
 
     Parameters
@@ -440,14 +446,20 @@ def _wait_until_idle(robot: xCoreSDK_python.xMateErProRobot, ec: dict[str, objec
         SDK 错误码字典，由调用方复用。
     prompt:
         轮询期间显示的提示文本。
+    timeout_s:
+        等待超时时间，超时后返回 `False`。
     """
 
     has_observed_active_state = False
+    deadline = time.time() + timeout_s
     while True:
+        if time.time() >= deadline:
+            print(f"{prompt} 超时：超过 {timeout_s:.1f} 秒仍未结束")
+            return False
         state = robot.operationState(ec)
         if state == xCoreSDK_python.OperationState.idle and has_observed_active_state:
             print("运动已结束")
-            return
+            return True
         if state not in (xCoreSDK_python.OperationState.idle, xCoreSDK_python.OperationState.unknown):
             has_observed_active_state = True
         print(f"{prompt}: {state}", end="\r")
@@ -540,31 +552,40 @@ def _drag_record_loop(
             cart_pose = robot.cartPosture(xCoreSDK_python.endInRef, ec)
             _print_sdk_result("jointPos", ec)
             _print_sdk_result("cartPosture(endInRef)", ec)
+            joint_values_deg = _rad_to_deg(joint_values)
+            trans_mm = _m_to_mm(cart_pose.trans)
+            rpy_deg = _rad_to_deg(cart_pose.rpy)
             record: dict[str, str] = {
                 "timestamp": datetime.now().isoformat(timespec="seconds"),
-                "arm_side": connected_arm.arm_side,
-                "robot_ip": connected_arm.config.robot_ip,
-                "robot_type": connected_arm.robot_type,
-                "robot_uid": connected_arm.robot_uid,
-                "joint_1_deg": f"{math.degrees(joint_values[0]):.6f}",
-                "joint_2_deg": f"{math.degrees(joint_values[1]):.6f}",
-                "joint_3_deg": f"{math.degrees(joint_values[2]):.6f}",
-                "joint_4_deg": f"{math.degrees(joint_values[3]):.6f}",
-                "joint_5_deg": f"{math.degrees(joint_values[4]):.6f}",
-                "joint_6_deg": f"{math.degrees(joint_values[5]):.6f}",
-                "joint_7_deg": f"{math.degrees(joint_values[6]):.6f}",
-                "x_mm": f"{float(cart_pose.trans[0]) * 1000.0:.6f}",
-                "y_mm": f"{float(cart_pose.trans[1]) * 1000.0:.6f}",
-                "z_mm": f"{float(cart_pose.trans[2]) * 1000.0:.6f}",
-                "rx_deg": f"{math.degrees(float(cart_pose.rpy[0])):.6f}",
-                "ry_deg": f"{math.degrees(float(cart_pose.rpy[1])):.6f}",
-                "rz_deg": f"{math.degrees(float(cart_pose.rpy[2])):.6f}",
+                "side": connected_arm.arm_side,
+                "j1": f"{joint_values_deg[0]:.6f}",
+                "j2": f"{joint_values_deg[1]:.6f}",
+                "j3": f"{joint_values_deg[2]:.6f}",
+                "j4": f"{joint_values_deg[3]:.6f}",
+                "j5": f"{joint_values_deg[4]:.6f}",
+                "j6": f"{joint_values_deg[5]:.6f}",
+                "j7": f"{joint_values_deg[6]:.6f}",
+                "x": f"{trans_mm[0]:.6f}",
+                "y": f"{trans_mm[1]:.6f}",
+                "z": f"{trans_mm[2]:.6f}",
+                "rx": f"{rpy_deg[0]:.6f}",
+                "ry": f"{rpy_deg[1]:.6f}",
+                "rz": f"{rpy_deg[2]:.6f}",
                 "has_elbow": str(bool(cart_pose.hasElbow)),
-                "elbow_deg": f"{math.degrees(float(cart_pose.elbow)):.6f}",
-                "conf_data": str(list(cart_pose.confData)),
+                "elbow": f"{math.degrees(float(cart_pose.elbow)):.6f}",
+                "conf": str(list(cart_pose.confData)),
             }
             records.append(record)
             print(f"已记录第 {len(records)} 条")
+            print(f"  臂别: {record['side']}, 时间: {record['timestamp']}")
+            print(f"  关节(deg): {_format_sequence(joint_values_deg)}")
+            print(f"  位姿(mm/deg): trans={_format_sequence(trans_mm)} rpy={_format_sequence(rpy_deg)}")
+            print(
+                "  上下文: "
+                f"hasElbow={cart_pose.hasElbow}, "
+                f"elbow(deg)={math.degrees(float(cart_pose.elbow)):.2f}, "
+                f"confData={list(cart_pose.confData)}"
+            )
     except KeyboardInterrupt:
         print()
         print("用户中断，退出记录模式")
@@ -575,7 +596,26 @@ def _write_drag_records_csv(records: list[dict[str, str]], arm_side: str) -> Pat
     if not records:
         return None
     csv_path = Path.cwd() / f"xcoresdk_drag_records_{arm_side}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
-    fieldnames = list(records[0].keys())
+    fieldnames = [
+        "timestamp",
+        "side",
+        "j1",
+        "j2",
+        "j3",
+        "j4",
+        "j5",
+        "j6",
+        "j7",
+        "x",
+        "y",
+        "z",
+        "rx",
+        "ry",
+        "rz",
+        "has_elbow",
+        "elbow",
+        "conf",
+    ]
     with csv_path.open("w", encoding="utf-8-sig", newline="") as file:
         writer = csv.DictWriter(file, fieldnames=fieldnames)
         writer.writeheader()
@@ -708,50 +748,30 @@ def _switch_mode(robot: xCoreSDK_python.xMateErProRobot, ec: dict[str, object]) 
 def _toggle_drag(connected_arm: ConnectedArm) -> None:
     robot = connected_arm.robot
     ec = connected_arm.ec
-    print("可选拖动开关:")
-    print("  1. 打开拖动")
-    print("  2. 关闭拖动")
-    choice = input("请选择: ").strip()
-    if choice == "1":
-        csv_path: Path | None = None
-        try:
-            if not _ensure_drag_prerequisites(robot, ec):
-                return
-            enable_drag = robot.enableDrag
-            enable_drag_any: Any = enable_drag
-            try:
-                enable_drag_any(
-                    int(xCoreSDK_python.DragParameterSpace.cartesianSpace),
-                    int(xCoreSDK_python.DragParameterType.freely),
-                    ec,
-                )
-                _print_sdk_result("enableDrag(cartesianSpace, freely, ec)", ec)
-            except TypeError:
-                enable_drag_any(
-                    int(xCoreSDK_python.DragParameterSpace.cartesianSpace),
-                    int(xCoreSDK_python.DragParameterType.freely),
-                    ec,
-                    True,
-                )
-                _print_sdk_result("enableDrag(cartesianSpace, freely, ec, True)", ec)
-            if ec.get("ec", 0) != 0:
-                return
-            records = _drag_record_loop(connected_arm)
-            csv_path = _write_drag_records_csv(records, connected_arm.arm_side)
-        finally:
-            robot.disableDrag(ec)
-            _print_sdk_result("disableDrag", ec)
-        if csv_path is None:
-            print("没有记录到任何数据，已关闭拖动")
-        else:
-            print(f"已保存到: {csv_path}")
-            print("拖动已关闭")
-    elif choice == "2":
+    csv_path: Path | None = None
+    try:
+        if not _ensure_drag_prerequisites(robot, ec):
+            return
+        robot.enableDrag(
+            int(xCoreSDK_python.DragParameterSpace.cartesianSpace),
+            int(xCoreSDK_python.DragParameterType.freely),
+            ec,
+            enable_drag_button=False
+        )
+        _print_sdk_result("enableDrag(cartesianSpace, freely, ec)", ec)
+
+        if ec.get("ec", 0) != 0:
+            return
+        records = _drag_record_loop(connected_arm)
+        csv_path = _write_drag_records_csv(records, connected_arm.arm_side)
+    finally:
         robot.disableDrag(ec)
         _print_sdk_result("disableDrag", ec)
-        print("拖动已关闭")
+    if csv_path is None:
+        print("没有记录到任何数据，已关闭拖动")
     else:
-        raise ValueError("无效选择")
+        print(f"已保存到: {csv_path}")
+        print("拖动已关闭")
 
 
 def _cartesian_control_loop(robot: xCoreSDK_python.xMateErProRobot, ec: dict[str, object]) -> None:
@@ -914,26 +934,31 @@ def _single_joint_control_loop(robot: xCoreSDK_python.xMateErProRobot, ec: dict[
             target_joint_values[axis_index - 1] = target_value
             target_joint = _make_joint_position(target_joint_values)
             cmd_id = xCoreSDK_python.PyString()
+        try:
             robot.moveReset(ec)
             _print_sdk_result("moveReset", ec)
             if ec.get("ec", 0) != 0:
-                return
+                continue
             robot.moveAppend([xCoreSDK_python.MoveAbsJCommand(target_joint, 1000, 10)], cmd_id, ec)
             _print_sdk_result("moveAppend(MoveAbsJ)", ec)
             if ec.get("ec", 0) != 0:
-                return
+                continue
             robot.moveStart(ec)
             _print_sdk_result("moveStart", ec)
-            if ec.get("ec", 0) != 0:
-                current_power_state = robot.powerState(ec)
-                current_operate_mode = robot.operateMode(ec)
-                current_operation_state = robot.operationState(ec)
-                print(f"moveStart 失败时电机状态: {current_power_state} ({_describe_power_state(current_power_state)})")
-                print(f"moveStart 失败时模式: {current_operate_mode}")
-                print(f"moveStart 失败时操作状态: {current_operation_state}")
-                return
-            print(f"已下发单关节运动，cmd_id={cmd_id.content()}")
-            _wait_until_idle(robot, ec, "等待单关节运动")
+        except Exception as exc:
+            print(f"单关节运动指令执行异常: {exc}")
+            continue
+        if ec.get("ec", 0) != 0:
+            current_power_state = robot.powerState(ec)
+            current_operate_mode = robot.operateMode(ec)
+            current_operation_state = robot.operationState(ec)
+            print(f"moveStart 失败时电机状态: {current_power_state} ({_describe_power_state(current_power_state)})")
+            print(f"moveStart 失败时模式: {current_operate_mode}")
+            print(f"moveStart 失败时操作状态: {current_operation_state}")
+            continue
+        print(f"已下发单关节运动，cmd_id={cmd_id.content()}")
+        if not _wait_until_idle(robot, ec, "等待单关节运动"):
+            continue
             joint_values = robot.jointPos(ec)
         continue
 
