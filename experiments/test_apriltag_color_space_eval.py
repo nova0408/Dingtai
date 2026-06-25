@@ -1,5 +1,17 @@
 from __future__ import annotations
 
+"""
+脚本流程概览：
+1. Gemini305 以 1280x800 彩色流采集原图，并执行相机畸变校正。
+2. 对同一帧生成 Gray / CLAHE / 背景归一化 / 双边滤波 / 高反差等增强视图。
+3. 在多分支候选提取链路中分别执行 Canny、局部二值、Otsu、LSD 等候选四边形搜索。
+4. 对候选四边形做透视校正、模板采样和 AprilTag 16h5 位解码，再结合重投影误差计算单帧评分。
+5. 将各增强分支的单帧结果做空间去重融合，得到单帧 Fusion。
+6. 对最近 5 帧 Fusion 做时序投票，只保留至少 3 帧一致的稳定实例，得到 TemporalFusion。
+7. 预览中展示各分支效果与最终 TemporalFusion；输出 CSV 和截图用于离线分析。
+详细说明见：test_apriltag_color_space_eval.md
+"""
+
 import argparse
 import csv
 import math
@@ -172,9 +184,7 @@ def main(config: AppConfig) -> None:
         allowed_tag_ids=config.allowed_tag_ids,
     )
     capture_rows: list[CaptureRow] = []
-    temporal_fusion_history: deque[list[DetectionResult]] = deque(
-        maxlen=DEFAULT_TEMPORAL_WINDOW_SIZE
-    )
+    temporal_fusion_history: deque[list[DetectionResult]] = deque(maxlen=DEFAULT_TEMPORAL_WINDOW_SIZE)
 
     options = SessionOptions(
         timeout=int(config.timeout_ms),
@@ -230,9 +240,7 @@ def main(config: AppConfig) -> None:
                     tag_specs=tag_specs,
                     tag_size_mm=config.tag_size_mm,
                 )
-                temporal_fusion_history.append(
-                    list(frame_results.get("Fusion", VariantDetections([], [])).results)
-                )
+                temporal_fusion_history.append(list(frame_results.get("Fusion", VariantDetections([], [])).results))
                 frame_results["TemporalFusion"] = _fuse_temporal_detections(
                     fusion_history=list(temporal_fusion_history),
                     window_size=DEFAULT_TEMPORAL_WINDOW_SIZE,
@@ -1627,11 +1635,7 @@ def _find_temporal_match(
     anchor: DetectionResult,
     history_results: list[DetectionResult],
 ) -> DetectionResult | None:
-    matched_results = [
-        result
-        for result in history_results
-        if _detection_matches(anchor, result)
-    ]
+    matched_results = [result for result in history_results if _detection_matches(anchor, result)]
     if not matched_results:
         return None
     return max(matched_results, key=lambda item: item.score)
@@ -1647,9 +1651,7 @@ def _build_temporal_detection_result(
     mean_score = float(np.mean([item.score for item in cluster]))
     temporal_score = float(0.7 * mean_score + 0.3 * support_ratio)
     mean_template_score = float(np.mean([item.template_score for item in cluster]))
-    mean_reprojection_error = float(
-        np.mean([item.reprojection_error_px for item in cluster])
-    )
+    mean_reprojection_error = float(np.mean([item.reprojection_error_px for item in cluster]))
     mean_reprojection_score = float(np.mean([item.reprojection_score for item in cluster]))
     mean_size_score = float(np.mean([item.size_score for item in cluster]))
     mean_perimeter = float(np.mean([item.perimeter_px for item in cluster]))
@@ -1696,18 +1698,12 @@ def _detection_matches(
     anchor: DetectionResult,
     candidate: DetectionResult,
 ) -> bool:
-    if (
-        anchor.tag_id != candidate.tag_id
-        or anchor.corners_px is None
-        or candidate.corners_px is None
-    ):
+    if anchor.tag_id != candidate.tag_id or anchor.corners_px is None or candidate.corners_px is None:
         return False
     anchor_center = np.mean(anchor.corners_px, axis=0)
     candidate_center = np.mean(candidate.corners_px, axis=0)
     center_distance = float(np.linalg.norm(anchor_center - candidate_center))
-    corner_distance = float(
-        np.mean(np.linalg.norm(anchor.corners_px - candidate.corners_px, axis=1))
-    )
+    corner_distance = float(np.mean(np.linalg.norm(anchor.corners_px - candidate.corners_px, axis=1)))
     return center_distance <= 24.0 and corner_distance <= 28.0
 
 
