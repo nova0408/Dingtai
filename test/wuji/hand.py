@@ -10,7 +10,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from common import DEFAULT_PORT, create_orin_channel, stop_ssh_process  # noqa: E402
+from common import DEFAULT_PORT, create_wuyou_channel, stop_ssh_process  # noqa: E402
 from src.wuji.right_hand_client import WujiRightHandClient  # noqa: E402
 
 DEFAULT_A0_DELTA = 0.1
@@ -23,7 +23,7 @@ def _clamp_normalized(value: float) -> float:
 def main() -> None:
     """读取右手当前状态并验证基础控制链路。"""
 
-    ssh_process, qmlinker_channel = create_orin_channel(DEFAULT_PORT)
+    ssh_process, qmlinker_channel = create_wuyou_channel(DEFAULT_PORT)
     hand = WujiRightHandClient(qmlinker_channel)
     try:
         logger.info("右手冒烟测试")
@@ -63,7 +63,9 @@ def main() -> None:
         moved_a0 = float(moved_state["actuators"][0]["position"])
         logger.info("右手 a0 运动后 {}", moved_a0)
 
-        if not hand.set_right_hand_axis(0, a0_before):
+        restore_positions = list(current_positions)
+        restore_positions[0] = a0_before
+        if not hand.set_hand_state(restore_positions):
             raise RuntimeError("右手 a0 恢复失败")
         time.sleep(0.5)
 

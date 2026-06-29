@@ -11,7 +11,6 @@ from network_discovery import (
     DEFAULT_ORIN_SSH_ALIAS,
     DEFAULT_WUYOU_FALLBACKS,
     DEFAULT_WUYOU_SSH_ALIAS,
-    get_cached_orin_host,
     get_cached_wuyou_host,
     iter_candidate_hosts,
     remember_host,
@@ -20,7 +19,7 @@ from network_discovery import (
 GRIPPER_PORT = 50066
 DEFAULT_PORT = 50062
 DATA_PORT = 50061
-ORIN_HOST = get_cached_orin_host()
+WUYOU_QMLINKER_HOST = "192.168.100.60"
 WUYOU_HOST = get_cached_wuyou_host()
 AGV_HOST = "192.168.100.70"
 SSH_ALIAS = "orin"
@@ -35,56 +34,21 @@ class SshTunnelGroup:
     processes: tuple[subprocess.Popen[bytes], ...]
 
 
-def create_orin_channel(remote_port: int, remote_host: str = ORIN_HOST) -> tuple[SshTunnelGroup, object]:
-    """按 qmlinker 官方示例创建本机调试 channel。
+def create_wuyou_channel(remote_port: int, remote_host: str = WUYOU_QMLINKER_HOST) -> tuple[SshTunnelGroup, object]:
+    """通过 `orin` 连接 `wuyou` 的 qmlinker 服务，并创建本机调试 channel。
 
     Notes
     -----
-    `qmlinker.create_channel("host")` 会同时使用：
-    - `DEFAULT` 通道：`50062`
-    - `DATA` 通道：`50061`
-
-    因此本机 SSH 调试不能把 `50062` 错映射到 `50061` 再直连单端口，
-    而应保持本地端口号与远端一致，再调用 `create_channel("127.0.0.1")`。
+    这里的链路含义是：
+    - 本机先通过 SSH 连接 `orin`
+    - 再由 `orin` 去访问 `wuyou` 侧的 `qmlinker` 服务地址
+    - 远端 `remote_port` 映射到本地 `remote_port - 1`
+    - 最后直接调用 `create_channel("127.0.0.1:{local_port}")`
     """
 
-    if int(remote_port) != DEFAULT_PORT:
-        process = start_ssh_tunnel(remote_port, remote_host)
-        time.sleep(TUNNEL_WAIT_S)
-        return SshTunnelGroup((process,)), create_channel(f"127.0.0.1:{int(remote_port) - 1}")
-
-    default_process = _start_ssh_tunnel_with_local_port(
-        remote_port=DEFAULT_PORT,
-        remote_host=remote_host,
-        local_port=DEFAULT_PORT,
-        ssh_alias=SSH_ALIAS,
-    )
-    data_process = _start_ssh_tunnel_with_local_port(
-        remote_port=DATA_PORT,
-        remote_host=remote_host,
-        local_port=DATA_PORT,
-        ssh_alias=SSH_ALIAS,
-        allow_discovery=False,
-    )
-    return SshTunnelGroup((default_process, data_process)), create_channel("127.0.0.1")
-
-
-def create_wuyou_channel(remote_port: int = DEFAULT_PORT, remote_host: str = WUYOU_HOST) -> tuple[SshTunnelGroup, object]:
-    """为 wuyou 上的 qmlinker 服务创建本机调试 channel。"""
-
-    if int(remote_port) != DEFAULT_PORT:
-        process = start_ssh_tunnel(remote_port, remote_host=remote_host, ssh_alias=WUYOU_SSH_ALIAS)
-        time.sleep(TUNNEL_WAIT_S)
-        return SshTunnelGroup((process,)), create_channel(f"127.0.0.1:{int(remote_port) - 1}")
-
-    default_process = _start_ssh_tunnel_with_local_port(
-        remote_port=DEFAULT_PORT,
-        remote_host=remote_host,
-        local_port=DEFAULT_PORT,
-        ssh_alias=WUYOU_SSH_ALIAS,
-        allow_discovery=True,
-    )
-    return SshTunnelGroup((default_process,)), create_channel("127.0.0.1")
+    process = start_ssh_tunnel(int(remote_port), remote_host=str(remote_host))
+    time.sleep(TUNNEL_WAIT_S)
+    return SshTunnelGroup((process,)), create_channel(f"127.0.0.1:{int(remote_port) - 1}")
 
 
 def stop_ssh_process(process: subprocess.Popen[bytes] | SshTunnelGroup) -> None:
@@ -99,7 +63,7 @@ def stop_ssh_process(process: subprocess.Popen[bytes] | SshTunnelGroup) -> None:
 
 def start_ssh_tunnel(
     remote_port: int,
-    remote_host: str = ORIN_HOST,
+    remote_host: str = WUYOU_QMLINKER_HOST,
     ssh_alias: str = SSH_ALIAS,
 ) -> subprocess.Popen[bytes]:
     """启动固定端口 SSH 本地转发。
@@ -186,9 +150,9 @@ def _build_tunnel_candidates(remote_host: str, ssh_alias: str, allow_discovery: 
 
     if not allow_discovery:
         return (str(remote_host),)
-    if ssh_alias == DEFAULT_ORIN_SSH_ALIAS and remote_host == ORIN_HOST:
+    if ssh_alias == DEFAULT_ORIN_SSH_ALIAS and remote_host == WUYOU_QMLINKER_HOST:
         return iter_candidate_hosts(ssh_alias, DEFAULT_ORIN_FALLBACKS, preferred_host=remote_host)
-    if ssh_alias == DEFAULT_WUYOU_SSH_ALIAS and remote_host == WUYOU_HOST:
+    if ssh_alias == DEFAULT_WUYOU_SSH_ALIAS and remote_host == WUYOU_QMLINKER_HOST:
         return iter_candidate_hosts(ssh_alias, DEFAULT_WUYOU_FALLBACKS, preferred_host=remote_host)
     return (str(remote_host),)
 

@@ -10,14 +10,14 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from common import GRIPPER_PORT, create_orin_channel, stop_ssh_process  # noqa: E402
-from src.wuji.dahuan_gripper_client import DahuanGripperClient  # noqa: E402
+from common import GRIPPER_PORT, create_wuyou_channel, stop_ssh_process
+from src.wuji.dahuan_gripper_client import DahuanGripperClient
 
 
 def main() -> None:
     """验证大寰夹爪基础控制链路。"""
 
-    ssh_process, channel = create_orin_channel(GRIPPER_PORT)
+    ssh_process, channel = create_wuyou_channel(GRIPPER_PORT)
     client = DahuanGripperClient(channel)
     try:
         status = client.get_status()

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 # region 依赖导入
 import argparse
-import os
 import sys
 from pathlib import Path
 import time
@@ -12,15 +11,15 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from common import DEFAULT_PORT, create_orin_channel, stop_ssh_process  # noqa: E402
-from src.wuji.body_client import WujiBodyClient  # noqa: E402
+from common import DEFAULT_PORT, create_wuyou_channel, stop_ssh_process
+from src.wuji.body_client import WujiBodyClient
 
 # endregion
 
 
 # region 默认参数
 
-DEFAULT_REQUEST_TIMEOUT_S = 3.0  # 请求超时时间，单位 s
+DEFAULT_REQUEST_TIMEOUT_S = 3.0
 
 # endregion
 
@@ -34,13 +33,12 @@ def main(request_timeout_s: float = DEFAULT_REQUEST_TIMEOUT_S) -> None:
     logger.info("身体控制脚本启动，请先确认 Orin 连接正常。")
     logger.info("请求超时 {} s", request_timeout_s)
 
-    ssh_process, qmlinker_channel = create_orin_channel(DEFAULT_PORT)
+    ssh_process, qmlinker_channel = create_wuyou_channel(DEFAULT_PORT)
     body_client = WujiBodyClient(qmlinker_channel)
     try:
         _interactive_loop(body_client=body_client)
     finally:
         stop_ssh_process(ssh_process)
-        os._exit(0)
 
 
 # endregion

@@ -11,9 +11,9 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from common import DEFAULT_PORT, create_orin_channel, stop_ssh_process  # noqa: E402
-from src.wuji.body_client import WujiBodyClient  # noqa: E402
-from qmlinker.grpc_py import lift_pb2  # noqa: E402
+from common import DEFAULT_PORT, create_wuyou_channel, stop_ssh_process
+from qmlinker.grpc_py import lift_pb2
+from src.wuji.body_client import WujiBodyClient
 
 def _read_lift_height_mm(result: object) -> float:
     """将 lift 读取结果转换成毫米。"""
@@ -34,7 +34,7 @@ def _set_lift_physical_height_direct(lift: object, height_mm: int, timeout_s: fl
 def main() -> None:
     """读取身体当前状态。"""
 
-    ssh_process, qmlinker_channel = create_orin_channel(DEFAULT_PORT)
+    ssh_process, qmlinker_channel = create_wuyou_channel(DEFAULT_PORT)
     body_client = WujiBodyClient(qmlinker_channel)
     try:
         logger.info("身体冒烟测试")

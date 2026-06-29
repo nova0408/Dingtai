@@ -10,7 +10,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from common import AGV_HOST, DEFAULT_PORT, create_orin_channel, stop_ssh_process  # noqa: E402
+from common import AGV_HOST, DEFAULT_PORT, create_wuyou_channel, stop_ssh_process  # noqa: E402
 from src.wuji.agv_client import WujiAgvClient  # noqa: E402
 from src.wuji.qmlinker_session import WujiQmlinkerSession  # noqa: E402
 from network_discovery import get_cached_orin_host  # noqa: E402
@@ -23,7 +23,7 @@ QMLINKER_HOST = get_cached_orin_host()
 def _smoke_direct_channel() -> None:
     """验证测试脚本直连路径可用。"""
 
-    ssh_process, qmlinker_channel = create_orin_channel(DEFAULT_PORT, AGV_HOST)
+    ssh_process, qmlinker_channel = create_wuyou_channel(DEFAULT_PORT, AGV_HOST)
     client = WujiAgvClient(qmlinker_channel)
     try:
         runtime_info = client.get_runtime_info()
