@@ -75,6 +75,7 @@ def _control_lift(body_client: WujiBodyClient) -> None:
     logger.info("lift 当前使能 {}", lift.get_enable())
     physical_height_mm = _read_lift_height_mm(lift.get_lift_physical_height())
     logger.info("lift 当前物理高度 {:.1f} mm", physical_height_mm)
+    logger.info("lift 当前目标高度 {}", lift.get_lift_height()[0])
     value = input("请输入升降高度（mm），输入 q 返回: ").strip().lower()
     if value == "q":
         return
@@ -88,6 +89,7 @@ def _control_lift(body_client: WujiBodyClient) -> None:
     time.sleep(3.0)
     physical_height_mm = _read_lift_height_mm(lift.get_lift_physical_height())
     logger.info("lift 当前物理高度 {:.1f} mm", physical_height_mm)
+    logger.info("lift 当前目标高度 {}", lift.get_lift_height()[0])
 
 
 def _control_waist(body_client: WujiBodyClient) -> None:

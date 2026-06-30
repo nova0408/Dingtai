@@ -2,13 +2,13 @@
 from __future__ import annotations
 
 import csv
+import gc
 import math
 import sys
 import time
 from datetime import datetime
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 if sys.platform == "win32":
     import msvcrt
@@ -16,11 +16,12 @@ if sys.platform == "win32":
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
-    
-from sdk.xcoresdk import xCoreSDK_python
-from common import DEFAULT_PORT, GRIPPER_PORT, create_wuyou_channel, stop_ssh_process
-from src.wuji.dahuan_gripper_client import DahuanGripperClient
-from src.wuji.right_hand_client import WujiRightHandClient
+
+from sdk.xcoresdk import xCoreSDK_python  # noqa: E402
+from common import DEFAULT_PORT, GRIPPER_PORT, SshTunnelGroup, close_wuyou_channel, create_wuyou_channel, stop_ssh_process  # noqa: E402
+from src.wuji.body_client import WujiBodyClient  # noqa: E402
+from src.wuji.dahuan_gripper_client import DahuanGripperClient  # noqa: E402
+from src.wuji.right_hand_client import WujiRightHandClient  # noqa: E402
 
 
 LEFT_ARM_IP = "192.168.1.161"
@@ -35,6 +36,11 @@ DEFAULT_PREDEFINED_JOINT_ZONE = 10.0
 DEFAULT_POWER_ON_TIMEOUT_S = 3.0
 DEFAULT_REQUEST_TIMEOUT_S = 10.0
 POSITION_POLL_INTERVAL_S = 0.2
+LIFT_SETTLE_DELAY_S = 4.0
+LIFT_RETRY_COUNT = 3
+LIFT_HEIGHT_TOLERANCE_MM = 1.0
+DEFAULT_TOOL_NAME = "g_tool_0"
+DEFAULT_WOBJ_NAME = "g_wobj_0"
 EXPECTED_ARM_TYPES = {
     "left": "AR5-5_0.8L-W4C1C9-ZY2",
     "right": "AR5-5_0.8R-W4C1C9-ZY2",
@@ -68,10 +74,11 @@ class ConnectedArm:
 class PersistentHandClients:
     """CLI 生命周期内复用的手部客户端。"""
 
-    gripper_process: object
+    gripper_process: SshTunnelGroup
     gripper: DahuanGripperClient
-    right_hand_process: object
+    right_hand_process: SshTunnelGroup
     right_hand: WujiRightHandClient
+    body: WujiBodyClient
 
 
 @dataclass(frozen=True, slots=True)
@@ -239,6 +246,28 @@ def _copy_cartesian_pose_context(
     target.elbow = source.elbow
 
 
+def _format_frame_values(frame: xCoreSDK_python.Frame) -> str:
+    """格式化 frame 的位姿参数。"""
+
+    return (
+        f"trans(m)=[{_format_sequence(frame.trans, decimals=4)}], "
+        f"rpy(deg)=[{_format_sequence(_rad_to_deg(frame.rpy), decimals=2)}]"
+    )
+
+
+def _apply_named_toolset(
+    robot: xCoreSDK_python.xMateErProRobot,
+    ec: dict[str, object],
+) -> xCoreSDK_python.Toolset | None:
+    """把 CLI 当前使用的工具/工件坐标系固定到命名对象。"""
+
+    toolset = robot.setToolset(DEFAULT_TOOL_NAME, DEFAULT_WOBJ_NAME, ec)
+    _print_sdk_result(f"setToolset({DEFAULT_TOOL_NAME}, {DEFAULT_WOBJ_NAME})", ec)
+    if ec.get("ec", 0) != 0:
+        return None
+    return toolset
+
+
 def _ensure_nrt_motion_ready(robot: xCoreSDK_python.xMateErProRobot, ec: dict[str, object]) -> bool:
     """确保非实时运动指令满足执行前提。"""
 
@@ -264,6 +293,8 @@ def _ensure_nrt_motion_ready(robot: xCoreSDK_python.xMateErProRobot, ec: dict[st
     robot.setDefaultConfOpt(False, ec)
     _print_sdk_result("setDefaultConfOpt(False)", ec)
     if ec.get("ec", 0) != 0:
+        return False
+    if _apply_named_toolset(robot, ec) is None:
         return False
     robot.setDefaultSpeed(DEFAULT_CARTESIAN_SPEED, ec)
     _print_sdk_result(f"setDefaultSpeed({DEFAULT_CARTESIAN_SPEED:.2f})", ec)
@@ -321,7 +352,10 @@ def _print_cartesian_ik_preview(
 
     current_joint_deg = _rad_to_deg(robot.jointPos(ec))
     robot_model = robot.model()
-    toolset = xCoreSDK_python.Toolset()
+    toolset = robot.toolset(ec)
+    _print_sdk_result("toolset", ec)
+    if ec.get("ec", 0) != 0:
+        return
     target_joint = robot_model.calcIk(target_pose, toolset, ec)
     _print_sdk_result("calcIk", ec)
     print(f"当前关节值(deg): {_format_sequence(current_joint_deg)}")
@@ -392,16 +426,31 @@ def _print_current_arm_state(connected_arm: ConnectedArm) -> None:
     power_state = robot.powerState(ec)
     print(f"当前机械臂: {connected_arm.arm_side} (ip={connected_arm.robot_ip}, type={connected_arm.robot_type}, uid={connected_arm.robot_uid})")
     print(f"当前模式/状态/电机: {operate_mode} / {operation_state} / {power_state} ({_describe_power_state(power_state)})")
+    toolset = robot.toolset(ec)
+    _print_sdk_result("toolset", ec)
+    if ec.get("ec", 0) == 0:
+        print(f"当前 CLI 笛卡尔参考: tool={DEFAULT_TOOL_NAME}, wobj={DEFAULT_WOBJ_NAME}")
+        print(f"当前工具坐标系 {DEFAULT_TOOL_NAME}: {_format_frame_values(toolset.end)}")
+        print(f"当前工件坐标系 {DEFAULT_WOBJ_NAME}: {_format_frame_values(toolset.ref)}")
 
 
 def _print_cartesian_pose(robot: xCoreSDK_python.xMateErProRobot, ec: dict[str, object]) -> None:
     """打印当前笛卡尔空间位姿。"""
 
     pose = robot.cartPosture(xCoreSDK_python.endInRef, ec)
+    _print_sdk_result("cartPosture(endInRef)", ec)
+    if ec.get("ec", 0) != 0:
+        return
+    toolset = robot.toolset(ec)
+    _print_sdk_result("toolset", ec)
     print("当前笛卡尔空间位姿:")
+    print(f"  基准: endInRef @ tool={DEFAULT_TOOL_NAME}, wobj={DEFAULT_WOBJ_NAME}")
     print(f"  trans(mm): {_format_sequence(_m_to_mm(pose.trans))}")
     print(f"  rpy(deg): {_format_sequence(_rad_to_deg(pose.rpy))}")
     print(f"  hasElbow: {pose.hasElbow}, elbow(deg): {math.degrees(pose.elbow):.2f}, confData: {pose.confData}")
+    if ec.get("ec", 0) == 0:
+        print(f"  tool frame: {_format_frame_values(toolset.end)}")
+        print(f"  wobj frame: {_format_frame_values(toolset.ref)}")
 
 
 def _wait_until_idle(
@@ -515,19 +564,22 @@ def _drag_record_loop(
     print("已进入记录模式。")
     try:
         while True:
-            print("直接回车记录当前臂的 joints / pose，输入 s 进入手部手动记录，输入 q 退出并保存。")
+            print("直接回车记录当前臂的 joints / pose，输入 h 进入手掌手动记录，输入 l 进入 lift 控制，输入 q 退出并保存。")
             raw_text = input("请输入: ").strip().lower()
             if raw_text == "q":
                 print("退出记录模式")
                 return records
-            if raw_text == "s":
+            if raw_text == "h":
                 if connected_arm.arm_side == "left":
                     _manual_gripper_record(hand_clients.gripper, records)
                 else:
                     _manual_m11_record(hand_clients.right_hand, records)
                 continue
+            if raw_text == "l":
+                _manual_lift_record(hand_clients.body, records)
+                continue
             if raw_text != "":
-                print("无效输入，请直接回车、输入 s 或输入 q")
+                print("无效输入，请直接回车、输入 h、输入 l 或输入 q")
                 continue
             joint_values = robot.jointPos(ec)
             cart_pose = robot.cartPosture(xCoreSDK_python.endInRef, ec)
@@ -571,22 +623,15 @@ def _format_pose_values(pose: xCoreSDK_python.CartesianPosition | None) -> str:
 def _manual_gripper_record(client: DahuanGripperClient, records: list[dict[str, str]]) -> None:
     """左臂拖动记录时的夹爪手动控制。"""
 
-    status = client.get_status()
-    print(f"当前 gripper 值: {status.position}")
-    raw_value = input("请输入单个 gripper 值并回车: ").strip()
-    if raw_value == "":
+    result = _run_gripper_control_prompt(client, prompt="请输入单个 gripper 值，输入 c 执行标定，输入 q 返回: ")
+    if result is None:
         print("已取消 gripper 手动记录")
         return
-    target_value = int(raw_value)
-    if not client.set_pos(target_value):
-        raise RuntimeError("gripper 手动下发失败")
-    time.sleep(2.0)
-    current_status = client.get_status()
     record = {
         "timestamp": datetime.now().isoformat(timespec="seconds"),
         "type": "gripper",
         "joints": "NaN",
-        "pose": f"{float(current_status.position or 0):.2f}",
+        "pose": f"{result:.2f}",
     }
     records.append(record)
     print(f"已记录第 {len(records)} 条")
@@ -630,6 +675,194 @@ def _manual_m11_record(hand: WujiRightHandClient, records: list[dict[str, str]])
     records.append(record)
     print(f"已记录第 {len(records)} 条")
     print(f"  type: {record['type']}, joints: {record['joints']}")
+
+
+def _read_lift_height_mm(result: object) -> float:
+    """将 lift 读取结果转换成毫米。"""
+
+    if isinstance(result, tuple) and len(result) == 2:
+        first_value = result[0]
+        if isinstance(first_value, int | float):
+            return float(first_value)
+        raise TypeError(f"lift 返回值首元素类型无效: {type(first_value)!r}")
+    if isinstance(result, int | float):
+        return float(result)
+    raise TypeError(f"lift 返回值类型无效: {type(result)!r}")
+
+
+def _wait_lift_until_near_target(body: WujiBodyClient, target_height_mm: int) -> float:
+    """等待 lift 尽量接近目标高度，并返回最终物理高度。"""
+
+    lift = body.lift
+    time.sleep(LIFT_SETTLE_DELAY_S)
+    attempt_index = 0
+    current_height_mm = _read_lift_height_mm(lift.get_lift_physical_height())
+    while attempt_index < LIFT_RETRY_COUNT:
+        if current_height_mm == -1.0:
+            print("lift 返回值 -1，判定为无效读数，立即重新请求且不计次数")
+            current_height_mm = _read_lift_height_mm(lift.get_lift_physical_height())
+            continue
+        current_error_mm = abs(current_height_mm - float(target_height_mm))
+        print(
+            f"lift 到位检查 {attempt_index + 1}/{LIFT_RETRY_COUNT}: "
+            f"target={target_height_mm} mm, actual={current_height_mm:.1f} mm, error={current_error_mm:.1f} mm"
+        )
+        if current_error_mm <= LIFT_HEIGHT_TOLERANCE_MM:
+            return current_height_mm
+        attempt_index += 1
+        if attempt_index < LIFT_RETRY_COUNT:
+            lift.set_lift_physical_height(target_height_mm)
+            print(f"lift 超出误差，重新下发目标高度: {target_height_mm} mm")
+            time.sleep(LIFT_SETTLE_DELAY_S)
+            current_height_mm = _read_lift_height_mm(lift.get_lift_physical_height())
+    return current_height_mm
+
+
+def _run_gripper_control_prompt(client: DahuanGripperClient, prompt: str) -> float | None:
+    """执行左手 gripper 控制，支持返回和标定。"""
+
+    while True:
+        status = client.get_status()
+        print(f"当前 gripper 值: {status.position}")
+        print(f"当前 gripper 校准状态: {bool(status.calibrated)}")
+        raw_value = input(prompt).strip().lower()
+        if raw_value in {"", "q"}:
+            return None
+        if raw_value == "c":
+            print("开始校准 gripper。")
+            if not client.calibrate():
+                raise RuntimeError("gripper 校准失败")
+            time.sleep(1.0)
+            current_status = client.get_status()
+            print(f"gripper 校准完成，当前位置: {current_status.position}")
+            continue
+        try:
+            target_value = int(raw_value)
+        except ValueError:
+            print("gripper 目标值输入无效")
+            continue
+        if not client.set_pos(target_value):
+            raise RuntimeError("gripper 手动下发失败")
+        time.sleep(2.0)
+        current_status = client.get_status()
+        return float(current_status.position or 0)
+
+
+def _manual_lift_record(body: WujiBodyClient, records: list[dict[str, str]]) -> None:
+    """拖动记录时的 lift 手动控制。"""
+
+    lift = body.lift
+    lift.set_enable(True)
+    current_height_mm = _read_lift_height_mm(lift.get_lift_physical_height())
+    print(f"当前 lift 物理高度(mm): {current_height_mm:.1f}")
+    raw_value = input("请输入 lift 目标高度(mm)并回车: ").strip()
+    if raw_value == "":
+        print("已取消 lift 手动记录")
+        return
+    target_height_mm = int(round(float(raw_value)))
+    if target_height_mm < 0:
+        print("lift 目标高度必须大于等于 0 mm")
+        return
+    lift.set_lift_physical_height(target_height_mm)
+    current_height_mm = _wait_lift_until_near_target(body, target_height_mm)
+    record = {
+        "timestamp": datetime.now().isoformat(timespec="seconds"),
+        "type": "lift",
+        "joints": "NaN",
+        "pose": f"{current_height_mm:.2f}",
+    }
+    records.append(record)
+    print(f"已记录第 {len(records)} 条")
+    print(f"  type: {record['type']}, pose: {record['pose']}")
+
+
+def _temporary_hand_control(connected_arm: ConnectedArm, hand_clients: PersistentHandClients) -> None:
+    """临时进入手掌控制模式，完成后返回原本的臂控制流程。"""
+
+    print("已进入手掌控制模式。输入 q 返回原本的控制模式。")
+    if connected_arm.arm_side == "left":
+        client = hand_clients.gripper
+        while True:
+            result = _run_gripper_control_prompt(client, prompt="请输入 gripper 目标值，输入 c 执行标定，输入 q 返回: ")
+            if result is None:
+                print("已退出手掌控制模式")
+                return
+            print(f"gripper 已更新为: {result:.2f}")
+            print("手掌控制完成，已返回原本的控制模式")
+            return
+
+    hand = hand_clients.right_hand
+    while True:
+        state = hand.get_hand_state(include_tactile=False)
+        if state is None:
+            raise RuntimeError("右手状态不可用")
+        positions = [float(item["position"]) for item in state["actuators"]]
+        print("当前右手执行器值:")
+        print(_format_joint_values(positions))
+        raw_axis = input("请输入轴编号 0-10，或输入 q 返回: ").strip().lower()
+        if raw_axis == "q":
+            print("已退出手掌控制模式")
+            return
+        try:
+            axis_index = int(raw_axis)
+        except ValueError:
+            print("轴编号输入无效")
+            continue
+        if not 0 <= axis_index < len(positions):
+            print("轴编号超出范围")
+            continue
+        raw_value = input("请输入目标值，单位归一化 0-1: ").strip().lower()
+        if raw_value == "q":
+            print("已退出手掌控制模式")
+            return
+        try:
+            target_value = float(raw_value)
+        except ValueError:
+            print("目标值输入无效")
+            continue
+        if not 0.0 <= target_value <= 1.0:
+            print("目标值必须在 0-1 之间")
+            continue
+        if not hand.set_right_hand_axis(axis_index, target_value):
+            print("右手下发失败")
+            continue
+        time.sleep(1.0)
+        current_state = hand.get_hand_state(include_tactile=False)
+        if current_state is None:
+            raise RuntimeError("右手状态不可用")
+        current_positions = [float(item["position"]) for item in current_state["actuators"]]
+        print("右手已更新为:")
+        print(_format_joint_values(current_positions))
+        print("手掌控制完成，已返回原本的控制模式")
+        return
+
+
+def _temporary_lift_control(body: WujiBodyClient) -> None:
+    """临时进入 lift 控制模式，完成后返回原本的臂控制流程。"""
+
+    print("已进入 lift 控制模式。输入 q 返回原本的控制模式。")
+    lift = body.lift
+    lift.set_enable(True)
+    while True:
+        current_height_mm = _read_lift_height_mm(lift.get_lift_physical_height())
+        print(f"当前 lift 物理高度(mm): {current_height_mm:.1f}")
+        raw_value = input("请输入 lift 目标高度(mm)，或输入 q 返回: ").strip().lower()
+        if raw_value == "q":
+            print("已退出 lift 控制模式")
+            return
+        try:
+            target_height_mm = int(round(float(raw_value)))
+        except ValueError:
+            print("lift 目标高度输入无效")
+            continue
+        if target_height_mm < 0:
+            print("lift 目标高度必须大于等于 0 mm")
+            continue
+        lift.set_lift_physical_height(target_height_mm)
+        current_height_mm = _wait_lift_until_near_target(body, target_height_mm)
+        print(f"lift 已更新为: {current_height_mm:.1f} mm")
+        print("lift 控制完成，已返回原本的控制模式")
+        return
 
 
 def _write_drag_records_csv(records: list[dict[str, str]], arm_side: str) -> Path | None:
@@ -678,6 +911,10 @@ def _connect_arms() -> dict[str, ConnectedArm]:
             _print_sdk_result(f"robotInfo({robot_ip})", ec)
             if ec.get("ec", 0) != 0:
                 raise RuntimeError(f"读取机器人信息失败: ip={robot_ip}")
+            if _apply_named_toolset(robot, ec) is None:
+                raise RuntimeError(
+                    f"设置默认工具/工件失败: ip={robot_ip}, tool={DEFAULT_TOOL_NAME}, wobj={DEFAULT_WOBJ_NAME}"
+                )
             arm_side = _detect_arm_side(robot_info.type)
             if arm_side != expected_side:
                 raise RuntimeError(f"机器人型号与预期侧别不匹配: ip={robot_ip}, expected={expected_side}, actual={arm_side}")
@@ -778,9 +1015,14 @@ def _toggle_drag(connected_arm: ConnectedArm, hand_clients: PersistentHandClient
         print("拖动已关闭")
 
 
-def _cartesian_control_loop(robot: xCoreSDK_python.xMateErProRobot, ec: dict[str, object]) -> None:
+def _cartesian_control_loop(
+    connected_arm: ConnectedArm,
+    hand_clients: PersistentHandClients,
+) -> None:
     """笛卡尔空间控制循环。"""
 
+    robot = connected_arm.robot
+    ec = connected_arm.ec
     if not _ensure_nrt_motion_ready(robot, ec):
         print("笛卡尔运动前置状态未准备完成，请先检查控制器状态")
         return
@@ -791,10 +1033,16 @@ def _cartesian_control_loop(robot: xCoreSDK_python.xMateErProRobot, ec: dict[str
         _print_cartesian_pose(robot, ec)
         _print_motion_speed_status("笛卡尔", cartesian_speed, cartesian_zone)
         print("输入新的 xyzrpy，单位分别为 mm 和 deg")
-        print("输入 s 调整速度，输入 q 返回主菜单")
+        print("输入 s 调整速度，输入 h 进入手掌控制模式，输入 l 进入 lift 控制模式，输入 q 返回主菜单")
         raw_text = input("目标 xyzrpy: ").strip()
         if raw_text.lower() == "s":
             cartesian_speed = _prompt_motion_speed(cartesian_speed, "笛卡尔")
+            continue
+        if raw_text.lower() == "h":
+            _temporary_hand_control(connected_arm, hand_clients)
+            continue
+        if raw_text.lower() == "l":
+            _temporary_lift_control(hand_clients.body)
             continue
         if raw_text.lower() == "q":
             return
@@ -864,9 +1112,14 @@ def _cartesian_control_loop(robot: xCoreSDK_python.xMateErProRobot, ec: dict[str
         _print_cartesian_pose(robot, ec)
 
 
-def _joint_control_loop(robot: xCoreSDK_python.xMateErProRobot, ec: dict[str, object]) -> None:
+def _joint_control_loop(
+    connected_arm: ConnectedArm,
+    hand_clients: PersistentHandClients,
+) -> None:
     """关节空间控制循环。"""
 
+    robot = connected_arm.robot
+    ec = connected_arm.ec
     if not _prepare_predefined_joint_motion_loop(robot, ec):
         print("关节运动前置状态未准备完成，请先检查控制器状态")
         return
@@ -878,10 +1131,16 @@ def _joint_control_loop(robot: xCoreSDK_python.xMateErProRobot, ec: dict[str, ob
         print(f"当前关节值(deg): {_format_sequence(_rad_to_deg(joint_values))}")
         _print_motion_speed_status("关节", joint_speed, joint_zone)
         print("输入新的关节值，单位 deg，支持空格、英文逗号或中文逗号分隔")
-        print("输入 s 调整速度，输入 q 返回主菜单")
+        print("输入 s 调整速度，输入 h 进入手掌控制模式，输入 l 进入 lift 控制模式，输入 q 返回主菜单")
         raw_text = input("目标关节值: ").strip()
         if raw_text.lower() == "s":
             joint_speed = _prompt_motion_speed(joint_speed, "关节")
+            continue
+        if raw_text.lower() == "h":
+            _temporary_hand_control(connected_arm, hand_clients)
+            continue
+        if raw_text.lower() == "l":
+            _temporary_lift_control(hand_clients.body)
             continue
         if raw_text.lower() == "q":
             return
@@ -914,9 +1173,14 @@ def _joint_control_loop(robot: xCoreSDK_python.xMateErProRobot, ec: dict[str, ob
         _wait_until_idle(robot, ec, "等待关节运动")
 
 
-def _single_joint_control_loop(robot: xCoreSDK_python.xMateErProRobot, ec: dict[str, object]) -> None:
+def _single_joint_control_loop(
+    connected_arm: ConnectedArm,
+    hand_clients: PersistentHandClients,
+) -> None:
     """单关节控制循环。"""
 
+    robot = connected_arm.robot
+    ec = connected_arm.ec
     if not _prepare_predefined_joint_motion_loop(robot, ec):
         print("单关节运动前置状态未准备完成，请先检查控制器状态")
         return
@@ -928,10 +1192,16 @@ def _single_joint_control_loop(robot: xCoreSDK_python.xMateErProRobot, ec: dict[
         print(f"当前关节值(deg): {_format_sequence(_rad_to_deg(joint_values))}")
         _print_motion_speed_status("单关节", single_joint_speed, single_joint_zone)
         print("输入 q 返回主菜单")
-        print("输入 s 调整速度")
+        print("输入 s 调整速度，输入 h 进入手掌控制模式，输入 l 进入 lift 控制模式")
         axis_text = input(f"请选择轴编号 1-{len(joint_values)}: ").strip().lower()
         if axis_text == "s":
             single_joint_speed = _prompt_motion_speed(single_joint_speed, "单关节")
+            continue
+        if axis_text == "h":
+            _temporary_hand_control(connected_arm, hand_clients)
+            continue
+        if axis_text == "l":
+            _temporary_lift_control(hand_clients.body)
             continue
         if axis_text == "q":
             return
@@ -959,33 +1229,32 @@ def _single_joint_control_loop(robot: xCoreSDK_python.xMateErProRobot, ec: dict[
             target_joint_values[axis_index - 1] = target_value
             target_joint = xCoreSDK_python.JointPosition(target_joint_values)
             cmd_id = xCoreSDK_python.PyString()
-        try:
-            robot.moveReset(ec)
-            _print_sdk_result("moveReset", ec)
-            if ec.get("ec", 0) != 0:
+            try:
+                robot.moveReset(ec)
+                _print_sdk_result("moveReset", ec)
+                if ec.get("ec", 0) != 0:
+                    continue
+                robot.moveAppend([xCoreSDK_python.MoveAbsJCommand(target_joint, single_joint_speed, single_joint_zone)], cmd_id, ec)
+                _print_sdk_result("moveAppend(MoveAbsJ)", ec)
+                if ec.get("ec", 0) != 0:
+                    continue
+                robot.moveStart(ec)
+                _print_sdk_result("moveStart", ec)
+            except Exception as exc:
+                print(f"单关节运动指令执行异常: {exc}")
                 continue
-            robot.moveAppend([xCoreSDK_python.MoveAbsJCommand(target_joint, single_joint_speed, single_joint_zone)], cmd_id, ec)
-            _print_sdk_result("moveAppend(MoveAbsJ)", ec)
             if ec.get("ec", 0) != 0:
+                current_power_state = robot.powerState(ec)
+                current_operate_mode = robot.operateMode(ec)
+                current_operation_state = robot.operationState(ec)
+                print(f"moveStart 失败时电机状态: {current_power_state} ({_describe_power_state(current_power_state)})")
+                print(f"moveStart 失败时模式: {current_operate_mode}")
+                print(f"moveStart 失败时操作状态: {current_operation_state}")
                 continue
-            robot.moveStart(ec)
-            _print_sdk_result("moveStart", ec)
-        except Exception as exc:
-            print(f"单关节运动指令执行异常: {exc}")
+            print(f"已下发单关节运动，cmd_id={cmd_id.content()}")
+            if not _wait_until_idle(robot, ec, "等待单关节运动"):
+                continue
             continue
-        if ec.get("ec", 0) != 0:
-            current_power_state = robot.powerState(ec)
-            current_operate_mode = robot.operateMode(ec)
-            current_operation_state = robot.operationState(ec)
-            print(f"moveStart 失败时电机状态: {current_power_state} ({_describe_power_state(current_power_state)})")
-            print(f"moveStart 失败时模式: {current_operate_mode}")
-            print(f"moveStart 失败时操作状态: {current_operation_state}")
-            continue
-        print(f"已下发单关节运动，cmd_id={cmd_id.content()}")
-        if not _wait_until_idle(robot, ec, "等待单关节运动"):
-            continue
-            joint_values = robot.jointPos(ec)
-        continue
 
 
 def _loop_predefined_joint_motion(robot: xCoreSDK_python.xMateErProRobot, ec: dict[str, object]) -> None:
@@ -1257,11 +1526,11 @@ def _main_menu(connected_arms: dict[str, ConnectedArm], hand_clients: Persistent
         elif choice == "3":
             _toggle_drag(connected_arm, hand_clients)
         elif choice == "4":
-            _cartesian_control_loop(robot, ec)
+            _cartesian_control_loop(connected_arm, hand_clients)
         elif choice == "5":
-            _joint_control_loop(robot, ec)
+            _joint_control_loop(connected_arm, hand_clients)
         elif choice == "6":
-            _single_joint_control_loop(robot, ec)
+            _single_joint_control_loop(connected_arm, hand_clients)
         elif choice == "7":
             _loop_predefined_joint_motion(robot, ec)
         elif choice == "8":
@@ -1285,15 +1554,22 @@ def main() -> int:
         gripper=DahuanGripperClient(gripper_channel),
         right_hand_process=right_hand_process,
         right_hand=WujiRightHandClient(right_hand_channel),
+        body=WujiBodyClient(right_hand_channel),
     )
     try:
         _main_menu(connected_arms, hand_clients)
         return 0
     finally:
+        preserved_gripper_process = hand_clients.gripper_process
+        preserved_right_hand_process = hand_clients.right_hand_process
         for connected_arm in connected_arms.values():
             _shutdown_robot(connected_arm.robot, connected_arm.ec)
-        stop_ssh_process(hand_clients.gripper_process)
-        stop_ssh_process(hand_clients.right_hand_process)
+        del hand_clients
+        gc.collect()
+        close_wuyou_channel(gripper_channel)
+        close_wuyou_channel(right_hand_channel)
+        stop_ssh_process(preserved_gripper_process)
+        stop_ssh_process(preserved_right_hand_process)
 
 
 if __name__ == "__main__":

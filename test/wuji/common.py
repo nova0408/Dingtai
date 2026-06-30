@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import socket
 import subprocess
+import threading
 import time
 from dataclasses import dataclass
 
@@ -25,13 +27,29 @@ AGV_HOST = "192.168.100.70"
 SSH_ALIAS = "orin"
 WUYOU_SSH_ALIAS = "wuyou"
 TUNNEL_WAIT_S = 1.0
+TUNNEL_HEARTBEAT_INTERVAL_S = 5.0
+TUNNEL_HEARTBEAT_MAX_MISSES = 3
+TUNNEL_WATCHDOG_INTERVAL_S = 1.0
+TUNNEL_READY_TIMEOUT_S = 5.0
 
 
 @dataclass(slots=True)
 class SshTunnelGroup:
     """一组需要统一关闭的 SSH 转发进程。"""
 
-    processes: tuple[subprocess.Popen[bytes], ...]
+    remote_host: str
+    remote_port: int
+    local_port: int
+    ssh_alias: str
+    process: subprocess.Popen[bytes]
+    stop_event: threading.Event
+    watcher_thread: threading.Thread
+
+    @property
+    def processes(self) -> tuple[subprocess.Popen[bytes], ...]:
+        """兼容旧调用方，暴露当前活动 SSH 进程。"""
+
+        return (self.process,)
 
 
 def create_wuyou_channel(remote_port: int, remote_host: str = WUYOU_QMLINKER_HOST) -> tuple[SshTunnelGroup, object]:
@@ -46,17 +64,48 @@ def create_wuyou_channel(remote_port: int, remote_host: str = WUYOU_QMLINKER_HOS
     - 最后直接调用 `create_channel("127.0.0.1:{local_port}")`
     """
 
+    local_port = int(remote_port) - 1
     process = start_ssh_tunnel(int(remote_port), remote_host=str(remote_host))
-    time.sleep(TUNNEL_WAIT_S)
-    return SshTunnelGroup((process,)), create_channel(f"127.0.0.1:{int(remote_port) - 1}")
+    _wait_for_local_tunnel_ready(local_port)
+    stop_event = threading.Event()
+    tunnel_group = SshTunnelGroup(
+        remote_host=str(remote_host),
+        remote_port=int(remote_port),
+        local_port=local_port,
+        ssh_alias=SSH_ALIAS,
+        process=process,
+        stop_event=stop_event,
+        watcher_thread=threading.Thread(target=lambda: None),
+    )
+    watcher_thread = threading.Thread(
+        target=_watch_ssh_tunnel,
+        args=(tunnel_group,),
+        name=f"ssh-tunnel-watch-{local_port}",
+        daemon=True,
+    )
+    tunnel_group.watcher_thread = watcher_thread
+    watcher_thread.start()
+    return tunnel_group, create_channel(f"127.0.0.1:{local_port}")
+
+
+def close_wuyou_channel(channel: object) -> None:
+    """关闭 qmlinker channel，避免退出后后台 gRPC 继续刷屏。"""
+
+    if isinstance(channel, dict):
+        for item in channel.values():
+            _close_single_channel(item)
+        return
+    _close_single_channel(channel)
 
 
 def stop_ssh_process(process: subprocess.Popen[bytes] | SshTunnelGroup) -> None:
     """停止 SSH 转发进程。"""
 
     if isinstance(process, SshTunnelGroup):
-        for item in process.processes:
-            _stop_single_ssh_process(item)
+        process.stop_event.set()
+        _stop_single_ssh_process(process.process)
+        if process.watcher_thread.is_alive():
+            process.watcher_thread.join(timeout=3.0)
         return
     _stop_single_ssh_process(process)
 
@@ -130,6 +179,14 @@ def _spawn_ssh_tunnel(remote_port: int, remote_host: str, local_port: int, ssh_a
 
     command = [
         "ssh",
+        "-o",
+        "ExitOnForwardFailure=yes",
+        "-o",
+        f"ServerAliveInterval={int(TUNNEL_HEARTBEAT_INTERVAL_S)}",
+        "-o",
+        f"ServerAliveCountMax={int(TUNNEL_HEARTBEAT_MAX_MISSES)}",
+        "-o",
+        "TCPKeepAlive=yes",
         "-N",
         "-L",
         f"127.0.0.1:{int(local_port)}:{remote_host}:{int(remote_port)}",
@@ -143,6 +200,60 @@ def _spawn_ssh_tunnel(remote_port: int, remote_host: str, local_port: int, ssh_a
         ssh_alias,
     )
     return subprocess.Popen(command, stderr=subprocess.PIPE)
+
+
+def _watch_ssh_tunnel(tunnel_group: SshTunnelGroup) -> None:
+    """后台监视 SSH 隧道，异常退出时自动重连。"""
+
+    while not tunnel_group.stop_event.wait(TUNNEL_WATCHDOG_INTERVAL_S):
+        if tunnel_group.process.poll() is None:
+            continue
+        if tunnel_group.stop_event.is_set():
+            return
+        _read_early_exit_error(tunnel_group.process)
+        logger.warning(
+            "检测到 SSH 隧道退出，准备重连: local=127.0.0.1:{} remote={}:{} alias={}",
+            tunnel_group.local_port,
+            tunnel_group.remote_host,
+            tunnel_group.remote_port,
+            tunnel_group.ssh_alias,
+        )
+        try:
+            restarted_process = _start_ssh_tunnel_with_local_port(
+                remote_port=tunnel_group.remote_port,
+                remote_host=tunnel_group.remote_host,
+                local_port=tunnel_group.local_port,
+                ssh_alias=tunnel_group.ssh_alias,
+            )
+            if tunnel_group.stop_event.is_set():
+                _stop_single_ssh_process(restarted_process)
+                return
+            _wait_for_local_tunnel_ready(tunnel_group.local_port)
+            if tunnel_group.stop_event.is_set():
+                _stop_single_ssh_process(restarted_process)
+                return
+            tunnel_group.process = restarted_process
+            logger.success(
+                "SSH 隧道已重连: local=127.0.0.1:{} remote={}:{}",
+                tunnel_group.local_port,
+                tunnel_group.remote_host,
+                tunnel_group.remote_port,
+            )
+        except Exception as exc:
+            logger.warning("SSH 隧道重连失败，稍后重试: {}", exc)
+
+
+def _wait_for_local_tunnel_ready(local_port: int, timeout_s: float = TUNNEL_READY_TIMEOUT_S) -> None:
+    """等待本地 SSH 转发端口真正进入可连接状态。"""
+
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.settimeout(0.5)
+            if sock.connect_ex(("127.0.0.1", int(local_port))) == 0:
+                return
+        time.sleep(0.1)
+    raise RuntimeError(f"ssh tunnel local port not ready: 127.0.0.1:{int(local_port)}")
 
 
 def _build_tunnel_candidates(remote_host: str, ssh_alias: str, allow_discovery: bool) -> tuple[str, ...]:
@@ -191,3 +302,15 @@ def _stop_single_ssh_process(process: subprocess.Popen[bytes]) -> None:
     except Exception:  # noqa: BLE001
         process.kill()
         process.wait(timeout=3.0)
+
+
+def _close_single_channel(channel: object) -> None:
+    """关闭单个 gRPC channel。"""
+
+    close_method = getattr(channel, "close", None)
+    if not callable(close_method):
+        return
+    try:
+        close_method()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("关闭 qmlinker channel 失败: {}", exc)
