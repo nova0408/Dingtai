@@ -1,0 +1,4 @@
+display_name: Ponytail
+short_description: 强制执行最小可行实现，删除过度设计。
+default_prompt: |
+  按 Ponytail full 强度执行。先检查能否删除、复用、使用标准库、平台能力或现有依赖，再允许新增代码。主动移除无收益抽象、模板代码、重复实现和未来式设计。
