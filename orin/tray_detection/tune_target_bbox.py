@@ -11,7 +11,7 @@ import cv2
 import numpy as np
 import torch
 
-from orin.camera_stream import CameraStreamRuntime, CameraStreamRuntimeConfig
+from ..camera_stream import CameraStreamRuntime, CameraStreamRuntimeConfig
 
 from .detector import TrayPointExcluder
 from .types import TrayDetection, TrayDetectionConfig

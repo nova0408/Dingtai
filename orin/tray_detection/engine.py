@@ -7,7 +7,7 @@ from typing import Optional
 import cv2
 import numpy as np
 
-from orin.camera_stream import CameraFramePacket, CameraStreamRuntime
+from ..camera_stream import CameraFramePacket, CameraStreamRuntime
 
 from .pipeline import TrayDetectionPipeline
 from .protocol import (

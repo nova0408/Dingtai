@@ -3,9 +3,9 @@ from __future__ import annotations
 import json
 from typing import List
 
-from orin.grasp_pose.codec import _decode_point4, _decode_tray_pose_info, _encode_jpeg, _encode_mask_stack, _encode_png_depth, _encode_png_mask, _decode_jpeg, _decode_mask_stack, _decode_png_depth, _decode_png_mask, _encode_tray_pose_info
-from orin.grasp_pose.protocol import DebugArtifacts
-from orin.tray_detection.codec import _decode_result, _encode_result
+from ..grasp_pose.codec import _decode_point4, _decode_tray_pose_info, _encode_jpeg, _encode_mask_stack, _encode_png_depth, _encode_png_mask, _decode_jpeg, _decode_mask_stack, _decode_png_depth, _decode_png_mask, _encode_tray_pose_info
+from ..grasp_pose.protocol import DebugArtifacts
+from ..tray_detection.codec import _decode_result, _encode_result
 
 from .protocol import GraspPosePipelineRequest, GraspPosePipelineResponse
 

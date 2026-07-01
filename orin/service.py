@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import argparse
 
-from orin.grasp_pose_pipeline.service import main as grasp_pose_pipeline_service_main
-from orin.tray_detection.service import main as tray_detection_service_main
+from ..grasp_pose_pipeline.service import main as grasp_pose_pipeline_service_main
+from ..tray_detection.service import main as tray_detection_service_main
 
 
 def main(argv=None) -> int:

@@ -6,11 +6,11 @@ from typing import Optional
 
 import numpy as np
 
-from orin.camera_stream import CameraStreamRuntime
-from orin.grasp_pose.engine import GraspPoseExecutor, GraspPoseExecutorConfig
-from orin.grasp_pose.protocol import DebugArtifacts, GraspPoseRequest, GraspPoseResponse
-from orin.tray_detection.engine import OrinTrayDetectionExecutor, OrinTrayDetectionExecutorConfig
-from orin.tray_detection.protocol import OrinTrayDetectionRequest
+from ..camera_stream import CameraStreamRuntime
+from ..grasp_pose.engine import GraspPoseExecutor, GraspPoseExecutorConfig
+from ..grasp_pose.protocol import DebugArtifacts, GraspPoseRequest, GraspPoseResponse
+from ..tray_detection.engine import OrinTrayDetectionExecutor, OrinTrayDetectionExecutorConfig
+from ..tray_detection.protocol import OrinTrayDetectionRequest
 
 from .protocol import GraspPosePipelineRequest, GraspPosePipelineResponse
 

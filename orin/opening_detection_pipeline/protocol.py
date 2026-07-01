@@ -3,8 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional, Tuple
 
-from orin.grasp_pose.protocol import DebugArtifacts, TrayPoseInfo
-from orin.tray_detection.protocol import OrinTrayDetectionInfo
+from ..grasp_pose.protocol import DebugArtifacts, TrayPoseInfo
+from ..tray_detection.protocol import OrinTrayDetectionInfo
 
 
 @dataclass(frozen=True)

@@ -8,14 +8,14 @@ from typing import Optional
 
 import zmq
 
-from orin.camera_stream import CameraStreamRuntime, CameraStreamRuntimeConfig
+from ..camera_stream import CameraStreamRuntime, CameraStreamRuntimeConfig
 
 from .engine import OrinTrayDetectionExecutor, OrinTrayDetectionExecutorConfig
 from .protocol import OrinTrayDetectionResponse, TrayDetectionServiceEndpointConfig
 from .transport import OrinTrayDetectionRpcServer, ZmqSocketOptions
 
 
-LOGGER = logging.getLogger("orin.tray_detection.service")
+LOGGER = logging.getLogger("..tray_detection.service")
 
 
 class OrinTrayDetectionService:

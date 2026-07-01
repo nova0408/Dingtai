@@ -8,14 +8,14 @@ from typing import Optional
 
 import zmq
 
-from orin.camera_stream import CameraStreamRuntime, CameraStreamRuntimeConfig
+from ..camera_stream import CameraStreamRuntime, CameraStreamRuntimeConfig
 
 from .engine import GraspPosePipelineExecutor, GraspPosePipelineExecutorConfig
 from .protocol import GraspPosePipelineResponse, GraspPosePipelineServiceEndpointConfig
 from .transport import GraspPosePipelineRpcServer, ZmqSocketOptions
 
 
-LOGGER = logging.getLogger("orin.grasp_pose_pipeline.service")
+LOGGER = logging.getLogger("..grasp_pose_pipeline.service")
 
 
 class GraspPosePipelineService:
