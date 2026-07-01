@@ -207,11 +207,11 @@ class PalmKinematicProtocol(Protocol):
         """模型名称。"""
         ...
 
-    def solve_grasp_pose(self, joint_positions: JointAngleTuple) -> Transform:
+    def solve_opening_detection(self, joint_positions: JointAngleTuple) -> Transform:
         """正解：手掌关节 -> 抓取位姿。"""
         ...
 
-    def solve_joints(self, target_grasp_pose: Transform, reference_joints: JointAngleTuple) -> JointAngleTuple:
+    def solve_joints(self, target_opening_detection: Transform, reference_joints: JointAngleTuple) -> JointAngleTuple:
         """逆解：目标抓取位姿 + 参考关节 -> 手掌关节解。"""
         ...
 
@@ -296,17 +296,17 @@ class PalmKinematicModel:
     ik_solver: Callable[[Transform, JointAngleTuple], JointAngleTuple] | None = None
     """逆解函数：输入目标抓取位姿与参考关节，返回手掌关节解；允许先不提供。"""
 
-    def solve_grasp_pose(self, joint_positions: JointAngleTuple) -> Transform:
+    def solve_opening_detection(self, joint_positions: JointAngleTuple) -> Transform:
         """计算手掌基座到抓取位姿的变换。"""
 
         return self.fk_solver(PalmKinematicInput(joint_positions=joint_positions))
 
-    def solve_joints(self, target_grasp_pose: Transform, reference_joints: JointAngleTuple) -> JointAngleTuple:
+    def solve_joints(self, target_opening_detection: Transform, reference_joints: JointAngleTuple) -> JointAngleTuple:
         """计算目标抓取位姿对应的手掌关节解。"""
 
         if self.ik_solver is None:
             raise NotImplementedError(f"模型 {self.name} 未配置 ik_solver")
-        return self.ik_solver(target_grasp_pose, reference_joints)
+        return self.ik_solver(target_opening_detection, reference_joints)
 
 
 # endregion

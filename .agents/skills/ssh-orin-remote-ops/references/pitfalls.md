@@ -27,7 +27,7 @@ set -e
 source /home/wuji-brain/miniconda3/etc/profile.d/conda.sh
 conda activate py38_tourch
 cd /home/wuji-brain/workspace
-python -m orin.tray_detection.smoke_test --service-addr tcp://127.0.0.1:6210
+python -m ..tray_detection.smoke_test --service-addr tcp://127.0.0.1:6210
 '@ | Set-Content -Path $scriptPath -Encoding utf8
 scp $scriptPath orin:/tmp/remote_task.sh
 ssh orin "bash /tmp/remote_task.sh"
@@ -104,13 +104,13 @@ Pattern:
 source /home/wuji-brain/miniconda3/etc/profile.d/conda.sh
 conda activate py38_tourch
 cd /home/wuji-brain/workspace
-setsid python -u -m orin.tray_detection.service >/tmp/orin_tray_service.log 2>&1 < /dev/null &
+setsid python -u -m ..tray_detection.service >/tmp/orin_tray_service.log 2>&1 < /dev/null &
 ```
 
 Then verify:
 
 ```bash
-ps -ef | grep orin.tray_detection.service | grep -v grep
+ps -ef | grep ..tray_detection.service | grep -v grep
 tail -n 20 /tmp/orin_tray_service.log
 ```
 
@@ -147,8 +147,8 @@ Preferred fix:
 Examples:
 
 ```bash
-pgrep -af orin.tray_detection.service
-pkill -f orin.tray_detection.service || true
+pgrep -af ..tray_detection.service
+pkill -f ..tray_detection.service || true
 ```
 
 ## Remote network assumptions

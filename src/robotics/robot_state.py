@@ -109,20 +109,20 @@ class DualArmRobotState:
         shoulder_to_tcp = self.right_arm_model.solve_tcp(self.right_arm_state.joint_positions)
         return self.get_right_shoulder_pose() @ shoulder_to_tcp
 
-    def get_left_grasp_pose(self) -> Transform:
+    def get_left_opening_detection(self) -> Transform:
         """获取世界到左手抓取位姿。"""
 
         if self.left_palm_model is None:
             raise ValueError("未配置 left_palm_model，无法计算左手抓取位姿")
-        palm_base_to_grasp = self.left_palm_model.solve_grasp_pose(self.left_palm_state.joint_positions)
+        palm_base_to_grasp = self.left_palm_model.solve_opening_detection(self.left_palm_state.joint_positions)
         return self.get_left_arm_tcp_pose() @ self.left_palm_state.arm_tcp_to_palm_base @ palm_base_to_grasp
 
-    def get_right_grasp_pose(self) -> Transform:
+    def get_right_opening_detection(self) -> Transform:
         """获取世界到右手抓取位姿。"""
 
         if self.right_palm_model is None:
             raise ValueError("未配置 right_palm_model，无法计算右手抓取位姿")
-        palm_base_to_grasp = self.right_palm_model.solve_grasp_pose(self.right_palm_state.joint_positions)
+        palm_base_to_grasp = self.right_palm_model.solve_opening_detection(self.right_palm_state.joint_positions)
         return self.get_right_arm_tcp_pose() @ self.right_palm_state.arm_tcp_to_palm_base @ palm_base_to_grasp
 
     # endregion

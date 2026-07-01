@@ -16,7 +16,7 @@ from .tray_detection import (
     TrayRuntimeState,
     project_points_to_image,
 )
-from .grasp_pose import (
+from .opening_detection import (
     GraspPoseEstimator,
     GraspPoseEstimatorConfig,
     OpeningDetectionPipeline,

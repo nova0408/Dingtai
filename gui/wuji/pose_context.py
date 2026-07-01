@@ -9,8 +9,8 @@ from typing import Any, Optional
 import numpy as np
 from loguru import logger
 
-from orin.grasp_pose_pipeline.protocol import GraspPosePipelineRequest
-from orin.grasp_pose_pipeline.transport import GraspPosePipelineRpcClient, ZmqSocketOptions
+from orin.opening_detection_pipeline.protocol import GraspPosePipelineRequest
+from orin.opening_detection_pipeline.transport import GraspPosePipelineRpcClient, ZmqSocketOptions
 from src.wuji.camera_protocol import WujiCameraFrame, WujiCameraIntrinsicsInfo, WujiCameraName
 from src.wuji.zmq_camera_catalog import SUPPORTED_WUJI_ZMQ_CAMERAS_LOCAL
 from src.wuji.zmq_camera_client import WujiZmqCameraClient
@@ -290,7 +290,7 @@ class WujiPoseExecutionContext:
         Notes
         -----
         当前 GUI 只负责从本地相机链路抓取预览帧并取得 `frame_id`，真正的 RGBD 数据读取、
-        托盘检测与抓取位姿计算全部由 Orin 侧 `grasp_pose_pipeline` 主服务完成。
+        托盘检测与抓取位姿计算全部由 Orin 侧 `opening_detection_pipeline` 主服务完成。
         """
 
         return GraspPosePipelineRequest(
@@ -333,7 +333,7 @@ class WujiPoseExecutionContext:
                 error=response.error,
             )
         except Exception as exc:  # noqa: BLE001
-            logger.exception("pose rpc call failed: {}", exc)
+            logger.error("pose rpc call failed: {}", exc)
             return WujiPoseExecutionResult(
                 frame_id=bundle.frame_id,
                 frame=bundle.frame,
@@ -426,7 +426,7 @@ class WujiPoseExecutionContext:
                         self._job_queue.qsize(),
                     )
                 except Exception as exc:  # noqa: BLE001
-                    logger.exception("pose context capture/build request failed")
+                    logger.error("pose context capture/build request failed")
                     self._push_failed_result(
                         frame_id=int(frame_id),
                         target_tray_index=int(target_tray_index),
@@ -434,7 +434,7 @@ class WujiPoseExecutionContext:
                         error="{0}: {1}".format(type(exc).__name__, exc),
                     )
         except Exception as exc:  # noqa: BLE001
-            logger.exception("pose context camera stream failed")
+            logger.error("pose context camera stream failed")
             self._push_failed_result(
                 frame_id=-1,
                 target_tray_index=int(self._target_tray_index),
@@ -498,7 +498,7 @@ class WujiPoseExecutionContext:
             )
             return self.call_orin(bundle)
         except Exception as exc:  # noqa: BLE001
-            logger.exception("pose context execution failed: frame={} target={}", frame_id, target_tray_index)
+            logger.error("pose context execution failed: frame={} target={}", frame_id, target_tray_index)
             return WujiPoseExecutionResult(
                 frame_id=int(frame_id),
                 frame=self._empty_frame(),

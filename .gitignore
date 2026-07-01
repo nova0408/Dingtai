@@ -16,8 +16,8 @@ Logs/*
 *.jpg
 *.bmp
 *.txt
-grasp_pose_pipeline_package/*
-grasp_pose_pipeline_package/
+opening_detection_pipeline_package/*
+opening_detection_pipeline_package/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

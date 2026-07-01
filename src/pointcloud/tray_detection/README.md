@@ -128,4 +128,4 @@ mask, from_detector = pipeline.segment_tray(frame_bgr, state)
 
 ## 8. 变更边界
 
-本说明仅针对 `src/pointcloud/tray_detection/` 子模块。若改动 `grasp_pose` 或 `three_plane` 流程，需分别在对应模块文档补充说明。
+本说明仅针对 `src/pointcloud/tray_detection/` 子模块。若改动 `opening_detection` 或 `three_plane` 流程，需分别在对应模块文档补充说明。
