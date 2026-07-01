@@ -10,28 +10,28 @@ import zmq
 
 from ..camera_stream import CameraStreamRuntime, CameraStreamRuntimeConfig
 
-from .engine import GraspPosePipelineExecutor, GraspPosePipelineExecutorConfig
-from .protocol import GraspPosePipelineResponse, GraspPosePipelineServiceEndpointConfig
-from .transport import GraspPosePipelineRpcServer, ZmqSocketOptions
+from .engine import OpeningDetectionPipelineExecutor, OpeningDetectionPipelineExecutorConfig
+from .protocol import OpeningDetectionPipelineResponse, OpeningDetectionPipelineServiceEndpointConfig
+from .transport import OpeningDetectionPipelineRpcServer, ZmqSocketOptions
 
 
-LOGGER = logging.getLogger("..grasp_pose_pipeline.service")
+LOGGER = logging.getLogger("..opening_detection_pipeline.service")
 
 
-class GraspPosePipelineService:
+class OpeningDetectionPipelineService:
     """抓取位姿主服务。"""
 
     def __init__(
         self,
-        endpoint_config: GraspPosePipelineServiceEndpointConfig,
+        endpoint_config: OpeningDetectionPipelineServiceEndpointConfig,
         frame_runtime_config: CameraStreamRuntimeConfig,
-        executor_config: Optional[GraspPosePipelineExecutorConfig] = None,
+        executor_config: Optional[OpeningDetectionPipelineExecutorConfig] = None,
         socket_options: Optional[ZmqSocketOptions] = None,
     ) -> None:
         self._frame_runtime = CameraStreamRuntime(frame_runtime_config)
         self._frame_runtime.start()
-        self._server = GraspPosePipelineRpcServer(endpoint_config.request_bind_addr, options=socket_options)
-        self._executor = GraspPosePipelineExecutor(frame_runtime=self._frame_runtime, config=executor_config)
+        self._server = OpeningDetectionPipelineRpcServer(endpoint_config.request_bind_addr, options=socket_options)
+        self._executor = OpeningDetectionPipelineExecutor(frame_runtime=self._frame_runtime, config=executor_config)
         self._running = True
 
     def close(self) -> None:
@@ -40,7 +40,7 @@ class GraspPosePipelineService:
         self._frame_runtime.stop()
 
     def run_forever(self) -> None:
-        LOGGER.info("grasp pose pipeline rpc service started")
+        LOGGER.info("opening detection pipeline rpc service started")
         while self._running:
             try:
                 request = self._server.recv_request()
@@ -49,8 +49,8 @@ class GraspPosePipelineService:
             try:
                 response = self._executor.process_request(request)
             except Exception as exc:  # noqa: BLE001
-                LOGGER.exception("grasp pose pipeline service failed: %s", exc)
-                response = GraspPosePipelineResponse(
+                LOGGER.exception("opening detection pipeline service failed: %s", exc)
+                response = OpeningDetectionPipelineResponse(
                     request_id=int(request.request_id),
                     frame_id=-1,
                     camera_name=str(request.camera_name),
@@ -63,7 +63,7 @@ class GraspPosePipelineService:
 
 
 def main(argv=None) -> int:
-    parser = argparse.ArgumentParser(description="Orin grasp pose pipeline RPC service")
+    parser = argparse.ArgumentParser(description="Orin opening detection pipeline RPC service")
     parser.add_argument("--bind-addr", type=str, default="tcp://0.0.0.0:6220")
     parser.add_argument("--host", type=str, default="192.168.100.60")
     parser.add_argument("--control-port", type=int, default=5570)
@@ -72,8 +72,8 @@ def main(argv=None) -> int:
     parser.add_argument("--camera-name", type=str, default="left_hand_camera")
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-    service = GraspPosePipelineService(
-        endpoint_config=GraspPosePipelineServiceEndpointConfig(request_bind_addr=str(args.bind_addr)),
+    service = OpeningDetectionPipelineService(
+        endpoint_config=OpeningDetectionPipelineServiceEndpointConfig(request_bind_addr=str(args.bind_addr)),
         frame_runtime_config=CameraStreamRuntimeConfig(
             host=str(args.host),
             control_port=int(args.control_port),
@@ -81,7 +81,7 @@ def main(argv=None) -> int:
             camera_id=str(args.camera_id),
             camera_name=str(args.camera_name),
         ),
-        executor_config=GraspPosePipelineExecutorConfig(),
+        executor_config=OpeningDetectionPipelineExecutorConfig(),
         socket_options=ZmqSocketOptions(),
     )
     if not service._frame_runtime.wait_until_ready(timeout_s=8.0):  # noqa: SLF001

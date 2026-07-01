@@ -3,14 +3,14 @@ from __future__ import annotations
 import json
 from typing import List
 
-from ..grasp_pose.codec import _decode_point4, _decode_tray_pose_info, _encode_jpeg, _encode_mask_stack, _encode_png_depth, _encode_png_mask, _decode_jpeg, _decode_mask_stack, _decode_png_depth, _decode_png_mask, _encode_tray_pose_info
-from ..grasp_pose.protocol import DebugArtifacts
+from ..opening_detection.codec import _decode_point4, _decode_tray_pose_info, _encode_jpeg, _encode_mask_stack, _encode_png_depth, _encode_png_mask, _decode_jpeg, _decode_mask_stack, _decode_png_depth, _decode_png_mask, _encode_tray_pose_info
+from ..opening_detection.protocol import DebugArtifacts
 from ..tray_detection.codec import _decode_result, _encode_result
 
-from .protocol import GraspPosePipelineRequest, GraspPosePipelineResponse
+from .protocol import OpeningDetectionPipelineRequest, OpeningDetectionPipelineResponse
 
 
-def encode_request(packet: GraspPosePipelineRequest) -> List[bytes]:
+def encode_request(packet: OpeningDetectionPipelineRequest) -> List[bytes]:
     meta = {
         "request_id": int(packet.request_id),
         "camera_name": str(packet.camera_name),
@@ -18,17 +18,17 @@ def encode_request(packet: GraspPosePipelineRequest) -> List[bytes]:
         "target_tray_index": int(packet.target_tray_index),
         "enable_debug": bool(packet.enable_debug),
     }
-    return [b"grasp_pose_pipeline_request", json.dumps(meta, ensure_ascii=False).encode("utf-8")]
+    return [b"opening_detection_pipeline_request", json.dumps(meta, ensure_ascii=False).encode("utf-8")]
 
 
-def decode_request(parts: List[bytes]) -> GraspPosePipelineRequest:
+def decode_request(parts: List[bytes]) -> OpeningDetectionPipelineRequest:
     if len(parts) != 2:
-        raise RuntimeError("invalid grasp pose pipeline request multipart count")
+        raise RuntimeError("invalid opening detection pipeline request multipart count")
     topic, meta_bytes = parts
-    if topic != b"grasp_pose_pipeline_request":
-        raise RuntimeError("unexpected grasp pose pipeline request topic")
+    if topic != b"opening_detection_pipeline_request":
+        raise RuntimeError("unexpected opening detection pipeline request topic")
     meta = json.loads(meta_bytes.decode("utf-8"))
-    return GraspPosePipelineRequest(
+    return OpeningDetectionPipelineRequest(
         request_id=int(meta.get("request_id", 0)),
         camera_name=str(meta.get("camera_name", "left_hand_camera")),
         frame_id=int(meta.get("frame_id", -1)),
@@ -37,7 +37,7 @@ def decode_request(parts: List[bytes]) -> GraspPosePipelineRequest:
     )
 
 
-def encode_response(packet: GraspPosePipelineResponse) -> List[bytes]:
+def encode_response(packet: OpeningDetectionPipelineResponse) -> List[bytes]:
     meta = {
         "request_id": int(packet.request_id),
         "frame_id": int(packet.frame_id),
@@ -64,7 +64,7 @@ def encode_response(packet: GraspPosePipelineResponse) -> List[bytes]:
     near_mask_bytes = _encode_png_mask(None if debug is None else debug.near_plane_mask)
     top_mask_bytes = _encode_png_mask(None if debug is None else debug.no_hole_mask)
     return [
-        b"grasp_pose_pipeline_response",
+        b"opening_detection_pipeline_response",
         json.dumps(meta, ensure_ascii=False).encode("utf-8"),
         color_bytes,
         depth_bytes,
@@ -77,12 +77,12 @@ def encode_response(packet: GraspPosePipelineResponse) -> List[bytes]:
     ]
 
 
-def decode_response(parts: List[bytes]) -> GraspPosePipelineResponse:
+def decode_response(parts: List[bytes]) -> OpeningDetectionPipelineResponse:
     if len(parts) != 10:
-        raise RuntimeError("invalid grasp pose pipeline response multipart count")
+        raise RuntimeError("invalid opening detection pipeline response multipart count")
     topic, meta_bytes, color_bytes, depth_bytes, overlay_bytes, contrast_bytes, tray_masks_bytes, selected_tray_mask_bytes, near_mask_bytes, top_mask_bytes = parts
-    if topic != b"grasp_pose_pipeline_response":
-        raise RuntimeError("unexpected grasp pose pipeline response topic")
+    if topic != b"opening_detection_pipeline_response":
+        raise RuntimeError("unexpected opening detection pipeline response topic")
     meta = json.loads(meta_bytes.decode("utf-8"))
     debug = None
     if len(color_bytes) > 0 or len(depth_bytes) > 0 or len(overlay_bytes) > 0 or len(contrast_bytes) > 0 or len(tray_masks_bytes) > 0:
@@ -98,7 +98,7 @@ def decode_response(parts: List[bytes]) -> GraspPosePipelineResponse:
             near_plane_mask=_decode_png_mask(near_mask_bytes),
             no_hole_mask=_decode_png_mask(top_mask_bytes),
         )
-    return GraspPosePipelineResponse(
+    return OpeningDetectionPipelineResponse(
         request_id=int(meta.get("request_id", 0)),
         frame_id=int(meta["frame_id"]),
         camera_name=str(meta["camera_name"]),

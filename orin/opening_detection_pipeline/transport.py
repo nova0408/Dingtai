@@ -6,7 +6,7 @@ from typing import Optional
 import zmq
 
 from .codec import decode_request, decode_response, encode_request, encode_response
-from .protocol import GraspPosePipelineRequest, GraspPosePipelineResponse
+from .protocol import OpeningDetectionPipelineRequest, OpeningDetectionPipelineResponse
 
 
 @dataclass
@@ -17,7 +17,7 @@ class ZmqSocketOptions:
     send_timeout_ms: int = 10000
 
 
-class GraspPosePipelineRpcServer:
+class OpeningDetectionPipelineRpcServer:
     def __init__(self, bind_addr: str, context: Optional[zmq.Context] = None, options: Optional[ZmqSocketOptions] = None) -> None:
         self._context = zmq.Context.instance() if context is None else context
         self._options = ZmqSocketOptions() if options is None else options
@@ -31,14 +31,14 @@ class GraspPosePipelineRpcServer:
     def close(self) -> None:
         self._socket.close(linger=0)
 
-    def recv_request(self) -> GraspPosePipelineRequest:
+    def recv_request(self) -> OpeningDetectionPipelineRequest:
         return decode_request(self._socket.recv_multipart())
 
-    def send_response(self, response: GraspPosePipelineResponse) -> None:
+    def send_response(self, response: OpeningDetectionPipelineResponse) -> None:
         self._socket.send_multipart(encode_response(response))
 
 
-class GraspPosePipelineRpcClient:
+class OpeningDetectionPipelineRpcClient:
     def __init__(self, connect_addr: str, context: Optional[zmq.Context] = None, options: Optional[ZmqSocketOptions] = None) -> None:
         self._context = zmq.Context.instance() if context is None else context
         self._options = ZmqSocketOptions() if options is None else options
@@ -52,6 +52,6 @@ class GraspPosePipelineRpcClient:
     def close(self) -> None:
         self._socket.close(linger=0)
 
-    def call(self, request: GraspPosePipelineRequest) -> GraspPosePipelineResponse:
+    def call(self, request: OpeningDetectionPipelineRequest) -> OpeningDetectionPipelineResponse:
         self._socket.send_multipart(encode_request(request))
         return decode_response(self._socket.recv_multipart())

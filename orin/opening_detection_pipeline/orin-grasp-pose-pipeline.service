@@ -1,5 +1,5 @@
 [Unit]
-Description=Orin Grasp Pose Pipeline RPC Service
+Description=Orin Opening Detection Pipeline RPC Service
 After=network-online.target
 Wants=network-online.target
 
@@ -7,7 +7,7 @@ Wants=network-online.target
 Type=simple
 WorkingDirectory=/home/wuji-brain/workspace
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/home/wuji-brain/miniconda3/envs/py38_tourch/bin/python -m ..service grasp_pose_pipeline --bind-addr tcp://0.0.0.0:6220 --host 192.168.100.60 --control-port 5570 --stream-port 5562 --camera-id LEFT --camera-name left_hand_camera
+ExecStart=/home/wuji-brain/miniconda3/envs/py38_tourch/bin/python -m service opening_detection_pipeline --bind-addr tcp://0.0.0.0:6220 --host 192.168.100.60 --control-port 5570 --stream-port 5562 --camera-id LEFT --camera-name left_hand_camera
 Restart=always
 RestartSec=2
 

@@ -3,12 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional, Tuple
 
-from ..grasp_pose.protocol import DebugArtifacts, TrayPoseInfo
+from ..opening_detection.protocol import DebugArtifacts, TrayPoseInfo
 from ..tray_detection.protocol import OrinTrayDetectionInfo
 
 
 @dataclass(frozen=True)
-class GraspPosePipelineServiceEndpointConfig:
+class OpeningDetectionPipelineServiceEndpointConfig:
     """抓取位姿主服务端点配置。"""
 
     request_bind_addr: str = "tcp://0.0.0.0:6220"
@@ -16,7 +16,7 @@ class GraspPosePipelineServiceEndpointConfig:
 
 
 @dataclass(frozen=True)
-class GraspPosePipelineRequest:
+class OpeningDetectionPipelineRequest:
     """抓取位姿主服务请求。"""
 
     request_id: int = 0
@@ -36,7 +36,7 @@ class GraspPosePipelineRequest:
 
 
 @dataclass(frozen=True)
-class GraspPosePipelineResponse:
+class OpeningDetectionPipelineResponse:
     """抓取位姿主服务响应。"""
 
     request_id: int

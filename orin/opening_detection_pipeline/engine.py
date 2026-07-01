@@ -7,32 +7,32 @@ from typing import Optional
 import numpy as np
 
 from ..camera_stream import CameraStreamRuntime
-from ..grasp_pose.engine import GraspPoseExecutor, GraspPoseExecutorConfig
-from ..grasp_pose.protocol import DebugArtifacts, GraspPoseRequest, GraspPoseResponse
+from ..opening_detection.engine import GraspPoseExecutor, GraspPoseExecutorConfig
+from ..opening_detection.protocol import DebugArtifacts, GraspPoseRequest, GraspPoseResponse
 from ..tray_detection.engine import OrinTrayDetectionExecutor, OrinTrayDetectionExecutorConfig
 from ..tray_detection.protocol import OrinTrayDetectionRequest
 
-from .protocol import GraspPosePipelineRequest, GraspPosePipelineResponse
+from .protocol import OpeningDetectionPipelineRequest, OpeningDetectionPipelineResponse
 
 
 @dataclass(frozen=True)
-class GraspPosePipelineExecutorConfig:
+class OpeningDetectionPipelineExecutorConfig:
     """抓取位姿主服务执行器配置。"""
 
     tray_config: OrinTrayDetectionExecutorConfig = OrinTrayDetectionExecutorConfig()
     grasp_config: GraspPoseExecutorConfig = GraspPoseExecutorConfig()
 
 
-class GraspPosePipelineExecutor:
+class OpeningDetectionPipelineExecutor:
     """统一顺序执行托盘检测与抓取位姿的主执行器。"""
 
-    def __init__(self, frame_runtime: CameraStreamRuntime, config: Optional[GraspPosePipelineExecutorConfig] = None) -> None:
+    def __init__(self, frame_runtime: CameraStreamRuntime, config: Optional[OpeningDetectionPipelineExecutorConfig] = None) -> None:
         self._frame_runtime = frame_runtime
-        self._config = GraspPosePipelineExecutorConfig() if config is None else config
+        self._config = OpeningDetectionPipelineExecutorConfig() if config is None else config
         self._tray_executor = OrinTrayDetectionExecutor(frame_runtime=frame_runtime, config=self._config.tray_config)
         self._grasp_executor = GraspPoseExecutor(frame_runtime=frame_runtime, config=self._config.grasp_config)
 
-    def process_request(self, request: GraspPosePipelineRequest) -> GraspPosePipelineResponse:
+    def process_request(self, request: OpeningDetectionPipelineRequest) -> OpeningDetectionPipelineResponse:
         t0 = time.perf_counter()
         tray_response = self._tray_executor.process_request(
             OrinTrayDetectionRequest(
@@ -78,7 +78,7 @@ class GraspPosePipelineExecutor:
                 if item.error is not None:
                     error = item.error
                     break
-        return GraspPosePipelineResponse(
+        return OpeningDetectionPipelineResponse(
             request_id=int(request.request_id),
             frame_id=int(tray_response.frame_id),
             camera_name=str(tray_response.camera_name),
@@ -110,8 +110,8 @@ class GraspPosePipelineExecutor:
             no_hole_mask=None if pose_debug.no_hole_mask is None else np.asarray(pose_debug.no_hole_mask, dtype=np.uint8).copy(),
         )
 
-    def _build_error_response(self, request: GraspPosePipelineRequest, tray_response, elapsed_ms: float, error: Optional[str] = None) -> GraspPosePipelineResponse:
-        return GraspPosePipelineResponse(
+    def _build_error_response(self, request: OpeningDetectionPipelineRequest, tray_response, elapsed_ms: float, error: Optional[str] = None) -> OpeningDetectionPipelineResponse:
+        return OpeningDetectionPipelineResponse(
             request_id=int(request.request_id),
             frame_id=int(tray_response.frame_id),
             camera_name=str(tray_response.camera_name),
