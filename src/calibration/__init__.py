@@ -1,5 +1,10 @@
 """标定算法入口。"""
 
+from .charuco import (
+    CharucoPoseEstimator,
+    CharucoPoseResult,
+    CHARUCO_200_12_9,
+)
 from .hand_eye import (
     HandEyeCalibrationResult,
     HandEyeResidualStats,
@@ -11,6 +16,9 @@ from .hand_eye import (
 )
 
 __all__ = [
+    "CharucoPoseEstimator",
+    "CharucoPoseResult",
+    "CHARUCO_200_12_9",
     "HandEyeResidualStats",
     "HandEyeCalibrationResult",
     "make_relative_motion_pairs",
@@ -19,4 +27,3 @@ __all__ = [
     "evaluate_hand_eye_solution",
     "generate_synthetic_motion_pairs",
 ]
-

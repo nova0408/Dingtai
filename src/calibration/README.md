@@ -1,13 +1,54 @@
 # 手眼标定子模块说明
 
-本目录提供纯数学 `AX=XB` 手眼标定能力，不依赖硬件 SDK。
+本模块提供纯数学 `AX=XB` 手眼标定能力，不依赖硬件 SDK。
 
 实现文件：
 
+- `src/calibration/charuco.py`
 - `src/calibration/hand_eye.py`
 - `src/calibration/__init__.py`
 
-## 1. 可用接口
+## 1. ChArUco 板检测与位姿接口
+
+`src/calibration/charuco.py` 提供与 SDK 解耦的 ChArUco 检测器。
+
+### 1.1 公开对象
+
+- `CHARUCO_200_12_9`
+- `CharucoPoseResult`
+- `CharucoPoseEstimator`
+
+### 1.2 当前硬编码板参数
+
+`CHARUCO_200_12_9` 是当前项目固定使用的原生 `cv2.aruco.CharucoBoard` 对象，可直接复用。
+如果需要改板型，直接创建新的原生 board 对象再传给 `CharucoPoseEstimator`。
+
+### 1.3 典型调用方式
+
+```python
+from src.calibration import CharucoPoseEstimator
+
+estimator = CharucoPoseEstimator()
+result = estimator.estimate_pose(image_bgr, camera_matrix, dist_coeffs)
+
+if result.transform_se3 is not None:
+    print(result.transform_se3)
+```
+
+输入说明：
+
+- `image_bgr`：BGR 彩色图像，形状 `(H, W, 3)`
+- `camera_matrix`：相机内参，形状 `(3, 3)`
+- `dist_coeffs`：畸变参数，形状 `(N, 1)` 或 `(1, N)`
+
+输出说明：
+
+- `transform_se3`：标定板相对相机的 4x4 齐次位姿矩阵
+- `rvec` / `tvec`：OpenCV 旋转向量和平移向量
+- `charuco_count`：插值角点数量
+- `reprojection_error_px`：重投影误差
+
+## 2. 现有手眼标定接口
 
 - `make_relative_motion_pairs(group_a_poses, group_b_poses, mode="all")`
 - `calibrate_hand_eye_ax_xb(a_motions, b_motions, min_required_samples=3) -> Transform`
@@ -20,7 +61,7 @@
 - `src.utils.datas.Transform`（推荐）
 - `np.ndarray` 形状 `4x4` 的 SE(3) 矩阵
 
-## 2. 快速调用示例
+## 3. 快速调用示例
 
 ```python
 from src.calibration import calibrate_hand_eye_from_pose_sequences
@@ -46,7 +87,7 @@ print("translation_rmse =", residual.translation_rmse)
 
 `result.transform` 即求解出的 `X`，满足 `A_k X = X B_k`。
 
-## 3. 接入真实硬件必须提供的数据
+## 4. 接入真实硬件必须提供的数据
 
 接入实机后，核心是“同一时刻的两组位姿序列”：
 
@@ -82,7 +123,7 @@ b_x,b_y,b_z,b_qw,b_qx,b_qy,b_qz
 - 四元数必须归一化
 - 禁止混用单位（例如 A 用 mm，B 用 m）
 
-## 4. 坐标语义要求（必须先定清）
+## 5. 坐标语义要求（必须先定清）
 
 本模块只解数学方程，不自动判断你是哪种安装方式。  
 你需要在采集时固定语义，并持续一致。
@@ -94,21 +135,21 @@ b_x,b_y,b_z,b_qw,b_qx,b_qy,b_qz
 - A 组：机械臂末端相对基座位姿（例如 `T_base_hand`）
 - B 组：标定板相对相机位姿（例如 `T_cam_target`）
 
-2. 眼在手外（Eye-to-Hand）
+1. 眼在手外（Eye-to-Hand）
 
 - A/B 含义会变化，但必须能构造到同一 `AX=XB` 语义下
 - 若语义不一致，结果会看似“有值但错误”
 
 建议在采集脚本中明确写下注释：`group_a` 和 `group_b` 分别是什么物理量。
 
-## 5. 数据质量最低要求
+## 6. 数据质量最低要求
 
 - 采样数量：建议 `>= 15`，最低不低于 `3`
 - 运动激励：末端姿态要有充分旋转变化（不只平移）
 - 视野约束：标定板需稳定识别，避免抖动和跳变
 - 异常过滤：剔除识别置信度低或机器人状态不稳定的样本
 
-## 6. 结果验收建议
+## 7. 结果验收建议
 
 至少检查以下指标：
 
@@ -119,10 +160,8 @@ b_x,b_y,b_z,b_qw,b_qx,b_qy,b_qz
 
 并做一个闭环 spot-check：随机抽样验证 `A_k X` 与 `X B_k` 是否接近。
 
-## 7. 注意事项
+## 8. 注意事项
 
 - 当前模块不做时间同步，请在上游完成时间对齐。
 - 当前模块不自动做离群点鲁棒优化，如需抗异常值可在上游先过滤。
 - 未接真实硬件前，只能声明软件级验证通过，不能声明硬件行为已验证。
-
-
