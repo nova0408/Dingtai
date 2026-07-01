@@ -9,8 +9,8 @@ from typing import Any, Optional
 import numpy as np
 from loguru import logger
 
-from orin.opening_detection_pipeline.protocol import GraspPosePipelineRequest
-from orin.opening_detection_pipeline.transport import GraspPosePipelineRpcClient, ZmqSocketOptions
+from camera_pipeline.opening_detection_pipeline.protocol import GraspPosePipelineRequest
+from camera_pipeline.opening_detection_pipeline.transport import GraspPosePipelineRpcClient, ZmqSocketOptions
 from src.wuji.camera_protocol import WujiCameraFrame, WujiCameraIntrinsicsInfo, WujiCameraName
 from src.wuji.zmq_camera_catalog import SUPPORTED_WUJI_ZMQ_CAMERAS_LOCAL
 from src.wuji.zmq_camera_client import WujiZmqCameraClient

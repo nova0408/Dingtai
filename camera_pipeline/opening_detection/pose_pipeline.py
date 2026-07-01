@@ -5,7 +5,6 @@ from dataclasses import dataclass, field
 from typing import Protocol
 
 import numpy as np
-import open3d as o3d
 
 from .types import GraspResult, OpeningDetection, PlaneResult
 
@@ -104,17 +103,17 @@ class GraspPoseEstimator:
         plane:
             平面模型 `n·x + d = 0`。
         """
-        pcd = o3d.geometry.PointCloud()
-        pcd.points = o3d.utility.Vector3dVector(np.asarray(xyz_local, dtype=np.float64))
-        if len(pcd.points) >= 300:
-            pcd, _ = pcd.remove_statistical_outlier(nb_neighbors=20, std_ratio=2.0)
-        if len(pcd.points) < 50:
-            raise RuntimeError(f"滤波后点数太少：{len(pcd.points)}")
-        model, inliers = pcd.segment_plane(distance_threshold=3.0, ransac_n=3, num_iterations=1500)
-        if len(inliers) < 30:
-            raise RuntimeError("平面内点不足")
-        n = _normalize(np.asarray(model[:3], dtype=np.float64))
-        d = float(model[3])
+        pts = np.asarray(xyz_local, dtype=np.float64)
+        pts = pts[np.isfinite(pts).all(axis=1)]
+        if pts.shape[0] < 50:
+            raise RuntimeError(f"滤波后点数太少：{pts.shape[0]}")
+        center = np.mean(pts, axis=0)
+        q = pts - center.reshape(1, 3)
+        cov = (q.T @ q) / max(1, q.shape[0])
+        vals, vecs = np.linalg.eigh(cov)
+        n = np.asarray(vecs[:, int(np.argmin(vals))], dtype=np.float64)
+        n = _normalize(n)
+        d = -float(np.dot(n, center))
         if np.dot(n, np.array([0.0, 0.0, -1.0], dtype=np.float64)) < 0.0:
             n = -n
             d = -d

@@ -8,63 +8,67 @@ from typing import Optional
 
 import zmq
 
-from ..camera_stream import CameraStreamRuntime, CameraStreamRuntimeConfig
-
-from .engine import OpeningDetectionPipelineExecutor, OpeningDetectionPipelineExecutorConfig
-from .protocol import OpeningDetectionPipelineResponse, OpeningDetectionPipelineServiceEndpointConfig
-from .transport import OpeningDetectionPipelineRpcServer, ZmqSocketOptions
-
-
-LOGGER = logging.getLogger("..opening_detection_pipeline.service")
+from ..camera_stream import CameraStreamRuntimeConfig
+from ..pipeline_context import PipelineContext, PipelineContextConfig
+from .engine import OrinTrayDetectionExecutor, OrinTrayDetectionExecutorConfig
+from .protocol import OrinTrayDetectionResponse, TrayDetectionServiceEndpointConfig
+from .transport import OrinTrayDetectionRpcServer, ZmqSocketOptions
 
 
-class OpeningDetectionPipelineService:
-    """抓取位姿主服务。"""
+LOGGER = logging.getLogger("..tray_detection.service")
+
+
+class OrinTrayDetectionService:
+    """可被本机或远端调用的独立托盘检测服务。"""
 
     def __init__(
         self,
-        endpoint_config: OpeningDetectionPipelineServiceEndpointConfig,
+        endpoint_config: TrayDetectionServiceEndpointConfig,
         frame_runtime_config: CameraStreamRuntimeConfig,
-        executor_config: Optional[OpeningDetectionPipelineExecutorConfig] = None,
+        executor_config: Optional[OrinTrayDetectionExecutorConfig] = None,
         socket_options: Optional[ZmqSocketOptions] = None,
     ) -> None:
-        self._frame_runtime = CameraStreamRuntime(frame_runtime_config)
-        self._frame_runtime.start()
-        self._server = OpeningDetectionPipelineRpcServer(endpoint_config.request_bind_addr, options=socket_options)
-        self._executor = OpeningDetectionPipelineExecutor(frame_runtime=self._frame_runtime, config=executor_config)
+        self._context = PipelineContext(
+            PipelineContextConfig(camera_runtime=frame_runtime_config),
+        )
+        self._context.start()
+        self._server = OrinTrayDetectionRpcServer(endpoint_config.request_bind_addr, options=socket_options)
+        self._executor = OrinTrayDetectionExecutor(config=executor_config)
         self._running = True
 
     def close(self) -> None:
         self._running = False
         self._server.close()
-        self._frame_runtime.stop()
+        self._context.close()
 
     def run_forever(self) -> None:
-        LOGGER.info("opening detection pipeline rpc service started")
+        LOGGER.info("orin tray detection rpc service started")
         while self._running:
             try:
                 request = self._server.recv_request()
             except zmq.error.Again:
                 continue
             try:
-                response = self._executor.process_request(request)
+                frame = self._context.resolve_frame(request.frame_id)
+                response = self._executor.compute(frame, request)
             except Exception as exc:  # noqa: BLE001
-                LOGGER.exception("opening detection pipeline service failed: %s", exc)
-                response = OpeningDetectionPipelineResponse(
+                LOGGER.exception("orin tray detection service failed: %s", exc)
+                response = OrinTrayDetectionResponse(
                     request_id=int(request.request_id),
                     frame_id=-1,
                     camera_name=str(request.camera_name),
                     timestamp_ms=0.0,
                     source_meta={},
-                    selected_tray_index=int(request.target_tray_index),
+                    tray_count=0,
+                    tray_results=tuple(),
                     error="{0}: {1}".format(type(exc).__name__, exc),
                 )
             self._server.send_response(response)
 
 
 def main(argv=None) -> int:
-    parser = argparse.ArgumentParser(description="Orin opening detection pipeline RPC service")
-    parser.add_argument("--bind-addr", type=str, default="tcp://0.0.0.0:6220")
+    parser = argparse.ArgumentParser(description="Orin tray detection RPC service")
+    parser.add_argument("--bind-addr", type=str, default="tcp://0.0.0.0:6210")
     parser.add_argument("--host", type=str, default="192.168.100.60")
     parser.add_argument("--control-port", type=int, default=5570)
     parser.add_argument("--stream-port", type=int, default=5562)
@@ -72,8 +76,8 @@ def main(argv=None) -> int:
     parser.add_argument("--camera-name", type=str, default="left_hand_camera")
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-    service = OpeningDetectionPipelineService(
-        endpoint_config=OpeningDetectionPipelineServiceEndpointConfig(request_bind_addr=str(args.bind_addr)),
+    service = OrinTrayDetectionService(
+        endpoint_config=TrayDetectionServiceEndpointConfig(request_bind_addr=str(args.bind_addr)),
         frame_runtime_config=CameraStreamRuntimeConfig(
             host=str(args.host),
             control_port=int(args.control_port),
@@ -81,10 +85,10 @@ def main(argv=None) -> int:
             camera_id=str(args.camera_id),
             camera_name=str(args.camera_name),
         ),
-        executor_config=OpeningDetectionPipelineExecutorConfig(),
+        executor_config=OrinTrayDetectionExecutorConfig(),
         socket_options=ZmqSocketOptions(),
     )
-    if not service._frame_runtime.wait_until_ready(timeout_s=8.0):  # noqa: SLF001
+    if not service._context.wait_until_ready(timeout_s=8.0):  # noqa: SLF001
         LOGGER.warning("camera stream not ready within timeout")
 
     def _handle_signal(signum, _frame) -> None:  # noqa: ANN001

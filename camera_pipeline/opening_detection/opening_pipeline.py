@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import cv2
 import numpy as np
-import open3d as o3d
 
 from .types import OpeningDetection, TrayMaskResult
 
@@ -175,15 +174,6 @@ class OpeningDetectionPipeline:
         pts = pts[np.isfinite(pts).all(axis=1)]
         if pts.shape[0] < 100:
             return None
-        if pts.shape[0] >= 180:
-            pcd = o3d.geometry.PointCloud()
-            pcd.points = o3d.utility.Vector3dVector(np.asarray(pts, dtype=np.float64))
-            try:
-                _, inliers = pcd.segment_plane(distance_threshold=1.8, ransac_n=3, num_iterations=800)
-                if len(inliers) >= 100:
-                    pts = np.asarray(pts[np.asarray(inliers, dtype=np.int32)], dtype=np.float64)
-            except RuntimeError:
-                pass
         c = np.mean(pts, axis=0)
         q = pts - c.reshape(1, 3)
         cov = (q.T @ q) / max(1, q.shape[0])

@@ -17,10 +17,10 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from orin.opening_detection_pipeline.protocol import OpeningDetectionPipelineRequest  # noqa: E402
-from orin.opening_detection_pipeline.transport import OpeningDetectionPipelineRpcClient, ZmqSocketOptions  # noqa: E402
-from src.wuji import SUPPORTED_WUJI_ZMQ_CAMERAS_LOCAL, WujiZmqCameraClient  # noqa: E402
-from src.wuji.camera_protocol import WujiCameraFrame, WujiCameraName  # noqa: E402
+from camera_pipeline.opening_detection.protocol import OpeningDetectionPipelineRequest
+from camera_pipeline.opening_detection.transport import OpeningDetectionPipelineRpcClient, ZmqSocketOptions
+from src.wuji import SUPPORTED_WUJI_ZMQ_CAMERAS_LOCAL, WujiZmqCameraClient
+from src.wuji.camera_protocol import WujiCameraFrame, WujiCameraName
 
 
 DEFAULT_SERVICE_ADDR = "tcp://192.168.1.116:6220"

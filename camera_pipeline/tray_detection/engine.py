@@ -43,29 +43,14 @@ class OrinTrayDetectionExecutorConfig:
 class OrinTrayDetectionExecutor:
     """独立托盘检测执行器。"""
 
-    def __init__(self, frame_runtime: CameraStreamRuntime, config: Optional[OrinTrayDetectionExecutorConfig] = None) -> None:
-        self._frame_runtime = frame_runtime
+    def __init__(self, config: Optional[OrinTrayDetectionExecutorConfig] = None) -> None:
         self._config = OrinTrayDetectionExecutorConfig() if config is None else config
         detector = TrayDetectionPipeline.build_detector(self._config.detector_config)
         self._pipeline = TrayDetectionPipeline(tray_detector=detector)
         self._state = TrayRuntimeState()
 
-    def process_request(self, request: OrinTrayDetectionRequest) -> OrinTrayDetectionResponse:
+    def compute(self, frame: CameraFramePacket, request: OrinTrayDetectionRequest) -> OrinTrayDetectionResponse:
         t0 = time.perf_counter()
-        frame = self._resolve_frame(request)
-        if frame is None:
-            return OrinTrayDetectionResponse(
-                request_id=int(request.request_id),
-                frame_id=-1,
-                camera_name=str(request.camera_name),
-                timestamp_ms=0.0,
-                source_meta={},
-                elapsed_ms=float((time.perf_counter() - t0) * 1000.0),
-                tray_count=0,
-                tray_results=tuple(),
-                debug=None,
-                error="camera frame not ready",
-            )
         detections, from_detector = self._pipeline.segment_trays(np.asarray(frame.color_bgr, dtype=np.uint8), self._state)
         filtered_detections = self._prune_container_detections(detections)
         ordered_detections = self._sort_detections_left_to_right(filtered_detections)
@@ -82,13 +67,6 @@ class OrinTrayDetectionExecutor:
             debug=self._build_debug_artifacts(frame, ordered_detections, request.enable_debug, from_detector),
             error=None,
         )
-
-    def _resolve_frame(self, request: OrinTrayDetectionRequest) -> Optional[CameraFramePacket]:
-        if int(request.frame_id) > 0:
-            frame = self._frame_runtime.get_frame_by_id(int(request.frame_id))
-            if frame is not None:
-                return frame
-        return self._frame_runtime.get_latest_frame()
 
     def _build_result(self, tray_id: int, det) -> OrinTrayDetectionInfo:
         mask = np.asarray(det.mask, dtype=np.uint8)

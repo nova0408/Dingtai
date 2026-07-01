@@ -23,8 +23,8 @@ if str(TEST_WUJI_ROOT) not in sys.path:
     sys.path.insert(0, str(TEST_WUJI_ROOT))
 
 from common import WUYOU_HOST, WUYOU_SSH_ALIAS, start_ssh_tunnel, stop_ssh_process
-from orin.tray_detection.protocol import OrinTrayDetectionRequest, OrinTrayDetectionResponse
-from orin.tray_detection.transport import OrinTrayDetectionRpcClient, ZmqSocketOptions
+from camera_pipeline.tray_detection.protocol import OrinTrayDetectionRequest, OrinTrayDetectionResponse
+from camera_pipeline.tray_detection.transport import OrinTrayDetectionRpcClient, ZmqSocketOptions
 from src.wuji import SUPPORTED_WUJI_ZMQ_CAMERAS, SUPPORTED_WUJI_ZMQ_CAMERAS_LOCAL, WujiZmqCameraClient
 from src.wuji.camera_protocol import WujiCameraFrame, WujiCameraIntrinsicsInfo, WujiCameraName
 from src.wuji.zmq_camera_catalog import get_wuji_zmq_camera_endpoint
@@ -58,8 +58,17 @@ DEFAULT_FRAME_CACHE_SIZE = 24
 DEFAULT_WINDOW_NAME = "opening_detection_local"
 "cv2 预览窗口名称。"
 
+DEFAULT_EDGE_WINDOW_NAME = "opening_detection_edge_methods"
+"边缘处理方案对比窗口名称。"
+
 DEFAULT_MIN_WINDOW_LONG_SIDE = 960
 "cv2 预览窗口最小长边，单位 像素。"
+
+DEFAULT_EDGE_TILE_WIDTH = 320
+"边缘方案单格预览宽度，单位 像素。"
+
+DEFAULT_EDGE_TILE_HEIGHT = 180
+"边缘方案单格预览高度，单位 像素。"
 
 DEFAULT_MAX_DEPTH_MM = 5000.0
 "点云构造使用的最大深度阈值，单位 mm。"
@@ -158,10 +167,12 @@ def main(
 
     try:
         cv2.namedWindow(DEFAULT_WINDOW_NAME, cv2.WINDOW_NORMAL)
+        cv2.namedWindow(DEFAULT_EDGE_WINDOW_NAME, cv2.WINDOW_NORMAL)
         latest_result: ComputeResult | None = None
         preview_frames = 0
         fps_t0 = time.perf_counter()
         window_ready = False
+        edge_window_ready = False
         while True:
             init_state = _open_wuji_camera_runtime(
                 camera_name=camera_name,
@@ -179,9 +190,14 @@ def main(
                     cv2.resizeWindow(DEFAULT_WINDOW_NAME, win_w, win_h)
                     window_ready = True
                 cv2.imshow(DEFAULT_WINDOW_NAME, wait_canvas)
+                edge_wait_canvas = _build_status_canvas("waiting tray result / edge method preview")
+                if not edge_window_ready:
+                    cv2.resizeWindow(DEFAULT_EDGE_WINDOW_NAME, edge_wait_canvas.shape[1], edge_wait_canvas.shape[0])
+                    edge_window_ready = True
+                cv2.imshow(DEFAULT_EDGE_WINDOW_NAME, edge_wait_canvas)
                 key = cv2.waitKey(max(1, int(round(DEFAULT_INIT_RETRY_INTERVAL_S * 1000.0))))
                 _close_camera_runtime(init_state)
-                if key in (27, ord("q"), ord("Q")) or _cv_window_closed(DEFAULT_WINDOW_NAME):
+                if key in (27, ord("q"), ord("Q")) or _cv_window_closed(DEFAULT_WINDOW_NAME) or _cv_window_closed(DEFAULT_EDGE_WINDOW_NAME):
                     break
                 continue
 
@@ -221,6 +237,7 @@ def main(
                         _log_compute_result(latest_result)
 
                     canvas = _build_preview_canvas(frame, latest_result)
+                    edge_canvas = _build_edge_method_canvas(frame, latest_result)
                     if not window_ready:
                         win_w, win_h = _compute_preview_window_size(
                             canvas.shape[1],
@@ -229,27 +246,33 @@ def main(
                         )
                         cv2.resizeWindow(DEFAULT_WINDOW_NAME, win_w, win_h)
                         window_ready = True
+                    if not edge_window_ready:
+                        cv2.resizeWindow(DEFAULT_EDGE_WINDOW_NAME, edge_canvas.shape[1], edge_canvas.shape[0])
+                        edge_window_ready = True
                     cv2.imshow(DEFAULT_WINDOW_NAME, canvas)
+                    cv2.imshow(DEFAULT_EDGE_WINDOW_NAME, edge_canvas)
                     preview_frames += 1
                     if preview_frames % 30 == 0:
                         elapsed = max(1e-6, time.perf_counter() - fps_t0)
                         logger.info("预览帧率 {:.1f} fps", preview_frames / elapsed)
                     key = cv2.waitKey(1)
-                    if key in (27, ord("q"), ord("Q")) or _cv_window_closed(DEFAULT_WINDOW_NAME):
+                    if key in (27, ord("q"), ord("Q")) or _cv_window_closed(DEFAULT_WINDOW_NAME) or _cv_window_closed(DEFAULT_EDGE_WINDOW_NAME):
                         return 0
             except Exception as exc:  # noqa: BLE001
                 stream_error = f"{type(exc).__name__}: {exc}"
                 logger.warning("相机流暂不可用：{}", stream_error)
                 wait_canvas = _build_status_canvas(stream_error)
                 cv2.imshow(DEFAULT_WINDOW_NAME, wait_canvas)
+                cv2.imshow(DEFAULT_EDGE_WINDOW_NAME, _build_status_canvas("waiting stream recovery"))
                 key = cv2.waitKey(max(1, int(round(DEFAULT_INIT_RETRY_INTERVAL_S * 1000.0))))
-                if key in (27, ord("q"), ord("Q")) or _cv_window_closed(DEFAULT_WINDOW_NAME):
+                if key in (27, ord("q"), ord("Q")) or _cv_window_closed(DEFAULT_WINDOW_NAME) or _cv_window_closed(DEFAULT_EDGE_WINDOW_NAME):
                     break
             finally:
                 _close_camera_runtime(init_state)
     finally:
         tray_client.close()
         _safe_destroy_cv_window(DEFAULT_WINDOW_NAME)
+        _safe_destroy_cv_window(DEFAULT_EDGE_WINDOW_NAME)
     return 0
 
 
@@ -393,8 +416,8 @@ def _compute_from_remote_tray_result(
     depth_mm = np.asarray(depth, dtype=np.float64)
 
     try:
-        _, hp_gray, hp_edge = _compute_high_contrast_domain(color_bgr)
-        opening = opening_pipeline.detect_opening(color_bgr, tray_mask, hp_gray)
+        _, hp_gray, hp_edge = opening_pipeline.build_high_contrast_domain(color_bgr)
+        opening = opening_pipeline.detect_opening(color_bgr, tray_mask, hp_gray, hp_edge)
         near_plane_mask, no_hole_mask = opening_pipeline.compute_mask_pipeline(
             tray_mask,
             True,
@@ -552,6 +575,74 @@ def _build_preview_canvas(
     return merged
 
 
+def _build_edge_method_canvas(frame: WujiCameraFrame, result: ComputeResult | None) -> np.ndarray:
+    """构造多种边缘处理方案的对比预览。"""
+
+    if result is None:
+        return _build_status_canvas("waiting local opening result")
+    target_tray_mask = _extract_target_tray_mask(result)
+    if target_tray_mask is None or np.count_nonzero(target_tray_mask) == 0:
+        return _build_status_canvas("waiting target tray mask")
+
+    base_bgr = np.asarray(frame.color_bgr, dtype=np.uint8)
+    roi_bgr, roi_mask, roi_origin_xy = _crop_tray_roi(base_bgr, target_tray_mask)
+    gray = cv2.cvtColor(roi_bgr, cv2.COLOR_BGR2GRAY)
+    clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
+    contrast = clahe.apply(gray)
+    background = cv2.GaussianBlur(gray, (0, 0), sigmaX=21.0, sigmaY=21.0)
+    background_norm = cv2.divide(gray, np.maximum(background, 1), scale=255.0)
+    bilateral = cv2.bilateralFilter(gray, d=7, sigmaColor=40.0, sigmaSpace=40.0)
+    blur_small = cv2.GaussianBlur(gray, (0, 0), sigmaX=1.2, sigmaY=1.2)
+    blur_large = cv2.GaussianBlur(gray, (0, 0), sigmaX=5.0, sigmaY=5.0)
+    highpass = cv2.normalize(cv2.subtract(blur_small, blur_large), None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+    adaptive_gauss = cv2.adaptiveThreshold(contrast, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 31, 5)
+    adaptive_mean = cv2.adaptiveThreshold(contrast, 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY, 31, 5)
+    _, otsu_binary = cv2.threshold(contrast, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
+    canny_gray = cv2.Canny(cv2.GaussianBlur(gray, (5, 5), 0), 50, 150, apertureSize=3, L2gradient=True)
+    canny_contrast = cv2.Canny(cv2.GaussianBlur(contrast, (5, 5), 0), 50, 150, apertureSize=3, L2gradient=True)
+
+    method_previews = [
+        ("Gray+Canny", _gray_to_bgr(canny_gray)),
+        ("CLAHE+Canny", _gray_to_bgr(canny_contrast)),
+        ("BgNorm+Canny", _gray_to_bgr(cv2.Canny(background_norm, 50, 150, apertureSize=3, L2gradient=True))),
+        ("Bilateral+Canny", _gray_to_bgr(cv2.Canny(bilateral, 50, 150, apertureSize=3, L2gradient=True))),
+        ("Highpass+Canny", _gray_to_bgr(cv2.Canny(highpass, 50, 150, apertureSize=3, L2gradient=True))),
+        ("AdaptiveGauss", _gray_to_bgr(cv2.bitwise_not(adaptive_gauss))),
+        ("AdaptiveMean", _gray_to_bgr(cv2.bitwise_not(adaptive_mean))),
+        ("Otsu", _gray_to_bgr(cv2.bitwise_not(otsu_binary))),
+        ("Hough", _build_hough_preview(contrast, canny_contrast)),
+        ("LSD", _build_lsd_preview(contrast)),
+    ]
+    rendered_tiles: list[np.ndarray] = []
+    for method_name, preview_bgr in method_previews:
+        masked_preview = preview_bgr.copy()
+        if roi_mask is not None:
+            masked_preview[roi_mask == 0] = (masked_preview[roi_mask == 0] * 0.35).astype(np.uint8)
+        if result.opening is not None:
+            _draw_opening_in_roi(masked_preview, result.opening, roi_bgr.shape[:2], roi_origin_xy)
+        rendered_tiles.append(_render_method_tile(masked_preview, method_name))
+
+    row_size = 5
+    rows: list[np.ndarray] = []
+    for start in range(0, len(rendered_tiles), row_size):
+        tiles = rendered_tiles[start : start + row_size]
+        while len(tiles) < row_size:
+            tiles.append(np.zeros((DEFAULT_EDGE_TILE_HEIGHT, DEFAULT_EDGE_TILE_WIDTH, 3), dtype=np.uint8))
+        rows.append(np.hstack(tiles))
+    canvas = np.vstack(rows)
+    cv2.putText(
+        canvas,
+        "Edge method comparison for opening detection",
+        (12, 24),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.68,
+        (255, 255, 255),
+        2,
+        cv2.LINE_AA,
+    )
+    return canvas
+
+
 def _draw_remote_overlay(
     base_bgr: np.ndarray,
     tray_response: OrinTrayDetectionResponse,
@@ -582,6 +673,115 @@ def _draw_remote_overlay(
             cv2.LINE_AA,
         )
     return out
+
+
+def _extract_target_tray_mask(result: ComputeResult) -> np.ndarray | None:
+    """从远端 tray 响应中提取当前目标托盘掩码。"""
+
+    debug = result.tray_response.debug
+    if debug is None:
+        return None
+    for result_index, tray_info in enumerate(result.tray_response.tray_results):
+        if int(tray_info.tray_id) != int(result.target_tray_id):
+            continue
+        if result_index >= len(debug.tray_masks):
+            return None
+        return np.asarray(debug.tray_masks[result_index], dtype=np.uint8)
+    return None
+
+
+def _crop_tray_roi(base_bgr: np.ndarray, tray_mask: np.ndarray) -> tuple[np.ndarray, np.ndarray | None, tuple[int, int]]:
+    """裁剪目标托盘 ROI，便于对比不同边缘方法。"""
+
+    ys, xs = np.where(np.asarray(tray_mask, dtype=np.uint8) > 0)
+    if xs.size == 0:
+        return base_bgr.copy(), None, (0, 0)
+    x1 = max(0, int(np.min(xs)) - 24)
+    x2 = min(base_bgr.shape[1], int(np.max(xs)) + 25)
+    y1 = max(0, int(np.min(ys)) - 24)
+    y2 = min(base_bgr.shape[0], int(np.max(ys)) + 25)
+    roi_bgr = np.asarray(base_bgr[y1:y2, x1:x2], dtype=np.uint8).copy()
+    roi_mask = np.asarray(tray_mask[y1:y2, x1:x2], dtype=np.uint8).copy()
+    return roi_bgr, roi_mask, (x1, y1)
+
+
+def _gray_to_bgr(gray: np.ndarray) -> np.ndarray:
+    """将单通道图转换为 BGR 预览。"""
+
+    return cv2.cvtColor(np.asarray(gray, dtype=np.uint8), cv2.COLOR_GRAY2BGR)
+
+
+def _render_method_tile(preview_bgr: np.ndarray, method_name: str) -> np.ndarray:
+    """渲染单个方法预览格并写入方法名。"""
+
+    tile = cv2.resize(
+        np.asarray(preview_bgr, dtype=np.uint8),
+        (DEFAULT_EDGE_TILE_WIDTH, DEFAULT_EDGE_TILE_HEIGHT),
+        interpolation=cv2.INTER_LINEAR,
+    )
+    cv2.rectangle(tile, (0, 0), (DEFAULT_EDGE_TILE_WIDTH - 1, 24), (12, 12, 12), -1)
+    cv2.putText(
+        tile,
+        method_name,
+        (8, 17),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.52,
+        (255, 255, 255),
+        1,
+        cv2.LINE_AA,
+    )
+    return tile
+
+
+def _draw_opening_in_roi(
+    image_bgr: np.ndarray,
+    opening: Any,
+    roi_shape: tuple[int, int],
+    roi_origin_xy: tuple[int, int],
+) -> None:
+    """在托盘 ROI 预览中绘制开口位置。"""
+
+    x1, y1 = roi_origin_xy
+    quad = np.asarray(opening.quad_uv, dtype=np.float64).copy()
+    quad[:, 0] -= float(x1)
+    quad[:, 1] -= float(y1)
+    quad[:, 0] = np.clip(quad[:, 0], 0, roi_shape[1] - 1)
+    quad[:, 1] = np.clip(quad[:, 1], 0, roi_shape[0] - 1)
+    cv2.polylines(image_bgr, [np.round(quad).astype(np.int32)], True, (0, 0, 255), 1, cv2.LINE_AA)
+
+
+def _build_hough_preview(gray: np.ndarray, canny_edges: np.ndarray) -> np.ndarray:
+    """构造 Hough 线段检测预览。"""
+
+    canvas = _gray_to_bgr(canny_edges)
+    lines = cv2.HoughLinesP(
+        canny_edges,
+        rho=1.0,
+        theta=np.pi / 180.0,
+        threshold=40,
+        minLineLength=24,
+        maxLineGap=8,
+    )
+    if lines is None:
+        return canvas
+    for line in lines[:80]:
+        x1, y1, x2, y2 = (int(v) for v in line.reshape(4))
+        cv2.line(canvas, (x1, y1), (x2, y2), (0, 255, 255), 1, cv2.LINE_AA)
+    return canvas
+
+
+def _build_lsd_preview(gray: np.ndarray) -> np.ndarray:
+    """构造 LSD 线段检测预览。"""
+
+    canvas = _gray_to_bgr(gray)
+    detector = cv2.createLineSegmentDetector(cv2.LSD_REFINE_STD)
+    lines = detector.detect(gray)[0]
+    if lines is None:
+        return canvas
+    for line in lines[:160]:
+        x1, y1, x2, y2 = (int(round(v)) for v in line.reshape(4))
+        cv2.line(canvas, (x1, y1), (x2, y2), (0, 200, 255), 1, cv2.LINE_AA)
+    return canvas
 
 
 def _draw_opening(image_bgr: np.ndarray, opening: Any) -> None:
@@ -660,16 +860,6 @@ def _draw_mask_outline(image_bgr: np.ndarray, mask: np.ndarray, color_bgr: tuple
 
 
 # region 数学与工具
-
-
-def _compute_high_contrast_domain(bgr: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    blur = cv2.GaussianBlur(bgr, (0, 0), 2.6)
-    highpass = cv2.addWeighted(bgr, 1.90, blur, -0.90, 0.0)
-    gray = cv2.cvtColor(highpass, cv2.COLOR_BGR2GRAY)
-    gray_f = cv2.bilateralFilter(gray, d=7, sigmaColor=42, sigmaSpace=42)
-    gray_f = cv2.morphologyEx(gray_f, cv2.MORPH_CLOSE, np.ones((3, 3), dtype=np.uint8), iterations=1)
-    edge = cv2.Canny(gray_f, 42, 118)
-    return highpass, gray_f, edge
 
 
 def _rgbd_to_points(

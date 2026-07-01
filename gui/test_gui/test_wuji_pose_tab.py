@@ -39,7 +39,7 @@ except Exception as exc:  # noqa: BLE001
     if POSE_DEPENDENCY_ERROR is None:
         POSE_DEPENDENCY_ERROR = f"o3d viewer unavailable: {type(exc).__name__}: {exc}"
 
-from orin.opening_detection_pipeline.protocol import GraspPosePipelineResponse as GraspPoseResponse
+from camera_pipeline.opening_detection_pipeline.protocol import GraspPosePipelineResponse as GraspPoseResponse
 
 LEFT_CAMERA_NAME = "left_hand_camera"
 DEFAULT_ORIN_SERVICE_ADDR = "tcp://192.168.1.113:6220"
