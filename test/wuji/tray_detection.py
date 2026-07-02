@@ -8,14 +8,14 @@ from typing import Any
 
 import cv2
 import numpy as np
-import logging
+from loguru import logger
 
 PROJECT_ROOT = next(parent for parent in Path(__file__).resolve().parents if (parent / "camera_pipeline").is_dir())
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 DEFAULT_CAMERA_NAME = "left_hand_camera"
-DEFAULT_SERVICE_ADDR = "tcp://127.0.0.1:6210"
+DEFAULT_SERVICE_ADDR = "tcp://192.168.1.118:6210"
 DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "test" / "wuji" / ".archive" / "tray_detection_capture"
 
 from camera_pipeline.tray_detection.protocol import OrinTrayDetectionRequest
@@ -28,8 +28,6 @@ def main(
     output_dir: Path = DEFAULT_OUTPUT_DIR,
 ) -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-    logger = logging.getLogger(__name__)
     logger.info("tray_detection smoke test start")
     client = OrinTrayDetectionRpcClient(
         connect_addr=str(service_addr),

@@ -197,7 +197,11 @@ def _decode_quad2(values: Any) -> Tuple[Tuple[float, float], ...]:
 
 
 def _decode_rotation3(values: Any) -> Tuple[Tuple[float, float, float], ...]:
-    return tuple(tuple(float(v) for v in row) for row in values)
+    return (
+        _decode_point3(values[0]),
+        _decode_point3(values[1]),
+        _decode_point3(values[2]),
+    )
 
 
 def _decode_bbox_xywh(values: Any) -> Tuple[int, int, int, int]:

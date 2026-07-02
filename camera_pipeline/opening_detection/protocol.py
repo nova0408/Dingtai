@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Optional, Tuple
 
 from ..tray_detection.protocol import OrinTrayDetectionInfo
+from ..ports import OPENING_DETECTION_BIND_ADDR
 
 
 @dataclass(frozen=True)
@@ -25,11 +26,11 @@ class TrayPoseInfo:
     """单托盘开口与位姿结果。"""
 
     tray_index: int
-    tray_bbox_xywh: Tuple[int, int, int, int]
-    tray_center_uv: Tuple[float, float]
-    opening_center_uv: Optional[Tuple[float, float]] = None
-    opening_quad_uv: Optional[Tuple[Tuple[float, float], ...]] = None
-    top_quad_uv: Optional[Tuple[Tuple[float, float], ...]] = None
+    tray_bbox_xywh: Any
+    tray_center_uv: Any
+    opening_center_uv: Optional[Any] = None
+    opening_quad_uv: Optional[Any] = None
+    top_quad_uv: Optional[Any] = None
     pose: Optional["GraspPoseInfo"] = None
 
 
@@ -37,10 +38,10 @@ class TrayPoseInfo:
 class GraspPoseInfo:
     """抓取位姿结果。"""
 
-    grasp_point_mm: Tuple[float, float, float]
-    pre_grasp_point_mm: Tuple[float, float, float]
-    rotation: Optional[Tuple[Tuple[float, float, float], ...]] = None
-    rpy_deg: Optional[Tuple[float, float, float]] = None
+    grasp_point_mm: Any
+    pre_grasp_point_mm: Any
+    rotation: Optional[Any] = None
+    rpy_deg: Optional[Any] = None
 
 
 @dataclass(frozen=True)
@@ -56,15 +57,15 @@ class DebugArtifacts:
     selected_tray_mask: Any = None
     near_plane_mask: Any = None
     no_hole_mask: Any = None
-    opening_center_uv: Optional[Tuple[float, float]] = None
-    opening_quad_uv: Optional[Tuple[Tuple[float, float], ...]] = None
-    opening_bbox_xywh: Optional[Tuple[int, int, int, int]] = None
+    opening_center_uv: Optional[Any] = None
+    opening_quad_uv: Optional[Any] = None
+    opening_bbox_xywh: Optional[Any] = None
     opening_score: Optional[float] = None
-    top_quad_uv: Optional[Tuple[Tuple[float, float], ...]] = None
-    grasp_point_mm: Optional[Tuple[float, float, float]] = None
-    pre_grasp_point_mm: Optional[Tuple[float, float, float]] = None
-    rotation: Optional[Tuple[Tuple[float, float, float], ...]] = None
-    rpy_deg: Optional[Tuple[float, float, float]] = None
+    top_quad_uv: Optional[Any] = None
+    grasp_point_mm: Optional[Any] = None
+    pre_grasp_point_mm: Optional[Any] = None
+    rotation: Optional[Any] = None
+    rpy_deg: Optional[Any] = None
 
 
 @dataclass(frozen=True)
@@ -86,7 +87,7 @@ class GraspPoseResponse:
 class OpeningDetectionPipelineServiceEndpointConfig:
     """抓取位姿主服务端点配置。"""
 
-    request_bind_addr: str = "tcp://0.0.0.0:6220"
+    request_bind_addr: str = OPENING_DETECTION_BIND_ADDR
 
 
 @dataclass(frozen=True)

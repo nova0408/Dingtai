@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any, cast
+
 import cv2
 import numpy as np
 
@@ -28,10 +30,17 @@ class OpeningDetectionPipeline:
         self._near_grow_global_diff = 30
 
     def estimate_from_tray(
-        self, rgb_bgr: np.ndarray, tray_mask: np.ndarray, tray_detect_ok: bool, hp_gray: np.ndarray, hp_edge: np.ndarray
+        self,
+        rgb_bgr: np.ndarray,
+        tray_mask: np.ndarray,
+        tray_detect_ok: bool,
+        hp_gray: np.ndarray,
+        hp_edge: np.ndarray,
     ) -> tuple[TrayMaskResult, OpeningDetection]:
         opening = self.detect_opening(rgb_bgr, tray_mask, hp_gray, hp_edge)
-        near_plane_mask, no_hole_mask = self.compute_mask_pipeline(tray_mask, tray_detect_ok, opening, hp_gray, hp_edge)
+        near_plane_mask, no_hole_mask = self.compute_mask_pipeline(
+            tray_mask, tray_detect_ok, opening, hp_gray, hp_edge
+        )
         top_quad = self.fit_rotated_quad(no_hole_mask)
         return (
             TrayMaskResult(
@@ -106,7 +115,9 @@ class OpeningDetectionPipeline:
             sigmaColor=DEFAULT_CONTRAST_BILATERAL_SIGMA_COLOR,
             sigmaSpace=DEFAULT_CONTRAST_BILATERAL_SIGMA_SPACE,
         )
-        gray_f = cv2.morphologyEx(gray_f, cv2.MORPH_CLOSE, np.ones((3, 3), dtype=np.uint8), iterations=1)
+        gray_f = cv2.morphologyEx(
+            gray_f, cv2.MORPH_CLOSE, np.ones((3, 3), dtype=np.uint8), iterations=1
+        )
         edge = cv2.Canny(gray_f, DEFAULT_CONTRAST_CANNY_LOW, DEFAULT_CONTRAST_CANNY_HIGH)
         return highpass, gray_f, edge
 
@@ -118,8 +129,14 @@ class OpeningDetectionPipeline:
         hp_gray: np.ndarray,
         hp_edge: np.ndarray,
     ) -> tuple[np.ndarray | None, np.ndarray | None]:
-        near_plane_mask = self._build_near_dark_plane_mask(tray_mask, opening, hp_gray, hp_edge) if tray_detect_ok else None
-        no_hole_mask = self._build_no_hole_top_plane_mask(tray_mask, opening, near_plane_mask, hp_gray, hp_edge)
+        near_plane_mask = (
+            self._build_near_dark_plane_mask(tray_mask, opening, hp_gray, hp_edge)
+            if tray_detect_ok
+            else None
+        )
+        no_hole_mask = self._build_no_hole_top_plane_mask(
+            tray_mask, opening, near_plane_mask, hp_gray, hp_edge
+        )
         return self._enforce_disjoint_region_masks(near_plane_mask, no_hole_mask)
 
     def filter_opening_local_points(
@@ -142,7 +159,7 @@ class OpeningDetectionPipeline:
             mask[idx] = local_roi[v, u] > 0
         if np.count_nonzero(mask) > 30:
             inten = np.max((rgb[mask] * 255.0).astype(np.float32), axis=1)
-            thr = float(np.clip(np.percentile(inten, 78), 70, 185))
+            thr = float(np.clip(np.percentile(cast(Any, inten), 78), 70, 185))
             sel = np.where(mask)[0]
             keep = inten <= thr
             mask2 = np.zeros_like(mask)
@@ -237,10 +254,7 @@ class OpeningDetectionPipeline:
         hp = hp_gray[y1:y2, x1:x2]
         roi_edge = hp_edge[y1:y2, x1:x2] if hp_edge is not None else None
         thresholds = sorted(
-            set(
-                int(np.clip(t, 20, 180))
-                for t in np.percentile(hp, [4, 6, 8, 12, 16, 20, 25, 30])
-            )
+            set(int(np.clip(t, 20, 180)) for t in np.percentile(cast(Any, hp), [4, 6, 8, 12, 16, 20, 25, 30]))
         )
         candidates: list[tuple[float, np.ndarray]] = []
         for thr in thresholds:
@@ -248,7 +262,9 @@ class OpeningDetectionPipeline:
             mask[(hp <= thr) & (roi_tray > 0)] = 255
             close_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (max(9, hp.shape[1] // 12), 3))
             mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, close_kernel)
-            mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3)))
+            mask = cv2.morphologyEx(
+                mask, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+            )
             contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             for cnt in contours:
                 area = float(cv2.contourArea(cnt))
@@ -276,18 +292,29 @@ class OpeningDetectionPipeline:
                     continue
                 patch_hp = hp[in_roi]
                 dark_ratio_hp = float(np.mean(patch_hp <= thr))
-                ring = self._patch_ring(hp, int(cx - rw / 2), int(cy - rh / 2), int(max(1, rw)), int(max(1, rh)))
+                ring = self._patch_ring(
+                    hp, int(cx - rw / 2), int(cy - rh / 2), int(max(1, rw)), int(max(1, rh))
+                )
                 slot_mean = float(np.mean(patch_hp))
                 ring_mean = float(np.mean(ring)) if ring.size > 0 else slot_mean
                 contrast_score = float(np.clip((ring_mean - slot_mean) / 45.0, 0.0, 1.5))
                 edge_score = 0.0
                 if roi_edge is not None:
                     # opening contour ideally与 `bilateral + canny` 的强边缘对齐；这里统计候选边框附近的命中率。
-                    edge_band = cv2.polylines(np.zeros_like(mask), [np.round(box).astype(np.int32)], True, 255, 2, cv2.LINE_AA)
+                    edge_band = cv2.polylines(
+                        np.zeros_like(mask),
+                        [np.round(box).astype(np.int32)],
+                        True,
+                        255,
+                        2,
+                        cv2.LINE_AA,
+                    )
                     edge_pixels = edge_band > 0
                     if np.count_nonzero(edge_pixels) > 0:
                         edge_score = float(np.mean(roi_edge[edge_pixels] > 0))
-                x_center_pref = 1.0 - min(abs((x1 + cx) - (tx + 0.5 * tw)) / max(1.0, 0.5 * tw), 1.0)
+                x_center_pref = 1.0 - min(
+                    abs((x1 + cx) - (tx + 0.5 * tw)) / max(1.0, 0.5 * tw), 1.0
+                )
                 score = (
                     2.7 * dark_ratio_hp
                     + 1.5 * min(aspect / 8.0, 2.0)
@@ -304,10 +331,19 @@ class OpeningDetectionPipeline:
         candidates.sort(key=lambda x: x[0], reverse=True)
         quad = candidates[0][1]
         bx, by, bw, bh = cv2.boundingRect(np.round(quad).astype(np.int32))
-        return OpeningDetection(center_uv=np.mean(quad, axis=0).astype(np.float64), bbox_xywh=(int(bx), int(by), int(bw), int(bh)), quad_uv=quad, score=float(candidates[0][0]))
+        return OpeningDetection(
+            center_uv=np.mean(quad, axis=0).astype(np.float64),
+            bbox_xywh=(int(bx), int(by), int(bw), int(bh)),
+            quad_uv=quad,
+            score=float(candidates[0][0]),
+        )
 
     def _build_near_dark_plane_mask(
-        self, tray_mask: np.ndarray, opening: OpeningDetection, hp_gray: np.ndarray, hp_edge: np.ndarray
+        self,
+        tray_mask: np.ndarray,
+        opening: OpeningDetection,
+        hp_gray: np.ndarray,
+        hp_edge: np.ndarray,
     ) -> np.ndarray | None:
         h, w = tray_mask.shape[:2]
         ring = self._build_opening_surround_ring_mask((h, w), opening)
@@ -330,7 +366,9 @@ class OpeningDetectionPipeline:
         if np.count_nonzero(grow) < 40:
             return None
         grow = cv2.morphologyEx(grow, cv2.MORPH_OPEN, np.ones((3, 3), dtype=np.uint8), iterations=1)
-        grow = cv2.morphologyEx(grow, cv2.MORPH_CLOSE, np.ones((5, 5), dtype=np.uint8), iterations=2)
+        grow = cv2.morphologyEx(
+            grow, cv2.MORPH_CLOSE, np.ones((5, 5), dtype=np.uint8), iterations=2
+        )
         grow = self._select_components_in_ring(grow, ring)
         if np.count_nonzero(grow) < 30:
             return None
@@ -363,7 +401,9 @@ class OpeningDetectionPipeline:
                 step = max(1, xs.size // 140)
                 seeds: list[tuple[int, int, int]] = []
                 for i in range(0, xs.size, step):
-                    sx = int(xs[i]); sy = int(ys[i]); seeds.append((sx, sy, int(hp_gray[sy, sx])))
+                    sx = int(xs[i])
+                    sy = int(ys[i])
+                    seeds.append((sx, sy, int(hp_gray[sy, sx])))
                 edge_block = cv2.dilate(hp_edge, np.ones((3, 3), dtype=np.uint8), iterations=1)
                 grown = self._region_grow_from_seeds(
                     gray=hp_gray,
@@ -374,17 +414,29 @@ class OpeningDetectionPipeline:
                     global_diff=max(18, self._near_grow_global_diff - 6),
                     max_pixels=max(12000, self._near_grow_max_pixels),
                 )
-                grown = cv2.morphologyEx(grown, cv2.MORPH_OPEN, np.ones((3, 3), dtype=np.uint8), iterations=1)
-                grown = cv2.morphologyEx(grown, cv2.MORPH_CLOSE, np.ones((9, 9), dtype=np.uint8), iterations=2)
+                grown = cv2.morphologyEx(
+                    grown, cv2.MORPH_OPEN, np.ones((3, 3), dtype=np.uint8), iterations=1
+                )
+                grown = cv2.morphologyEx(
+                    grown, cv2.MORPH_CLOSE, np.ones((9, 9), dtype=np.uint8), iterations=2
+                )
                 grown = self._select_component_near_target(grown, target)
                 if np.count_nonzero(grown) >= 180:
                     return grown
         edge_soft = cv2.GaussianBlur(hp_edge.astype(np.float32), (5, 5), 0)
         low_edge = np.zeros_like(base_mask)
-        thr = float(np.percentile(edge_soft[base_mask > 0], 55)) if np.count_nonzero(base_mask) > 0 else 0.0
+        thr = (
+            float(np.percentile(cast(Any, np.asarray(edge_soft[base_mask > 0], dtype=np.float64)), 55))
+            if np.count_nonzero(base_mask) > 0
+            else 0.0
+        )
         low_edge[(edge_soft <= thr) & (base_mask > 0)] = 255
-        fallback = cv2.morphologyEx(low_edge, cv2.MORPH_OPEN, np.ones((5, 5), dtype=np.uint8), iterations=1)
-        fallback = cv2.morphologyEx(fallback, cv2.MORPH_CLOSE, np.ones((11, 11), dtype=np.uint8), iterations=2)
+        fallback = cv2.morphologyEx(
+            low_edge, cv2.MORPH_OPEN, np.ones((5, 5), dtype=np.uint8), iterations=1
+        )
+        fallback = cv2.morphologyEx(
+            fallback, cv2.MORPH_CLOSE, np.ones((11, 11), dtype=np.uint8), iterations=2
+        )
         fallback = self._select_component_near_target(fallback, target)
         if np.count_nonzero(fallback) < 180:
             return None
@@ -396,7 +448,10 @@ class OpeningDetectionPipeline:
         if xs.size == 0:
             h, w = mask.shape[:2]
             return 0, 0, w, h
-        x1 = int(np.min(xs)); x2 = int(np.max(xs)); y1 = int(np.min(ys)); y2 = int(np.max(ys))
+        x1 = int(np.min(xs))
+        x2 = int(np.max(xs))
+        y1 = int(np.min(ys))
+        y2 = int(np.max(ys))
         return x1, y1, x2 - x1 + 1, y2 - y1 + 1
 
     @staticmethod
@@ -422,13 +477,16 @@ class OpeningDetectionPipeline:
 
     @staticmethod
     def _select_components_in_ring(mask: np.ndarray, ring: np.ndarray) -> np.ndarray:
-        num, cc, stats, _ = cv2.connectedComponentsWithStats((mask > 0).astype(np.uint8), connectivity=8)
+        num, cc, stats, _ = cv2.connectedComponentsWithStats(
+            (mask > 0).astype(np.uint8), connectivity=8
+        )
         if num <= 1:
             return mask
         ring_px = ring > 0
         out = np.zeros_like(mask, dtype=np.uint8)
         for i in range(1, num):
-            comp = cc == i; area = float(stats[i, cv2.CC_STAT_AREA])
+            comp = cc == i
+            area = float(stats[i, cv2.CC_STAT_AREA])
             if area < 12.0:
                 continue
             overlap = float(np.count_nonzero(comp & ring_px))
@@ -439,31 +497,45 @@ class OpeningDetectionPipeline:
         return out
 
     @staticmethod
-    def _build_opening_local_roi_mask(image_shape: tuple[int, int], opening: OpeningDetection) -> np.ndarray:
+    def _build_opening_local_roi_mask(
+        image_shape: tuple[int, int], opening: OpeningDetection
+    ) -> np.ndarray:
         h, w = image_shape
         quad = np.asarray(opening.quad_uv, dtype=np.float64)
         c = np.mean(quad, axis=0)
         v_long, v_short = OpeningDetectionPipeline._opening_axes_from_quad(quad)
         long_len, short_len = OpeningDetectionPipeline._opening_long_short_lengths(quad)
-        rect_w = max(16.0, long_len * 2.35); rect_h = max(12.0, short_len * 3.10)
+        rect_w = max(16.0, long_len * 2.35)
+        rect_h = max(12.0, short_len * 3.10)
         poly = OpeningDetectionPipeline._rot_rect_to_poly(c, v_long, v_short, rect_w, rect_h)
-        poly[:, 0] = np.clip(poly[:, 0], 0, w - 1); poly[:, 1] = np.clip(poly[:, 1], 0, h - 1)
-        mask = np.zeros((h, w), dtype=np.uint8); cv2.fillConvexPoly(mask, np.round(poly).astype(np.int32), 255)
+        poly[:, 0] = np.clip(poly[:, 0], 0, w - 1)
+        poly[:, 1] = np.clip(poly[:, 1], 0, h - 1)
+        mask = np.zeros((h, w), dtype=np.uint8)
+        cv2.fillConvexPoly(mask, np.round(poly).astype(np.int32), 255)
         return mask
 
     @staticmethod
-    def _build_opening_surround_ring_mask(image_shape: tuple[int, int], opening: OpeningDetection) -> np.ndarray:
+    def _build_opening_surround_ring_mask(
+        image_shape: tuple[int, int], opening: OpeningDetection
+    ) -> np.ndarray:
         h, w = image_shape
         quad = np.asarray(opening.quad_uv, dtype=np.float64)
         c = np.mean(quad, axis=0)
         v_long, v_short = OpeningDetectionPipeline._opening_axes_from_quad(quad)
         long_len, short_len = OpeningDetectionPipeline._opening_long_short_lengths(quad)
-        outer = OpeningDetectionPipeline._rot_rect_to_poly(c, v_long, v_short, max(16.0, long_len * 3.20), max(14.0, short_len * 4.20))
-        inner = OpeningDetectionPipeline._rot_rect_to_poly(c, v_long, v_short, max(8.0, long_len * 1.08), max(6.0, short_len * 1.35))
-        outer[:, 0] = np.clip(outer[:, 0], 0, w - 1); outer[:, 1] = np.clip(outer[:, 1], 0, h - 1)
-        inner[:, 0] = np.clip(inner[:, 0], 0, w - 1); inner[:, 1] = np.clip(inner[:, 1], 0, h - 1)
+        outer = OpeningDetectionPipeline._rot_rect_to_poly(
+            c, v_long, v_short, max(16.0, long_len * 3.20), max(14.0, short_len * 4.20)
+        )
+        inner = OpeningDetectionPipeline._rot_rect_to_poly(
+            c, v_long, v_short, max(8.0, long_len * 1.08), max(6.0, short_len * 1.35)
+        )
+        outer[:, 0] = np.clip(outer[:, 0], 0, w - 1)
+        outer[:, 1] = np.clip(outer[:, 1], 0, h - 1)
+        inner[:, 0] = np.clip(inner[:, 0], 0, w - 1)
+        inner[:, 1] = np.clip(inner[:, 1], 0, h - 1)
         mask = np.zeros((h, w), dtype=np.uint8)
-        cv2.fillConvexPoly(mask, np.round(outer).astype(np.int32), 255); cv2.fillConvexPoly(mask, np.round(inner).astype(np.int32), 0)
+        cv2.fillConvexPoly(mask, np.round(outer).astype(np.int32), 255)
+        cv2.fillConvexPoly(mask, np.round(inner).astype(np.int32), 0)
         return mask
 
     @staticmethod
@@ -472,14 +544,18 @@ class OpeningDetectionPipeline:
     ) -> list[tuple[int, int, int]]:
         h, w = allowed_mask.shape[:2]
         quad = np.round(opening.quad_uv).astype(np.int32)
-        edge_mask = np.zeros((h, w), dtype=np.uint8); cv2.polylines(edge_mask, [quad], True, 255, 2, cv2.LINE_AA)
+        edge_mask = np.zeros((h, w), dtype=np.uint8)
+        cv2.polylines(edge_mask, [quad], True, 255, 2, cv2.LINE_AA)
         edge_mask = cv2.dilate(edge_mask, np.ones((3, 3), dtype=np.uint8), iterations=1)
         seed_mask = cv2.bitwise_and(edge_mask, allowed_mask)
         ys, xs = np.where(seed_mask > 0)
         if xs.size == 0:
             return []
         step = max(1, xs.size // 120)
-        return [(int(xs[i]), int(ys[i]), int(gray[int(ys[i]), int(xs[i])])) for i in range(0, xs.size, step)]
+        return [
+            (int(xs[i]), int(ys[i]), int(gray[int(ys[i]), int(xs[i])]))
+            for i in range(0, xs.size, step)
+        ]
 
     @staticmethod
     def _region_grow_from_seeds(
@@ -492,22 +568,27 @@ class OpeningDetectionPipeline:
         max_pixels: int,
     ) -> np.ndarray:
         h, w = gray.shape[:2]
-        out = np.zeros((h, w), dtype=np.uint8); visited = np.zeros((h, w), dtype=np.uint8)
+        out = np.zeros((h, w), dtype=np.uint8)
+        visited = np.zeros((h, w), dtype=np.uint8)
         q: list[tuple[int, int, int, int]] = []
         for sx, sy, sgv in seeds:
             if sx < 0 or sx >= w or sy < 0 or sy >= h or allowed_mask[sy, sx] == 0:
                 continue
-            q.append((sx, sy, sgv, sgv)); visited[sy, sx] = 1
-        head = 0; pix_count = 0
+            q.append((sx, sy, sgv, sgv))
+            visited[sy, sx] = 1
+        head = 0
+        pix_count = 0
         while head < len(q):
-            x, y, seed_ref, parent_gray = q[head]; head += 1
+            x, y, seed_ref, parent_gray = q[head]
+            head += 1
             gv = int(gray[y, x])
             if abs(gv - seed_ref) > global_diff or abs(gv - parent_gray) > local_diff:
                 continue
             if edge_block[y, x] > 0 and abs(gv - parent_gray) > max(4, local_diff // 2):
                 continue
             if out[y, x] == 0:
-                out[y, x] = 255; pix_count += 1
+                out[y, x] = 255
+                pix_count += 1
                 if pix_count >= max_pixels:
                     break
             for nx, ny in ((x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)):
@@ -520,9 +601,12 @@ class OpeningDetectionPipeline:
         return out
 
     @staticmethod
-    def _build_no_hole_roi_poly(image_shape: tuple[int, int], opening: OpeningDetection, tray_mask: np.ndarray) -> np.ndarray | None:
+    def _build_no_hole_roi_poly(
+        image_shape: tuple[int, int], opening: OpeningDetection, tray_mask: np.ndarray
+    ) -> np.ndarray | None:
         h, w = image_shape
-        quad = np.asarray(opening.quad_uv, dtype=np.float64); c = np.mean(quad, axis=0)
+        quad = np.asarray(opening.quad_uv, dtype=np.float64)
+        c = np.mean(quad, axis=0)
         v_long, v_short = OpeningDetectionPipeline._opening_axes_from_quad(quad)
         ys, xs = np.where(tray_mask > 0)
         if xs.size == 0:
@@ -532,19 +616,27 @@ class OpeningDetectionPipeline:
             v_short = -v_short
         long_len, short_len = OpeningDetectionPipeline._opening_long_short_lengths(quad)
         rect_c = c + v_short * (2.05 * short_len)
-        poly = OpeningDetectionPipeline._rot_rect_to_poly(rect_c, v_long, v_short, max(18.0, long_len * 1.45), max(14.0, short_len * 2.90))
-        poly[:, 0] = np.clip(poly[:, 0], 0, w - 1); poly[:, 1] = np.clip(poly[:, 1], 0, h - 1)
+        poly = OpeningDetectionPipeline._rot_rect_to_poly(
+            rect_c, v_long, v_short, max(18.0, long_len * 1.45), max(14.0, short_len * 2.90)
+        )
+        poly[:, 0] = np.clip(poly[:, 0], 0, w - 1)
+        poly[:, 1] = np.clip(poly[:, 1], 0, h - 1)
         return poly
 
     @staticmethod
     def _opening_axes_from_quad(quad: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        best_i = 0; best_len = -1.0
+        best_i = 0
+        best_len = -1.0
         for i in range(4):
-            j = (i + 1) % 4; ll = float(np.linalg.norm(quad[j] - quad[i]))
+            j = (i + 1) % 4
+            ll = float(np.linalg.norm(quad[j] - quad[i]))
             if ll > best_len:
-                best_len = ll; best_i = i
+                best_len = ll
+                best_i = i
         v_long = OpeningDetectionPipeline._normalize(quad[(best_i + 1) % 4] - quad[best_i])
-        v_short = OpeningDetectionPipeline._normalize(np.array([-v_long[1], v_long[0]], dtype=np.float64))
+        v_short = OpeningDetectionPipeline._normalize(
+            np.array([-v_long[1], v_long[0]], dtype=np.float64)
+        )
         return v_long, v_short
 
     @staticmethod
@@ -553,19 +645,39 @@ class OpeningDetectionPipeline:
         return (max(lens), max(2.0, min(lens))) if len(lens) > 0 else (20.0, 6.0)
 
     @staticmethod
-    def _rot_rect_to_poly(center: np.ndarray, v_long: np.ndarray, v_short: np.ndarray, w: float, h: float) -> np.ndarray:
-        hw = 0.5 * float(w); hh = 0.5 * float(h); c = np.asarray(center, dtype=np.float64)
-        return np.asarray([c - v_long * hw - v_short * hh, c + v_long * hw - v_short * hh, c + v_long * hw + v_short * hh, c - v_long * hw + v_short * hh], dtype=np.float64)
+    def _rot_rect_to_poly(
+        center: np.ndarray, v_long: np.ndarray, v_short: np.ndarray, w: float, h: float
+    ) -> np.ndarray:
+        hw = 0.5 * float(w)
+        hh = 0.5 * float(h)
+        c = np.asarray(center, dtype=np.float64)
+        return np.asarray(
+            [
+                c - v_long * hw - v_short * hh,
+                c + v_long * hw - v_short * hh,
+                c + v_long * hw + v_short * hh,
+                c - v_long * hw + v_short * hh,
+            ],
+            dtype=np.float64,
+        )
 
     @staticmethod
     def _patch_ring(gray: np.ndarray, x: int, y: int, w: int, h: int) -> np.ndarray:
         ih, iw = gray.shape[:2]
-        pad_x = max(3, int(round(0.35 * w))); pad_y = max(2, int(round(0.90 * h)))
-        x1 = max(0, x - pad_x); y1 = max(0, y - pad_y); x2 = min(iw, x + w + pad_x); y2 = min(ih, y + h + pad_y)
+        pad_x = max(3, int(round(0.35 * w)))
+        pad_y = max(2, int(round(0.90 * h)))
+        x1 = max(0, x - pad_x)
+        y1 = max(0, y - pad_y)
+        x2 = min(iw, x + w + pad_x)
+        y2 = min(ih, y + h + pad_y)
         if x2 <= x1 or y2 <= y1:
             return np.empty((0,), dtype=np.uint8)
-        outer = gray[y1:y2, x1:x2]; inner = np.zeros_like(outer, dtype=np.uint8)
-        ix1 = x - x1; iy1 = y - y1; ix2 = min(ix1 + w, outer.shape[1]); iy2 = min(iy1 + h, outer.shape[0])
+        outer = gray[y1:y2, x1:x2]
+        inner = np.zeros_like(outer, dtype=np.uint8)
+        ix1 = x - x1
+        iy1 = y - y1
+        ix2 = min(ix1 + w, outer.shape[1])
+        iy2 = min(iy1 + h, outer.shape[0])
         if ix2 > ix1 and iy2 > iy1:
             inner[iy1:iy2, ix1:ix2] = 255
         return outer[inner == 0]

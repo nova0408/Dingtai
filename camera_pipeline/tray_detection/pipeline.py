@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+from typing import Any, cast
 
 import cv2
 import numpy as np
@@ -11,7 +12,9 @@ from .types import TrayDetection, TrayDetectionConfig, TrayPipelineConfig, TrayR
 
 
 class TrayDetectionPipeline:
-    def __init__(self, tray_detector: TrayPointExcluder | None, config: TrayPipelineConfig | None = None) -> None:
+    def __init__(
+        self, tray_detector: TrayPointExcluder | None, config: TrayPipelineConfig | None = None
+    ) -> None:
         self._tray_detector = tray_detector
         self._config = config if config is not None else TrayPipelineConfig()
 
@@ -41,7 +44,9 @@ class TrayDetectionPipeline:
             )
         )
 
-    def segment_trays(self, rgb_bgr: np.ndarray, state: TrayRuntimeState) -> tuple[list[TrayDetection], bool]:
+    def segment_trays(
+        self, rgb_bgr: np.ndarray, state: TrayRuntimeState
+    ) -> tuple[list[TrayDetection], bool]:
         motion_dx, motion_dy = self._estimate_motion(rgb_bgr, state)
         state.compute_count += 1
         fast_detections = self._segment_trays_fast(rgb_bgr)
@@ -84,7 +89,12 @@ class TrayDetectionPipeline:
                 if len(dets) > 0:
                     refined_detections: list[TrayDetection] = []
                     for det in dets:
-                        mask = cv2.morphologyEx(np.asarray(det.mask, dtype=np.uint8), cv2.MORPH_CLOSE, np.ones((9, 9), dtype=np.uint8), iterations=2)
+                        mask = cv2.morphologyEx(
+                            np.asarray(det.mask, dtype=np.uint8),
+                            cv2.MORPH_CLOSE,
+                            np.ones((9, 9), dtype=np.uint8),
+                            iterations=2,
+                        )
                         contour = self._mask_to_contour(mask)
                         if contour.shape[0] < 3:
                             continue
@@ -109,8 +119,13 @@ class TrayDetectionPipeline:
     def _segment_trays_fast(self, rgb_bgr: np.ndarray) -> list[TrayDetection]:
         h, w = rgb_bgr.shape[:2]
         gray = cv2.cvtColor(rgb_bgr, cv2.COLOR_BGR2GRAY)
-        base = (gray <= np.percentile(gray, float(self._config.fast_gray_percentile))).astype(np.uint8) * 255
-        base = cv2.morphologyEx(base, cv2.MORPH_CLOSE, np.ones((7, 7), dtype=np.uint8), iterations=1)
+        gray_f = np.asarray(gray, dtype=np.float64)
+        base = (gray_f <= np.percentile(cast(Any, gray_f), float(self._config.fast_gray_percentile))).astype(
+            np.uint8
+        ) * 255
+        base = cv2.morphologyEx(
+            base, cv2.MORPH_CLOSE, np.ones((7, 7), dtype=np.uint8), iterations=1
+        )
         base[: int(float(self._config.fast_top_crop_ratio) * h), :] = 0
         num, cc, stats, _ = cv2.connectedComponentsWithStats(base, connectivity=8)
         if num <= 1:
@@ -143,15 +158,32 @@ class TrayDetectionPipeline:
                 )
             )
         candidates.sort(key=lambda item: item[0], reverse=True)
-        max_targets = max(1, int(getattr(self._tray_detector.config if self._tray_detector is not None else TrayDetectionConfig(), "max_targets", 1)))
+        max_targets = max(
+            1,
+            int(
+                getattr(
+                    self._tray_detector.config
+                    if self._tray_detector is not None
+                    else TrayDetectionConfig(),
+                    "max_targets",
+                    1,
+                )
+            ),
+        )
         return [item[1] for item in candidates[:max_targets]]
 
     def _estimate_motion(self, rgb_bgr: np.ndarray, state: TrayRuntimeState) -> tuple[float, float]:
-        max_side = int(round(max(rgb_bgr.shape[0], rgb_bgr.shape[1]) * float(self._config.motion_downsample)))
+        max_side = int(
+            round(max(rgb_bgr.shape[0], rgb_bgr.shape[1]) * float(self._config.motion_downsample))
+        )
         small, scale = prepare_tracking_gray(rgb_bgr, max(32, max_side))
         small_u8 = np.asarray(np.clip(small, 0.0, 255.0), dtype=np.uint8)
         with state.lock:
-            prev = None if state.prev_motion_gray_small is None else state.prev_motion_gray_small.copy()
+            prev = (
+                None
+                if state.prev_motion_gray_small is None
+                else state.prev_motion_gray_small.copy()
+            )
             state.prev_motion_gray_small = small_u8
             dx_s = float(state.motion_dx_smooth)
             dy_s = float(state.motion_dy_smooth)
@@ -180,7 +212,9 @@ class TrayDetectionPipeline:
     def _warp_mask(mask: np.ndarray, dx: float, dy: float) -> np.ndarray:
         return warp_mask(np.asarray(mask, dtype=np.uint8), dx_px=float(dx), dy_px=float(dy))
 
-    def _warp_tray_detections(self, detections: list[TrayDetection], dx: float, dy: float) -> list[TrayDetection]:
+    def _warp_tray_detections(
+        self, detections: list[TrayDetection], dx: float, dy: float
+    ) -> list[TrayDetection]:
         warped: list[TrayDetection] = []
         for item in detections:
             warped_mask = self._warp_mask(np.asarray(item.mask, dtype=np.uint8), dx, dy)
@@ -200,7 +234,9 @@ class TrayDetectionPipeline:
 
     @staticmethod
     def _mask_to_contour(mask: np.ndarray) -> np.ndarray:
-        contours, _ = cv2.findContours(np.asarray(mask, dtype=np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        contours, _ = cv2.findContours(
+            np.asarray(mask, dtype=np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+        )
         if len(contours) == 0:
             return np.empty((0, 2), dtype=np.int32)
         contour = max(contours, key=cv2.contourArea)

@@ -22,6 +22,15 @@ from .opening_detection import (
     OpeningDetectionPipeline,
     TemporalFilterState,
 )
+from .ball_pose_detection import (
+    BallObservation,
+    BallPoseDetectionConfig,
+    BallPoseDetectionPipeline,
+    BallPoseDetectionResult,
+    BallPoseFrame,
+    BallPoseReferencePose,
+    BallPosePrior,
+)
 from .motion_shift import (
     PhaseShiftEstimate,
     estimate_phase_shift,
@@ -42,6 +51,13 @@ __all__ = [
     "TrayRuntimeState",
     "GraspPoseEstimator",
     "GraspPoseEstimatorConfig",
+    "BallObservation",
+    "BallPoseDetectionConfig",
+    "BallPoseDetectionPipeline",
+    "BallPoseDetectionResult",
+    "BallPoseFrame",
+    "BallPoseReferencePose",
+    "BallPosePrior",
     "OpeningDetectionPipeline",
     "TemporalFilterState",
     "TrayPointExcluder",

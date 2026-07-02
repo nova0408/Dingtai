@@ -4,6 +4,7 @@ import argparse
 import json
 import logging
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -15,12 +16,12 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 DEFAULT_CAMERA_NAME = "left_hand_camera"
-DEFAULT_SERVICE_ADDR = "tcp://127.0.0.1:6220"
+DEFAULT_SERVICE_ADDR = "tcp://192.168.1.118:6220"
 DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "test" / "wuji" / ".archive" / "opening_detection_capture"
 DEFAULT_TARGET_TRAY_INDEX = 0
 
-from camera_pipeline.opening_detection.protocol import OpeningDetectionPipelineRequest
-from camera_pipeline.opening_detection.transport import OpeningDetectionPipelineRpcClient, ZmqSocketOptions
+from camera_pipeline.opening_detection.protocol import OpeningDetectionPipelineRequest  # noqa: E402
+from camera_pipeline.opening_detection.transport import OpeningDetectionPipelineRpcClient, ZmqSocketOptions  # noqa: E402
 
 
 def main(
@@ -37,22 +38,32 @@ def main(
         connect_addr=str(service_addr),
         options=ZmqSocketOptions(recv_timeout_ms=30_000, send_timeout_ms=30_000),
     )
+    response = None
     try:
-        response = client.call(
-            OpeningDetectionPipelineRequest(
-                request_id=1,
-                camera_name=str(camera_name),
-                frame_id=-1,
-                target_tray_index=int(target_tray_index),
-                enable_debug=True,
+        deadline = time.monotonic() + 60.0
+        last_error: str | None = None
+        request_id = 1
+        while time.monotonic() < deadline:
+            response = client.call(
+                OpeningDetectionPipelineRequest(
+                    request_id=request_id,
+                    camera_name=str(camera_name),
+                    frame_id=-1,
+                    target_tray_index=int(target_tray_index),
+                    enable_debug=True,
+                )
             )
-        )
+            request_id += 1
+            if response.error is None and response.selected_result is not None and response.selected_result.pose is not None:
+                break
+            last_error = response.error or "opening detection returned no pose result"
+            time.sleep(1.0)
+        else:
+            raise RuntimeError(last_error or "opening detection smoke test timed out")
     finally:
         client.close()
-    if response.error is not None:
-        raise RuntimeError(response.error)
-    if response.selected_result is None or response.selected_result.pose is None:
-        raise RuntimeError("opening detection returned no pose result")
+    if response is None:
+        raise RuntimeError("opening detection returned no response")
     _save_capture(output_dir, response)
     print(_format_summary(response))
     return 0

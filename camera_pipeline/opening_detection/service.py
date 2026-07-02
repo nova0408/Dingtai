@@ -10,13 +10,20 @@ import zmq
 
 from ..camera_stream import CameraStreamRuntimeConfig
 from ..pipeline_context import PipelineContext, PipelineContextConfig
+from ..ports import (
+    DEFAULT_CAMERA_HOST,
+    DEFAULT_CAMERA_ID,
+    DEFAULT_CAMERA_NAME,
+    DEFAULT_CONTROL_PORT,
+    DEFAULT_STREAM_PORT,
+    OPENING_DETECTION_BIND_ADDR,
+)
 from .engine import OpeningDetectionPipelineExecutor, OpeningDetectionPipelineExecutorConfig
 from .protocol import OpeningDetectionPipelineResponse, OpeningDetectionPipelineServiceEndpointConfig
 from .transport import OpeningDetectionPipelineRpcServer, ZmqSocketOptions
 
 
 LOGGER = logging.getLogger("..opening_detection.service")
-
 
 class OpeningDetectionPipelineService:
     """抓取位姿主服务。"""
@@ -75,7 +82,6 @@ class OpeningDetectionPipelineService:
             raise RuntimeError(tray_response.error)
         if request.target_tray_index < 0 or request.target_tray_index >= len(tray_response.tray_results):
             raise RuntimeError(f"目标托盘索引越界：{request.target_tray_index}")
-        selected_tray = tray_response.tray_results[int(request.target_tray_index)]
         tray_mask = self._extract_tray_mask(tray_response, int(request.target_tray_index))
         tray_pose, debug = self._executor.compute(
             frame=frame,
@@ -110,12 +116,12 @@ class OpeningDetectionPipelineService:
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="Orin opening detection pipeline RPC service")
-    parser.add_argument("--bind-addr", type=str, default="tcp://0.0.0.0:6220")
-    parser.add_argument("--host", type=str, default="192.168.100.60")
-    parser.add_argument("--control-port", type=int, default=5570)
-    parser.add_argument("--stream-port", type=int, default=5562)
-    parser.add_argument("--camera-id", type=str, default="LEFT")
-    parser.add_argument("--camera-name", type=str, default="left_hand_camera")
+    parser.add_argument("--bind-addr", type=str, default=OPENING_DETECTION_BIND_ADDR)
+    parser.add_argument("--host", type=str, default=DEFAULT_CAMERA_HOST)
+    parser.add_argument("--control-port", type=int, default=DEFAULT_CONTROL_PORT)
+    parser.add_argument("--stream-port", type=int, default=DEFAULT_STREAM_PORT)
+    parser.add_argument("--camera-id", type=str, default=DEFAULT_CAMERA_ID)
+    parser.add_argument("--camera-name", type=str, default=DEFAULT_CAMERA_NAME)
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     service = OpeningDetectionPipelineService(

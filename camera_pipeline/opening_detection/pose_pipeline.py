@@ -14,12 +14,23 @@ from .types import GraspResult, OpeningDetection, PlaneResult
 class CameraIntrinsicsProtocol(Protocol):
     """抓取位姿计算所需的相机内参协议。"""
 
-    fx: float
-    fy: float
-    cx: float
-    cy: float
-    width: int
-    height: int
+    @property
+    def fx(self) -> float: ...
+
+    @property
+    def fy(self) -> float: ...
+
+    @property
+    def cx(self) -> float: ...
+
+    @property
+    def cy(self) -> float: ...
+
+    @property
+    def width(self) -> int: ...
+
+    @property
+    def height(self) -> int: ...
 
 
 @dataclass

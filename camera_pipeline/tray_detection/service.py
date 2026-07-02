@@ -10,13 +10,13 @@ import zmq
 
 from ..camera_stream import CameraStreamRuntimeConfig
 from ..pipeline_context import PipelineContext, PipelineContextConfig
+from ..ports import DEFAULT_CAMERA_HOST, DEFAULT_CAMERA_ID, DEFAULT_CAMERA_NAME, DEFAULT_CONTROL_PORT, DEFAULT_STREAM_PORT, TRAY_DETECTION_BIND_ADDR
 from .engine import OrinTrayDetectionExecutor, OrinTrayDetectionExecutorConfig
 from .protocol import OrinTrayDetectionResponse, TrayDetectionServiceEndpointConfig
 from .transport import OrinTrayDetectionRpcServer, ZmqSocketOptions
 
 
 LOGGER = logging.getLogger("..tray_detection.service")
-
 
 class OrinTrayDetectionService:
     """可被本机或远端调用的独立托盘检测服务。"""
@@ -68,12 +68,12 @@ class OrinTrayDetectionService:
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="Orin tray detection RPC service")
-    parser.add_argument("--bind-addr", type=str, default="tcp://0.0.0.0:6210")
-    parser.add_argument("--host", type=str, default="192.168.100.60")
-    parser.add_argument("--control-port", type=int, default=5570)
-    parser.add_argument("--stream-port", type=int, default=5562)
-    parser.add_argument("--camera-id", type=str, default="LEFT")
-    parser.add_argument("--camera-name", type=str, default="left_hand_camera")
+    parser.add_argument("--bind-addr", type=str, default=TRAY_DETECTION_BIND_ADDR)
+    parser.add_argument("--host", type=str, default=DEFAULT_CAMERA_HOST)
+    parser.add_argument("--control-port", type=int, default=DEFAULT_CONTROL_PORT)
+    parser.add_argument("--stream-port", type=int, default=DEFAULT_STREAM_PORT)
+    parser.add_argument("--camera-id", type=str, default=DEFAULT_CAMERA_ID)
+    parser.add_argument("--camera-name", type=str, default=DEFAULT_CAMERA_NAME)
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     service = OrinTrayDetectionService(

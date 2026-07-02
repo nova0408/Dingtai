@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
-
+from typing import Optional, Tuple
 from .camera_stream import CameraStreamRuntime, CameraStreamRuntimeConfig
+from .ports import BALL_POSE_DETECTION_CONNECT_ADDR, TRAY_DETECTION_CONNECT_ADDR
+from .ball_pose_detection.protocol import BallPoseDetectionRequest, BallPoseDetectionResponse
+from .ball_pose_detection.transport import BallPoseDetectionRpcClient, ZmqSocketOptions as BallZmqSocketOptions
 from .tray_detection.protocol import OrinTrayDetectionRequest, OrinTrayDetectionResponse
 from .tray_detection.transport import OrinTrayDetectionRpcClient, ZmqSocketOptions as TrayZmqSocketOptions
 
@@ -13,8 +15,10 @@ class PipelineContextConfig:
     """总流程上下文配置。"""
 
     camera_runtime: CameraStreamRuntimeConfig
-    tray_rpc_addr: str = "tcp://127.0.0.1:6210"
+    tray_rpc_addr: str = TRAY_DETECTION_CONNECT_ADDR
     tray_rpc_timeout_ms: int = 30000
+    ball_rpc_addr: str = BALL_POSE_DETECTION_CONNECT_ADDR
+    ball_rpc_timeout_ms: int = 30000
 
 
 class PipelineContext:
@@ -23,6 +27,13 @@ class PipelineContext:
     def __init__(self, config: PipelineContextConfig) -> None:
         self._config = config
         self._frame_runtime = CameraStreamRuntime(config.camera_runtime)
+        self._ball_client = BallPoseDetectionRpcClient(
+            connect_addr=str(config.ball_rpc_addr),
+            options=BallZmqSocketOptions(
+                recv_timeout_ms=int(config.ball_rpc_timeout_ms),
+                send_timeout_ms=int(config.ball_rpc_timeout_ms),
+            ),
+        )
         self._tray_client = OrinTrayDetectionRpcClient(
             connect_addr=str(config.tray_rpc_addr),
             options=TrayZmqSocketOptions(
@@ -35,6 +46,7 @@ class PipelineContext:
         self._frame_runtime.start()
 
     def close(self) -> None:
+        self._ball_client.close()
         self._tray_client.close()
         self._frame_runtime.stop()
 
@@ -84,5 +96,28 @@ class PipelineContext:
                 camera_name=camera_name,
                 frame_id=frame_id,
                 enable_debug=enable_debug,
+            )
+        )
+
+    def request_ball_pose_detection(self, request: BallPoseDetectionRequest) -> BallPoseDetectionResponse:
+        return self._ball_client.call(request)
+
+    def request_ball_pose_detection_for_frame(
+        self,
+        request_id: int,
+        camera_name: str,
+        frame_id: int,
+        priors: tuple,
+        reference_relative_transform_mm: Optional[Tuple[Tuple[float, float, float, float], ...]] = None,
+        enable_debug: bool = True,
+    ) -> BallPoseDetectionResponse:
+        return self.request_ball_pose_detection(
+            BallPoseDetectionRequest(
+                request_id=int(request_id),
+                camera_name=str(camera_name),
+                frame_id=int(frame_id),
+                enable_debug=bool(enable_debug),
+                priors=tuple(priors),
+                reference_relative_transform_mm=reference_relative_transform_mm,
             )
         )
