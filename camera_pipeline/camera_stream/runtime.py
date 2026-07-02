@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import queue
+import logging
 import struct
 import threading
 import time
@@ -11,6 +12,9 @@ import cv2
 import lz4.block
 import numpy as np
 import zmq
+
+
+LOGGER = logging.getLogger("..camera_stream.runtime")
 
 
 # region 数据结构
@@ -114,7 +118,10 @@ class CameraStreamRuntime:
 
         if self._running:
             return
-        self._send_control_command("set_depth_enabled", {"enable": True})
+        try:
+            self._send_control_command("set_depth_enabled", {"enable": True})
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning("set_depth_enabled failed during camera start: %s", exc)
         self._stream_socket = self._create_stream_socket()
         self._running = True
         self._thread = threading.Thread(target=self._capture_loop, name="orin-camera-stream", daemon=True)

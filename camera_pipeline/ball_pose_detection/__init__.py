@@ -5,7 +5,6 @@ from .protocol import (
     BallPoseDetectionDebugArtifacts,
     BallPoseDetectionRequest,
     BallPoseDetectionResponse,
-    BallPoseDetectionServiceEndpointConfig,
     BallPosePriorInfo,
 )
 from .transport import BallPoseDetectionRpcClient, BallPoseDetectionRpcServer, ZmqSocketOptions
@@ -16,7 +15,6 @@ __all__ = [
     "BallPoseDetectionResponse",
     "BallPoseDetectionRpcClient",
     "BallPoseDetectionRpcServer",
-    "BallPoseDetectionServiceEndpointConfig",
     "BallPoseDetector",
     "BallPosePriorInfo",
     "ZmqSocketOptions",

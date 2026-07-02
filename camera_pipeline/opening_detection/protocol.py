@@ -4,7 +4,6 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Optional, Tuple
 
 from ..tray_detection.protocol import OrinTrayDetectionInfo
-from ..ports import OPENING_DETECTION_BIND_ADDR
 
 
 @dataclass(frozen=True)
@@ -81,13 +80,6 @@ class GraspPoseResponse:
     selected_result: Optional[TrayPoseInfo] = None
     debug: Optional[DebugArtifacts] = None
     error: Optional[str] = None
-
-
-@dataclass(frozen=True)
-class OpeningDetectionPipelineServiceEndpointConfig:
-    """抓取位姿主服务端点配置。"""
-
-    request_bind_addr: str = OPENING_DETECTION_BIND_ADDR
 
 
 @dataclass(frozen=True)

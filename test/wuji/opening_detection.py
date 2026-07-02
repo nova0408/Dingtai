@@ -16,57 +16,65 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 DEFAULT_CAMERA_NAME = "left_hand_camera"
-DEFAULT_SERVICE_ADDR = "tcp://192.168.1.118:6220"
+DEFAULT_SERVICE_ADDR = "tcp://192.168.1.118:6200"
 DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "test" / "wuji" / ".archive" / "opening_detection_capture"
-DEFAULT_TARGET_TRAY_INDEX = 0
+DEFAULT_RETRY_TIMEOUT_S = 60.0
 
+from camera_pipeline.client import CameraPipelineClient  # noqa: E402
 from camera_pipeline.opening_detection.protocol import OpeningDetectionPipelineRequest  # noqa: E402
-from camera_pipeline.opening_detection.transport import OpeningDetectionPipelineRpcClient, ZmqSocketOptions  # noqa: E402
+from camera_pipeline.tray_detection.protocol import OrinTrayDetectionRequest  # noqa: E402
 
 
 def main(
     service_addr: str = DEFAULT_SERVICE_ADDR,
     camera_name: str = DEFAULT_CAMERA_NAME,
     output_dir: Path = DEFAULT_OUTPUT_DIR,
-    target_tray_index: int = DEFAULT_TARGET_TRAY_INDEX,
+    retry_timeout_s: float = DEFAULT_RETRY_TIMEOUT_S,
 ) -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     logger = logging.getLogger(__name__)
     logger.info("opening_detection smoke test start")
-    client = OpeningDetectionPipelineRpcClient(
-        connect_addr=str(service_addr),
-        options=ZmqSocketOptions(recv_timeout_ms=30_000, send_timeout_ms=30_000),
-    )
-    response = None
+    client = CameraPipelineClient(service_addr=str(service_addr), timeout_ms=30_000)
     try:
-        deadline = time.monotonic() + 60.0
+        deadline = time.monotonic() + float(retry_timeout_s)
         last_error: str | None = None
         request_id = 1
+        response = None
         while time.monotonic() < deadline:
-            response = client.call(
-                OpeningDetectionPipelineRequest(
+            tray_response = client.request_tray_detection(
+                OrinTrayDetectionRequest(
                     request_id=request_id,
                     camera_name=str(camera_name),
                     frame_id=-1,
-                    target_tray_index=int(target_tray_index),
-                    enable_debug=True,
+                    enable_debug=False,
                 )
             )
             request_id += 1
-            if response.error is None and response.selected_result is not None and response.selected_result.pose is not None:
-                break
-            last_error = response.error or "opening detection returned no pose result"
+            if tray_response.error is not None:
+                last_error = tray_response.error
+                time.sleep(1.0)
+                continue
+            for tray_index in range(int(tray_response.tray_count)):
+                response = client.request_opening_detection(
+                    OpeningDetectionPipelineRequest(
+                        request_id=request_id,
+                        camera_name=str(camera_name),
+                        frame_id=int(tray_response.frame_id),
+                        target_tray_index=int(tray_index),
+                        enable_debug=True,
+                    )
+                )
+                request_id += 1
+                if response.error is None and response.selected_result is not None and response.selected_result.pose is not None:
+                    _save_capture(output_dir, response)
+                    print(_format_summary(response))
+                    return 0
+                last_error = response.error or f"opening detection returned no pose result for tray {tray_index}"
             time.sleep(1.0)
-        else:
-            raise RuntimeError(last_error or "opening detection smoke test timed out")
+        raise RuntimeError(last_error or "opening detection smoke test timed out")
     finally:
         client.close()
-    if response is None:
-        raise RuntimeError("opening detection returned no response")
-    _save_capture(output_dir, response)
-    print(_format_summary(response))
-    return 0
 
 
 def _save_capture(output_dir: Path, response: Any) -> None:
@@ -220,7 +228,7 @@ def _parse_cli(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--service-addr", type=str, default=DEFAULT_SERVICE_ADDR)
     parser.add_argument("--camera-name", type=str, default=DEFAULT_CAMERA_NAME)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
-    parser.add_argument("--target-tray-index", type=int, default=DEFAULT_TARGET_TRAY_INDEX)
+    parser.add_argument("--retry-timeout-s", type=float, default=DEFAULT_RETRY_TIMEOUT_S)
     return parser.parse_args(argv)
 
 
@@ -231,6 +239,6 @@ if __name__ == "__main__":
             service_addr=str(args.service_addr),
             camera_name=str(args.camera_name),
             output_dir=Path(args.output_dir),
-            target_tray_index=int(args.target_tray_index),
+            retry_timeout_s=float(args.retry_timeout_s),
         )
     )

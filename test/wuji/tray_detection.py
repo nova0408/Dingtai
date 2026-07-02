@@ -15,11 +15,11 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 DEFAULT_CAMERA_NAME = "left_hand_camera"
-DEFAULT_SERVICE_ADDR = "tcp://192.168.1.118:6210"
+DEFAULT_SERVICE_ADDR = "tcp://192.168.1.118:6200"
 DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "test" / "wuji" / ".archive" / "tray_detection_capture"
 
-from camera_pipeline.tray_detection.protocol import OrinTrayDetectionRequest
-from camera_pipeline.tray_detection.transport import OrinTrayDetectionRpcClient, ZmqSocketOptions
+from camera_pipeline.client import CameraPipelineClient  # noqa: E402
+from camera_pipeline.tray_detection.protocol import OrinTrayDetectionRequest  # noqa: E402
 
 
 def main(
@@ -29,12 +29,9 @@ def main(
 ) -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
     logger.info("tray_detection smoke test start")
-    client = OrinTrayDetectionRpcClient(
-        connect_addr=str(service_addr),
-        options=ZmqSocketOptions(recv_timeout_ms=30_000, send_timeout_ms=30_000),
-    )
+    client = CameraPipelineClient(service_addr=str(service_addr), timeout_ms=30_000)
     try:
-        response = client.call(
+        response = client.request_tray_detection(
             OrinTrayDetectionRequest(
                 request_id=1,
                 camera_name=str(camera_name),

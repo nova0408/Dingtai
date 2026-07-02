@@ -5,18 +5,8 @@ from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
 
-from ..ports import TRAY_DETECTION_BIND_ADDR
-
 
 # region 数据结构
-@dataclass(frozen=True)
-class TrayDetectionServiceEndpointConfig:
-    """托盘检测服务端点配置。"""
-
-    request_bind_addr: str = TRAY_DETECTION_BIND_ADDR
-    "托盘检测服务 `REP` 绑定地址。"
-
-
 @dataclass(frozen=True)
 class OrinTrayDetectionRequest:
     """托盘检测请求。"""

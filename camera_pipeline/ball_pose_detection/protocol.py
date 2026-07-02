@@ -5,15 +5,6 @@ from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
 
-from ..ports import BALL_POSE_DETECTION_BIND_ADDR
-
-
-@dataclass(frozen=True)
-class BallPoseDetectionServiceEndpointConfig:
-    """球位姿检测服务端点配置。"""
-
-    request_bind_addr: str = BALL_POSE_DETECTION_BIND_ADDR
-
 
 @dataclass(frozen=True)
 class BallPosePriorInfo:

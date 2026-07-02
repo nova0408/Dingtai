@@ -18,6 +18,7 @@ Prefer this skill when the task includes any of these patterns:
 ## Core Rules
 
 - Prefer short single-purpose SSH calls over one giant compound command.
+- When changing Orin-side project code that also exists in the local workspace, always update the local source of truth first, then upload or sync the exact result to Orin. Do not edit only the remote copy when the same module is maintained locally.
 - When running Python scripts, SDK examples, or Python-based diagnostics on `orin`, use the `wuji` Conda environment by default instead of the system Python.
 - Prefer `conda run -n wuji ...` for one-shot remote Python commands so the environment choice stays explicit and does not depend on interactive shell initialization.
 - Prefer uploading a temporary script to Orin for multi-line logic instead of nesting `bash`, `python`, quotes, and `here-doc` inside one Windows command.

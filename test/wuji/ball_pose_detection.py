@@ -15,12 +15,12 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 DEFAULT_CAMERA_NAME = "left_hand_camera"
-DEFAULT_SERVICE_ADDR = "tcp://192.168.1.118:6230"
+DEFAULT_SERVICE_ADDR = "tcp://192.168.1.118:6200"
 DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "test" / "wuji" / ".archive" / "ball_pose_detection_capture"
 DEFAULT_PRIOR_CAPTURE_PATH = PROJECT_ROOT / "test" / "wuji" / ".archive" / "collect_ball_opening_relative_pose" / "summary.json"
 
 from camera_pipeline.ball_pose_detection.protocol import BallPoseDetectionRequest, BallPosePriorInfo  # noqa: E402
-from camera_pipeline.ball_pose_detection.transport import BallPoseDetectionRpcClient, ZmqSocketOptions  # noqa: E402
+from camera_pipeline.client import CameraPipelineClient  # noqa: E402
 
 
 def main(
@@ -34,12 +34,9 @@ def main(
     prior_capture = _load_prior_capture(prior_capture_path)
     priors = _build_priors_from_capture(prior_capture)
     reference_relative_transform = _load_reference_relative_transform(prior_capture)
-    client = BallPoseDetectionRpcClient(
-        connect_addr=str(service_addr),
-        options=ZmqSocketOptions(recv_timeout_ms=30_000, send_timeout_ms=30_000),
-    )
+    client = CameraPipelineClient(service_addr=str(service_addr), timeout_ms=30_000)
     try:
-        response = client.call(
+        response = client.request_ball_pose_detection(
             BallPoseDetectionRequest(
                 request_id=1,
                 camera_name=str(camera_name),

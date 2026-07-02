@@ -23,11 +23,17 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 DEFAULT_CAMERA_NAME = "left_hand_camera"
-DEFAULT_SERVICE_ADDR = "tcp://192.168.1.118:6220"
+DEFAULT_SERVICE_ADDR = "tcp://192.168.1.118:6200"
 DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "test" / "wuji" / ".archive" / "collect_ball_opening_relative_pose"
 DEFAULT_TARGET_TRAY_INDEX = 0
 DEFAULT_BALL_RADIUS_MM = 20.0
 DEFAULT_COLOR_ORDER = ("#ff0000", "#ffff00", "#ff00ff")
+DEFAULT_COLOR_NAME_MAP = {
+    "#ff0000": "red",
+    "#ffff00": "yellow",
+    "#ff00ff": "purple",
+}
+DEFAULT_RETRY_TIMEOUT_S = 60.0
 
 @dataclass(frozen=True)
 class BallRelativePoseCapture:
@@ -49,10 +55,16 @@ def main(
     camera_name: str = DEFAULT_CAMERA_NAME,
     target_tray_index: int = DEFAULT_TARGET_TRAY_INDEX,
     output_dir: Path = DEFAULT_OUTPUT_DIR,
+    retry_timeout_s: float = DEFAULT_RETRY_TIMEOUT_S,
 ) -> int:
     logger.info("启动多球相对位姿采集")
     output_dir.mkdir(parents=True, exist_ok=True)
-    capture = _compute_once(service_addr=str(service_addr), camera_name=str(camera_name), target_tray_index=int(target_tray_index))
+    capture = _compute_once(
+        service_addr=str(service_addr),
+        camera_name=str(camera_name),
+        target_tray_index=int(target_tray_index),
+        retry_timeout_s=float(retry_timeout_s),
+    )
     overlay_path = _save_overlay(output_dir, capture)
     _save_capture(output_dir, capture, overlay_path)
     if capture.error is not None:
@@ -61,27 +73,64 @@ def main(
     return 0
 
 
-def _compute_once(service_addr: str, camera_name: str, target_tray_index: int) -> BallRelativePoseCapture:
+def _compute_once(
+    service_addr: str,
+    camera_name: str,
+    target_tray_index: int,
+    retry_timeout_s: float,
+) -> BallRelativePoseCapture:
+    from camera_pipeline.client import CameraPipelineClient
     from camera_pipeline.opening_detection.protocol import OpeningDetectionPipelineRequest
-    from camera_pipeline.opening_detection.transport import OpeningDetectionPipelineRpcClient, ZmqSocketOptions
+    from camera_pipeline.tray_detection.protocol import OrinTrayDetectionRequest
 
-    client = OpeningDetectionPipelineRpcClient(
-        connect_addr=str(service_addr),
-        options=ZmqSocketOptions(recv_timeout_ms=30_000, send_timeout_ms=30_000),
-    )
+    client = CameraPipelineClient(service_addr=str(service_addr), timeout_ms=30_000)
     try:
-        response = client.call(
-            OpeningDetectionPipelineRequest(
-                request_id=1,
-                camera_name=str(camera_name),
-                frame_id=-1,
-                target_tray_index=int(target_tray_index),
-                enable_debug=True,
+        deadline_s = cv2.getTickCount() / cv2.getTickFrequency() + float(retry_timeout_s)
+        request_id = 1
+        response = None
+        last_error: str | None = None
+        while (cv2.getTickCount() / cv2.getTickFrequency()) < deadline_s:
+            tray_response = client.request_tray_detection(
+                OrinTrayDetectionRequest(
+                    request_id=request_id,
+                    camera_name=str(camera_name),
+                    frame_id=-1,
+                    enable_debug=False,
+                )
             )
-        )
+            request_id += 1
+            if tray_response.error is not None:
+                last_error = str(tray_response.error)
+                continue
+            tray_indices = [int(target_tray_index)]
+            tray_indices.extend(
+                tray_index
+                for tray_index in range(int(tray_response.tray_count))
+                if tray_index != int(target_tray_index)
+            )
+            for tray_index in tray_indices:
+                response = client.request_opening_detection(
+                    OpeningDetectionPipelineRequest(
+                        request_id=request_id,
+                        camera_name=str(camera_name),
+                        frame_id=int(tray_response.frame_id),
+                        target_tray_index=int(tray_index),
+                        enable_debug=True,
+                    )
+                )
+                request_id += 1
+                if response.error is None:
+                    break
+                last_error = str(response.error)
+            if response is not None and response.error is None:
+                break
+        if response is None:
+            return BallRelativePoseCapture(0, None, None, None, None, None, None, None, last_error or "opening detection returned no response")
     finally:
         client.close()
 
+    if response.error is not None:
+        return BallRelativePoseCapture(0, None, None, None, response, None, None, None, str(response.error))
     if response.error is not None:
         return BallRelativePoseCapture(0, None, None, None, response, None, None, None, str(response.error))
     if response.selected_result is None or response.selected_result.pose is None:
@@ -119,9 +168,24 @@ def _detect_balls_on_remote_frame(color_bgr: np.ndarray, depth_mm: np.ndarray, c
         raise RuntimeError("camera intrinsics is missing")
     fx, fy, cx, cy = (float(camera_intrinsics[0]), float(camera_intrinsics[1]), float(camera_intrinsics[2]), float(camera_intrinsics[3]))
     priors = [
-        ball_runtime.BallPosePrior(color_hex="#ff0000", radius_mm=DEFAULT_BALL_RADIUS_MM, model_center_mm=np.asarray([0.0, 0.0, 0.0], dtype=np.float64)),
-        ball_runtime.BallPosePrior(color_hex="#ffff00", radius_mm=DEFAULT_BALL_RADIUS_MM, model_center_mm=np.asarray([1.0, 0.0, 0.0], dtype=np.float64)),
-        ball_runtime.BallPosePrior(color_hex="#ff00ff", radius_mm=DEFAULT_BALL_RADIUS_MM, model_center_mm=np.asarray([0.0, 1.0, 0.0], dtype=np.float64)),
+        ball_runtime.BallPosePrior(
+            name=DEFAULT_COLOR_NAME_MAP["#ff0000"],
+            color_hex="#ff0000",
+            radius_mm=DEFAULT_BALL_RADIUS_MM,
+            model_center_mm=np.asarray([0.0, 0.0, 0.0], dtype=np.float64),
+        ),
+        ball_runtime.BallPosePrior(
+            name=DEFAULT_COLOR_NAME_MAP["#ffff00"],
+            color_hex="#ffff00",
+            radius_mm=DEFAULT_BALL_RADIUS_MM,
+            model_center_mm=np.asarray([1.0, 0.0, 0.0], dtype=np.float64),
+        ),
+        ball_runtime.BallPosePrior(
+            name=DEFAULT_COLOR_NAME_MAP["#ff00ff"],
+            color_hex="#ff00ff",
+            radius_mm=DEFAULT_BALL_RADIUS_MM,
+            model_center_mm=np.asarray([0.0, 1.0, 0.0], dtype=np.float64),
+        ),
     ]
     pipeline = ball_runtime.BallPoseDetectionPipeline()
     frame = SimpleNamespace(
@@ -361,9 +425,18 @@ def _parse_cli(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--camera-name", type=str, default=DEFAULT_CAMERA_NAME)
     parser.add_argument("--target-tray-index", type=int, default=DEFAULT_TARGET_TRAY_INDEX)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
+    parser.add_argument("--retry-timeout-s", type=float, default=DEFAULT_RETRY_TIMEOUT_S)
     return parser.parse_args(argv)
 
 
 if __name__ == "__main__":
     args = _parse_cli(sys.argv[1:])
-    raise SystemExit(main(service_addr=str(args.service_addr), camera_name=str(args.camera_name), target_tray_index=int(args.target_tray_index), output_dir=Path(args.output_dir)))
+    raise SystemExit(
+        main(
+            service_addr=str(args.service_addr),
+            camera_name=str(args.camera_name),
+            target_tray_index=int(args.target_tray_index),
+            output_dir=Path(args.output_dir),
+            retry_timeout_s=float(args.retry_timeout_s),
+        )
+    )

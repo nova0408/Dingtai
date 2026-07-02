@@ -1,83 +1,45 @@
 from __future__ import annotations
 
-import argparse
-import logging
-import signal
-import time
-from typing import Optional
+from typing import Any, Optional
 
 import cv2
-import zmq
 import numpy as np
-
-from ..camera_stream import CameraStreamRuntimeConfig
-from ..pipeline_context import PipelineContext, PipelineContextConfig
-from ..ports import (
-    DEFAULT_CAMERA_HOST,
-    DEFAULT_CAMERA_ID,
-    DEFAULT_CAMERA_NAME,
-    DEFAULT_CONTROL_PORT,
-    DEFAULT_STREAM_PORT,
-    BALL_POSE_DETECTION_BIND_ADDR,
-)
-
 from .detector import BallPoseDetector
+from .types import BallPoseDetectionConfig
 from .protocol import (
     BallPoseDetectionDebugArtifacts,
     BallPoseDetectionRequest,
     BallPoseDetectionResponse,
-    BallPoseDetectionServiceEndpointConfig,
 )
 from .priors import BallPosePrior
-from .transport import BallPoseDetectionRpcServer, ZmqSocketOptions
-
-
-LOGGER = logging.getLogger("..ball_pose_detection.service")
 
 
 class BallPoseDetectionService:
-    """球位姿检测独立服务。"""
+    """球位姿检测纯计算执行器包装。
 
-    def __init__(
-        self,
-        endpoint_config: BallPoseDetectionServiceEndpointConfig,
-        frame_runtime_config: CameraStreamRuntimeConfig,
-        socket_options: Optional[ZmqSocketOptions] = None,
-    ) -> None:
-        self._context = PipelineContext(PipelineContextConfig(camera_runtime=frame_runtime_config))
-        self._context.start()
-        self._server = BallPoseDetectionRpcServer(endpoint_config.request_bind_addr, options=socket_options)
-        self._detector = BallPoseDetector()
-        self._running = True
+    职责边界：
+    - 只接收单帧 RGBD 和球位姿请求。
+    - 不负责相机流、PipelineContext、RPC 监听或请求轮询。
+    - 只负责球检测与位姿求解。
 
-    def close(self) -> None:
-        self._running = False
-        self._server.close()
-        self._context.close()
+    设计思想：
+    - 保持算法对象与 IO 编排分离。
+    - 让上层决定 frame 与 request 的来源，子模块只处理输入。
 
-    def run_forever(self) -> None:
-        LOGGER.info("ball pose detection rpc service started")
-        while self._running:
-            try:
-                request = self._server.recv_request()
-            except zmq.error.Again:
-                continue
-            try:
-                response = self._process_request(request)
-            except Exception as exc:  # noqa: BLE001
-                LOGGER.exception("ball pose detection service failed: %s", exc)
-                response = BallPoseDetectionResponse(
-                    request_id=int(request.request_id),
-                    frame_id=-1,
-                    camera_name=str(request.camera_name),
-                    timestamp_ms=0.0,
-                    source_meta={},
-                    error="{0}: {1}".format(type(exc).__name__, exc),
-                )
-            self._server.send_response(response)
+    生命周期：
+    - 不持有硬件资源。
+    - 可跨线程复用，但默认仅作为单次请求处理器使用。
 
-    def _process_request(self, request: BallPoseDetectionRequest) -> BallPoseDetectionResponse:
-        frame = self._context.resolve_frame(request.frame_id)
+    继承关系：
+    - 不继承业务基类。
+    """
+
+    def __init__(self, config: Optional[BallPoseDetectionConfig] = None) -> None:
+        self._detector = BallPoseDetector(config=config)
+
+    def compute(self, frame: Any, request: BallPoseDetectionRequest) -> BallPoseDetectionResponse:
+        """基于输入帧和请求计算球位姿结果。"""
+
         priors = [
             BallPosePrior(
                 color_hex=str(prior.color_hex),
@@ -128,10 +90,10 @@ class BallPoseDetectionService:
         )
         return BallPoseDetectionResponse(
             request_id=int(request.request_id),
-            frame_id=int(getattr(frame, "frame_id", request.frame_id)),
+            frame_id=int(frame.frame_id),
             camera_name=str(request.camera_name),
-            timestamp_ms=float(getattr(frame, "timestamp_ms", 0.0)),
-            source_meta=dict(getattr(frame, "source_meta", {})),
+            timestamp_ms=float(frame.timestamp_ms),
+            source_meta=dict(frame.source_meta),
             elapsed_ms=float(result.timings_ms.get("detect_balls", 0.0) + result.timings_ms.get("estimate_pose", 0.0)),
             pose_transform=pose_transform,
             pose_translation_mm=pose_translation_mm,
@@ -191,8 +153,6 @@ def _matrix4_to_tuple(values: np.ndarray) -> tuple[tuple[float, float, float, fl
     )
 
 
-
-
 def _build_detection_overlay(frame, result) -> np.ndarray:
     overlay = np.asarray(frame.color_bgr, dtype=np.uint8).copy()
     for item in result.detections:
@@ -250,45 +210,3 @@ def _build_overlay(frame, result, pose_transform) -> np.ndarray:
         cv2.LINE_AA,
     )
     return overlay
-
-
-def main(argv=None) -> int:
-    parser = argparse.ArgumentParser(description="Ball pose detection RPC service")
-    parser.add_argument("--bind-addr", type=str, default=BALL_POSE_DETECTION_BIND_ADDR)
-    parser.add_argument("--host", type=str, default=DEFAULT_CAMERA_HOST)
-    parser.add_argument("--control-port", type=int, default=DEFAULT_CONTROL_PORT)
-    parser.add_argument("--stream-port", type=int, default=DEFAULT_STREAM_PORT)
-    parser.add_argument("--camera-id", type=str, default=DEFAULT_CAMERA_ID)
-    parser.add_argument("--camera-name", type=str, default=DEFAULT_CAMERA_NAME)
-    args = parser.parse_args(argv)
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-    service = BallPoseDetectionService(
-        endpoint_config=BallPoseDetectionServiceEndpointConfig(request_bind_addr=str(args.bind_addr)),
-        frame_runtime_config=CameraStreamRuntimeConfig(
-            host=str(args.host),
-            control_port=int(args.control_port),
-            stream_port=int(args.stream_port),
-            camera_id=str(args.camera_id),
-            camera_name=str(args.camera_name),
-        ),
-        socket_options=ZmqSocketOptions(),
-    )
-    if not service._context.wait_until_ready(timeout_s=8.0):  # noqa: SLF001
-        LOGGER.warning("camera stream not ready within timeout")
-
-    def _handle_signal(signum, _frame) -> None:  # noqa: ANN001
-        LOGGER.info("received stop signal %s", signum)
-        service.close()
-
-    signal.signal(signal.SIGINT, _handle_signal)
-    signal.signal(signal.SIGTERM, _handle_signal)
-    try:
-        service.run_forever()
-    finally:
-        service.close()
-        time.sleep(0.05)
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

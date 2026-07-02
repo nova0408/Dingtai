@@ -7,7 +7,6 @@ from .protocol import (
     GraspPoseResponse,
     OpeningDetectionPipelineRequest,
     OpeningDetectionPipelineResponse,
-    OpeningDetectionPipelineServiceEndpointConfig,
     TrayPoseInfo,
 )
 
@@ -18,6 +17,5 @@ __all__ = [
     "GraspPoseResponse",
     "OpeningDetectionPipelineRequest",
     "OpeningDetectionPipelineResponse",
-    "OpeningDetectionPipelineServiceEndpointConfig",
     "TrayPoseInfo",
 ]

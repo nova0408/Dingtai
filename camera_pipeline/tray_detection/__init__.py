@@ -5,7 +5,6 @@ from .protocol import (
     OrinTrayDetectionInfo,
     OrinTrayDetectionRequest,
     OrinTrayDetectionResponse,
-    TrayDetectionServiceEndpointConfig,
 )
 from .transport import OrinTrayDetectionRpcClient, OrinTrayDetectionRpcServer, ZmqSocketOptions
 
@@ -16,6 +15,5 @@ __all__ = [
     "OrinTrayDetectionResponse",
     "OrinTrayDetectionRpcClient",
     "OrinTrayDetectionRpcServer",
-    "TrayDetectionServiceEndpointConfig",
     "ZmqSocketOptions",
 ]
