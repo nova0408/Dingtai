@@ -99,6 +99,16 @@ class PipelineContext:
 
         return self._frame_runtime
 
+    def get_camera_id(self) -> str:
+        """返回当前相机控制标识。"""
+
+        return str(self._config.camera_id)
+
+    def get_camera_name(self) -> str:
+        """返回当前相机逻辑名称。"""
+
+        return str(self._config.camera_name)
+
     def get_latest_frame(self):
         """返回最新缓存帧。"""
 

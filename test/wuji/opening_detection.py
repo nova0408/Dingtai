@@ -14,7 +14,6 @@ import numpy as np
 PROJECT_ROOT = next(parent for parent in Path(__file__).resolve().parents if (parent / "camera_pipeline").is_dir())
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
-
 DEFAULT_CAMERA_NAME = "left_hand_camera"
 DEFAULT_SERVICE_ADDR = "tcp://192.168.1.118:6200"
 DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "test" / "wuji" / ".archive" / "opening_detection_capture"
@@ -56,15 +55,20 @@ def main(
                 time.sleep(1.0)
                 continue
             for tray_index in range(int(tray_response.tray_count)):
-                response = client.request_opening_detection(
-                    OpeningDetectionPipelineRequest(
-                        request_id=request_id,
-                        camera_name=str(camera_name),
-                        frame_id=int(tray_response.frame_id),
-                        target_tray_index=int(tray_index),
-                        enable_debug=True,
+                try:
+                    response = client.request_opening_detection(
+                        OpeningDetectionPipelineRequest(
+                            request_id=request_id,
+                            camera_name=str(camera_name),
+                            frame_id=int(tray_response.frame_id),
+                            target_tray_index=int(tray_index),
+                            enable_debug=True,
+                        )
                     )
-                )
+                except Exception as exc:  # noqa: BLE001
+                    last_error = f"{type(exc).__name__}: {exc}"
+                    request_id += 1
+                    continue
                 request_id += 1
                 if response.error is None and response.selected_result is not None and response.selected_result.pose is not None:
                     _save_capture(output_dir, response)

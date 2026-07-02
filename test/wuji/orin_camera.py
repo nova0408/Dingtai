@@ -6,12 +6,10 @@ from pathlib import Path
 
 from loguru import logger
 
-PROJECT_ROOT = next(parent for parent in Path(__file__).resolve().parents if (parent / "camera_pipeline").is_dir())
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
-
-from camera_pipeline.client import CameraPipelineClient  # noqa: E402
-
+from camera_pipeline.client import CameraPipelineClient  
 DEFAULT_READY_TIMEOUT_S = 10.0
 DEFAULT_ORIN_SERVICE_ADDR = "tcp://192.168.1.118:6200"
 

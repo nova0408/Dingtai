@@ -2,13 +2,12 @@ from __future__ import annotations
 
 """
 脚本流程概览：
-1. Gemini305 以 1280x800 彩色流采集原图，并执行相机畸变校正。
-2. 对同一帧生成 Gray / CLAHE / 背景归一化 / 双边滤波 / 高反差等增强视图。
-3. 在多分支候选提取链路中分别执行 Canny、局部二值、Otsu、LSD 等候选四边形搜索。
-4. 对候选四边形做透视校正、模板采样和 AprilTag 16h5 位解码，再结合重投影误差计算单帧评分。
-5. 将各增强分支的单帧结果做空间去重融合，得到单帧 Fusion。
-6. 对最近 5 帧 Fusion 做时序投票，只保留至少 3 帧一致的稳定实例，得到 TemporalFusion。
-7. 预览中展示各分支效果与最终 TemporalFusion；输出 CSV 和截图用于离线分析。
+1. 通过 Orin 的 `camera_pipeline_service` 订阅 1280x800 彩色流，并执行相机畸变校正。
+2. 对同一帧仅生成 CLAHE 与 HoughCompare 两个增强视图。
+3. 对候选四边形做透视校正、模板采样和 AprilTag 16h5 位解码，再结合重投影误差计算单帧评分。
+4. 将各增强分支的单帧结果做空间去重融合，得到单帧 Fusion。
+5. 对最近 1 秒内的 Fusion 做时序投票，只保留至少 3 次一致的稳定实例，得到 TemporalFusion。
+6. 非交互式持续运行，直到 TemporalFusion 中稳定识别出先验 tag 3、4、5；随后输出 CSV、截图和最终结果图到 `.archive` 用于离线分析。
 详细说明见：test_apriltag_color_space_eval.md
 """
 
@@ -20,36 +19,41 @@ import time
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
+import json
+import shutil
 
 import cv2
 import numpy as np
 from loguru import logger
-from pyorbbecsdk import OBFormat
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.rgbd_camera import Gemini305, OrbbecSession, SessionOptions  # noqa: E402
+from camera_pipeline.client import CameraPipelineClient  # noqa: E402
 
 # region 默认参数（优先在这里直接改）
 DEFAULT_WINDOW_NAME = "AprilTag Color Eval"
 DEFAULT_WINDOW_MIN_LONG_SIDE = 1280
 DEFAULT_TIMEOUT_MS = 120
 DEFAULT_CAPTURE_FPS = 30
+DEFAULT_CAMERA_NAME = "left_hand_camera"
+DEFAULT_ORIN_SERVICE_ADDR = "tcp://192.168.1.118:6200"
 DEFAULT_COLOR_WIDTH = 1280
 DEFAULT_COLOR_HEIGHT = 800
 DEFAULT_COLOR_FORMAT_NAME = "BGR"
 DEFAULT_TAG_SIZE_MM = 40.0
 DEFAULT_DICTIONARY_NAME = "DICT_APRILTAG_16H5"
-DEFAULT_OUTPUT_ROOT = Path("experiments/apriltag_color_eval_runs")
-DEFAULT_AUTO_CAPTURE_INTERVAL = 30
+DEFAULT_OUTPUT_ROOT = Path("test/wuji/.archive/apriltag_detect_runs")
 DEFAULT_CLAHE_CLIP_LIMIT = 2.5
 DEFAULT_CLAHE_GRID = 8
 DEFAULT_TEMPLATE_SIZE_PX = 120
 DEFAULT_ALLOWED_TAG_IDS = tuple(range(7))
-DEFAULT_TEMPORAL_WINDOW_SIZE = 5
+DEFAULT_TEMPORAL_WINDOW_S = 1.0
 DEFAULT_TEMPORAL_MIN_SUPPORT = 3
+DEFAULT_TARGET_TAG_IDS = (3, 4, 5)
+DEFAULT_TARGET_STABLE_COUNT = 3
+DEFAULT_MAX_FRAMES = 100
 # endregion
 
 
@@ -68,7 +72,7 @@ class TagSpec:
 
 @dataclass(frozen=True)
 class CameraCalibration:
-    """Gemini305 彩色相机内参与畸变。"""
+    """Wuji/ZMQ 彩色相机内参与畸变。"""
 
     width: int
     height: int
@@ -140,9 +144,9 @@ class AppConfig:
     output_root: Path
     tag_spec_path: Path | None
     allowed_tag_ids: tuple[int, ...]
-    auto_capture_interval: int
     clahe_clip_limit: float
     clahe_grid: int
+    max_frames: int
 
 
 @dataclass
@@ -184,113 +188,148 @@ def main(config: AppConfig) -> None:
         allowed_tag_ids=config.allowed_tag_ids,
     )
     capture_rows: list[CaptureRow] = []
-    temporal_fusion_history: deque[list[DetectionResult]] = deque(maxlen=DEFAULT_TEMPORAL_WINDOW_SIZE)
+    temporal_fusion_history: deque[tuple[float, list[DetectionResult]]] = deque()
+    final_state: dict[str, object] = {
+        "session_dir": str(session_dir),
+        "target_tag_ids": list(DEFAULT_TARGET_TAG_IDS),
+        "target_stable_count": int(DEFAULT_TARGET_STABLE_COUNT),
+        "frames": [],
+        "final_result": None,
+    }
+    final_preview: np.ndarray | None = None
 
-    options = SessionOptions(
-        timeout=int(config.timeout_ms),
-        preferred_capture_fps=max(1, int(config.capture_fps)),
-        preferred_color_width=int(DEFAULT_COLOR_WIDTH),
-        preferred_color_height=int(DEFAULT_COLOR_HEIGHT),
-        preferred_color_format_name=DEFAULT_COLOR_FORMAT_NAME,
-    )
-    with Gemini305(options=options) as session:
-        calibration = _read_camera_calibration(session)
+    client = CameraPipelineClient(service_addr=DEFAULT_ORIN_SERVICE_ADDR, timeout_ms=30_000)
+    try:
+        summary_response = client.get_camera_summary(timeout_s=float(config.timeout_ms) / 1000.0)
+        status_response = client.get_camera_status(timeout_s=float(config.timeout_ms) / 1000.0)
+        intrinsics_response = client.get_camera_intrinsics(timeout_s=float(config.timeout_ms) / 1000.0)
+        calibration = _read_camera_calibration(intrinsics_response)
+        if str(status_response.camera_name) != str(DEFAULT_CAMERA_NAME):
+            logger.warning(
+                "相机状态返回的 camera_name={} 与脚本默认值 {} 不一致，将继续使用订阅相机名 {}",
+                status_response.camera_name,
+                DEFAULT_CAMERA_NAME,
+                DEFAULT_CAMERA_NAME,
+            )
+        if int(status_response.width) != int(calibration.width) or int(status_response.height) != int(calibration.height):
+            logger.warning(
+                "相机状态分辨率 {}x{} 与内参分辨率 {}x{} 不一致，以内参为准",
+                int(status_response.width),
+                int(status_response.height),
+                int(calibration.width),
+                int(calibration.height),
+            )
         logger.info(
-            "AprilTag eval color stream target: "
+            "AprilTag eval Orin stream target: "
             f"{DEFAULT_COLOR_WIDTH}x{DEFAULT_COLOR_HEIGHT} {DEFAULT_COLOR_FORMAT_NAME}, "
-            f"actual calibration={calibration.width}x{calibration.height}"
+            f"actual calibration={calibration.width}x{calibration.height}, "
+            f"camera_status={status_response.camera_model}/{status_response.width}x{status_response.height}, "
+            f"source_meta={summary_response.source_meta}"
         )
         cv2.namedWindow(DEFAULT_WINDOW_NAME, cv2.WINDOW_NORMAL)
-        frame_size = _compute_preview_window_size(
-            src_w=calibration.width * 3,
-            src_h=calibration.height * 2,
-            min_long_side=DEFAULT_WINDOW_MIN_LONG_SIDE,
-        )
-        cv2.resizeWindow(DEFAULT_WINDOW_NAME, frame_size[0], frame_size[1])
-
         frame_index = 0
-        pose_index = 0
-        try:
-            while True:
-                frames = session.wait_for_frames()
-                if frames is None:
-                    continue
-
-                color_bgr = _decode_color_frame_bgr(frames.get_color_frame())
-                if color_bgr is None:
-                    continue
-
-                frame_index += 1
-                undistorted_bgr = cv2.undistort(
-                    color_bgr,
-                    calibration.camera_matrix,
-                    calibration.dist_coeffs,
+        for frame in client.subscribe_camera_frames(DEFAULT_CAMERA_NAME):
+            color_bgr = np.asarray(frame.color_bgr, dtype=np.uint8)
+            if color_bgr.size == 0:
+                logger.warning("Orin camera_frame 返回空图像，跳过本帧")
+                continue
+            if str(frame.camera_name) != str(DEFAULT_CAMERA_NAME):
+                logger.warning(
+                    "订阅流返回 camera_name={}，期望 {}，仍继续处理该帧",
+                    frame.camera_name,
+                    DEFAULT_CAMERA_NAME,
                 )
-                variant_frames = _build_variant_frames(
-                    undistorted_bgr=undistorted_bgr,
-                    clip_limit=config.clahe_clip_limit,
-                    clahe_grid=config.clahe_grid,
-                )
-                started = time.perf_counter()
-                frame_results = _evaluate_frame(
-                    variant_frames=variant_frames,
-                    calibration=calibration,
-                    dictionary=dictionary,
-                    template_bank=template_bank,
-                    tag_specs=tag_specs,
-                    tag_size_mm=config.tag_size_mm,
-                )
-                temporal_fusion_history.append(list(frame_results.get("Fusion", VariantDetections([], [])).results))
-                frame_results["TemporalFusion"] = _fuse_temporal_detections(
-                    fusion_history=list(temporal_fusion_history),
-                    window_size=DEFAULT_TEMPORAL_WINDOW_SIZE,
-                    min_support=DEFAULT_TEMPORAL_MIN_SUPPORT,
-                )
-                elapsed_ms = (time.perf_counter() - started) * 1000.0
-                preview = _compose_preview(
-                    variant_frames=variant_frames,
-                    frame_results=frame_results,
-                    frame_index=frame_index,
-                    pose_index=pose_index,
-                    elapsed_ms=elapsed_ms,
-                    session_dir=session_dir,
-                    auto_capture_interval=config.auto_capture_interval,
-                )
-                cv2.imshow(DEFAULT_WINDOW_NAME, preview)
 
-                auto_capture = config.auto_capture_interval > 0 and frame_index % config.auto_capture_interval == 0
-                key = cv2.waitKey(1) & 0xFF
-                if auto_capture:
-                    pose_index += 1
-                    _capture_pose(
-                        pose_index=pose_index,
-                        frame_index=frame_index,
-                        frame_results=frame_results,
-                        rows=capture_rows,
-                        session_dir=session_dir,
-                        preview_image=preview,
-                    )
-
-                if key in (27, ord("q"), ord("Q")):
-                    logger.warning("收到退出指令，结束评估。")
-                    break
-                if key in (ord("p"), ord("P"), 13):
-                    pose_index += 1
-                    _capture_pose(
-                        pose_index=pose_index,
-                        frame_index=frame_index,
-                        frame_results=frame_results,
-                        rows=capture_rows,
-                        session_dir=session_dir,
-                        preview_image=preview,
-                    )
-                if cv2.getWindowProperty(DEFAULT_WINDOW_NAME, cv2.WND_PROP_VISIBLE) < 1:
-                    logger.warning("预览窗口关闭，结束评估。")
-                    break
-        finally:
-            cv2.destroyWindow(DEFAULT_WINDOW_NAME)
-
-    _write_outputs(session_dir=session_dir, rows=capture_rows)
+            frame_index += 1
+            undistorted_bgr = cv2.undistort(
+                color_bgr,
+                calibration.camera_matrix,
+                calibration.dist_coeffs,
+            )
+            variant_frames = _build_variant_frames(
+                undistorted_bgr=undistorted_bgr,
+                clip_limit=config.clahe_clip_limit,
+                clahe_grid=config.clahe_grid,
+            )
+            started = time.perf_counter()
+            frame_results = _evaluate_frame(
+                variant_frames=variant_frames,
+                calibration=calibration,
+                dictionary=dictionary,
+                template_bank=template_bank,
+                tag_specs=tag_specs,
+                tag_size_mm=config.tag_size_mm,
+            )
+            temporal_fusion_history.append(
+                (
+                    time.perf_counter(),
+                    list(frame_results.get("Fusion", VariantDetections([], [])).results),
+                )
+            )
+            _prune_temporal_history(
+                temporal_fusion_history=temporal_fusion_history,
+                window_s=DEFAULT_TEMPORAL_WINDOW_S,
+            )
+            frame_results["TemporalFusion"] = _fuse_temporal_detections(
+                fusion_history=list(temporal_fusion_history),
+                window_s=DEFAULT_TEMPORAL_WINDOW_S,
+                min_support=DEFAULT_TEMPORAL_MIN_SUPPORT,
+            )
+            elapsed_ms = (time.perf_counter() - started) * 1000.0
+            preview = _compose_preview(
+                variant_frames=variant_frames,
+                frame_results=frame_results,
+                frame_index=frame_index,
+                elapsed_ms=elapsed_ms,
+                session_dir=session_dir,
+            )
+            cv2.imshow(DEFAULT_WINDOW_NAME, preview)
+            cv2.waitKey(1)
+            _save_frame_artifacts(
+                session_dir=session_dir,
+                frame_index=frame_index,
+                preview_image=preview,
+                variant_frames=variant_frames,
+                frame_results=frame_results,
+            )
+            _capture_pose(
+                pose_index=frame_index,
+                frame_index=frame_index,
+                frame_results=frame_results,
+                rows=capture_rows,
+                session_dir=session_dir,
+                preview_image=preview,
+            )
+            final_state["frames"].append(
+                {
+                    "frame_index": int(frame_index),
+                    "elapsed_ms": float(elapsed_ms),
+                    "temporal_tag_ids": [int(item.tag_id) for item in frame_results.get("TemporalFusion", VariantDetections([], [])).results],
+                }
+            )
+            if _has_stable_target_tags(frame_results.get("TemporalFusion", VariantDetections([], [])).results, DEFAULT_TARGET_TAG_IDS):
+                logger.success("已稳定识别到目标 tag 3,4,5，结束采集。")
+                final_state["final_result"] = _build_final_result_payload(frame_index, elapsed_ms, frame_results)
+                final_preview = _annotate_final_preview(preview, frame_results["TemporalFusion"].results)
+                _write_outputs(session_dir=session_dir, rows=capture_rows, final_state=final_state)
+                cv2.imshow(DEFAULT_WINDOW_NAME, final_preview)
+                cv2.waitKey(5000)
+                break
+            if int(config.max_frames) > 0 and frame_index >= int(config.max_frames):
+                logger.warning("达到最大帧数 {}，停止采集。", int(config.max_frames))
+                final_state["final_result"] = _build_final_result_payload(frame_index, elapsed_ms, frame_results)
+                final_preview = _annotate_final_preview(preview, frame_results["TemporalFusion"].results)
+                _write_outputs(session_dir=session_dir, rows=capture_rows, final_state=final_state)
+                cv2.imshow(DEFAULT_WINDOW_NAME, final_preview)
+                cv2.waitKey(5000)
+                break
+    finally:
+        client.close()
+    if final_preview is not None:
+        cv2.imwrite(str(session_dir / "final_preview.png"), final_preview)
+    cv2.destroyAllWindows()
+    if final_preview is None:
+        _write_outputs(session_dir=session_dir, rows=capture_rows, final_state=final_state)
     logger.success(f"评估结果输出目录：{session_dir}")
 
 
@@ -536,8 +575,6 @@ def _build_variant_frames(
         tileGridSize=(int(clahe_grid), int(clahe_grid)),
     )
     contrast = clahe.apply(gray)
-    background = cv2.GaussianBlur(gray, (0, 0), sigmaX=21.0, sigmaY=21.0)
-    background_norm = cv2.divide(gray, np.maximum(background, 1), scale=255.0)
     bilateral = cv2.bilateralFilter(gray, d=7, sigmaColor=40.0, sigmaSpace=40.0)
     blur_small = cv2.GaussianBlur(gray, (0, 0), sigmaX=1.2, sigmaY=1.2)
     blur_large = cv2.GaussianBlur(gray, (0, 0), sigmaX=5.0, sigmaY=5.0)
@@ -548,110 +585,15 @@ def _build_variant_frames(
         255,
         cv2.NORM_MINMAX,
     ).astype(np.uint8)
-    adaptive_gauss = cv2.adaptiveThreshold(
-        contrast,
-        255,
-        cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-        cv2.THRESH_BINARY,
-        31,
-        5,
-    )
-    adaptive_mean = cv2.adaptiveThreshold(
-        contrast,
-        255,
-        cv2.ADAPTIVE_THRESH_MEAN_C,
-        cv2.THRESH_BINARY,
-        31,
-        5,
-    )
-    _, otsu_binary = cv2.threshold(
-        contrast,
-        0,
-        255,
-        cv2.THRESH_BINARY | cv2.THRESH_OTSU,
-    )
-    canny_gray = cv2.Canny(gray, 50, 150, apertureSize=3, L2gradient=True)
     canny_contrast = cv2.Canny(contrast, 50, 150, apertureSize=3, L2gradient=True)
     hough_vis = _build_hough_preview(contrast, canny_contrast)
-    lsd_vis = _build_lsd_preview(contrast)
 
     return [
         VariantFrame(
-            name="Original",
-            detect_images=_build_detect_inputs(
-                gray,
-                contrast,
-                background_norm,
-                adaptive_gauss,
-                adaptive_mean,
-                otsu_binary,
-            ),
-            candidate_mode="canny",
-            preview_image=undistorted_bgr.copy(),
-            edge_image=_gray_to_bgr(canny_gray),
-            source_bgr=undistorted_bgr,
-        ),
-        VariantFrame(
-            name="Gray",
-            detect_images=_build_detect_inputs(gray),
-            candidate_mode="canny",
-            preview_image=_gray_to_bgr(gray),
-            edge_image=_gray_to_bgr(canny_gray),
-            source_bgr=undistorted_bgr,
-        ),
-        VariantFrame(
             name="CLAHE",
-            detect_images=_build_detect_inputs(contrast),
+            detect_images=_build_detect_inputs(contrast, bilateral, highpass),
             candidate_mode="canny",
             preview_image=_gray_to_bgr(contrast),
-            edge_image=_gray_to_bgr(canny_contrast),
-            source_bgr=undistorted_bgr,
-        ),
-        VariantFrame(
-            name="BgDivNorm",
-            detect_images=_build_detect_inputs(background_norm),
-            candidate_mode="canny",
-            preview_image=_gray_to_bgr(background_norm),
-            edge_image=_gray_to_bgr(cv2.Canny(background_norm, 50, 150, apertureSize=3, L2gradient=True)),
-            source_bgr=undistorted_bgr,
-        ),
-        VariantFrame(
-            name="Bilateral",
-            detect_images=_build_detect_inputs(bilateral),
-            candidate_mode="canny",
-            preview_image=_gray_to_bgr(bilateral),
-            edge_image=_gray_to_bgr(cv2.Canny(bilateral, 50, 150, apertureSize=3, L2gradient=True)),
-            source_bgr=undistorted_bgr,
-        ),
-        VariantFrame(
-            name="HighPass",
-            detect_images=_build_detect_inputs(highpass),
-            candidate_mode="canny",
-            preview_image=_gray_to_bgr(highpass),
-            edge_image=_gray_to_bgr(cv2.Canny(highpass, 50, 150, apertureSize=3, L2gradient=True)),
-            source_bgr=undistorted_bgr,
-        ),
-        VariantFrame(
-            name="LocalBinaryCompare",
-            detect_images=_build_detect_inputs(adaptive_gauss, adaptive_mean, contrast, background_norm),
-            candidate_mode="local_binary",
-            preview_image=_gray_to_bgr(adaptive_gauss),
-            edge_image=_gray_to_bgr(canny_contrast),
-            source_bgr=undistorted_bgr,
-        ),
-        VariantFrame(
-            name="OtsuCompare",
-            detect_images=_build_detect_inputs(otsu_binary, contrast, background_norm),
-            candidate_mode="global_otsu",
-            preview_image=_gray_to_bgr(otsu_binary),
-            edge_image=_gray_to_bgr(canny_contrast),
-            source_bgr=undistorted_bgr,
-        ),
-        VariantFrame(
-            name="CannyCompare",
-            detect_images=_build_detect_inputs(gray, contrast, bilateral, highpass),
-            candidate_mode="canny",
-            preview_image=_gray_to_bgr(canny_contrast),
             edge_image=_gray_to_bgr(canny_contrast),
             source_bgr=undistorted_bgr,
         ),
@@ -663,22 +605,6 @@ def _build_variant_frames(
             edge_image=hough_vis,
             source_bgr=undistorted_bgr,
         ),
-        VariantFrame(
-            name="LSDCompare",
-            detect_images=_build_detect_inputs(contrast, bilateral, highpass, background_norm),
-            candidate_mode="lsd",
-            preview_image=lsd_vis,
-            edge_image=lsd_vis,
-            source_bgr=undistorted_bgr,
-        ),
-        VariantFrame(
-            name="Adaptive",
-            detect_images=_build_detect_inputs(adaptive_gauss, adaptive_mean, otsu_binary),
-            candidate_mode="local_binary",
-            preview_image=_gray_to_bgr(adaptive_mean),
-            edge_image=_gray_to_bgr(canny_contrast),
-            source_bgr=undistorted_bgr,
-        ),
     ]
 
 
@@ -686,10 +612,8 @@ def _compose_preview(
     variant_frames: list[VariantFrame],
     frame_results: dict[str, VariantDetections],
     frame_index: int,
-    pose_index: int,
     elapsed_ms: float,
     session_dir: Path,
-    auto_capture_interval: int,
 ) -> np.ndarray:
     panels: list[np.ndarray] = []
     for variant_frame in variant_frames:
@@ -720,17 +644,29 @@ def _compose_preview(
     panels.append(fusion_panel)
 
     grid = _compose_panel_grid(panels, columns=4)
-    capture_hint = (
-        f"auto_capture_every={auto_capture_interval} frames"
-        if auto_capture_interval > 0
-        else "manual_capture=P/Enter only"
-    )
     footer_lines = [
-        f"frame={frame_index} pose={pose_index} compute_ms={elapsed_ms:.2f}",
-        f"{capture_hint} | keys: P/Enter capture pose | Q/ESC quit",
+        f"frame={frame_index} compute_ms={elapsed_ms:.2f}",
+        "non-interactive capture until stable tags 3,4,5",
         f"output={session_dir.name}",
     ]
     return _append_footer(grid, footer_lines)
+
+
+def _annotate_final_preview(preview: np.ndarray, detections: list[DetectionResult]) -> np.ndarray:
+    canvas = preview.copy()
+    _draw_text(canvas, "FINAL STABLE TAGS: 3 / 4 / 5", (18, 34), scale=_panel_text_scale(canvas, 1.0))
+    if not detections:
+        _draw_text(canvas, "no stable targets detected", (18, 72), scale=_panel_text_scale(canvas, 0.85))
+        return canvas
+    for index, result in enumerate(detections[:3]):
+        if result.corners_px is None:
+            continue
+        polygon = np.round(result.corners_px).astype(np.int32).reshape(-1, 1, 2)
+        color = (0, 220, 0)
+        cv2.polylines(canvas, [polygon], True, color, 3, cv2.LINE_AA)
+        center = tuple(int(v) for v in np.round(np.mean(result.corners_px, axis=0)))
+        _draw_text(canvas, f"target {result.tag_id}", (center[0] + 8, center[1] - 8), scale=_panel_text_scale(canvas, 0.75))
+    return canvas
 
 
 def _draw_detection_overlays(
@@ -887,11 +823,58 @@ def _capture_pose(
     logger.info(f"已记录 pose={pose_index} frame={frame_index} -> {image_path.name}")
 
 
-def _write_outputs(session_dir: Path, rows: list[CaptureRow]) -> None:
+def _save_frame_artifacts(
+    session_dir: Path,
+    frame_index: int,
+    preview_image: np.ndarray,
+    variant_frames: list[VariantFrame],
+    frame_results: dict[str, VariantDetections],
+) -> None:
+    frame_dir = session_dir / f"frame_{frame_index:06d}"
+    frame_dir.mkdir(parents=True, exist_ok=True)
+    cv2.imwrite(str(frame_dir / "preview.png"), preview_image)
+    for variant_frame in variant_frames:
+        cv2.imwrite(str(frame_dir / f"{variant_frame.name}.png"), variant_frame.preview_image)
+    summary_path = frame_dir / "summary.json"
+    summary_payload = {
+        "frame_index": int(frame_index),
+        "variant_summary": {
+            name: [int(item.tag_id) for item in detections.results]
+            for name, detections in frame_results.items()
+        },
+    }
+    summary_path.write_text(json.dumps(summary_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _build_final_result_payload(
+    frame_index: int,
+    elapsed_ms: float,
+    frame_results: dict[str, VariantDetections],
+) -> dict[str, object]:
+    temporal = frame_results.get("TemporalFusion", VariantDetections(results=[], rejected_corners=[]))
+    return {
+        "frame_index": int(frame_index),
+        "elapsed_ms": float(elapsed_ms),
+        "temporal_tag_ids": [int(item.tag_id) for item in temporal.results],
+        "temporal_labels": [str(item.label) for item in temporal.results],
+        "temporal_scores": [float(item.score) for item in temporal.results],
+    }
+
+
+def _has_stable_target_tags(results: list[DetectionResult], target_tag_ids: tuple[int, ...]) -> bool:
+    detected_ids = {int(item.tag_id) for item in results if item.detected}
+    return set(int(tag_id) for tag_id in target_tag_ids).issubset(detected_ids)
+
+
+def _write_outputs(session_dir: Path, rows: list[CaptureRow], final_state: dict[str, object]) -> None:
     detail_path = session_dir / "pose_samples.csv"
     _write_pose_rows(detail_path, rows)
     _write_summary_by_tag(session_dir / "summary_by_tag.csv", rows)
     _write_summary_by_variant(session_dir / "summary_by_variant.csv", rows)
+    (session_dir / "final_state.json").write_text(
+        json.dumps(final_state, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
 
 
 def _write_pose_rows(path: Path, rows: list[CaptureRow]) -> None:
@@ -1059,41 +1042,28 @@ def _load_tag_specs(path: Path | None) -> dict[int, TagSpec]:
     return specs
 
 
-def _read_camera_calibration(session: OrbbecSession) -> CameraCalibration:
-    camera_param = session.get_camera_param()
-    intrinsic = camera_param.rgb_intrinsic
-    distortion = camera_param.rgb_distortion
+def _read_camera_calibration(intrinsics_response) -> CameraCalibration:
     camera_matrix = np.array(
         [
-            [float(intrinsic.fx), 0.0, float(intrinsic.cx)],
-            [0.0, float(intrinsic.fy), float(intrinsic.cy)],
+            [float(intrinsics_response.fx), 0.0, float(intrinsics_response.cx)],
+            [0.0, float(intrinsics_response.fy), float(intrinsics_response.cy)],
             [0.0, 0.0, 1.0],
         ],
         dtype=np.float64,
     )
-    dist_coeffs = np.asarray(
-        [
-            float(distortion.k1),
-            float(distortion.k2),
-            float(distortion.p1),
-            float(distortion.p2),
-            float(distortion.k3),
-            float(distortion.k4),
-            float(distortion.k5),
-            float(distortion.k6),
-        ],
-        dtype=np.float64,
-    )
+    dist_coeffs = np.zeros((8,), dtype=np.float64)
     return CameraCalibration(
-        width=int(intrinsic.width),
-        height=int(intrinsic.height),
+        width=int(intrinsics_response.width),
+        height=int(intrinsics_response.height),
         camera_matrix=camera_matrix,
         dist_coeffs=dist_coeffs,
     )
 
 
 def _create_session_dir(output_root: Path) -> Path:
-    session_dir = Path(output_root) / time.strftime("%Y%m%d_%H%M%S")
+    session_dir = Path(output_root) / "latest"
+    if session_dir.exists():
+        shutil.rmtree(session_dir)
     session_dir.mkdir(parents=True, exist_ok=False)
     return session_dir
 
@@ -1481,18 +1451,6 @@ def _build_hough_preview(gray: np.ndarray, canny_edges: np.ndarray) -> np.ndarra
     return canvas
 
 
-def _build_lsd_preview(gray: np.ndarray) -> np.ndarray:
-    canvas = _gray_to_bgr(gray)
-    detector = cv2.createLineSegmentDetector(cv2.LSD_REFINE_STD)
-    lines = detector.detect(gray)[0]
-    if lines is None:
-        return canvas
-    for line in lines[:160]:
-        x1, y1, x2, y2 = (int(round(v)) for v in line.reshape(4))
-        cv2.line(canvas, (x1, y1), (x2, y2), (0, 200, 255), 1, cv2.LINE_AA)
-    return canvas
-
-
 def _extract_candidate_quads(
     gray: np.ndarray,
     candidate_mode: str,
@@ -1602,20 +1560,22 @@ def _fuse_variant_detections(
 
 
 def _fuse_temporal_detections(
-    fusion_history: list[list[DetectionResult]],
-    window_size: int,
+    fusion_history: list[tuple[float, list[DetectionResult]]],
+    window_s: float,
     min_support: int,
 ) -> VariantDetections:
     if not fusion_history:
         return VariantDetections(results=[], rejected_corners=[])
-    latest_results = fusion_history[-1]
-    if len(fusion_history) < window_size or not latest_results:
+    latest_ts, latest_results = fusion_history[-1]
+    if not latest_results:
         return VariantDetections(results=[], rejected_corners=[])
 
     temporal_results: list[DetectionResult] = []
     for latest_result in latest_results:
         cluster = [latest_result]
-        for history_results in reversed(fusion_history[:-1]):
+        for history_ts, history_results in reversed(fusion_history[:-1]):
+            if latest_ts - history_ts > float(window_s):
+                break
             matched = _find_temporal_match(latest_result, history_results)
             if matched is not None:
                 cluster.append(matched)
@@ -1624,7 +1584,7 @@ def _fuse_temporal_detections(
         temporal_results.append(
             _build_temporal_detection_result(
                 cluster=cluster,
-                window_size=window_size,
+                window_s=window_s,
                 detection_index=len(temporal_results) + 1,
             )
         )
@@ -1643,11 +1603,11 @@ def _find_temporal_match(
 
 def _build_temporal_detection_result(
     cluster: list[DetectionResult],
-    window_size: int,
+    window_s: float,
     detection_index: int,
 ) -> DetectionResult:
     representative = max(cluster, key=lambda item: item.score)
-    support_ratio = float(len(cluster)) / float(max(1, window_size))
+    support_ratio = float(len(cluster)) / float(max(1.0, window_s * 30.0))
     mean_score = float(np.mean([item.score for item in cluster]))
     temporal_score = float(0.7 * mean_score + 0.3 * support_ratio)
     mean_template_score = float(np.mean([item.template_score for item in cluster]))
@@ -1674,6 +1634,17 @@ def _build_temporal_detection_result(
         tvec_mm=representative.tvec_mm,
         rpy_deg=representative.rpy_deg,
     )
+
+
+def _prune_temporal_history(
+    temporal_fusion_history: deque[tuple[float, list[DetectionResult]]],
+    window_s: float,
+) -> None:
+    if not temporal_fusion_history:
+        return
+    latest_ts = temporal_fusion_history[-1][0]
+    while temporal_fusion_history and latest_ts - temporal_fusion_history[0][0] > float(window_s):
+        temporal_fusion_history.popleft()
 
 
 def _is_duplicate_detection(
@@ -1815,22 +1786,22 @@ def _parse_cli() -> AppConfig:
         help="允许接受的真实 tag id，逗号分隔；默认 0-6",
     )
     parser.add_argument(
-        "--auto-capture-interval",
-        type=int,
-        default=DEFAULT_AUTO_CAPTURE_INTERVAL,
-        help="每隔多少帧自动记录一个 pose；0 表示关闭",
-    )
-    parser.add_argument(
         "--clahe-clip-limit",
         type=float,
         default=DEFAULT_CLAHE_CLIP_LIMIT,
-        help="高反差 CLAHE clip limit",
+        help="CLAHE clip limit",
     )
     parser.add_argument(
         "--clahe-grid",
         type=int,
         default=DEFAULT_CLAHE_GRID,
-        help="高反差 CLAHE tile grid 大小",
+        help="CLAHE tile grid 大小",
+    )
+    parser.add_argument(
+        "--max-frames",
+        type=int,
+        default=DEFAULT_MAX_FRAMES,
+        help="最多处理多少帧，0 表示不限制",
     )
     args = parser.parse_args()
     return AppConfig(
@@ -1841,9 +1812,9 @@ def _parse_cli() -> AppConfig:
         output_root=Path(args.output_root),
         tag_spec_path=None if args.tag_spec_csv is None else Path(args.tag_spec_csv),
         allowed_tag_ids=_parse_allowed_tag_ids(str(args.allowed_tag_ids)),
-        auto_capture_interval=int(args.auto_capture_interval),
         clahe_clip_limit=float(args.clahe_clip_limit),
         clahe_grid=int(args.clahe_grid),
+        max_frames=int(args.max_frames),
     )
 
 

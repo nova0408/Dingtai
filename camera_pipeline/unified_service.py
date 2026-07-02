@@ -3,19 +3,29 @@ from __future__ import annotations
 import argparse
 import logging
 import signal
+import pickle
+import threading
 import time
 
 import zmq
 
-from .ball_pose_detection.protocol import BallPoseDetectionResponse
-from .ball_pose_detection.service import BallPoseDetectionService
-from .opening_detection.protocol import DebugArtifacts, OpeningDetectionPipelineResponse, TrayPoseInfo
-from .opening_detection.service import OpeningDetectionPipelineService
 from .pipeline_context import PipelineContext, PipelineContextConfig
-from .ports import CAMERA_PIPELINE_SERVICE_BIND_ADDR, DEFAULT_CAMERA_ID, DEFAULT_CAMERA_NAME, DEFAULT_CONTROL_PORT, DEFAULT_STREAM_PORT
-from .tray_detection.protocol import OrinTrayDetectionRequest, OrinTrayDetectionResponse
-from .tray_detection.service import OrinTrayDetectionService
-from .unified_protocol import CameraPipelineServiceRequest, CameraPipelineServiceResponse, CameraSummaryResponse
+from .ports import (
+    CAMERA_PIPELINE_FRAME_STREAM_BIND_ADDR,
+    CAMERA_PIPELINE_SERVICE_BIND_ADDR,
+    DEFAULT_CAMERA_ID,
+    DEFAULT_CAMERA_NAME,
+    DEFAULT_CONTROL_PORT,
+    DEFAULT_STREAM_PORT,
+)
+from .unified_protocol import (
+    CameraFrameSubscribeResponse,
+    CameraIntrinsicsResponse,
+    CameraPipelineServiceRequest,
+    CameraPipelineServiceResponse,
+    CameraStatusResponse,
+    CameraSummaryResponse,
+)
 from .unified_transport import CameraPipelineRpcServer, ZmqSocketOptions
 
 LOGGER = logging.getLogger("..unified_service")
@@ -26,15 +36,34 @@ class CameraPipelineUnifiedService:
 
     def __init__(self, context: PipelineContext) -> None:
         self._context = context
-        self._tray_service = OrinTrayDetectionService()
-        self._opening_service = OpeningDetectionPipelineService()
-        self._ball_service = BallPoseDetectionService()
+        self._frame_pub_socket = zmq.Context.instance().socket(zmq.PUB)
+        self._frame_pub_socket.bind(CAMERA_PIPELINE_FRAME_STREAM_BIND_ADDR)
+        self._frame_pub_running = False
+        self._frame_pub_thread: threading.Thread | None = None
+        self._tray_service = None
+        self._opening_service = None
+        self._ball_service = None
 
     def handle(self, request: CameraPipelineServiceRequest) -> CameraPipelineServiceResponse:
         if request.operation == "camera_summary":
             return CameraPipelineServiceResponse(
                 operation=request.operation,
                 camera_summary=self._handle_camera_summary(request),
+            )
+        if request.operation == "camera_intrinsics":
+            return CameraPipelineServiceResponse(
+                operation=request.operation,
+                camera_intrinsics=self._handle_camera_intrinsics(request),
+            )
+        if request.operation == "camera_status":
+            return CameraPipelineServiceResponse(
+                operation=request.operation,
+                camera_status=self._handle_camera_status(request),
+            )
+        if request.operation == "camera_frame_subscribe":
+            return CameraPipelineServiceResponse(
+                operation=request.operation,
+                camera_frame_subscribe=self._handle_camera_frame_subscribe(request),
             )
         if request.operation == "tray_detection":
             return CameraPipelineServiceResponse(
@@ -76,7 +105,94 @@ class CameraPipelineUnifiedService:
             error=None,
         )
 
+    def _handle_camera_intrinsics(self, request: CameraPipelineServiceRequest) -> CameraIntrinsicsResponse:
+        intrinsics_request = request.camera_intrinsics
+        if intrinsics_request is None:
+            raise RuntimeError("camera_intrinsics payload missing")
+        if not self._context.wait_until_ready(timeout_s=float(intrinsics_request.timeout_s)):
+            raise RuntimeError(f"camera intrinsics not ready within {float(intrinsics_request.timeout_s):.1f}s")
+        frame = self._context.get_latest_frame()
+        if frame is None:
+            raise RuntimeError("camera intrinsics unavailable")
+        return CameraIntrinsicsResponse(
+            camera_name=str(frame.camera_name),
+            fx=float(frame.fx),
+            fy=float(frame.fy),
+            cx=float(frame.cx),
+            cy=float(frame.cy),
+            distortion=tuple(),
+            width=int(frame.color_bgr.shape[1]),
+            height=int(frame.color_bgr.shape[0]),
+            error=None,
+        )
+
+    def _handle_camera_status(self, request: CameraPipelineServiceRequest) -> CameraStatusResponse:
+        status_request = request.camera_status
+        if status_request is None:
+            raise RuntimeError("camera_status payload missing")
+        if not self._context.wait_until_ready(timeout_s=float(status_request.timeout_s)):
+            raise RuntimeError(f"camera status not ready within {float(status_request.timeout_s):.1f}s")
+        frame = self._context.get_latest_frame()
+        if frame is None:
+            raise RuntimeError("camera status unavailable")
+        return CameraStatusResponse(
+            camera_name=str(frame.camera_name),
+            camera_id=str(self._context.get_camera_id()),
+            camera_model=str(frame.source_meta.get("camera_model", "unknown")),
+            width=int(frame.color_bgr.shape[1]),
+            height=int(frame.color_bgr.shape[0]),
+            color_enabled=True,
+            depth_enabled=True,
+            online=True,
+            source_meta=dict(frame.source_meta),
+            error=None,
+        )
+
+    def _handle_camera_frame_subscribe(self, request: CameraPipelineServiceRequest) -> CameraFrameSubscribeResponse:
+        subscribe_request = request.camera_frame_subscribe
+        if subscribe_request is None:
+            raise RuntimeError("camera_frame_subscribe payload missing")
+        self._ensure_frame_publisher_started()
+        return CameraFrameSubscribeResponse(
+            stream_addr=CAMERA_PIPELINE_FRAME_STREAM_BIND_ADDR,
+            camera_name=str(subscribe_request.camera_name),
+            error=None,
+        )
+
+    def _ensure_frame_publisher_started(self) -> None:
+        if self._frame_pub_running:
+            return
+        self._frame_pub_running = True
+        self._frame_pub_thread = threading.Thread(target=self._frame_pub_loop, name="camera-frame-pub", daemon=True)
+        self._frame_pub_thread.start()
+
+    def _frame_pub_loop(self) -> None:
+        last_frame_id = -1
+        while self._frame_pub_running:
+            frame = self._context.get_latest_frame()
+            if frame is None or int(frame.frame_id) == int(last_frame_id):
+                time.sleep(0.02)
+                continue
+            last_frame_id = int(frame.frame_id)
+            try:
+                self._frame_pub_socket.send(pickle.dumps(frame, protocol=pickle.HIGHEST_PROTOCOL), flags=zmq.NOBLOCK)
+            except zmq.error.Again:
+                pass
+            time.sleep(0.01)
+
+    def close(self) -> None:
+        self._frame_pub_running = False
+        if self._frame_pub_thread is not None:
+            self._frame_pub_thread.join(timeout=1.0)
+            self._frame_pub_thread = None
+        self._frame_pub_socket.close(linger=0)
+
     def _handle_tray_detection(self, request: CameraPipelineServiceRequest) -> OrinTrayDetectionResponse:
+        from .tray_detection.protocol import OrinTrayDetectionRequest, OrinTrayDetectionResponse
+        from .tray_detection.service import OrinTrayDetectionService
+
+        if self._tray_service is None:
+            self._tray_service = OrinTrayDetectionService()
         tray_request = request.tray_detection
         if tray_request is None:
             raise RuntimeError("tray_detection payload missing")
@@ -84,6 +200,16 @@ class CameraPipelineUnifiedService:
         return self._tray_service.compute(frame, tray_request)
 
     def _handle_opening_detection(self, request: CameraPipelineServiceRequest) -> OpeningDetectionPipelineResponse:
+        from .opening_detection.protocol import DebugArtifacts, OpeningDetectionPipelineResponse, TrayPoseInfo
+        from .opening_detection.service import OpeningDetectionPipelineService
+        from .tray_detection.protocol import OrinTrayDetectionRequest
+
+        if self._opening_service is None:
+            self._opening_service = OpeningDetectionPipelineService()
+        if self._tray_service is None:
+            from .tray_detection.service import OrinTrayDetectionService
+
+            self._tray_service = OrinTrayDetectionService()
         opening_request = request.opening_detection
         if opening_request is None:
             raise RuntimeError("opening_detection payload missing")
@@ -133,6 +259,11 @@ class CameraPipelineUnifiedService:
         )
 
     def _handle_ball_pose_detection(self, request: CameraPipelineServiceRequest) -> BallPoseDetectionResponse:
+        from .ball_pose_detection.protocol import BallPoseDetectionResponse
+        from .ball_pose_detection.service import BallPoseDetectionService
+
+        if self._ball_service is None:
+            self._ball_service = BallPoseDetectionService()
         ball_request = request.ball_pose_detection
         if ball_request is None:
             raise RuntimeError("ball_pose_detection payload missing")
