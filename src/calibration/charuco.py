@@ -155,7 +155,7 @@ class CharucoPoseEstimator:
 
         marker_corners_raw, marker_ids_raw, _ = self._detector.detectMarkers(gray)
         marker_corners = self._normalize_marker_corners(marker_corners_raw)
-        marker_ids = np.asarray(marker_ids_raw, dtype=np.int32).reshape(-1, 1)
+        marker_ids = None if marker_ids_raw is None else np.asarray(marker_ids_raw, dtype=np.int32).reshape(-1, 1)
         marker_count = 0 if marker_ids is None else int(len(marker_ids))
 
         if not marker_corners or marker_ids is None:
@@ -198,6 +198,20 @@ class CharucoPoseEstimator:
             )
 
         obj_points, img_points = self._charuco_object_image_points(charuco_corners, charuco_ids, board)
+        if obj_points.shape[0] < 4 or img_points.shape[0] < 4:
+            return CharucoPoseResult(
+                marker_count=marker_count,
+                charuco_count=int(charuco_count),
+                board_visible=True,
+                reprojection_error_px=None,
+                marker_corners_px=marker_corners,
+                marker_ids=marker_ids,
+                charuco_corners_px=np.asarray(charuco_corners, dtype=np.float64).reshape(-1, 2),
+                charuco_ids=np.asarray(charuco_ids, dtype=np.int32).reshape(-1, 1),
+                rvec=None,
+                tvec=None,
+                transform_se3=None,
+            )
         success, rvec, tvec = cv2.solvePnP(
             obj_points,
             img_points,

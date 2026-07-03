@@ -10,7 +10,7 @@ from .protocol import OrinTrayDetectionRequest
 from .transport import OrinTrayDetectionRpcClient, ZmqSocketOptions
 
 
-DEFAULT_SERVICE_ADDR = "tcp://127.0.0.1:6210"
+DEFAULT_SERVICE_ADDR = "tcp://127.0.0.1:6200"
 DEFAULT_OUTPUT_DIR = Path(__file__).resolve().parent / "artifacts" / "smoke_test_local"
 
 

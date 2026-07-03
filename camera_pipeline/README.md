@@ -4,10 +4,11 @@
 
 `camera_pipeline/` 的正确结构不是“本机多个测试脚本各自创建不同 client”，而是：
 
-1. 远端部署一个统一的 `camera_pipeline_service`。
+1. 远端只部署一个统一的 `CameraPipelineUnifiedService`，对外仍暴露为 `camera_pipeline_service`。
 2. 远端服务内部统一持有 `PipelineContext`。
 3. 本机只保留一个统一的 `camera_pipeline_client`。
-4. 本机与远端所有测试都只验证这个统一服务的可用性，不再分别绕过服务直连相机或直连子模块。
+4. 所有子模块请求都必须经由统一服务转发，不再单独起 tray/opening/ball 三套独立服务。
+5. 本机与远端所有测试都只验证这个统一服务的可用性，不再分别绕过服务直连相机或直连子模块。
 
 这里最重要的边界是：
 
@@ -75,6 +76,11 @@
    - 请求 opening detection
    - 请求 ball pose detection
 4. 屏蔽远端内部相机流、子模块和上下文细节。
+
+说明：
+
+1. 当前实现的服务类名是 `CameraPipelineUnifiedService`，这是统一服务的真实实现。
+2. `6210` 不是当前统一服务的默认端口，遗留测试或旧文档里若出现它，应视为旧配置。
 
 ### `camera_pipeline_client`
 
@@ -153,7 +159,7 @@ local test script
 
 远端测试脚本可以直接连：
 
-1. `127.0.0.1:<service-port>`
+1. `127.0.0.1:6200`
 
 因为它们运行在 Orin 本机。
 
@@ -167,7 +173,7 @@ local test script
 
 本机测试脚本应该连接：
 
-1. `tcp://<orin-host>:<service-port>`
+1. `tcp://<orin-host>:6200`
 
 例如 `tcp://192.168.1.118:<service-port>`。
 

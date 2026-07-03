@@ -43,7 +43,7 @@ DEFAULT_LAYOUT_JSON = PROJECT_ROOT / "test" / "wuji" / "apriltag_board_layout.js
 DEFAULT_TARGET_TAG_IDS = (3, 4, 5)
 DEFAULT_STABLE_WINDOW_S = 1.0
 DEFAULT_STABLE_MIN_SUPPORT = 3
-DEFAULT_MAX_FRAMES = 200
+DEFAULT_MAX_FRAMES = 20
 DEFAULT_TAG_SIZE_MM = 40.0
 DEFAULT_WAIT_AFTER_SUCCESS_MS = 5000
 
@@ -62,9 +62,9 @@ class CollectResult:
     """一次采集结果。"""
 
     frame_index: int
-    board_pose_camera_frame: np.ndarray | None
+    tag_poses_camera_frame: dict[int, np.ndarray]
     opening_pose_camera_frame: np.ndarray | None
-    board_T_opening: np.ndarray | None
+    opening_T_tag0: np.ndarray | None
     camera_intrinsics: np.ndarray | None
     detected_tag_ids: list[int]
     layout_path: Path
@@ -141,13 +141,11 @@ def _collect_once(
     capture_rows: list[apriltag_eval.CaptureRow] = []
     temporal_fusion_history: list[tuple[float, list[apriltag_eval.DetectionResult]]] = []
     latest_preview: np.ndarray | None = None
-    last_opening_response: Any | None = None
     frame_index = 0
     final_error: str | None = None
-    board_pose_camera_frame: np.ndarray | None = None
-    opening_pose_camera_frame: np.ndarray | None = None
-    board_T_opening: np.ndarray | None = None
     detected_tag_ids: list[int] = []
+    tag_pose_samples: dict[int, list[np.ndarray]] = {tag_id: [] for tag_id in DEFAULT_TARGET_TAG_IDS}
+    opening_pose_samples: list[np.ndarray] = []
     cv2.namedWindow(apriltag_eval.DEFAULT_WINDOW_NAME, cv2.WINDOW_NORMAL)
 
     try:
@@ -195,21 +193,23 @@ def _collect_once(
                 frame_results=frame_results,
             )
             temporal_results = frame_results["TemporalFusion"].results
-            if apriltag_eval._has_stable_target_tags(temporal_results, DEFAULT_TARGET_TAG_IDS):
-                detected_tag_ids = [int(item.tag_id) for item in temporal_results]
-                board_pose_camera_frame = _estimate_board_pose(
-                    detections=temporal_results,
-                    calibration=calibration,
-                    layout=layout,
-                    tag_size_mm=DEFAULT_TAG_SIZE_MM,
-                )
-                last_opening_response = _request_opening_pose(client, camera_name, frame.frame_id)
-                opening_pose_camera_frame = _opening_pose_to_transform(last_opening_response)
-                if board_pose_camera_frame is not None and opening_pose_camera_frame is not None:
-                    board_T_opening = np.linalg.inv(board_pose_camera_frame) @ opening_pose_camera_frame
-                break
-            if int(max_frames) > 0 and frame_index >= int(max_frames):
-                final_error = f"达到最大帧数 {int(max_frames)} 仍未稳定识别到目标 tag"
+            board_pose_camera_frame = _estimate_board_pose(
+                detections=temporal_results,
+                calibration=calibration,
+                layout=layout,
+                tag_size_mm=DEFAULT_TAG_SIZE_MM,
+            )
+            if board_pose_camera_frame is not None:
+                tag_poses_camera_frame = _build_tag_poses_from_board_pose(board_pose_camera_frame, layout, DEFAULT_TARGET_TAG_IDS)
+                if set(tag_poses_camera_frame.keys()) == set(DEFAULT_TARGET_TAG_IDS):
+                    detected_tag_ids = list(DEFAULT_TARGET_TAG_IDS)
+                    for tag_id, pose in tag_poses_camera_frame.items():
+                        tag_pose_samples[int(tag_id)].append(pose)
+                    opening_response = _request_opening_pose(client, camera_name, frame.frame_id)
+                    opening_pose_camera_frame = _opening_pose_to_transform(opening_response)
+                    if opening_pose_camera_frame is not None:
+                        opening_pose_samples.append(opening_pose_camera_frame)
+            if frame_index >= int(max_frames):
                 break
     finally:
         cv2.destroyAllWindows()
@@ -221,14 +221,27 @@ def _collect_once(
         cv2.waitKey(DEFAULT_WAIT_AFTER_SUCCESS_MS)
         cv2.destroyAllWindows()
 
-    if board_pose_camera_frame is None and final_error is None:
-        final_error = "未获得稳定的 target tag 3/4/5 结果"
+    averaged_tag_poses = {
+        tag_id: _average_transform(samples)
+        for tag_id, samples in tag_pose_samples.items()
+        if samples
+    }
+    averaged_opening_pose = _average_transform(opening_pose_samples) if opening_pose_samples else None
+    opening_T_tag0 = None
+    base_tag_pose = averaged_tag_poses.get(DEFAULT_TARGET_TAG_IDS[0])
+    if base_tag_pose is not None and averaged_opening_pose is not None:
+        opening_T_tag0 = np.linalg.inv(base_tag_pose) @ averaged_opening_pose
+
+    if len(averaged_tag_poses) < len(DEFAULT_TARGET_TAG_IDS):
+        final_error = final_error or f"有效样本不足，当前仅获得 {len(averaged_tag_poses)} 个 tag 的平均位姿"
+    if averaged_opening_pose is None:
+        final_error = final_error or "未获得有效 opening pose 样本"
 
     return CollectResult(
         frame_index=int(frame_index),
-        board_pose_camera_frame=board_pose_camera_frame,
-        opening_pose_camera_frame=opening_pose_camera_frame,
-        board_T_opening=board_T_opening,
+        tag_poses_camera_frame=averaged_tag_poses,
+        opening_pose_camera_frame=averaged_opening_pose,
+        opening_T_tag0=opening_T_tag0,
         camera_intrinsics=calibration.camera_matrix,
         detected_tag_ids=detected_tag_ids,
         layout_path=DEFAULT_LAYOUT_JSON,
@@ -314,7 +327,7 @@ def _build_tag_corner_points(
     translation_mm: np.ndarray,
     rotation_matrix: np.ndarray,
     tag_size_mm: float,
-) -> np.ndarray:
+    ) -> np.ndarray:
     half = float(tag_size_mm) * 0.5
     local_corners = np.array(
         [
@@ -326,6 +339,47 @@ def _build_tag_corner_points(
         dtype=np.float64,
     )
     return (np.asarray(rotation_matrix, dtype=np.float64) @ local_corners.T).T + np.asarray(translation_mm, dtype=np.float64)
+
+
+def _build_tag_poses_from_board_pose(
+    board_pose_camera_frame: np.ndarray,
+    layout: dict[int, TagLayoutEntry],
+    target_tag_ids: tuple[int, ...],
+) -> dict[int, np.ndarray]:
+    board_to_camera = np.asarray(board_pose_camera_frame, dtype=np.float64)
+    camera_to_board = np.linalg.inv(board_to_camera)
+    tag_poses: dict[int, np.ndarray] = {}
+    for tag_id in target_tag_ids:
+        entry = layout.get(int(tag_id))
+        if entry is None:
+            continue
+        board_to_tag = np.eye(4, dtype=np.float64)
+        board_to_tag[:3, :3] = np.asarray(entry.rotation_matrix, dtype=np.float64)
+        board_to_tag[:3, 3] = np.asarray(entry.translation_mm, dtype=np.float64)
+        tag_to_camera = board_to_camera @ np.linalg.inv(board_to_tag)
+        tag_poses[int(tag_id)] = tag_to_camera
+    return tag_poses
+
+
+def _average_transform(transforms: list[np.ndarray]) -> np.ndarray | None:
+    if not transforms:
+        return None
+    mats = [np.asarray(transform, dtype=np.float64) for transform in transforms if np.asarray(transform).shape == (4, 4)]
+    if not mats:
+        return None
+    translations = np.stack([mat[:3, 3] for mat in mats], axis=0)
+    rotations = np.stack([mat[:3, :3] for mat in mats], axis=0)
+    mean_translation = np.mean(translations, axis=0)
+    mean_rotation = np.mean(rotations, axis=0)
+    u, _, vt = np.linalg.svd(mean_rotation)
+    rotation = u @ vt
+    if np.linalg.det(rotation) < 0:
+        u[:, -1] *= -1
+        rotation = u @ vt
+    transform = np.eye(4, dtype=np.float64)
+    transform[:3, :3] = rotation
+    transform[:3, 3] = mean_translation
+    return transform
 
 
 def _append_capture_rows(
@@ -387,14 +441,14 @@ def _load_layout(path: Path) -> dict[int, TagLayoutEntry]:
 
 
 def _save_overlay(session_dir: Path, result: CollectResult) -> Path | None:
-    if result.board_pose_camera_frame is None:
+    if not result.tag_poses_camera_frame:
         return None
     overlay = np.zeros((720, 1280, 3), dtype=np.uint8)
     cv2.putText(overlay, "apriltag relative pose", (40, 80), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 255, 255), 2, cv2.LINE_AA)
     cv2.putText(overlay, f"frame={result.frame_index}", (40, 130), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 255, 255), 2, cv2.LINE_AA)
     cv2.putText(overlay, f"tags={result.detected_tag_ids}", (40, 180), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
-    if result.board_T_opening is not None:
-        for idx, row in enumerate(np.asarray(result.board_T_opening, dtype=np.float64)):
+    if result.opening_T_tag0 is not None:
+        for idx, row in enumerate(np.asarray(result.opening_T_tag0, dtype=np.float64)):
             cv2.putText(overlay, " ".join(f"{value: .3f}" for value in row), (40, 260 + idx * 40), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 220, 0), 2, cv2.LINE_AA)
     overlay_path = session_dir / "final_overlay.png"
     cv2.imwrite(str(overlay_path), overlay)
@@ -409,9 +463,12 @@ def _serialize_result(result: CollectResult, overlay_path: Path | None) -> dict[
             "intrinsics": None if result.camera_intrinsics is None else np.asarray(result.camera_intrinsics, dtype=np.float64).tolist(),
         },
         "pose": {
-            "board_pose_camera_frame": None if result.board_pose_camera_frame is None else np.asarray(result.board_pose_camera_frame, dtype=np.float64).tolist(),
+            "tag_poses_camera_frame": {
+                str(tag_id): np.asarray(pose, dtype=np.float64).tolist()
+                for tag_id, pose in sorted(result.tag_poses_camera_frame.items())
+            },
             "opening_pose_camera_frame": None if result.opening_pose_camera_frame is None else np.asarray(result.opening_pose_camera_frame, dtype=np.float64).tolist(),
-            "board_T_opening": None if result.board_T_opening is None else np.asarray(result.board_T_opening, dtype=np.float64).tolist(),
+            "opening_T_tag0": None if result.opening_T_tag0 is None else np.asarray(result.opening_T_tag0, dtype=np.float64).tolist(),
         },
         "layout_path": str(result.layout_path),
         "overlay_image_path": None if overlay_path is None else str(overlay_path),

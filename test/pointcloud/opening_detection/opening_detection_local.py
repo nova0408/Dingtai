@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+# ruff: noqa: E402
+
 import argparse
 import importlib.util
 import sys
@@ -31,7 +33,7 @@ from src.wuji.zmq_camera_catalog import get_wuji_zmq_camera_endpoint
 
 # region 默认参数
 
-DEFAULT_SERVICE_ADDR = "tcp://127.0.0.1:6210"
+DEFAULT_SERVICE_ADDR = "tcp://127.0.0.1:6200"
 "远端托盘检测服务地址。"
 
 DEFAULT_CAMERA_NAME: WujiCameraName = "left_hand_camera"
