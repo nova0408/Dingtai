@@ -6,17 +6,28 @@ import csv
 import gc
 import math
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
 
+import numpy as np
 from loguru import logger
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from camera_pipeline.ball_pose_detection.protocol import BallPoseDetectionRequest  # noqa: E402
+from camera_pipeline.client import CameraPipelineClient  # noqa: E402
 from sdk.xcoresdk import xCoreSDK_python  # noqa: E402
+from test.wuji.ball_pose_detection import (  # noqa: E402
+    DEFAULT_CAMERA_NAME as DEFAULT_BALL_POSE_CAMERA_NAME,
+    DEFAULT_PRIOR_CAPTURE_PATH,
+    DEFAULT_SERVICE_ADDR as DEFAULT_BALL_POSE_SERVICE_ADDR,
+    _build_priors_from_capture,
+    _load_prior_capture,
+    _load_reference_relative_transform,
+)
 from test.wuji.common import (  # noqa: E402
     DEFAULT_PORT,
     GRIPPER_PORT,
@@ -26,9 +37,7 @@ from test.wuji.common import (  # noqa: E402
     stop_ssh_process,
 )
 from test.wuji.xcoresdk_arm_cli_test import (  # noqa: E402
-    DEFAULT_CARTESIAN_SPEED,
     DEFAULT_CARTESIAN_ZONE,
-    DEFAULT_JOINT_SPEED,
     DEFAULT_JOINT_ZONE,
     DEFAULT_TOOL_NAME,
     DEFAULT_WOBJ_NAME,
@@ -41,15 +50,14 @@ from test.wuji.xcoresdk_arm_cli_test import (  # noqa: E402
     _detect_arm_side,
     _ensure_nrt_motion_ready,
     _format_sequence,
+    _parse_cartesian_pose_input,
     _mm_to_m,
     _m_to_mm,
     _deg_to_rad,
-    _poll_gripper_until_idle,
     _print_sdk_result,
     _rad_to_deg,
     _shutdown_robot,
     _validate_cartesian_target,
-    _wait_lift_until_near_target,
     _wait_until_idle,
 )
 
@@ -62,14 +70,35 @@ DEFAULT_ARM_SIDE = "left"
 DEFAULT_MAX_FILES: int | None = None
 "默认加载的 CSV 文件数量；`None` 表示全部。"
 
-DEFAULT_CARTESIAN_MOTION_MODE = "movej"
-"笛卡尔目标执行方式默认值，仅作为 CLI 缺省；交互入口仍会展示并确认。"
+DEFAULT_REPLAY_JOINT_SPEED = 400.0
+"回放关节空间速度，单位 deg/s。"
 
-CSV_CARTESIAN_OFFSET_TARGETS = [3, 4]
+DEFAULT_REPLAY_CARTESIAN_SPEED = 20.0
+"回放笛卡尔空间速度，单位 mm/s。"
+
+DEFAULT_REPLAY_LIFT_SETTLE_DELAY_S = 1.0
+"回放 lift 单次等待时间，单位 s。"
+
+DEFAULT_REPLAY_LIFT_RETRY_COUNT = 4
+"回放 lift 最大重试次数。"
+
+DEFAULT_REPLAY_LIFT_HEIGHT_TOLERANCE_MM = 4.0
+"回放 lift 到位误差容忍，单位 mm。"
+
+CSV_CARTESIAN_OFFSET_TARGETS = []
 "需要应用全局笛卡尔纠偏的 CSV 序号列表。"
 
-CSV_CARTESIAN_OFFSET_CALCULATE_AT = 2
+CSV_CARTESIAN_OFFSET_CALCULATE_AT = None
 "在该 CSV 的最后一个 arm pose 处计算一次全局笛卡尔纠偏。"
+
+DEFAULT_OFFSET_SERVICE_ADDR = DEFAULT_BALL_POSE_SERVICE_ADDR
+"计算全局 offset 时使用的球位姿检测服务地址。"
+
+DEFAULT_OFFSET_CAMERA_NAME = DEFAULT_BALL_POSE_CAMERA_NAME
+"计算全局 offset 时使用的相机名称。"
+
+DEFAULT_OFFSET_PRIOR_CAPTURE_PATH = DEFAULT_PRIOR_CAPTURE_PATH
+"计算全局 offset 时使用的先验采集结果路径。"
 
 
 # region 数据结构
@@ -92,9 +121,9 @@ class ParsedArmPose:
 
     xyz_mm: tuple[float, float, float]
     rpy_deg: tuple[float, float, float]
-    has_elbow: bool
-    elbow_deg: float
-    conf_data: tuple[int, ...]
+    has_elbow: bool | None
+    elbow_deg: float | None
+    conf_data: tuple[int, ...] | None
 
 
 @dataclass(slots=True)
@@ -109,6 +138,12 @@ class ReplayRuntime:
     body_channel: object
     body: WujiBodyClient
     global_cartesian_offset: tuple[tuple[float, float, float, float], ...] | None = None
+    offset_service_addr: str = DEFAULT_OFFSET_SERVICE_ADDR
+    offset_camera_name: str = DEFAULT_OFFSET_CAMERA_NAME
+    offset_prior_capture_path: Path = DEFAULT_OFFSET_PRIOR_CAPTURE_PATH
+    joint_speed_deg_s: float = DEFAULT_REPLAY_JOINT_SPEED
+    cartesian_speed_mm_s: float = DEFAULT_REPLAY_CARTESIAN_SPEED
+    auto_execute_remaining: bool = False
 
 
 # endregion
@@ -120,9 +155,11 @@ class ReplayRuntime:
 def _parse_cli(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Replay left-arm drag-record CSV files in record_left.")
     parser.add_argument("--record-dir", type=Path, default=DEFAULT_RECORD_DIR)
-    parser.add_argument("--cartesian-motion", choices=("movej", "movel"), default=DEFAULT_CARTESIAN_MOTION_MODE)
     parser.add_argument("--max-files", type=int, default=DEFAULT_MAX_FILES)
     parser.add_argument("--auto-start", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--offset-service-addr", type=str, default=DEFAULT_OFFSET_SERVICE_ADDR)
+    parser.add_argument("--offset-camera-name", type=str, default=DEFAULT_OFFSET_CAMERA_NAME)
+    parser.add_argument("--offset-prior-capture-path", type=Path, default=DEFAULT_OFFSET_PRIOR_CAPTURE_PATH)
     return parser.parse_args(argv)
 
 
@@ -171,29 +208,25 @@ def _parse_joint_values(joints_text: str, expected_len: int = 7) -> list[float]:
 def _parse_pose_values(pose_text: str) -> ParsedArmPose:
     if pose_text.strip().lower() == "nan":
         raise ValueError("pose 列为 NaN，不能解析为笛卡尔目标")
-    parsed = ast.literal_eval(pose_text)
-    if not isinstance(parsed, list) or len(parsed) != 9:
-        raise ValueError(f"pose 列格式无效: {pose_text}")
-    xyz_mm = (float(parsed[0]), float(parsed[1]), float(parsed[2]))
-    rpy_deg = (float(parsed[3]), float(parsed[4]), float(parsed[5]))
-    has_elbow = bool(parsed[6])
-    elbow_deg = float(parsed[7])
-    conf_data_raw = parsed[8]
-    if not isinstance(conf_data_raw, list):
-        raise ValueError(f"pose confData 格式无效: {pose_text}")
-    conf_data = tuple(int(value) for value in conf_data_raw)
+    parsed_pose = _parse_cartesian_pose_input(pose_text)
     return ParsedArmPose(
-        xyz_mm=xyz_mm,
-        rpy_deg=rpy_deg,
-        has_elbow=has_elbow,
-        elbow_deg=elbow_deg,
-        conf_data=conf_data,
+        xyz_mm=parsed_pose.xyz_mm,
+        rpy_deg=parsed_pose.rpy_deg,
+        has_elbow=parsed_pose.has_elbow,
+        elbow_deg=parsed_pose.elbow_deg,
+        conf_data=parsed_pose.conf_data,
     )
 
 
 def _extract_csv_sequence(csv_name: str) -> int:
     prefix = csv_name.split("_", maxsplit=1)[0]
     return int(prefix)
+
+
+def _format_optional_csv_sequence(sequence: int | None) -> str:
+    if sequence is None:
+        return "None"
+    return f"{sequence:02d}"
 
 
 # endregion
@@ -266,7 +299,11 @@ def _execute_joint_row(runtime: ReplayRuntime, row: ReplayRow) -> None:
     _print_sdk_result("moveReset(replay-joint)", ec)
     if ec.get("ec", 0) != 0:
         raise RuntimeError("回放关节 moveReset 失败")
-    robot.moveAppend([xCoreSDK_python.MoveAbsJCommand(target_joint, DEFAULT_JOINT_SPEED, DEFAULT_JOINT_ZONE)], cmd_id, ec)
+    robot.moveAppend(
+        [xCoreSDK_python.MoveAbsJCommand(target_joint, runtime.joint_speed_deg_s, DEFAULT_JOINT_ZONE)],
+        cmd_id,
+        ec,
+    )
     _print_sdk_result("moveAppend(MoveAbsJCommand)", ec)
     if ec.get("ec", 0) != 0:
         raise RuntimeError("回放关节 moveAppend 失败")
@@ -297,9 +334,12 @@ def _build_cartesian_target(runtime: ReplayRuntime, row: ReplayRow) -> xCoreSDK_
         raise RuntimeError("读取当前笛卡尔位姿失败")
     target_pose = xCoreSDK_python.CartesianPosition(_mm_to_m(target_xyz_mm) + _deg_to_rad(target_rpy_deg))
     _copy_cartesian_pose_context(current_pose, target_pose)
-    target_pose.hasElbow = parsed_pose.has_elbow
-    target_pose.elbow = _deg_to_rad([parsed_pose.elbow_deg])[0]
-    target_pose.confData = list(parsed_pose.conf_data)
+    if parsed_pose.has_elbow is not None:
+        target_pose.hasElbow = parsed_pose.has_elbow
+    if parsed_pose.elbow_deg is not None:
+        target_pose.elbow = _deg_to_rad([parsed_pose.elbow_deg])[0]
+    if parsed_pose.conf_data is not None:
+        target_pose.confData = list(parsed_pose.conf_data)
     csv_sequence = _extract_csv_sequence(row.csv_name)
     if csv_sequence in CSV_CARTESIAN_OFFSET_TARGETS:
         target_pose = _apply_global_cartesian_offset(runtime, row, target_pose)
@@ -374,7 +414,7 @@ def _apply_global_cartesian_offset(
     if runtime.global_cartesian_offset is None:
         raise RuntimeError(
             f"CSV {row.csv_name} 需要使用全局笛卡尔纠偏，但当前尚未在 "
-            f"{CSV_CARTESIAN_OFFSET_CALCULATE_AT:02d}_*.csv 末尾计算 offset"
+            f"{_format_optional_csv_sequence(CSV_CARTESIAN_OFFSET_CALCULATE_AT)}_*.csv 末尾计算 offset"
         )
     original_matrix = _frame_to_homogeneous_matrix(target_pose)
     corrected_matrix = _multiply_homogeneous_matrix(runtime.global_cartesian_offset, original_matrix)
@@ -396,66 +436,197 @@ def _find_last_arm_pose_row(rows: list[ReplayRow]) -> ReplayRow | None:
     return None
 
 
+def _load_prior_opening_pose(prior_capture_path: Path) -> np.ndarray:
+    prior_capture = _load_prior_capture(prior_capture_path)
+    opening_pose = prior_capture.get("pose", {}).get("opening_pose_camera_frame")
+    if not isinstance(opening_pose, list) or len(opening_pose) != 4:
+        raise RuntimeError(f"先验文件缺少 opening_pose_camera_frame: {prior_capture_path}")
+    opening_pose_matrix = np.asarray(opening_pose, dtype=np.float64)
+    if opening_pose_matrix.shape != (4, 4):
+        raise RuntimeError(f"先验 opening pose 形状无效: {prior_capture_path}")
+    return opening_pose_matrix
+
+
+def _detect_current_opening_pose(
+    service_addr: str,
+    camera_name: str,
+    prior_capture_path: Path,
+) -> np.ndarray:
+    prior_capture = _load_prior_capture(prior_capture_path)
+    priors = _build_priors_from_capture(prior_capture)
+    reference_relative_transform = _load_reference_relative_transform(prior_capture)
+    client = CameraPipelineClient(service_addr=str(service_addr), timeout_ms=30_000)
+    try:
+        response = client.request_ball_pose_detection(
+            BallPoseDetectionRequest(
+                request_id=1,
+                camera_name=str(camera_name),
+                frame_id=-1,
+                enable_debug=True,
+                priors=tuple(priors),
+                reference_relative_transform_mm=reference_relative_transform,
+            )
+        )
+    finally:
+        client.close()
+    if response.error is not None:
+        raise RuntimeError(f"ball pose detection 返回错误: {response.error}")
+    if response.matched_count < 3 or response.pose_transform is None:
+        raise RuntimeError("ball pose detection 未返回足够的 opening pose 结果")
+    pose_transform = np.asarray(response.pose_transform, dtype=np.float64)
+    if pose_transform.shape != (4, 4):
+        raise RuntimeError("ball pose detection pose_transform 形状无效")
+    logger.info(
+        "ball pose detection 完成 frame_id={} matched_count={} camera={}",
+        response.frame_id,
+        response.matched_count,
+        camera_name,
+    )
+    return pose_transform
+
+
 def _calculate_global_cartesian_offset(
     runtime: ReplayRuntime,
     csv_path: Path,
     reference_row: ReplayRow,
 ) -> tuple[tuple[float, float, float, float], ...]:
-    logger.warning(
-        "全局 offset 计算暂未实现；当前先记录占位逻辑。file={} row={} base=tool:{} wobj:{}",
+    prior_opening_pose = _load_prior_opening_pose(runtime.offset_prior_capture_path)
+    detected_opening_pose = _detect_current_opening_pose(
+        service_addr=runtime.offset_service_addr,
+        camera_name=runtime.offset_camera_name,
+        prior_capture_path=runtime.offset_prior_capture_path,
+    )
+    offset_matrix = prior_opening_pose @ np.linalg.inv(detected_opening_pose)
+    logger.success(
+        "全局 offset 已计算 file={} row={} base=tool:{} wobj:{}",
         csv_path.name,
         reference_row.row_index,
         DEFAULT_TOOL_NAME,
         DEFAULT_WOBJ_NAME,
     )
+    logger.info(
+        "offset translation(mm)=[{}]",
+        _format_sequence(
+            [
+                float(offset_matrix[0, 3]),
+                float(offset_matrix[1, 3]),
+                float(offset_matrix[2, 3]),
+            ]
+        ),
+    )
     return (
-        (1.0, 0.0, 0.0, 0.0),
-        (0.0, 1.0, 0.0, 0.0),
-        (0.0, 0.0, 1.0, 0.0),
-        (0.0, 0.0, 0.0, 1.0),
+        (
+            float(offset_matrix[0, 0]),
+            float(offset_matrix[0, 1]),
+            float(offset_matrix[0, 2]),
+            float(offset_matrix[0, 3]),
+        ),
+        (
+            float(offset_matrix[1, 0]),
+            float(offset_matrix[1, 1]),
+            float(offset_matrix[1, 2]),
+            float(offset_matrix[1, 3]),
+        ),
+        (
+            float(offset_matrix[2, 0]),
+            float(offset_matrix[2, 1]),
+            float(offset_matrix[2, 2]),
+            float(offset_matrix[2, 3]),
+        ),
+        (
+            float(offset_matrix[3, 0]),
+            float(offset_matrix[3, 1]),
+            float(offset_matrix[3, 2]),
+            float(offset_matrix[3, 3]),
+        ),
     )
 
 
 def _execute_cartesian_row(
     runtime: ReplayRuntime,
     row: ReplayRow,
-    cartesian_motion: Literal["movej", "movel"],
 ) -> None:
     robot = runtime.connected_arm.robot
     ec = runtime.connected_arm.ec
     target_pose = _build_cartesian_target(runtime, row)
+    robot_model = robot.model()
+    toolset = robot.toolset(ec)
+    _print_sdk_result("toolset(replay-cartesian)", ec)
+    if ec.get("ec", 0) != 0:
+        raise RuntimeError("回放笛卡尔读取 toolset 失败")
+    target_joint = robot_model.calcIk(target_pose, toolset, ec)
+    _print_sdk_result("calcIk(replay-cartesian)", ec)
+    if ec.get("ec", 0) != 0:
+        fallback_joint_deg: list[float] | None = None
+        try:
+            fallback_joint_deg = _parse_joint_values(row.joints_text)
+        except ValueError:
+            fallback_joint_deg = None
+        if fallback_joint_deg is not None:
+            logger.warning(
+                "回放笛卡尔目标逆解失败，改用记录关节值兜底 file={} row={} ec={} message={}",
+                row.csv_name,
+                row.row_index,
+                ec.get("ec", 0),
+                ec.get("message", ""),
+            )
+            target_joint = xCoreSDK_python.JointPosition(_deg_to_rad(fallback_joint_deg))
+        else:
+            logger.warning(
+                "回放笛卡尔目标逆解失败 file={} row={} ec={} message={}",
+                row.csv_name,
+                row.row_index,
+                ec.get("ec", 0),
+                ec.get("message", ""),
+            )
+            raise RuntimeError("回放笛卡尔目标逆解失败，且无可用 joints 兜底")
     cmd_id = xCoreSDK_python.PyString()
-    if cartesian_motion == "movel" and not _validate_cartesian_target(robot, ec, target_pose):
-        raise RuntimeError("回放笛卡尔目标未通过 checkPath 校验")
+    should_fallback_to_move_abs_j = bool(ec.get("ec", 0) != 0) or not _validate_cartesian_target(robot, ec, target_pose)
+    if should_fallback_to_move_abs_j:
+        logger.warning(
+            "回放 MoveL 路径检查失败，回退 MoveAbsJ file={} row={} xyz(mm)=[{}] rpy(deg)=[{}]",
+            row.csv_name,
+            row.row_index,
+            _format_sequence(_m_to_mm(target_pose.trans)),
+            _format_sequence(_rad_to_deg(target_pose.rpy)),
+        )
     robot.moveReset(ec)
     _print_sdk_result("moveReset(replay-cartesian)", ec)
     if ec.get("ec", 0) != 0:
         raise RuntimeError("回放笛卡尔 moveReset 失败")
-    if cartesian_motion == "movel":
+    if should_fallback_to_move_abs_j:
         robot.moveAppend(
-            [xCoreSDK_python.MoveLCommand(target_pose, DEFAULT_CARTESIAN_SPEED, DEFAULT_CARTESIAN_ZONE)],
+            [xCoreSDK_python.MoveAbsJCommand(target_joint, runtime.joint_speed_deg_s, DEFAULT_JOINT_ZONE)],
+            cmd_id,
+            ec,
+        )
+        _print_sdk_result("moveAppend(MoveAbsJ)", ec)
+    else:
+        robot.moveAppend(
+            [xCoreSDK_python.MoveLCommand(target_pose, runtime.cartesian_speed_mm_s, DEFAULT_CARTESIAN_ZONE)],
             cmd_id,
             ec,
         )
         _print_sdk_result("moveAppend(MoveL)", ec)
-    else:
-        robot.moveAppend(
-            [xCoreSDK_python.MoveJCommand(target_pose, DEFAULT_CARTESIAN_SPEED, DEFAULT_CARTESIAN_ZONE)],
-            cmd_id,
-            ec,
-        )
-        _print_sdk_result("moveAppend(MoveJ)", ec)
     if ec.get("ec", 0) != 0:
         raise RuntimeError("回放笛卡尔 moveAppend 失败")
     robot.moveStart(ec)
     _print_sdk_result("moveStart(replay-cartesian)", ec)
     if ec.get("ec", 0) != 0:
+        logger.warning(
+            "回放运动启动失败 file={} row={} motion={} ec={} message={}",
+            row.csv_name,
+            row.row_index,
+            "MoveAbsJ" if should_fallback_to_move_abs_j else "MoveL",
+            ec.get("ec", 0),
+            ec.get("message", ""),
+        )
         raise RuntimeError("回放笛卡尔 moveStart 失败")
     logger.info(
         "已下发笛卡尔运动 file={} row={} motion={} xyz(mm)=[{}] rpy(deg)=[{}] cmd_id={}",
         row.csv_name,
         row.row_index,
-        cartesian_motion,
+        "moveabsj" if should_fallback_to_move_abs_j else "movel",
         _format_sequence(_m_to_mm(target_pose.trans)),
         _format_sequence(_rad_to_deg(target_pose.rpy)),
         cmd_id.content(),
@@ -468,10 +639,50 @@ def _execute_gripper_row(runtime: ReplayRuntime, row: ReplayRow) -> None:
     target_value = int(round(float(row.pose_text)))
     if not runtime.gripper.set_pos(target_value):
         raise RuntimeError("夹爪 set_pos 下发失败")
-    _poll_gripper_until_idle(runtime.gripper, target_value)
-    logger.info("已下发夹爪目标 file={} row={} pos={}", row.csv_name, row.row_index, target_value)
+    logger.info("已下发夹爪目标 file={} row={} pos={}，当前策略不等待到位", row.csv_name, row.row_index, target_value)
     deadline_hint = runtime.gripper.get_status()
     logger.info("夹爪当前状态 pos={} calibrated={}", deadline_hint.position, bool(deadline_hint.calibrated))
+
+
+def _read_lift_height_mm(result: object) -> float:
+    if isinstance(result, tuple) and len(result) == 2:
+        first_value = result[0]
+        if isinstance(first_value, int | float):
+            return float(first_value)
+        raise TypeError(f"lift 返回值首元素类型无效: {type(first_value)!r}")
+    if isinstance(result, int | float):
+        return float(result)
+    raise TypeError(f"lift 返回值类型无效: {type(result)!r}")
+
+
+def _wait_replay_lift_until_near_target(body: WujiBodyClient, target_height_mm: int) -> float:
+    lift = body.lift
+    time.sleep(DEFAULT_REPLAY_LIFT_SETTLE_DELAY_S)
+    attempt_index = 0
+    current_height_mm = _read_lift_height_mm(lift.get_lift_physical_height())
+    while attempt_index < DEFAULT_REPLAY_LIFT_RETRY_COUNT:
+        if current_height_mm == -1.0:
+            logger.warning("lift 返回值 -1，视为无效读数，立即重试且不计次数")
+            current_height_mm = _read_lift_height_mm(lift.get_lift_physical_height())
+            continue
+        current_error_mm = abs(current_height_mm - float(target_height_mm))
+        logger.info(
+            "lift 到位检查 {}/{}: target={} mm actual={:.1f} mm error={:.1f} mm",
+            attempt_index + 1,
+            DEFAULT_REPLAY_LIFT_RETRY_COUNT,
+            target_height_mm,
+            current_height_mm,
+            current_error_mm,
+        )
+        if current_error_mm <= DEFAULT_REPLAY_LIFT_HEIGHT_TOLERANCE_MM:
+            return current_height_mm
+        attempt_index += 1
+        if attempt_index < DEFAULT_REPLAY_LIFT_RETRY_COUNT:
+            lift.set_lift_physical_height(target_height_mm)
+            logger.warning("lift 超出误差，重新下发目标高度 {} mm", target_height_mm)
+            time.sleep(DEFAULT_REPLAY_LIFT_SETTLE_DELAY_S)
+            current_height_mm = _read_lift_height_mm(lift.get_lift_physical_height())
+    return current_height_mm
 
 
 def _execute_lift_row(runtime: ReplayRuntime, row: ReplayRow) -> None:
@@ -479,7 +690,7 @@ def _execute_lift_row(runtime: ReplayRuntime, row: ReplayRow) -> None:
     if target_height_mm < 0:
         raise ValueError(f"lift 目标高度非法: {target_height_mm}")
     runtime.body.lift.set_lift_physical_height(target_height_mm)
-    actual_height_mm = _wait_lift_until_near_target(runtime.body, target_height_mm)
+    actual_height_mm = _wait_replay_lift_until_near_target(runtime.body, target_height_mm)
     logger.info(
         "lift 已执行 file={} row={} target={} mm actual={:.1f} mm",
         row.csv_name,
@@ -492,7 +703,6 @@ def _execute_lift_row(runtime: ReplayRuntime, row: ReplayRow) -> None:
 def _execute_row(
     runtime: ReplayRuntime,
     row: ReplayRow,
-    cartesian_motion: Literal["movej", "movel"],
 ) -> None:
     logger.info(
         "开始执行 file={} row={} type={} joints={} pose={}",
@@ -506,7 +716,7 @@ def _execute_row(
         if row.pose_text.strip().lower() == "nan":
             _execute_joint_row(runtime, row)
             return
-        _execute_cartesian_row(runtime, row, cartesian_motion)
+        _execute_cartesian_row(runtime, row)
         return
     if row.action_type == "gripper":
         _execute_gripper_row(runtime, row)
@@ -539,40 +749,83 @@ def _cleanup_runtime(runtime: ReplayRuntime | None) -> None:
 # region 交互流程
 
 
-def _prompt_cartesian_motion(default_motion: Literal["movej", "movel"]) -> Literal["movej", "movel"]:
-    print("请选择笛卡尔记录的执行方式：")
-    print("  1. MoveJ 到笛卡尔目标")
-    print("  2. MoveL 到笛卡尔目标")
-    print(f"直接回车采用默认值: {default_motion}")
-    raw_text = input("请选择: ").strip().lower()
-    if raw_text == "":
-        return default_motion
-    if raw_text == "1":
-        return "movej"
-    if raw_text == "2":
-        return "movel"
-    raise ValueError("无效的笛卡尔执行方式选择")
-
-
 def _print_csv_summary(csv_paths: list[Path]) -> None:
     print("本次将按以下顺序执行 CSV：")
     for index, csv_path in enumerate(csv_paths, start=1):
         print(f"  {index:02d}. {csv_path.name}")
+    print(f"关节回放速度: {DEFAULT_REPLAY_JOINT_SPEED:.1f} deg/s")
+    print(f"笛卡尔回放速度: {DEFAULT_REPLAY_CARTESIAN_SPEED:.1f} mm/s")
     print(
         "全局笛卡尔纠偏配置: "
-        f"calculate_at={CSV_CARTESIAN_OFFSET_CALCULATE_AT:02d}, "
+        f"calculate_at={_format_optional_csv_sequence(CSV_CARTESIAN_OFFSET_CALCULATE_AT)}, "
         f"targets={[f'{value:02d}' for value in CSV_CARTESIAN_OFFSET_TARGETS]}"
     )
 
 
-def _confirm_start(csv_paths: list[Path], cartesian_motion: str, auto_start: bool) -> bool:
+def _prompt_positive_speed(current_value: float, label: str, unit_text: str) -> float:
+    while True:
+        raw_text = input(f"请输入新的{label}速度，当前 {current_value:.2f} {unit_text}，输入 q 返回: ").strip().lower()
+        if raw_text == "q":
+            return current_value
+        try:
+            new_value = float(raw_text)
+        except ValueError:
+            print("速度输入无效")
+            continue
+        if new_value <= 0:
+            print("速度必须大于 0")
+            continue
+        return new_value
+
+
+def _configure_replay_speeds(runtime: ReplayRuntime) -> None:
+    print(f"当前关节回放速度: {runtime.joint_speed_deg_s:.2f} deg/s")
+    print(f"当前笛卡尔回放速度: {runtime.cartesian_speed_mm_s:.2f} mm/s")
+    runtime.joint_speed_deg_s = _prompt_positive_speed(runtime.joint_speed_deg_s, "关节回放", "deg/s")
+    runtime.cartesian_speed_mm_s = _prompt_positive_speed(runtime.cartesian_speed_mm_s, "笛卡尔回放", "mm/s")
+    logger.info(
+        "回放速度已更新 joint={:.2f} deg/s cartesian={:.2f} mm/s",
+        runtime.joint_speed_deg_s,
+        runtime.cartesian_speed_mm_s,
+    )
+
+
+def _configure_initial_replay_speeds(runtime: ReplayRuntime, auto_start: bool) -> None:
+    print(f"初始关节回放速度: {runtime.joint_speed_deg_s:.2f} deg/s")
+    print(f"初始笛卡尔回放速度: {runtime.cartesian_speed_mm_s:.2f} mm/s")
+    if auto_start:
+        logger.info(
+            "自动启动模式保留默认速度 joint={:.2f} deg/s cartesian={:.2f} mm/s",
+            runtime.joint_speed_deg_s,
+            runtime.cartesian_speed_mm_s,
+        )
+        return
+    raw_text = input("输入回车保留默认速度，输入 s 立即调整速度，输入 q 退出: ").strip().lower()
+    if raw_text == "q":
+        raise RuntimeError("用户在启动阶段取消执行")
+    if raw_text == "s":
+        _configure_replay_speeds(runtime)
+
+
+def _confirm_start(csv_paths: list[Path], auto_start: bool) -> str:
     _print_csv_summary(csv_paths)
     print(f"左臂基坐标固定为 tool={DEFAULT_TOOL_NAME}, wobj={DEFAULT_WOBJ_NAME}")
-    print(f"笛卡尔记录执行方式: {cartesian_motion}")
+    print("arm 动作策略: pose=NaN -> MoveAbsJ；否则 MoveL，失败自动回退 MoveAbsJ")
+    print("gripper 动作策略: 仅下发，不等待到位")
+    print(
+        "lift 动作策略: 等待到位后才允许继续下一步，"
+        f"delay={DEFAULT_REPLAY_LIFT_SETTLE_DELAY_S:.1f}s "
+        f"retry={DEFAULT_REPLAY_LIFT_RETRY_COUNT} "
+        f"tolerance={DEFAULT_REPLAY_LIFT_HEIGHT_TOLERANCE_MM:.1f}mm"
+    )
     if auto_start:
-        return True
-    raw_text = input("输入回车开始，输入 q 退出: ").strip().lower()
-    return raw_text != "q"
+        return "auto"
+    raw_text = input("输入回车开始单步模式，输入 a 全自动执行全部 CSV，输入 q 退出: ").strip().lower()
+    if raw_text == "q":
+        return "quit"
+    if raw_text == "a":
+        return "auto"
+    return "manual"
 
 
 def _confirm_each_file(csv_path: Path) -> str:
@@ -581,27 +834,55 @@ def _confirm_each_file(csv_path: Path) -> str:
     return input("输入回车执行该文件，输入 s 跳过，输入 q 终止: ").strip().lower()
 
 
+def _confirm_each_action(runtime: ReplayRuntime, row: ReplayRow) -> str:
+    print("")
+    print(f"下一动作: file={row.csv_name} row={row.row_index} type={row.action_type}")
+    print(
+        f"当前速度: joint={runtime.joint_speed_deg_s:.2f} deg/s, "
+        f"cartesian={runtime.cartesian_speed_mm_s:.2f} mm/s"
+    )
+    if row.action_type == "arm":
+        if row.pose_text.strip().lower() == "nan":
+            print(f"目标 joints(deg): {row.joints_text}")
+        else:
+            print(f"目标 pose(mm/deg): {row.pose_text}")
+    elif row.action_type == "gripper":
+        print(f"目标 gripper: {row.pose_text}")
+    elif row.action_type == "lift":
+        print(f"目标 lift(mm): {row.pose_text}")
+    else:
+        print(f"目标值: joints={row.joints_text} pose={row.pose_text}")
+    return input("输入回车执行下一动作，输入 a 全自动执行，输入 s 修改速度，输入 j 跳过该动作，输入 q 终止: ").strip().lower()
+
+
 def main(
     record_dir: Path = DEFAULT_RECORD_DIR,
-    cartesian_motion: Literal["movej", "movel"] = DEFAULT_CARTESIAN_MOTION_MODE,
     max_files: int | None = DEFAULT_MAX_FILES,
     auto_start: bool = False,
+    offset_service_addr: str = DEFAULT_OFFSET_SERVICE_ADDR,
+    offset_camera_name: str = DEFAULT_OFFSET_CAMERA_NAME,
+    offset_prior_capture_path: Path = DEFAULT_OFFSET_PRIOR_CAPTURE_PATH,
 ) -> int:
     logger.info("左臂拖动示教自动回放 CLI 启动")
     csv_paths = _discover_csv_paths(Path(record_dir), max_files)
     if not csv_paths:
         raise RuntimeError(f"没有在目录中发现 CSV: {record_dir}")
-    selected_motion = cartesian_motion if auto_start else _prompt_cartesian_motion(cartesian_motion)
-    if not _confirm_start(csv_paths, selected_motion, auto_start):
+    start_mode = _confirm_start(csv_paths, auto_start)
+    if start_mode == "quit":
         logger.info("用户取消执行")
         return 0
 
     runtime: ReplayRuntime | None = None
     try:
         runtime = _create_runtime()
+        runtime.offset_service_addr = str(offset_service_addr)
+        runtime.offset_camera_name = str(offset_camera_name)
+        runtime.offset_prior_capture_path = Path(offset_prior_capture_path)
+        runtime.auto_execute_remaining = start_mode == "auto"
+        _configure_initial_replay_speeds(runtime, auto_start)
         _prepare_runtime(runtime)
         for csv_path in csv_paths:
-            if not auto_start:
+            if not auto_start and not runtime.auto_execute_remaining:
                 file_choice = _confirm_each_file(csv_path)
                 if file_choice == "q":
                     logger.warning("用户终止执行")
@@ -612,7 +893,26 @@ def main(
             rows = _load_replay_rows(csv_path)
             logger.info("开始执行文件 {}，共 {} 行", csv_path.name, len(rows))
             for row in rows:
-                _execute_row(runtime, row, selected_motion)
+                if not auto_start and not runtime.auto_execute_remaining:
+                    while True:
+                        action_choice = _confirm_each_action(runtime, row)
+                        if action_choice == "q":
+                            logger.warning("用户终止执行")
+                            return 0
+                        if action_choice == "a":
+                            runtime.auto_execute_remaining = True
+                            logger.success("已切换为全自动执行模式，后续动作将连续执行到结束")
+                            break
+                        if action_choice == "s":
+                            _configure_replay_speeds(runtime)
+                            continue
+                        if action_choice == "j":
+                            logger.warning("跳过动作 file={} row={} type={}", row.csv_name, row.row_index, row.action_type)
+                            break
+                        break
+                    if action_choice == "j":
+                        continue
+                _execute_row(runtime, row)
             csv_sequence = _extract_csv_sequence(csv_path.name)
             if csv_sequence == CSV_CARTESIAN_OFFSET_CALCULATE_AT:
                 reference_row = _find_last_arm_pose_row(rows)
@@ -632,8 +932,10 @@ if __name__ == "__main__":
     raise SystemExit(
         main(
             record_dir=Path(args.record_dir),
-            cartesian_motion=args.cartesian_motion,
             max_files=args.max_files,
             auto_start=bool(args.auto_start),
+            offset_service_addr=str(args.offset_service_addr),
+            offset_camera_name=str(args.offset_camera_name),
+            offset_prior_capture_path=Path(args.offset_prior_capture_path),
         )
     )

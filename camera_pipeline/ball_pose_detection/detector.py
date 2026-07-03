@@ -235,7 +235,13 @@ class BallPoseDetector:
         x = (xs.astype(np.float64) - float(frame.cx)) * sampled_depth / float(frame.fx)
         y = (ys.astype(np.float64) - float(frame.cy)) * sampled_depth / float(frame.fy)
         xyz = np.stack([x, y, sampled_depth], axis=1)
-        return np.mean(xyz, axis=0).astype(np.float64), int(xyz.shape[0])
+        xyz = self._smooth_surface_points(xyz)
+        if xyz.shape[0] < int(self._config.min_depth_points):
+            return None, int(xyz.shape[0])
+        center_mm = self._fit_sphere_center(xyz)
+        if center_mm is None:
+            return None, int(xyz.shape[0])
+        return center_mm.astype(np.float64), int(xyz.shape[0])
 
     def _resolve_duplicates(self, ranked_by_color: dict[str, list[_BallDetection]], priors: list[BallPosePrior]) -> list[_BallDetection]:
         resolved: dict[str, _BallDetection] = {}
@@ -320,6 +326,36 @@ class BallPoseDetector:
         aligned = (model_points @ rotation.T) + translation.reshape(1, 3)
         residual = float(np.sqrt(np.mean(np.sum((aligned - camera_points) ** 2, axis=1))))
         return _PoseFitResult(rotation=rotation.astype(np.float64), translation_mm=translation.astype(np.float64), residual_mm=residual)
+
+    @staticmethod
+    def _smooth_surface_points(points: np.ndarray) -> np.ndarray:
+        pts = np.asarray(points, dtype=np.float64)
+        if pts.shape[0] < 10:
+            return pts
+        center = np.median(pts, axis=0)
+        dist = np.linalg.norm(pts - center.reshape(1, 3), axis=1)
+        if not np.all(np.isfinite(dist)):
+            return pts
+        keep = dist <= float(np.quantile(dist, 0.85))
+        if int(np.count_nonzero(keep)) < 10:
+            return pts
+        return pts[keep]
+
+    @staticmethod
+    def _fit_sphere_center(points: np.ndarray) -> np.ndarray | None:
+        pts = np.asarray(points, dtype=np.float64)
+        if pts.shape[0] < 4:
+            return None
+        a = np.column_stack([2.0 * pts, np.ones((pts.shape[0], 1), dtype=np.float64)])
+        b = np.sum(pts * pts, axis=1)
+        try:
+            sol, *_ = np.linalg.lstsq(a, b, rcond=None)
+        except np.linalg.LinAlgError:
+            return None
+        center = np.asarray(sol[:3], dtype=np.float64)
+        if not np.all(np.isfinite(center)):
+            return None
+        return center
 
 
 def _hex_to_bgr(color_hex: str) -> np.ndarray:

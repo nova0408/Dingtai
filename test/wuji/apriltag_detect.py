@@ -1061,7 +1061,7 @@ def _read_camera_calibration(intrinsics_response) -> CameraCalibration:
 
 
 def _create_session_dir(output_root: Path) -> Path:
-    session_dir = Path(output_root) / "latest"
+    session_dir = Path(output_root) 
     if session_dir.exists():
         shutil.rmtree(session_dir)
     session_dir.mkdir(parents=True, exist_ok=False)

@@ -123,6 +123,10 @@ def _save_capture(output_dir: Path, response: Any) -> None:
         cv2.imwrite(str(output_dir / "no_hole_mask.png"), np.asarray(response.debug.no_hole_mask, dtype=np.uint8))
     if response.debug is not None and response.debug.selected_tray_mask is not None:
         cv2.imwrite(str(output_dir / "selected_tray_mask_overlay.jpg"), _build_mask_overlay(response.debug.color_bgr, response.debug.selected_tray_mask))
+    if response.debug is not None and response.debug.color_bgr is not None and response.debug.camera_intrinsics is not None and response.selected_result is not None and response.selected_result.pose is not None:
+        compare_overlay = _build_pose_uv_compare_overlay(response)
+        if compare_overlay is not None:
+            cv2.imwrite(str(output_dir / "pose_uv_compare.jpg"), compare_overlay)
 
 
 def _format_summary(response: Any) -> str:
@@ -151,6 +155,39 @@ def _build_mask_overlay(color_bgr: Any, mask: Any) -> np.ndarray:
     mask_u8 = np.asarray(mask, dtype=np.uint8) > 0
     base[mask_u8] = (base[mask_u8] * 0.55 + np.array([0, 160, 255], dtype=np.float32) * 0.45).astype(np.uint8)
     return base
+
+
+def _build_pose_uv_compare_overlay(response: Any) -> np.ndarray | None:
+    if response.debug is None or response.debug.color_bgr is None or response.debug.camera_intrinsics is None:
+        return None
+    if response.selected_result is None or response.selected_result.pose is None:
+        return None
+    if response.selected_result.opening_center_uv is None:
+        return None
+
+    canvas = np.asarray(response.debug.color_bgr, dtype=np.uint8).copy()
+    intrinsics = np.asarray(response.debug.camera_intrinsics, dtype=np.float64).reshape(4)
+    pose = response.selected_result.pose
+    grasp_point_mm = np.asarray(pose.grasp_point_mm, dtype=np.float64).reshape(3)
+    fx = float(intrinsics[0])
+    fy = float(intrinsics[1])
+    cx = float(intrinsics[2])
+    cy = float(intrinsics[3])
+    if abs(float(grasp_point_mm[2])) <= 1e-6:
+        return None
+    pose_uv = (
+        int(round(grasp_point_mm[0] * fx / grasp_point_mm[2] + cx)),
+        int(round(grasp_point_mm[1] * fy / grasp_point_mm[2] + cy)),
+    )
+    uv_uv = tuple(int(round(float(v))) for v in response.selected_result.opening_center_uv)
+
+    cv2.circle(canvas, uv_uv, 8, (0, 255, 255), 2, cv2.LINE_AA)
+    cv2.circle(canvas, pose_uv, 8, (0, 0, 255), 2, cv2.LINE_AA)
+    cv2.line(canvas, uv_uv, pose_uv, (255, 0, 0), 2, cv2.LINE_AA)
+    cv2.putText(canvas, f"uv={uv_uv}", (uv_uv[0] + 10, uv_uv[1] - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2, cv2.LINE_AA)
+    cv2.putText(canvas, f"pose={pose_uv}", (pose_uv[0] + 10, pose_uv[1] - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2, cv2.LINE_AA)
+    cv2.putText(canvas, f"delta=({pose_uv[0] - uv_uv[0]}, {pose_uv[1] - uv_uv[1]})px", (40, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
+    return canvas
 
 
 def _build_depth_view(depth_mm: np.ndarray) -> np.ndarray:

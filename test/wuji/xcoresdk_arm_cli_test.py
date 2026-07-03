@@ -6,9 +6,11 @@ import gc
 import math
 import sys
 import time
+import ast
 from datetime import datetime
 from dataclasses import dataclass
 from pathlib import Path
+from loguru import logger
 
 if sys.platform == "win32":
     import msvcrt
@@ -184,6 +186,67 @@ def _input_optional_float_list(prompt: str, expected_len: int) -> list[float] | 
     return _parse_float_list(raw_text, expected_len=expected_len)
 
 
+@dataclass(frozen=True, slots=True)
+class ParsedCartesianPoseInput:
+    """笛卡尔位姿输入解析结果。"""
+
+    xyz_mm: tuple[float, float, float]
+    "平移分量，单位 mm。"
+
+    rpy_deg: tuple[float, float, float]
+    "姿态分量，单位 deg。"
+
+    has_elbow: bool | None
+    "肘部约束是否显式输入；`None` 表示沿用当前位姿上下文。"
+
+    elbow_deg: float | None
+    "肘部角度，单位 deg；`None` 表示沿用当前位姿上下文。"
+
+    conf_data: tuple[int, ...] | None
+    "构型约束；`None` 表示沿用当前位姿上下文。"
+
+
+def _parse_cartesian_pose_input(raw_text: str) -> ParsedCartesianPoseInput:
+    """解析笛卡尔目标，兼容纯 xyzrpy 与完整 pose 记录格式。"""
+
+    stripped_text = raw_text.strip()
+    if stripped_text == "":
+        raise ValueError("未输入任何笛卡尔目标")
+    if "[" not in stripped_text and "]" not in stripped_text:
+        target_values = _parse_float_list(stripped_text, expected_len=6)
+        return ParsedCartesianPoseInput(
+            xyz_mm=(target_values[0], target_values[1], target_values[2]),
+            rpy_deg=(target_values[3], target_values[4], target_values[5]),
+            has_elbow=None,
+            elbow_deg=None,
+            conf_data=None,
+        )
+    parsed = ast.literal_eval(stripped_text)
+    if not isinstance(parsed, list):
+        raise ValueError("笛卡尔目标必须是 list 格式")
+    if len(parsed) == 6:
+        target_values = [float(value) for value in parsed]
+        return ParsedCartesianPoseInput(
+            xyz_mm=(target_values[0], target_values[1], target_values[2]),
+            rpy_deg=(target_values[3], target_values[4], target_values[5]),
+            has_elbow=None,
+            elbow_deg=None,
+            conf_data=None,
+        )
+    if len(parsed) != 9:
+        raise ValueError(f"笛卡尔目标长度无效，expected=6 or 9, actual={len(parsed)}")
+    conf_data_raw = parsed[8]
+    if not isinstance(conf_data_raw, list):
+        raise ValueError("笛卡尔目标 confData 必须是 list")
+    return ParsedCartesianPoseInput(
+        xyz_mm=(float(parsed[0]), float(parsed[1]), float(parsed[2])),
+        rpy_deg=(float(parsed[3]), float(parsed[4]), float(parsed[5])),
+        has_elbow=bool(parsed[6]),
+        elbow_deg=float(parsed[7]),
+        conf_data=tuple(int(value) for value in conf_data_raw),
+    )
+
+
 # region 状态查询
 def _format_sequence(values: list[float] | tuple[float, ...], decimals: int = 2) -> str:
     return ", ".join(f"{float(value):.{decimals}f}" for value in values)
@@ -347,7 +410,7 @@ def _print_cartesian_ik_preview(
     robot: xCoreSDK_python.xMateErProRobot,
     ec: dict[str, object],
     target_pose: xCoreSDK_python.CartesianPosition,
-) -> None:
+) -> xCoreSDK_python.JointPosition | None:
     """输入笛卡尔目标后，立即打印当前关节与逆解结果。"""
 
     current_joint_deg = _rad_to_deg(robot.jointPos(ec))
@@ -355,30 +418,28 @@ def _print_cartesian_ik_preview(
     toolset = robot.toolset(ec)
     _print_sdk_result("toolset", ec)
     if ec.get("ec", 0) != 0:
-        return
+        return None
     target_joint = robot_model.calcIk(target_pose, toolset, ec)
     _print_sdk_result("calcIk", ec)
     print(f"当前关节值(deg): {_format_sequence(current_joint_deg)}")
     if ec.get("ec", 0) != 0:
-        return
-    print(f"目标逆解值(deg): {_format_sequence(_rad_to_deg(target_joint))}")
-
-
-def _select_cartesian_motion_type() -> str | None:
-    """选择笛卡尔目标的执行方式。"""
-
-    print("笛卡尔运动方式:")
-    print("  1. MoveL 直线运动")
-    print("  2. MoveJ 关节插补到笛卡尔目标")
-    print("  q. 返回上一级")
-    choice = input("请选择运动方式: ").strip().lower()
-    if choice == "1":
-        return "movel"
-    if choice == "2":
-        return "movej"
-    if choice == "q":
         return None
-    raise ValueError("无效运动方式")
+    print(f"目标逆解值(deg): {_format_sequence(_rad_to_deg(target_joint))}")
+    fk_pose = robot_model.calcFk(target_joint, toolset, ec)
+    _print_sdk_result("calcFk(calcIk(target))", ec)
+    if ec.get("ec", 0) != 0:
+        return target_joint
+    fk_xyz_mm = _m_to_mm(fk_pose.trans)
+    fk_rpy_deg = _rad_to_deg(fk_pose.rpy)
+    target_xyz_mm = _m_to_mm(target_pose.trans)
+    target_rpy_deg = _rad_to_deg(target_pose.rpy)
+    xyz_error_mm = [fk_xyz_mm[index] - target_xyz_mm[index] for index in range(3)]
+    rpy_error_deg = [fk_rpy_deg[index] - target_rpy_deg[index] for index in range(3)]
+    print(f"逆解回代 trans(mm): {_format_sequence(fk_xyz_mm)}")
+    print(f"逆解回代 rpy(deg): {_format_sequence(fk_rpy_deg)}")
+    print(f"逆解回代误差 trans(mm): {_format_sequence(xyz_error_mm, decimals=4)}")
+    print(f"逆解回代误差 rpy(deg): {_format_sequence(rpy_error_deg, decimals=4)}")
+    return target_joint
 
 
 def _prompt_motion_speed(current_speed: float, label: str) -> float:
@@ -1033,6 +1094,7 @@ def _cartesian_control_loop(
         _print_cartesian_pose(robot, ec)
         _print_motion_speed_status("笛卡尔", cartesian_speed, cartesian_zone)
         print("输入新的 xyzrpy，单位分别为 mm 和 deg")
+        print("也支持输入完整 pose 列格式: [x, y, z, r, p, y, hasElbow, elbowDeg, confData]")
         print("输入 s 调整速度，输入 h 进入手掌控制模式，输入 l 进入 lift 控制模式，输入 q 返回主菜单")
         raw_text = input("目标 xyzrpy: ").strip()
         if raw_text.lower() == "s":
@@ -1047,59 +1109,76 @@ def _cartesian_control_loop(
         if raw_text.lower() == "q":
             return
         try:
-            target_values = _parse_float_list(raw_text, expected_len=6)
+            parsed_pose = _parse_cartesian_pose_input(raw_text)
         except ValueError as exc:
+            logger.warning("笛卡尔输入格式错误: {}", exc)
             print(f"输入格式错误: {exc}")
             continue
         current_pose = robot.cartPosture(xCoreSDK_python.endInRef, ec)
-        target_pose = xCoreSDK_python.CartesianPosition(_mm_to_m(target_values[:3]) + _deg_to_rad(target_values[3:]))
+        target_xyz_mm = list(parsed_pose.xyz_mm)
+        target_rpy_deg = list(parsed_pose.rpy_deg)
+        target_pose = xCoreSDK_python.CartesianPosition(_mm_to_m(target_xyz_mm) + _deg_to_rad(target_rpy_deg))
         _copy_cartesian_pose_context(current_pose, target_pose)
-        _print_cartesian_ik_preview(robot, ec, target_pose)
-        try:
-            motion_type = _select_cartesian_motion_type()
-        except ValueError as exc:
-            print(exc)
-            continue
-        if motion_type is None:
+        if parsed_pose.has_elbow is not None:
+            target_pose.hasElbow = parsed_pose.has_elbow
+        if parsed_pose.elbow_deg is not None:
+            target_pose.elbow = _deg_to_rad([parsed_pose.elbow_deg])[0]
+        if parsed_pose.conf_data is not None:
+            target_pose.confData = list(parsed_pose.conf_data)
+        target_joint = _print_cartesian_ik_preview(robot, ec, target_pose)
+        if target_joint is None:
+            logger.warning("笛卡尔目标未得到可用逆解，已取消执行")
+            print("当前目标未得到可用逆解，已取消本次笛卡尔运动")
             continue
         print(
             "目标笛卡尔位姿: "
-            f"trans(mm)={_format_sequence(target_values[:3])}, "
-            f"rpy(deg)={_format_sequence(target_values[3:])}, "
+            f"trans(mm)={_format_sequence(target_xyz_mm)}, "
+            f"rpy(deg)={_format_sequence(target_rpy_deg)}, "
             f"speed={cartesian_speed:.2f}, "
             f"zone={cartesian_zone:.2f}, "
-            f"motion={motion_type}, "
+            "motion=movel->moveabsj fallback, "
             f"hasElbow={target_pose.hasElbow}, "
             f"elbow(deg)={math.degrees(target_pose.elbow):.2f}, "
             f"confData={target_pose.confData}"
         )
-        if motion_type == "movel" and not _validate_cartesian_target(robot, ec, target_pose):
-            print("当前目标未通过路径检查，已取消本次笛卡尔运动")
-            continue
+        should_fallback_to_move_abs_j = not _validate_cartesian_target(robot, ec, target_pose)
+        if should_fallback_to_move_abs_j:
+            logger.warning(
+                "MoveL 路径检查失败，回退 MoveAbsJ: xyz(mm)=[{}] rpy(deg)=[{}]",
+                _format_sequence(target_xyz_mm),
+                _format_sequence(target_rpy_deg),
+            )
+            print("当前目标未通过 MoveL 路径检查，回退为 MoveAbsJ 关节空间运动")
         cmd_id = xCoreSDK_python.PyString()
         robot.moveReset(ec)
         _print_sdk_result("moveReset", ec)
         if ec.get("ec", 0) != 0:
             continue
-        if motion_type == "movel":
+        if should_fallback_to_move_abs_j:
+            robot.moveAppend(
+                [xCoreSDK_python.MoveAbsJCommand(target_joint, DEFAULT_JOINT_SPEED, DEFAULT_JOINT_ZONE)],
+                cmd_id,
+                ec,
+            )
+            _print_sdk_result("moveAppend(MoveAbsJ)", ec)
+        else:
             robot.moveAppend(
                 [xCoreSDK_python.MoveLCommand(target_pose, cartesian_speed, cartesian_zone)],
                 cmd_id,
                 ec,
             )
             _print_sdk_result("moveAppend(MoveL)", ec)
-        else:
-            robot.moveAppend(
-                [xCoreSDK_python.MoveJCommand(target_pose, cartesian_speed, cartesian_zone)],
-                cmd_id,
-                ec,
-            )
-            _print_sdk_result("moveAppend(MoveJ)", ec)
         if ec.get("ec", 0) != 0:
             continue
         robot.moveStart(ec)
         _print_sdk_result("moveStart", ec)
         if ec.get("ec", 0) != 0:
+            logger.warning(
+                "运动启动失败: motion={} ec={} message={}",
+                "MoveAbsJ" if should_fallback_to_move_abs_j else "MoveL",
+                ec.get("ec", 0),
+                ec.get("message", ""),
+            )
             current_power_state = robot.powerState(ec)
             current_operate_mode = robot.operateMode(ec)
             current_operation_state = robot.operationState(ec)
@@ -1107,7 +1186,10 @@ def _cartesian_control_loop(
             print(f"moveStart 失败时模式: {current_operate_mode}")
             print(f"moveStart 失败时操作状态: {current_operation_state}")
             continue
-        print(f"已下发笛卡尔运动，cmd_id={cmd_id.content()}")
+        if should_fallback_to_move_abs_j:
+            print(f"已下发 MoveAbsJ 回退运动，cmd_id={cmd_id.content()}")
+        else:
+            print(f"已下发笛卡尔运动，cmd_id={cmd_id.content()}")
         _wait_until_idle(robot, ec, "等待笛卡尔运动")
         _print_cartesian_pose(robot, ec)
 
@@ -1573,4 +1655,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit()

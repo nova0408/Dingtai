@@ -196,7 +196,125 @@ def _detect_balls_on_remote_frame(color_bgr: np.ndarray, depth_mm: np.ndarray, c
         cx=float(cx),
         cy=float(cy),
     )
-    return pipeline.detect(frame, priors)
+    result = pipeline.detect(frame, priors)
+    refined_detections = _refine_ball_detections_from_depth(frame, result)
+    if refined_detections is None:
+        return result
+    return SimpleNamespace(
+        detections=refined_detections,
+        pose_translation_mm=result.pose_translation_mm,
+        pose_rotation=result.pose_rotation,
+        pose_transform=result.pose_transform,
+        residual_mm=result.residual_mm,
+        matched_count=sum(1 for item in refined_detections if item.detected and item.center_mm is not None),
+        debug_ball_colors_bgr=result.debug_ball_colors_bgr,
+        debug_ball_radii_mm=result.debug_ball_radii_mm,
+        debug_ball_positions_mm={item.color_hex: np.asarray(item.center_mm, dtype=np.float64).copy() for item in refined_detections if item.center_mm is not None},
+        debug_ball_model_positions_mm=result.debug_ball_model_positions_mm,
+        status=result.status,
+        timings_ms=result.timings_ms,
+    )
+
+
+def _refine_ball_detections_from_depth(frame: Any, result: Any) -> list[Any] | None:
+    if result is None or not getattr(result, "detections", None):
+        return None
+    if not hasattr(frame, "depth_mm") or frame.depth_mm is None:
+        return None
+    depth_mm = np.asarray(frame.depth_mm, dtype=np.float64)
+    height, width = depth_mm.shape[:2]
+    refined: list[Any] = []
+    changed = False
+    for item in result.detections:
+        center_mm = None if item.mask is None else _fit_ball_center_from_mask(depth_mm, np.asarray(item.mask, dtype=np.uint8), float(frame.fx), float(frame.fy), float(frame.cx), float(frame.cy))
+        if center_mm is None:
+            refined.append(item)
+            continue
+        changed = True
+        refined.append(
+            type(item)(
+                name=item.name,
+                color_hex=item.color_hex,
+                detected=item.detected,
+                center_px=item.center_px,
+                center_mm=np.asarray(center_mm, dtype=np.float64),
+                radius_mm=item.radius_mm,
+                radius_px=item.radius_px,
+                contour=item.contour,
+                mask=item.mask,
+                center_norm=item.center_norm,
+                radius_norm=item.radius_norm,
+                point_count=item.point_count,
+                debug_bgr=item.debug_bgr,
+                status=item.status,
+            )
+        )
+    return refined if changed else None
+
+
+def _fit_ball_center_from_mask(
+    depth_mm: np.ndarray,
+    mask_u8: np.ndarray,
+    fx: float,
+    fy: float,
+    cx: float,
+    cy: float,
+) -> np.ndarray | None:
+    mask = np.asarray(mask_u8, dtype=np.uint8) > 0
+    if np.count_nonzero(mask) < 30:
+        return None
+    ys, xs = np.where(mask)
+    z = depth_mm[ys, xs]
+    valid = np.isfinite(z) & (z > 1.0)
+    if np.count_nonzero(valid) < 30:
+        return None
+    xs = xs[valid]
+    ys = ys[valid]
+    z = z[valid]
+    lo = float(np.quantile(z, 0.18))
+    hi = float(np.quantile(z, 0.82))
+    keep = (z >= lo) & (z <= hi)
+    if np.count_nonzero(keep) < 30:
+        return None
+    xs = xs[keep].astype(np.float64)
+    ys = ys[keep].astype(np.float64)
+    z = z[keep].astype(np.float64)
+    x = (xs - float(cx)) * z / max(1e-9, float(fx))
+    y = (ys - float(cy)) * z / max(1e-9, float(fy))
+    pts = np.stack([x, y, z], axis=1)
+    pts = _smooth_surface_points(pts)
+    if pts.shape[0] < 30:
+        return None
+    return _fit_sphere_center(pts)
+
+
+def _smooth_surface_points(points: np.ndarray) -> np.ndarray:
+    pts = np.asarray(points, dtype=np.float64)
+    if pts.shape[0] < 10:
+        return pts
+    center = np.median(pts, axis=0)
+    dist = np.linalg.norm(pts - center.reshape(1, 3), axis=1)
+    keep = dist <= float(np.quantile(dist, 0.85))
+    pts = pts[keep]
+    if pts.shape[0] < 10:
+        return np.asarray(points, dtype=np.float64)
+    return pts
+
+
+def _fit_sphere_center(points: np.ndarray) -> np.ndarray | None:
+    pts = np.asarray(points, dtype=np.float64)
+    if pts.shape[0] < 4:
+        return None
+    a = np.column_stack([2.0 * pts, np.ones((pts.shape[0], 1), dtype=np.float64)])
+    b = np.sum(pts * pts, axis=1)
+    try:
+        sol, *_ = np.linalg.lstsq(a, b, rcond=None)
+    except np.linalg.LinAlgError:
+        return None
+    center = np.asarray(sol[:3], dtype=np.float64)
+    if not np.all(np.isfinite(center)):
+        return None
+    return center
 
 
 def _load_ball_pose_runtime() -> Any:
@@ -298,10 +416,84 @@ def _save_overlay(output_dir: Path, capture: BallRelativePoseCapture) -> Path | 
     ball_result = capture.ball_detection_result
     if ball_result is not None:
         _draw_ball_overlay(overlay, ball_result)
+    if capture.ball_pose_transform is not None and capture.camera_intrinsics is not None:
+        _draw_pose_axes(
+            overlay,
+            capture.ball_pose_transform,
+            capture.camera_intrinsics,
+            axis_length_mm=60.0,
+            origin_color=(255, 255, 255),
+            x_color=(0, 0, 255),
+            y_color=(0, 255, 0),
+            z_color=(255, 0, 0),
+            label="ball",
+        )
     _draw_opening_overlay(overlay, capture)
+    if capture.opening_pose_transform is not None and capture.camera_intrinsics is not None:
+        _draw_pose_axes(
+            overlay,
+            capture.opening_pose_transform,
+            capture.camera_intrinsics,
+            axis_length_mm=60.0,
+            origin_color=(0, 255, 255),
+            x_color=(0, 128, 255),
+            y_color=(0, 255, 128),
+            z_color=(255, 128, 0),
+            label="opening",
+        )
     overlay_path = output_dir / f"frame_{capture.frame_id:06d}_overlay.png"
     cv2.imwrite(str(overlay_path), overlay)
     return overlay_path
+
+
+def _draw_pose_axes(
+    image_bgr: np.ndarray,
+    pose_transform: np.ndarray,
+    camera_intrinsics: np.ndarray,
+    axis_length_mm: float,
+    origin_color: tuple[int, int, int],
+    x_color: tuple[int, int, int],
+    y_color: tuple[int, int, int],
+    z_color: tuple[int, int, int],
+    label: str,
+) -> None:
+    if pose_transform.shape != (4, 4):
+        return
+    if camera_intrinsics.shape != (4,):
+        return
+    fx, fy, cx, cy = (float(camera_intrinsics[0]), float(camera_intrinsics[1]), float(camera_intrinsics[2]), float(camera_intrinsics[3]))
+    origin = np.asarray(pose_transform[:3, 3], dtype=np.float64)
+    axes = np.asarray(pose_transform[:3, :3], dtype=np.float64)
+    points = [
+        origin,
+        origin + axes[:, 0] * float(axis_length_mm),
+        origin + axes[:, 1] * float(axis_length_mm),
+        origin + axes[:, 2] * float(axis_length_mm),
+    ]
+    projected: list[tuple[int, int]] = []
+    for point in points:
+        z = float(point[2])
+        if abs(z) <= 1e-6:
+            return
+        u = int(round(point[0] * fx / z + cx))
+        v = int(round(point[1] * fy / z + cy))
+        projected.append((u, v))
+    if len(projected) != 4:
+        return
+    cv2.circle(image_bgr, projected[0], 6, origin_color, 2, cv2.LINE_AA)
+    cv2.line(image_bgr, projected[0], projected[1], x_color, 2, cv2.LINE_AA)
+    cv2.line(image_bgr, projected[0], projected[2], y_color, 2, cv2.LINE_AA)
+    cv2.line(image_bgr, projected[0], projected[3], z_color, 2, cv2.LINE_AA)
+    cv2.putText(
+        image_bgr,
+        label,
+        (projected[0][0] + 8, projected[0][1] + 16),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.6,
+        origin_color,
+        2,
+        cv2.LINE_AA,
+    )
 
 
 def _draw_ball_overlay(image_bgr: np.ndarray, result: Any) -> None:
@@ -376,9 +568,30 @@ def _serialize_capture(capture: BallRelativePoseCapture, overlay_path: Path | No
             "opening_pose_camera_frame": None if capture.opening_pose_transform is None else capture.opening_pose_transform.tolist(),
             "ball_pose_camera_frame": None if capture.ball_pose_transform is None else capture.ball_pose_transform.tolist(),
             "relative_transform": None if capture.relative_transform is None else capture.relative_transform.tolist(),
+            "opening_axes_camera_frame": None if capture.opening_pose_transform is None else _serialize_pose_axes(capture.opening_pose_transform),
+            "ball_axes_camera_frame": None if capture.ball_pose_transform is None else _serialize_pose_axes(capture.ball_pose_transform),
         },
         "overlay_image_path": None if overlay_path is None else str(overlay_path),
         "error": capture.error,
+    }
+
+
+def _serialize_pose_axes(pose_transform: np.ndarray) -> dict[str, Any]:
+    pose = np.asarray(pose_transform, dtype=np.float64)
+    if pose.shape != (4, 4):
+        return {}
+    origin = pose[:3, 3]
+    axes = pose[:3, :3]
+    axis_length_mm = 60.0
+    x_end = origin + axes[:, 0] * axis_length_mm
+    y_end = origin + axes[:, 1] * axis_length_mm
+    z_end = origin + axes[:, 2] * axis_length_mm
+    return {
+        "origin_mm": origin.tolist(),
+        "x_end_mm": x_end.tolist(),
+        "y_end_mm": y_end.tolist(),
+        "z_end_mm": z_end.tolist(),
+        "rotation": pose[:3, :3].tolist(),
     }
 
 

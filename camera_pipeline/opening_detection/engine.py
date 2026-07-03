@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import concurrent.futures
 from typing import Protocol
 
 import cv2
@@ -71,13 +72,6 @@ class OpeningDetectionPipelineExecutor:
         tray_mask_u8 = np.asarray(tray_mask, dtype=np.uint8)
         _, hp_gray, hp_edge = self._opening_pipeline.build_high_contrast_domain(color_bgr)
         opening = self._opening_pipeline.detect_opening(color_bgr, tray_mask_u8, hp_gray, hp_edge)
-        near_plane_mask, no_hole_mask = self._opening_pipeline.compute_mask_pipeline(
-            tray_mask_u8,
-            True,
-            opening,
-            hp_gray,
-            hp_edge,
-        )
         xyz, rgb = self._rgbd_to_points(
             depth_mm,
             color_bgr,
@@ -107,21 +101,47 @@ class OpeningDetectionPipelineExecutor:
         if xyz_local.shape[0] < 80:
             raise RuntimeError(f"开口局部点不足：{xyz_local.shape[0]} 点")
         plane = self._pose_estimator.estimate_plane(xyz_local)
-        top_normal = self._opening_pipeline.estimate_top_plane_normal(xyz, no_hole_mask, uv, valid)
-        top_normal = self._pose_estimator.stabilize_top_normal(top_normal, self._temporal_state)
+        intrinsics = _FrameIntrinsics(
+            width=int(color_bgr.shape[1]),
+            height=int(color_bgr.shape[0]),
+            fx=float(frame.fx),
+            fy=float(frame.fy),
+            cx=float(frame.cx),
+            cy=float(frame.cy),
+        )
         grasp = self._pose_estimator.compute_grasp(
             opening=opening,
             plane=plane,
-            intrinsics=_FrameIntrinsics(
-                width=int(color_bgr.shape[1]),
-                height=int(color_bgr.shape[0]),
-                fx=float(frame.fx),
-                fy=float(frame.fy),
-                cx=float(frame.cx),
-                cy=float(frame.cy),
-            ),
-            top_ref_normal=top_normal,
+            intrinsics=intrinsics,
+            top_ref_normal=None,
         )
+        near_plane_mask: np.ndarray | None = None
+        no_hole_mask: np.ndarray | None = None
+        top_quad: np.ndarray | None = None
+        try:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="opening_mask") as executor:
+                mask_future = executor.submit(
+                    self._opening_pipeline.compute_mask_pipeline,
+                    tray_mask_u8,
+                    True,
+                    opening,
+                    hp_gray,
+                    hp_edge,
+                )
+                near_plane_mask, no_hole_mask = mask_future.result(timeout=0.06)
+                top_quad = self._opening_pipeline.fit_rotated_quad(no_hole_mask)
+                top_normal = self._opening_pipeline.estimate_top_plane_normal(xyz, no_hole_mask, uv, valid)
+                top_normal = self._pose_estimator.stabilize_top_normal(top_normal, self._temporal_state)
+                grasp = self._pose_estimator.compute_grasp(
+                    opening=opening,
+                    plane=plane,
+                    intrinsics=intrinsics,
+                    top_ref_normal=top_normal,
+                )
+        except concurrent.futures.TimeoutError:
+            pass
+        except Exception:
+            pass
         grasp = self._pose_estimator.stabilize_grasp_result(grasp, self._temporal_state)
         tray_pose = self._build_tray_pose_info(
             target_tray_index=int(target_tray_index),
