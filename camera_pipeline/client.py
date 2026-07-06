@@ -1,19 +1,21 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from typing import cast
 
 import pickle
 
 import zmq
 
 from .ball_pose_detection.protocol import BallPoseDetectionRequest, BallPoseDetectionResponse
-from .camera_stream import CameraFramePacket
+from .camera_stream import CameraColorFramePacket, CameraDepthFramePacket, CameraFramePacket
 from .opening_detection.protocol import OpeningDetectionPipelineRequest, OpeningDetectionPipelineResponse
 from .ports import CAMERA_PIPELINE_FRAME_STREAM_CONNECT_ADDR, CAMERA_PIPELINE_SERVICE_CONNECT_ADDR
 from .tray_detection.protocol import OrinTrayDetectionRequest, OrinTrayDetectionResponse
 from .unified_protocol import (
+    CameraColorFrameSubscribeRequest,
     CameraFrameSubscribeRequest,
-    CameraFrameSubscribeResponse,
+    CameraDepthFrameSubscribeRequest,
     CameraIntrinsicsRequest,
     CameraIntrinsicsResponse,
     CameraStatusRequest,
@@ -90,6 +92,38 @@ class CameraPipelineClient:
         if response.camera_frame_subscribe.error is not None:
             raise RuntimeError(response.camera_frame_subscribe.error)
         stream_addr = response.camera_frame_subscribe.stream_addr
+        for item in self._subscribe_pickle_stream(stream_addr):
+            yield cast(CameraFramePacket, item)
+
+    def subscribe_camera_color_frames(self, camera_name: str = "left_hand_camera") -> Iterator[CameraColorFramePacket]:
+        response = self._rpc_client.call(
+            CameraPipelineServiceRequest(
+                operation="camera_color_frame_subscribe",
+                camera_color_frame_subscribe=CameraColorFrameSubscribeRequest(camera_name=str(camera_name)),
+            )
+        )
+        if response.error is not None or response.camera_color_frame_subscribe is None:
+            raise RuntimeError(response.error or "camera color frame subscribe response missing")
+        if response.camera_color_frame_subscribe.error is not None:
+            raise RuntimeError(response.camera_color_frame_subscribe.error)
+        for item in self._subscribe_pickle_stream(response.camera_color_frame_subscribe.stream_addr):
+            yield cast(CameraColorFramePacket, item)
+
+    def subscribe_camera_depth_frames(self, camera_name: str = "left_hand_camera") -> Iterator[CameraDepthFramePacket]:
+        response = self._rpc_client.call(
+            CameraPipelineServiceRequest(
+                operation="camera_depth_frame_subscribe",
+                camera_depth_frame_subscribe=CameraDepthFrameSubscribeRequest(camera_name=str(camera_name)),
+            )
+        )
+        if response.error is not None or response.camera_depth_frame_subscribe is None:
+            raise RuntimeError(response.error or "camera depth frame subscribe response missing")
+        if response.camera_depth_frame_subscribe.error is not None:
+            raise RuntimeError(response.camera_depth_frame_subscribe.error)
+        for item in self._subscribe_pickle_stream(response.camera_depth_frame_subscribe.stream_addr):
+            yield cast(CameraDepthFramePacket, item)
+
+    def _subscribe_pickle_stream(self, stream_addr: str) -> Iterator[object]:
         service_host = self._service_addr.removeprefix("tcp://").split(":")[0]
         if stream_addr.startswith("tcp://0.0.0.0:") or stream_addr.startswith("tcp://127.0.0.1:"):
             stream_addr = stream_addr.replace("0.0.0.0", service_host, 1).replace("127.0.0.1", service_host, 1)

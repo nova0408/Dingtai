@@ -82,6 +82,36 @@ class CameraFramePacket:
     "来源元信息。"
 
 
+@dataclass(frozen=True)
+class CameraColorFramePacket:
+    """仅包含 RGB 载荷的轻量彩色帧数据包。"""
+
+    frame_id: int
+    camera_name: str
+    timestamp_ms: float
+    color_bgr: np.ndarray
+    fx: float
+    fy: float
+    cx: float
+    cy: float
+    source_meta: Dict[str, str] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class CameraDepthFramePacket:
+    """仅包含深度载荷的轻量深度帧数据包。"""
+
+    frame_id: int
+    camera_name: str
+    timestamp_ms: float
+    depth_mm: np.ndarray
+    fx: float
+    fy: float
+    cx: float
+    cy: float
+    source_meta: Dict[str, str] = field(default_factory=dict)
+
+
 # endregion
 
 
@@ -101,10 +131,7 @@ class CameraStreamRuntime:
     def __init__(self, config: Optional[CameraStreamRuntimeConfig] = None) -> None:
         self._config = CameraStreamRuntimeConfig() if config is None else config
         self._context = zmq.Context()
-        self._control_socket = self._context.socket(zmq.REQ)
-        self._control_socket.setsockopt(zmq.RCVTIMEO, int(self._config.request_timeout_ms))
-        self._control_socket.setsockopt(zmq.SNDTIMEO, int(self._config.request_timeout_ms))
-        self._control_socket.connect(self._tcp_addr(self._config.control_port))
+        self._control_socket = self._create_control_socket()
         self._stream_socket: Optional[zmq.Socket] = None
         self._lock = threading.Lock()
         self._latest_frame: Optional[CameraFramePacket] = None
@@ -112,6 +139,7 @@ class CameraStreamRuntime:
         self._frame_order: queue.Queue[int] = queue.Queue(maxsize=max(1, int(self._config.cache_size)))
         self._running = False
         self._thread: Optional[threading.Thread] = None
+        self._cached_intrinsics: tuple[float, float, float, float] | None = None
 
     def start(self) -> None:
         """启动后台采流线程。"""
@@ -122,6 +150,11 @@ class CameraStreamRuntime:
             self._send_control_command("set_depth_enabled", {"enable": True})
         except Exception as exc:  # noqa: BLE001
             LOGGER.warning("set_depth_enabled failed during camera start: %s", exc)
+        try:
+            self._cached_intrinsics = self._get_intrinsics_from_control()
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning("get_intrinsics failed during camera start: %s", exc)
+            self._cached_intrinsics = None
         self._stream_socket = self._create_stream_socket()
         self._running = True
         self._thread = threading.Thread(target=self._capture_loop, name="orin-camera-stream", daemon=True)
@@ -143,6 +176,7 @@ class CameraStreamRuntime:
             self._stream_socket = None
         self._control_socket.close(linger=0)
         self._context.term()
+        self._cached_intrinsics = None
 
     def get_latest_frame(self) -> Optional[CameraFramePacket]:
         """获取最新一帧缓存。"""
@@ -194,8 +228,12 @@ class CameraStreamRuntime:
             "camera": self._config.camera_id,
             "params": {} if params is None else params,
         }
-        self._control_socket.send_json(payload)
-        response = self._control_socket.recv_json()
+        try:
+            self._control_socket.send_json(payload)
+            response = self._control_socket.recv_json()
+        except Exception:
+            self._reset_control_socket()
+            raise
         if not isinstance(response, dict):
             raise RuntimeError("invalid camera control response")
         if not bool(response.get("success", False)):
@@ -231,8 +269,8 @@ class CameraStreamRuntime:
             frame_id=int(sequence),
             camera_name=str(self._config.camera_name),
             timestamp_ms=float(timestamp_us) / 1000.0,
-            color_bgr=np.asarray(color_bgr, dtype=np.uint8).copy(),
-            depth_mm=np.asarray(depth_mm, dtype=np.uint16),
+            color_bgr=color_bgr,
+            depth_mm=depth_mm,
             fx=float(fx),
             fy=float(fy),
             cx=float(cx),
@@ -241,6 +279,12 @@ class CameraStreamRuntime:
         )
 
     def _get_intrinsics(self) -> tuple[float, float, float, float]:
+        if self._cached_intrinsics is not None:
+            return self._cached_intrinsics
+        self._cached_intrinsics = self._get_intrinsics_from_control()
+        return self._cached_intrinsics
+
+    def _get_intrinsics_from_control(self) -> tuple[float, float, float, float]:
         payload = self._send_control_command("get_intrinsics")
         data = payload.get("data", {})
         if not isinstance(data, dict):
@@ -263,6 +307,20 @@ class CameraStreamRuntime:
         socket_obj.setsockopt(zmq.RCVTIMEO, int(self._config.stream_timeout_ms))
         socket_obj.connect(self._tcp_addr(self._config.stream_port))
         return socket_obj
+
+    def _create_control_socket(self) -> zmq.Socket:
+        socket_obj = self._context.socket(zmq.REQ)
+        socket_obj.setsockopt(zmq.RCVTIMEO, int(self._config.request_timeout_ms))
+        socket_obj.setsockopt(zmq.SNDTIMEO, int(self._config.request_timeout_ms))
+        socket_obj.connect(self._tcp_addr(self._config.control_port))
+        return socket_obj
+
+    def _reset_control_socket(self) -> None:
+        try:
+            self._control_socket.close(linger=0)
+        except Exception:
+            pass
+        self._control_socket = self._create_control_socket()
 
 
 # endregion

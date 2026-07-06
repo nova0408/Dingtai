@@ -4,7 +4,6 @@ from dataclasses import dataclass
 from typing import Literal, Optional
 
 from .ball_pose_detection.protocol import BallPoseDetectionRequest, BallPoseDetectionResponse
-from .camera_stream import CameraFramePacket
 from .opening_detection.protocol import OpeningDetectionPipelineRequest, OpeningDetectionPipelineResponse
 from .tray_detection.protocol import OrinTrayDetectionRequest, OrinTrayDetectionResponse
 
@@ -95,14 +94,58 @@ class CameraFrameSubscribeResponse:
 
 
 @dataclass(frozen=True)
+class CameraColorFrameSubscribeRequest:
+    """订阅仅 RGB 轻量帧请求。"""
+
+    camera_name: str = "left_hand_camera"
+
+
+@dataclass(frozen=True)
+class CameraColorFrameSubscribeResponse:
+    """订阅仅 RGB 轻量帧响应。"""
+
+    stream_addr: str
+    camera_name: str
+    error: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class CameraDepthFrameSubscribeRequest:
+    """订阅仅深度轻量帧请求。"""
+
+    camera_name: str = "left_hand_camera"
+
+
+@dataclass(frozen=True)
+class CameraDepthFrameSubscribeResponse:
+    """订阅仅深度轻量帧响应。"""
+
+    stream_addr: str
+    camera_name: str
+    error: Optional[str] = None
+
+
+@dataclass(frozen=True)
 class CameraPipelineServiceRequest:
     """统一远端 camera pipeline 服务请求。"""
 
-    operation: Literal["camera_summary", "camera_intrinsics", "camera_status", "camera_frame_subscribe", "tray_detection", "opening_detection", "ball_pose_detection"]
+    operation: Literal[
+        "camera_summary",
+        "camera_intrinsics",
+        "camera_status",
+        "camera_frame_subscribe",
+        "camera_color_frame_subscribe",
+        "camera_depth_frame_subscribe",
+        "tray_detection",
+        "opening_detection",
+        "ball_pose_detection",
+    ]
     camera_summary: CameraSummaryRequest | None = None
     camera_intrinsics: CameraIntrinsicsRequest | None = None
     camera_status: CameraStatusRequest | None = None
     camera_frame_subscribe: CameraFrameSubscribeRequest | None = None
+    camera_color_frame_subscribe: CameraColorFrameSubscribeRequest | None = None
+    camera_depth_frame_subscribe: CameraDepthFrameSubscribeRequest | None = None
     tray_detection: OrinTrayDetectionRequest | None = None
     opening_detection: OpeningDetectionPipelineRequest | None = None
     ball_pose_detection: BallPoseDetectionRequest | None = None
@@ -112,11 +155,23 @@ class CameraPipelineServiceRequest:
 class CameraPipelineServiceResponse:
     """统一远端 camera pipeline 服务响应。"""
 
-    operation: Literal["camera_summary", "camera_intrinsics", "camera_status", "camera_frame_subscribe", "tray_detection", "opening_detection", "ball_pose_detection"]
+    operation: Literal[
+        "camera_summary",
+        "camera_intrinsics",
+        "camera_status",
+        "camera_frame_subscribe",
+        "camera_color_frame_subscribe",
+        "camera_depth_frame_subscribe",
+        "tray_detection",
+        "opening_detection",
+        "ball_pose_detection",
+    ]
     camera_summary: CameraSummaryResponse | None = None
     camera_intrinsics: CameraIntrinsicsResponse | None = None
     camera_status: CameraStatusResponse | None = None
     camera_frame_subscribe: CameraFrameSubscribeResponse | None = None
+    camera_color_frame_subscribe: CameraColorFrameSubscribeResponse | None = None
+    camera_depth_frame_subscribe: CameraDepthFrameSubscribeResponse | None = None
     tray_detection: OrinTrayDetectionResponse | None = None
     opening_detection: OpeningDetectionPipelineResponse | None = None
     ball_pose_detection: BallPoseDetectionResponse | None = None
