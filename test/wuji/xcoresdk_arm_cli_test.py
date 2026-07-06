@@ -43,6 +43,8 @@ LIFT_RETRY_COUNT = 3
 LIFT_HEIGHT_TOLERANCE_MM = 1.0
 DEFAULT_TOOL_NAME = "g_tool_0"
 DEFAULT_WOBJ_NAME = "g_wobj_0"
+M11_ROOT_ACTUATOR_IDS: tuple[int, ...] = (3, 5, 7, 9)
+M11_TIP_ACTUATOR_IDS: tuple[int, ...] = (4, 6, 8, 10)
 EXPECTED_ARM_TYPES = {
     "left": "AR5-5_0.8L-W4C1C9-ZY2",
     "right": "AR5-5_0.8R-W4C1C9-ZY2",
@@ -133,7 +135,7 @@ INTERLOCK_RIGHT_TARGETS: tuple[InterlockTarget, ...] = (
         arm_joint_deg=[-100.00, 100.00, 135.00, -55.00, 0.00, -15.00, 10.00],
         arm_xyzrpye=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
         gripper_pos=None,
-        hand_root_tip={"root": [0.0, 0.0, 0.0], "tip": [1.0, 1.0, 1.0]},
+        hand_root_tip={"root": [0.0, 0.0, 0.0, 0.0], "tip": [1.0, 1.0, 1.0, 1.0]},
     ),
     InterlockTarget(
         target_type="arm",
@@ -141,7 +143,7 @@ INTERLOCK_RIGHT_TARGETS: tuple[InterlockTarget, ...] = (
         arm_joint_deg=[-90.00, 95.00, 120.00, -50.00, 3.00, -10.00, 8.00],
         arm_xyzrpye=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
         gripper_pos=None,
-        hand_root_tip={"root": [1.0, 1.0, 1.0], "tip": [0.0, 0.0, 0.0]},
+        hand_root_tip={"root": [1.0, 1.0, 1.0, 1.0], "tip": [0.0, 0.0, 0.0, 0.0]},
     ),
 )
 
@@ -250,6 +252,50 @@ def _parse_cartesian_pose_input(raw_text: str) -> ParsedCartesianPoseInput:
 # region 状态查询
 def _format_sequence(values: list[float] | tuple[float, ...], decimals: int = 2) -> str:
     return ", ".join(f"{float(value):.{decimals}f}" for value in values)
+
+
+def _get_actuator_positions(state: dict[str, object]) -> list[float]:
+    """读取右手状态中的执行器位置，并在结构异常时直接报错。"""
+
+    actuators = state.get("actuators")
+    if not isinstance(actuators, list):
+        raise RuntimeError("右手状态格式异常：actuators 不是 list")
+    positions: list[float] = []
+    for index, actuator in enumerate(actuators):
+        if not isinstance(actuator, dict):
+            raise RuntimeError(f"右手状态格式异常：actuators[{index}] 不是 dict")
+        position = actuator.get("position")
+        if not isinstance(position, int | float):
+            raise RuntimeError(f"右手状态格式异常：actuators[{index}].position 非数值")
+        positions.append(float(position))
+    return positions
+
+
+def _validate_m11_positions(positions: list[float]) -> None:
+    """确认当前右手状态能覆盖 m11 所需的执行器索引。"""
+
+    required_max_id = max(*M11_ROOT_ACTUATOR_IDS, *M11_TIP_ACTUATOR_IDS)
+    if len(positions) <= required_max_id:
+        raise RuntimeError(
+            "右手状态执行器数量不足以覆盖 m11 索引，"
+            f"required_max_id={required_max_id}, actual_len={len(positions)}"
+        )
+
+
+def _set_m11_group_positions(
+    hand: WujiRightHandClient,
+    positions: list[float],
+    selected_ids: tuple[int, ...],
+    target_value: float,
+) -> bool:
+    """将 m11 的一组执行器统一设置为同一目标值。"""
+
+    if len(selected_ids) == 0:
+        raise ValueError("selected_ids 不能为空")
+    _validate_m11_positions(positions)
+    for actuator_id in selected_ids:
+        positions[actuator_id] = target_value
+    return bool(hand.set_hand_state(positions))
 
 
 def _mm_to_m(values_mm: list[float]) -> list[float]:
@@ -518,7 +564,7 @@ def _wait_until_idle(
     robot: xCoreSDK_python.xMateErProRobot,
     ec: dict[str, object],
     prompt: str,
-    timeout_s: float = 15.0,
+    timeout_s: float = 5.0,
 ) -> bool:
     """轮询等待机器人运动结束。
 
@@ -709,8 +755,9 @@ def _manual_m11_record(hand: WujiRightHandClient, records: list[dict[str, str]])
     state = hand.get_hand_state(include_tactile=False)
     if state is None:
         raise RuntimeError("右手状态不可用")
-    positions = [float(item["position"]) for item in state["actuators"]]
-    selected_ids = (0, 1, 2, 3, 4) if group_choice == "root" else (5, 6, 7, 8, 9, 10)
+    positions = _get_actuator_positions(state)
+    selected_ids = M11_ROOT_ACTUATOR_IDS if group_choice == "root" else M11_TIP_ACTUATOR_IDS
+    _validate_m11_positions(positions)
     print("当前选中四指/关节值:")
     print(_format_joint_values([positions[index] for index in selected_ids]))
     raw_value = input("请输入统一值并回车: ").strip()
@@ -857,41 +904,63 @@ def _temporary_hand_control(connected_arm: ConnectedArm, hand_clients: Persisten
         state = hand.get_hand_state(include_tactile=False)
         if state is None:
             raise RuntimeError("右手状态不可用")
-        positions = [float(item["position"]) for item in state["actuators"]]
+        positions = _get_actuator_positions(state)
+        _validate_m11_positions(positions)
         print("当前右手执行器值:")
         print(_format_joint_values(positions))
-        raw_axis = input("请输入轴编号 0-10，或输入 q 返回: ").strip().lower()
-        if raw_axis == "q":
+        print("输入 axis 进行单轴控制，输入 root 或 tip 进行整组控制，输入 q 返回")
+        raw_mode = input("请选择控制类型: ").strip().lower()
+        if raw_mode == "q":
             print("已退出手掌控制模式")
             return
-        try:
-            axis_index = int(raw_axis)
-        except ValueError:
-            print("轴编号输入无效")
-            continue
-        if not 0 <= axis_index < len(positions):
-            print("轴编号超出范围")
-            continue
-        raw_value = input("请输入目标值，单位归一化 0-1: ").strip().lower()
-        if raw_value == "q":
-            print("已退出手掌控制模式")
-            return
-        try:
-            target_value = float(raw_value)
-        except ValueError:
-            print("目标值输入无效")
-            continue
-        if not 0.0 <= target_value <= 1.0:
-            print("目标值必须在 0-1 之间")
-            continue
-        if not hand.set_right_hand_axis(axis_index, target_value):
-            print("右手下发失败")
-            continue
+        if raw_mode in {"root", "tip"}:
+            selected_ids = M11_ROOT_ACTUATOR_IDS if raw_mode == "root" else M11_TIP_ACTUATOR_IDS
+            selected_values = [positions[actuator_id] for actuator_id in selected_ids]
+            print(f"当前选中{raw_mode}: {_format_joint_values(selected_values)}")
+            raw_value = input("请输入统一目标值，单位归一化 0-1: ").strip().lower()
+            if raw_value == "q":
+                print("已退出手掌控制模式")
+                return
+            try:
+                target_value = float(raw_value)
+            except ValueError:
+                print("目标值输入无效")
+                continue
+            if not 0.0 <= target_value <= 1.0:
+                print("目标值必须在 0-1 之间")
+                continue
+            if not _set_m11_group_positions(hand, positions, selected_ids, target_value):
+                print("右手下发失败")
+                continue
+        else:
+            try:
+                axis_index = int(raw_mode)
+            except ValueError:
+                print("控制类型输入无效")
+                continue
+            if not 0 <= axis_index < len(positions):
+                print("轴编号超出范围")
+                continue
+            raw_value = input("请输入目标值，单位归一化 0-1: ").strip().lower()
+            if raw_value == "q":
+                print("已退出手掌控制模式")
+                return
+            try:
+                target_value = float(raw_value)
+            except ValueError:
+                print("目标值输入无效")
+                continue
+            if not 0.0 <= target_value <= 1.0:
+                print("目标值必须在 0-1 之间")
+                continue
+            if not hand.set_right_hand_axis(axis_index, target_value):
+                print("右手下发失败")
+                continue
         time.sleep(1.0)
         current_state = hand.get_hand_state(include_tactile=False)
         if current_state is None:
             raise RuntimeError("右手状态不可用")
-        current_positions = [float(item["position"]) for item in current_state["actuators"]]
+        current_positions = _get_actuator_positions(current_state)
         print("右手已更新为:")
         print(_format_joint_values(current_positions))
         print("手掌控制完成，已返回原本的控制模式")
@@ -1095,7 +1164,7 @@ def _cartesian_control_loop(
         _print_motion_speed_status("笛卡尔", cartesian_speed, cartesian_zone)
         print("输入新的 xyzrpy，单位分别为 mm 和 deg")
         print("也支持输入完整 pose 列格式: [x, y, z, r, p, y, hasElbow, elbowDeg, confData]")
-        print("输入 s 调整速度，输入 h 进入手掌控制模式，输入 l 进入 lift 控制模式，输入 q 返回主菜单")
+        print("输入 s 调整速度，输入 h 进入手掌控制模式（axis/root/tip），输入 l 进入 lift 控制模式，输入 q 返回主菜单")
         raw_text = input("目标 xyzrpy: ").strip()
         if raw_text.lower() == "s":
             cartesian_speed = _prompt_motion_speed(cartesian_speed, "笛卡尔")
@@ -1213,7 +1282,7 @@ def _joint_control_loop(
         print(f"当前关节值(deg): {_format_sequence(_rad_to_deg(joint_values))}")
         _print_motion_speed_status("关节", joint_speed, joint_zone)
         print("输入新的关节值，单位 deg，支持空格、英文逗号或中文逗号分隔")
-        print("输入 s 调整速度，输入 h 进入手掌控制模式，输入 l 进入 lift 控制模式，输入 q 返回主菜单")
+        print("输入 s 调整速度，输入 h 进入手掌控制模式（axis/root/tip），输入 l 进入 lift 控制模式，输入 q 返回主菜单")
         raw_text = input("目标关节值: ").strip()
         if raw_text.lower() == "s":
             joint_speed = _prompt_motion_speed(joint_speed, "关节")
@@ -1473,11 +1542,13 @@ def _poll_right_hand_until_idle(hand: WujiRightHandClient, target_name: str) -> 
         state = hand.get_hand_state(include_tactile=False)
         if state is None:
             raise RuntimeError("右手状态不可用")
-        positions = [float(item["position"]) for item in state["actuators"]]
+        positions = _get_actuator_positions(state)
+        root_positions = [positions[actuator_id] for actuator_id in M11_ROOT_ACTUATOR_IDS]
+        tip_positions = [positions[actuator_id] for actuator_id in M11_TIP_ACTUATOR_IDS]
         print(
             f"hand {target_name}: "
-            f"root={positions[0]:.6f},{positions[1]:.6f},{positions[2]:.6f}/r "
-            f"tip={positions[3]:.6f},{positions[4]:.6f},{positions[5]:.6f}/r"
+            f"root={_format_sequence(root_positions, decimals=6)}/r "
+            f"tip={_format_sequence(tip_positions, decimals=6)}/r"
         )
         if time.monotonic() >= deadline:
             raise TimeoutError("右手联调执行超时")
@@ -1570,13 +1641,16 @@ def _run_interlock_sequence(connected_arm: ConnectedArm, hand_clients: Persisten
                 state = hand.get_hand_state(include_tactile=False)
                 if state is None or target.hand_root_tip is None:
                     raise RuntimeError("右手状态不可用")
-                current_positions = [float(item["position"]) for item in state["actuators"]]
+                current_positions = _get_actuator_positions(state)
+                _validate_m11_positions(current_positions)
                 root_values = target.hand_root_tip["root"]
                 tip_values = target.hand_root_tip["tip"]
-                for actuator_id in (0, 1, 2):
-                    current_positions[actuator_id] = root_values[actuator_id]
-                for actuator_id in (3, 4, 5):
-                    current_positions[actuator_id] = tip_values[actuator_id - 3]
+                if len(root_values) != len(M11_ROOT_ACTUATOR_IDS) or len(tip_values) != len(M11_TIP_ACTUATOR_IDS):
+                    raise RuntimeError("右手 root/tip 目标长度与 m11 定义不一致")
+                for actuator_id, target_value in zip(M11_ROOT_ACTUATOR_IDS, root_values):
+                    current_positions[actuator_id] = target_value
+                for actuator_id, target_value in zip(M11_TIP_ACTUATOR_IDS, tip_values):
+                    current_positions[actuator_id] = target_value
                 if not hand.set_hand_state(current_positions):
                     raise RuntimeError("右手联调下发失败")
                 _poll_right_hand_until_idle(hand, f"{target.target_type}-{target.target_id}")
@@ -1655,4 +1729,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit()
+    raise SystemExit(main())

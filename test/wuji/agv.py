@@ -53,6 +53,7 @@ def _smoke_gui_session_path() -> None:
         runtime_info = client.get_runtime_info()
         logger.info("AGV GUI 路径运行信息 {}", runtime_info)
         logger.info("AGV GUI 路径使能状态 {}", client.get_enable())
+        client.navigate_to("3")
         logger.success("AGV GUI 路径冒烟通过")
     finally:
         session.close()
