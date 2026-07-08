@@ -63,6 +63,7 @@ class BallPoseDetector:
             ranked[prior.color_hex] = self._rank_ball_candidates(frame, prior, candidates)
         detections = self._resolve_duplicates(ranked, priors)
         observations = [self._to_observation(detection, priors) for detection in detections]
+        geometry_valid = self._validate_prior_geometry(observations, priors)
         debug_colors = {prior.color_hex: _hex_to_bgr(prior.color_hex) for prior in priors}
         debug_radii = {prior.color_hex: float(prior.radius_mm) for prior in priors}
         debug_positions = {
@@ -71,7 +72,7 @@ class BallPoseDetector:
             if item.center_mm is not None
         }
         debug_model_positions = {prior.color_hex: np.asarray(prior.model_center_mm, dtype=np.float64).copy() for prior in priors}
-        fit = self._estimate_pose(observations, priors)
+        fit = None if not geometry_valid else self._estimate_pose(observations, priors)
         pose_transform = None
         pose_translation_mm = None
         pose_rotation = None
@@ -85,6 +86,8 @@ class BallPoseDetector:
             pose_transform[:3, 3] = pose_translation_mm
             residual_mm = fit.residual_mm
             status = "pose_estimated"
+        elif not geometry_valid:
+            status = "prior_geometry_rejected"
         return BallPoseDetectionResult(
             detections=observations,
             pose_translation_mm=pose_translation_mm,
@@ -120,6 +123,66 @@ class BallPoseDetector:
         if full_fit.residual_mm <= anchor_fit.residual_mm + 1e-6:
             return full_fit
         return anchor_fit
+
+    def _validate_prior_geometry(self, detections: list[BallObservation], priors: list[BallPosePrior]) -> bool:
+        matched_items: list[tuple[BallPosePrior, BallObservation]] = []
+        for prior in priors:
+            match = next((item for item in detections if item.color_hex == prior.color_hex and item.center_mm is not None), None)
+            if match is None:
+                continue
+            matched_items.append((prior, match))
+        if len(matched_items) < 3:
+            return False
+        max_pair_distance_error_mm = float(self._config.max_pair_distance_error_mm)
+        for left_index in range(len(matched_items)):
+            for right_index in range(left_index + 1, len(matched_items)):
+                left_prior, left_observation = matched_items[left_index]
+                right_prior, right_observation = matched_items[right_index]
+                expected_distance = float(
+                    np.linalg.norm(
+                        np.asarray(left_prior.model_center_mm, dtype=np.float64)
+                        - np.asarray(right_prior.model_center_mm, dtype=np.float64)
+                    )
+                )
+                actual_distance = float(
+                    np.linalg.norm(
+                        np.asarray(left_observation.center_mm, dtype=np.float64)
+                        - np.asarray(right_observation.center_mm, dtype=np.float64)
+                    )
+                )
+                if abs(actual_distance - expected_distance) > max_pair_distance_error_mm:
+                    return False
+        fit = self._estimate_pose_without_gate(matched_items)
+        if fit is None:
+            return False
+        return float(fit.residual_mm) <= float(self._config.max_pose_residual_mm)
+
+    @staticmethod
+    def _estimate_pose_without_gate(matched_items: list[tuple[BallPosePrior, BallObservation]]) -> _PoseFitResult | None:
+        if len(matched_items) < 3:
+            return None
+        model_stack = np.stack(
+            [np.asarray(prior.model_center_mm, dtype=np.float64) for prior, _ in matched_items],
+            axis=0,
+        )
+        camera_stack = np.stack(
+            [np.asarray(observation.center_mm, dtype=np.float64) for _, observation in matched_items],
+            axis=0,
+        )
+        model_center = np.mean(model_stack, axis=0)
+        camera_center = np.mean(camera_stack, axis=0)
+        model_centered = model_stack - model_center.reshape(1, 3)
+        camera_centered = camera_stack - camera_center.reshape(1, 3)
+        h = model_centered.T @ camera_centered
+        u, _, vt = np.linalg.svd(h)
+        rotation = vt.T @ u.T
+        if np.linalg.det(rotation) < 0.0:
+            vt[-1, :] *= -1.0
+            rotation = vt.T @ u.T
+        translation = camera_center - rotation @ model_center
+        aligned = (model_stack @ rotation.T) + translation.reshape(1, 3)
+        residual = float(np.sqrt(np.mean(np.sum((aligned - camera_stack) ** 2, axis=1))))
+        return _PoseFitResult(rotation=rotation.astype(np.float64), translation_mm=translation.astype(np.float64), residual_mm=residual)
 
     def _build_color_masks(self, color_bgr: np.ndarray) -> dict[str, np.ndarray]:
         blurred = cv2.GaussianBlur(np.asarray(color_bgr, dtype=np.uint8), (5, 5), 0)

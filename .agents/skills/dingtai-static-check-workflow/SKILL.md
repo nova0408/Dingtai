@@ -25,16 +25,17 @@ description: 统一 Dingtai 仓库静态检查流程。用于在固定 DingTai c
    - 按 Conda 环境名 `DingTai` 解析 `pyright.exe`
 3. 由本 skill 触发的测试、验证和静态检查，必须共享同一个 `DingTai` 环境，不得混用 `base`、系统 Python 或其他 Conda 环境。
 4. 检查流程顺序固定为：先 `ruff`，后 `pyright`。
-5. 运行全量检查时，默认命令为：
+5. `ruff` 配置已全局忽略 `E402`，不要再花时间修复或重排导入顺序来追这个规则。
+6. 运行全量检查时，默认命令为：
    - `powershell -ExecutionPolicy Bypass -File .\.agents\skills\dingtai-static-check-workflow\scripts\check\run_all_checks.ps1 -Target .`
-6. 运行单项检查时，必须使用：
+7. 运行单项检查时，必须使用：
    - `run_ruff.ps1`
    - `run_pyright.ps1`
-7. 结论中必须明确区分：
+8. 结论中必须明确区分：
    - 已验证：静态检查（ruff/pyright）结果。
    - 未验证：硬件行为、实时相机链路、GUI 交互行为。
-8. 不允许为了通过静态检查而随意更改业务默认行为或控制流程。
-9. 所有 `*_ui.py` 文件默认豁免静态检查与人工修改；这类文件视为 Qt 插件自动生成产物，只允许通过生成流程更新，不允许手工修补。
+9. 不允许为了通过静态检查而随意更改业务默认行为或控制流程。
+10. 所有 `*_ui.py` 文件默认豁免静态检查与人工修改；这类文件视为 Qt 插件自动生成产物，只允许通过生成流程更新，不允许手工修补。
 
 ## 标准命令
 

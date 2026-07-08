@@ -46,6 +46,12 @@ class CameraStreamRuntimeConfig:
     cache_size: int = 16
     "按帧号缓存最近帧数量。"
 
+    max_consecutive_timeouts: int = 3
+    "连续收流超时次数上限；超过后触发自愈。"
+
+    recover_retry_interval_s: float = 2.0
+    "自愈后再次尝试前的最小间隔，单位 s。"
+
 
 @dataclass(frozen=True)
 class CameraFramePacket:
@@ -140,6 +146,7 @@ class CameraStreamRuntime:
         self._running = False
         self._thread: Optional[threading.Thread] = None
         self._cached_intrinsics: tuple[float, float, float, float] | None = None
+        self._last_recover_time = 0.0
 
     def start(self) -> None:
         """启动后台采流线程。"""
@@ -201,16 +208,29 @@ class CameraStreamRuntime:
         return False
 
     def _capture_loop(self) -> None:
-        if self._stream_socket is None:
-            return
+        consecutive_timeouts = 0
         while self._running:
+            if self._stream_socket is None:
+                self._recover_stream_runtime("stream socket missing")
+                time.sleep(0.05)
+                continue
             try:
                 raw_message = self._stream_socket.recv()
                 packet = self._decode_frame(raw_message)
             except zmq.error.Again:
+                consecutive_timeouts += 1
+                if consecutive_timeouts >= max(1, int(self._config.max_consecutive_timeouts)):
+                    self._recover_stream_runtime(
+                        "stream recv timeout x{0}".format(consecutive_timeouts)
+                    )
+                    consecutive_timeouts = 0
                 continue
-            except Exception:
+            except Exception as exc:
+                LOGGER.warning("decode camera frame failed: %s", exc)
+                self._recover_stream_runtime("frame decode failure")
+                consecutive_timeouts = 0
                 continue
+            consecutive_timeouts = 0
             with self._lock:
                 self._latest_frame = packet
                 self._frame_cache[int(packet.frame_id)] = packet
@@ -221,6 +241,37 @@ class CameraStreamRuntime:
                     except queue.Empty:
                         pass
                 self._frame_order.put_nowait(int(packet.frame_id))
+
+    def _recover_stream_runtime(self, reason: str) -> None:
+        now = time.perf_counter()
+        min_interval_s = max(0.2, float(self._config.recover_retry_interval_s))
+        if now - self._last_recover_time < min_interval_s:
+            return
+        self._last_recover_time = now
+        LOGGER.warning("camera stream runtime recovering: %s", reason)
+        try:
+            self._send_control_command("set_depth_enabled", {"enable": True})
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning("set_depth_enabled failed during recover: %s", exc)
+        try:
+            self._cached_intrinsics = self._get_intrinsics_from_control()
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning("get_intrinsics failed during recover: %s", exc)
+            self._cached_intrinsics = None
+        self._recreate_stream_socket()
+
+    def _recreate_stream_socket(self) -> None:
+        old_socket = self._stream_socket
+        self._stream_socket = None
+        if old_socket is not None:
+            try:
+                old_socket.close(linger=0)
+            except Exception:
+                pass
+        try:
+            self._stream_socket = self._create_stream_socket()
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning("recreate stream socket failed: %s", exc)
 
     def _send_control_command(self, command_name: str, params: Optional[Dict[str, object]] = None) -> Dict[str, object]:
         payload = {

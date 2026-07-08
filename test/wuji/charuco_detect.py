@@ -638,10 +638,7 @@ def _parse_cli() -> AppConfig:
         max_frames=int(args.max_frames),
     )
 
-
 # endregion
-
-
 if __name__ == "__main__":
     try:
         main(_parse_cli())

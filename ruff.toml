@@ -11,3 +11,6 @@ exclude = [
   "logs",
   "Log",
 ]
+
+[lint]
+ignore = ["E402"]

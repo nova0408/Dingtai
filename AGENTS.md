@@ -93,3 +93,6 @@ powershell -ExecutionPolicy Bypass -File .\.agents\skills\windows-powershell-utf
 - 用无结构 `dict` 长距离透传参数；参数过多时优先提取 dataclass。
 - 使用不必要的动态分发或魔术式调用。
 - 不要盲目增加不必要的复杂性；如果现有接口只需修补一个方法，就不要顺手引入缓存层、额外包装层或新的兼容分支。
+
+## 旋转约定
+项目中使用的欧拉旋转均使用scipy.spatial.transform.Rotation.as_euler("XYZ", degrees=True)表示。

@@ -53,7 +53,8 @@ if result.transform_se3 is not None:
 - `make_relative_motion_pairs(group_a_poses, group_b_poses, mode="all")`
 - `calibrate_hand_eye_ax_xb(a_motions, b_motions, min_required_samples=3) -> Transform`
 - `evaluate_hand_eye_solution(a_motions, b_motions, x) -> HandEyeResidualStats`
-- `calibrate_hand_eye_from_pose_sequences(group_a_poses, group_b_poses, pair_mode="all") -> HandEyeCalibrationResult`
+- `calibrate_hand_eye_multi_method(group_a_poses, group_b_poses, pair_mode="all", methods=None, cv_folds=None) -> HandEyeMultiMethodResult`
+- `calibrate_hand_eye_from_pose_sequences(group_a_poses, group_b_poses, pair_mode="all", method="closed_form") -> HandEyeCalibrationResult`
 - `generate_synthetic_motion_pairs(...)`
 
 接口输入支持：
@@ -86,6 +87,20 @@ print("translation_rmse =", residual.translation_rmse)
 ```
 
 `result.transform` 即求解出的 `X`，满足 `A_k X = X B_k`。
+
+如果需要比较多个候选方法，建议直接调用 `calibrate_hand_eye_multi_method()`，它会返回：
+
+- `best_method`
+- `best_result`
+- `candidates`
+
+每个候选结果都包含：
+
+- `residual`
+- `cv_residual`
+- `stability`
+- `score`
+- `error_message`
 
 ## 4. 接入真实硬件必须提供的数据
 

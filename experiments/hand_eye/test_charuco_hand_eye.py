@@ -5,10 +5,10 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-import cv2  # type: ignore[reportMissingImports]
+import cv2  
 import numpy as np
 from loguru import logger
-from pyorbbecsdk import OBFormat  # type: ignore[reportMissingImports]
+from pyorbbecsdk import OBFormat  
 from PySide6.QtCore import QObject, Qt, QThread, Signal, Slot
 from PySide6.QtGui import QImage, QKeyEvent, QPixmap
 from PySide6.QtWidgets import (

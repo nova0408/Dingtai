@@ -68,6 +68,8 @@ class BallPoseDetectionConfig:
     depth_trim_ratio: float = 0.18
     min_depth_points: int = 18
     min_center_distance_ratio: float = 1.35
+    max_pair_distance_error_mm: float = 12.0
+    max_pose_residual_mm: float = 10.0
     color_ranges: dict[str, tuple[tuple[int, int, int, int, int, int], ...]] = field(
         default_factory=lambda: {
             "#ff0000": ((0, 75, 55, 10, 255, 255), (170, 75, 55, 179, 255, 255)),
