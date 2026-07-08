@@ -2,6 +2,7 @@
 
 `test_charuco_hand_eye.py` 是一个 ChArUco 眼在手上手眼标定测试脚本。
 `test_charuco_board_viewer.py` 是一个专门用于查看 ChArUco 标定板识别结果的实时 `cv2` 预览页。
+`hand_eye_orin_left_arm_drag.py` 是一个新的左臂实采页：启动后自动打开左臂拖动，接入 Orin 左手相机流，实时叠加 ChArUco 识别结果、左臂关节角、TCP 位姿和采样建议，并在采样后直接更新 `T_tool_camera` 外参结果文件。
 
 已固定的板参数：
 
@@ -18,6 +19,18 @@
 
 - `p` 或回车：记录一帧样本
 - `q` 或 `Esc`：退出
+
+左臂实采页运行时：
+
+- 启动即连接左臂并打开拖动示教，只用于左臂
+- 使用 Orin `left_hand_camera` 相机流做实时预览
+- 预览上直接显示板识别结果、机器人关节角、TCP 位姿、采样覆盖度和下一步拖动建议
+- `Enter` / `Space` / `P`：记录当前样本
+- 每次记录都会保存原始图、预览图、CSV 样本和单独的 `tool_camera_extrinsic_result.txt`
+- 求解时使用：
+  - A 组：`T_base_tool`
+  - B 组：`T_board_camera`
+  - 结果：`T_tool_camera`
 
 识别查看页运行时：
 

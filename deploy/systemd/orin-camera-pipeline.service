@@ -1,5 +1,5 @@
 [Unit]
-Description=Orin Tray Detection RPC Service
+Description=Orin Camera Pipeline RPC Service
 After=network-online.target
 Wants=network-online.target
 

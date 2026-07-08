@@ -9,6 +9,7 @@ import time
 
 import zmq
 
+from .camera_stream import CameraColorFramePacket, CameraDepthFramePacket, CameraFramePacket
 from .pipeline_context import PipelineContext, PipelineContextConfig
 from .ports import (
     CAMERA_PIPELINE_FRAME_STREAM_BIND_ADDR,
@@ -19,6 +20,8 @@ from .ports import (
     DEFAULT_STREAM_PORT,
 )
 from .unified_protocol import (
+    CameraColorFrameSubscribeResponse,
+    CameraDepthFrameSubscribeResponse,
     CameraFrameSubscribeResponse,
     CameraIntrinsicsResponse,
     CameraPipelineServiceRequest,
@@ -27,6 +30,9 @@ from .unified_protocol import (
     CameraSummaryResponse,
 )
 from .unified_transport import CameraPipelineRpcServer, ZmqSocketOptions
+from .tray_detection.protocol import OrinTrayDetectionResponse
+from .opening_detection.protocol import OpeningDetectionPipelineResponse
+from .ball_pose_detection.protocol import BallPoseDetectionResponse
 
 LOGGER = logging.getLogger("..unified_service")
 
@@ -37,9 +43,21 @@ class CameraPipelineUnifiedService:
     def __init__(self, context: PipelineContext) -> None:
         self._context = context
         self._frame_pub_socket = zmq.Context.instance().socket(zmq.PUB)
+        self._frame_pub_socket.setsockopt(zmq.SNDHWM, 1)
+        self._frame_pub_socket.setsockopt(zmq.CONFLATE, 1)
         self._frame_pub_socket.bind(CAMERA_PIPELINE_FRAME_STREAM_BIND_ADDR)
+        self._color_frame_pub_socket = zmq.Context.instance().socket(zmq.PUB)
+        self._color_frame_pub_socket.setsockopt(zmq.SNDHWM, 1)
+        self._color_frame_pub_socket.setsockopt(zmq.CONFLATE, 1)
+        self._color_frame_pub_socket.bind(CAMERA_PIPELINE_FRAME_STREAM_BIND_ADDR.replace(":6201", ":6202"))
+        self._depth_frame_pub_socket = zmq.Context.instance().socket(zmq.PUB)
+        self._depth_frame_pub_socket.setsockopt(zmq.SNDHWM, 1)
+        self._depth_frame_pub_socket.setsockopt(zmq.CONFLATE, 1)
+        self._depth_frame_pub_socket.bind(CAMERA_PIPELINE_FRAME_STREAM_BIND_ADDR.replace(":6201", ":6203"))
         self._frame_pub_running = False
         self._frame_pub_thread: threading.Thread | None = None
+        self._color_frame_pub_thread: threading.Thread | None = None
+        self._depth_frame_pub_thread: threading.Thread | None = None
         self._tray_service = None
         self._opening_service = None
         self._ball_service = None
@@ -64,6 +82,16 @@ class CameraPipelineUnifiedService:
             return CameraPipelineServiceResponse(
                 operation=request.operation,
                 camera_frame_subscribe=self._handle_camera_frame_subscribe(request),
+            )
+        if request.operation == "camera_color_frame_subscribe":
+            return CameraPipelineServiceResponse(
+                operation=request.operation,
+                camera_color_frame_subscribe=self._handle_camera_color_frame_subscribe(request),
+            )
+        if request.operation == "camera_depth_frame_subscribe":
+            return CameraPipelineServiceResponse(
+                operation=request.operation,
+                camera_depth_frame_subscribe=self._handle_camera_depth_frame_subscribe(request),
             )
         if request.operation == "tray_detection":
             return CameraPipelineServiceResponse(
@@ -159,14 +187,66 @@ class CameraPipelineUnifiedService:
             error=None,
         )
 
+    def _handle_camera_color_frame_subscribe(self, request: CameraPipelineServiceRequest):
+        subscribe_request = request.camera_color_frame_subscribe
+        if subscribe_request is None:
+            raise RuntimeError("camera_color_frame_subscribe payload missing")
+        self._ensure_frame_publisher_started()
+        return CameraColorFrameSubscribeResponse(
+            stream_addr=CAMERA_PIPELINE_FRAME_STREAM_BIND_ADDR.replace(":6201", ":6202"),
+            camera_name=str(subscribe_request.camera_name),
+            error=None,
+        )
+
+    def _handle_camera_depth_frame_subscribe(self, request: CameraPipelineServiceRequest):
+        subscribe_request = request.camera_depth_frame_subscribe
+        if subscribe_request is None:
+            raise RuntimeError("camera_depth_frame_subscribe payload missing")
+        self._ensure_frame_publisher_started()
+        return CameraDepthFrameSubscribeResponse(
+            stream_addr=CAMERA_PIPELINE_FRAME_STREAM_BIND_ADDR.replace(":6201", ":6203"),
+            camera_name=str(subscribe_request.camera_name),
+            error=None,
+        )
+
     def _ensure_frame_publisher_started(self) -> None:
         if self._frame_pub_running:
             return
         self._frame_pub_running = True
         self._frame_pub_thread = threading.Thread(target=self._frame_pub_loop, name="camera-frame-pub", daemon=True)
+        self._color_frame_pub_thread = threading.Thread(
+            target=self._color_frame_pub_loop,
+            name="camera-color-frame-pub",
+            daemon=True,
+        )
+        self._depth_frame_pub_thread = threading.Thread(
+            target=self._depth_frame_pub_loop,
+            name="camera-depth-frame-pub",
+            daemon=True,
+        )
         self._frame_pub_thread.start()
+        self._color_frame_pub_thread.start()
+        self._depth_frame_pub_thread.start()
 
     def _frame_pub_loop(self) -> None:
+        self._publish_frame_loop(
+            packet_builder=self._build_full_frame_packet,
+            socket_obj=self._frame_pub_socket,
+        )
+
+    def _color_frame_pub_loop(self) -> None:
+        self._publish_frame_loop(
+            packet_builder=self._build_color_frame_packet,
+            socket_obj=self._color_frame_pub_socket,
+        )
+
+    def _depth_frame_pub_loop(self) -> None:
+        self._publish_frame_loop(
+            packet_builder=self._build_depth_frame_packet,
+            socket_obj=self._depth_frame_pub_socket,
+        )
+
+    def _publish_frame_loop(self, packet_builder, socket_obj: zmq.Socket) -> None:
         last_frame_id = -1
         while self._frame_pub_running:
             frame = self._context.get_latest_frame()
@@ -175,20 +255,59 @@ class CameraPipelineUnifiedService:
                 continue
             last_frame_id = int(frame.frame_id)
             try:
-                self._frame_pub_socket.send(pickle.dumps(frame, protocol=pickle.HIGHEST_PROTOCOL), flags=zmq.NOBLOCK)
+                socket_obj.send(
+                    pickle.dumps(packet_builder(frame), protocol=pickle.HIGHEST_PROTOCOL),
+                    flags=zmq.NOBLOCK,
+                )
             except zmq.error.Again:
                 pass
             time.sleep(0.01)
+
+    def _build_full_frame_packet(self, frame: CameraFramePacket) -> CameraFramePacket:
+        return frame
+
+    def _build_color_frame_packet(self, frame: CameraFramePacket) -> CameraColorFramePacket:
+        return CameraColorFramePacket(
+            frame_id=int(frame.frame_id),
+            camera_name=str(frame.camera_name),
+            timestamp_ms=float(frame.timestamp_ms),
+            color_bgr=frame.color_bgr,
+            fx=float(frame.fx),
+            fy=float(frame.fy),
+            cx=float(frame.cx),
+            cy=float(frame.cy),
+            source_meta=dict(frame.source_meta),
+        )
+
+    def _build_depth_frame_packet(self, frame: CameraFramePacket) -> CameraDepthFramePacket:
+        return CameraDepthFramePacket(
+            frame_id=int(frame.frame_id),
+            camera_name=str(frame.camera_name),
+            timestamp_ms=float(frame.timestamp_ms),
+            depth_mm=frame.depth_mm,
+            fx=float(frame.fx),
+            fy=float(frame.fy),
+            cx=float(frame.cx),
+            cy=float(frame.cy),
+            source_meta=dict(frame.source_meta),
+        )
 
     def close(self) -> None:
         self._frame_pub_running = False
         if self._frame_pub_thread is not None:
             self._frame_pub_thread.join(timeout=1.0)
             self._frame_pub_thread = None
+        if self._color_frame_pub_thread is not None:
+            self._color_frame_pub_thread.join(timeout=1.0)
+            self._color_frame_pub_thread = None
+        if self._depth_frame_pub_thread is not None:
+            self._depth_frame_pub_thread.join(timeout=1.0)
+            self._depth_frame_pub_thread = None
         self._frame_pub_socket.close(linger=0)
+        self._color_frame_pub_socket.close(linger=0)
+        self._depth_frame_pub_socket.close(linger=0)
 
-    def _handle_tray_detection(self, request: CameraPipelineServiceRequest) -> OrinTrayDetectionResponse:
-        from .tray_detection.protocol import OrinTrayDetectionRequest, OrinTrayDetectionResponse
+    def _handle_tray_detection(self, request: CameraPipelineServiceRequest) -> "OrinTrayDetectionResponse":
         from .tray_detection.service import OrinTrayDetectionService
 
         if self._tray_service is None:
@@ -199,7 +318,7 @@ class CameraPipelineUnifiedService:
         frame = self._context.resolve_frame(tray_request.frame_id)
         return self._tray_service.compute(frame, tray_request)
 
-    def _handle_opening_detection(self, request: CameraPipelineServiceRequest) -> OpeningDetectionPipelineResponse:
+    def _handle_opening_detection(self, request: CameraPipelineServiceRequest) -> "OpeningDetectionPipelineResponse":
         from .opening_detection.protocol import DebugArtifacts, OpeningDetectionPipelineResponse, TrayPoseInfo
         from .opening_detection.service import OpeningDetectionPipelineService
         from .tray_detection.protocol import OrinTrayDetectionRequest
@@ -258,8 +377,7 @@ class CameraPipelineUnifiedService:
             error=None,
         )
 
-    def _handle_ball_pose_detection(self, request: CameraPipelineServiceRequest) -> BallPoseDetectionResponse:
-        from .ball_pose_detection.protocol import BallPoseDetectionResponse
+    def _handle_ball_pose_detection(self, request: CameraPipelineServiceRequest) -> "BallPoseDetectionResponse":
         from .ball_pose_detection.service import BallPoseDetectionService
 
         if self._ball_service is None:
