@@ -1,22 +1,20 @@
 # Ball Pose Detection
 
-`camera_pipeline.ball_pose_detection` 是一个只负责 RGBD 多球检测与位姿求解的服务模块。
+`camera_pipeline.ball_pose_detection` 只负责 RGBD 小球检测，不负责坐标系生成、位姿求解或结果回传拼装。
 
 ## 算法逻辑
 
-输入是一帧 RGBD 图像和一组球先验。先验必须按实际物体上的球顺序给出，并至少包含 3 个球。
+输入是一帧 RGBD 图像和一组球先验。
 
-算法按照下面的真实规则构建球坐标系：
+服务端只做下面这些事情：
 
-1. 记录到的第一个球作为坐标系原点。
-2. 第二个球与第一个球连线方向作为 `x` 轴。
-3. 第三个球与前两个球共同确定 `xoy` 平面，平面法向用于构建 `z` 轴，随后按右手系得到 `y` 轴。
-4. 如果输入超过 3 个球，后续球用于修正位姿误差。
-5. 检测阶段先得到球坐标系到相机坐标系的刚体变换 `T_ball_cam`。
-6. 如果请求携带 `reference_relative_transform_mm`，最终输出位姿会叠加该先验变换，得到 `T_final_cam = T_ball_cam @ T_relative`。
-7. 所以最终位姿 `pose_transform`、`pose_rotation`、`pose_translation_mm` 都是叠加了先验修正后的相机坐标系结果。
+1. 根据球颜色在 RGB 图中分割候选区域。
+2. 对每个候选区域提取轮廓，计算圆心像素位置和像素半径。
+3. 结合深度图把圆心反投影到相机坐标系，得到球圆心三维坐标。
+4. 根据相机内参与深度估计一个物理半径，作为检测半径输出。
+5. 按先验颜色顺序返回三个球的检测结果。
 
-位姿计算时，服务会优先使用前 3 个球构建基准位姿，再将全部可用球一起参与误差修正。如果全量拟合比基准拟合更稳定，则采用全量结果，否则回退到前三球基准结果。
+服务端不构建黄球原点坐标系，不构建红球 x 轴，不判断紫球是否落在 xoy 平面，也不输出任何刚体变换矩阵。
 
 ## 输入数据
 
@@ -26,26 +24,30 @@
 - `camera_name`: 相机名称
 - `frame_id`: 要处理的 frame 编号
 - `enable_debug`: 是否返回 debug 数据
-- `priors`: 球先验列表
-- `reference_relative_transform_mm`: 可选的参考相对变换，用于采集和对比，不参与核心检测
+- `priors`: 球先验列表，主要提供颜色和半径先验
 
 ### `BallPosePriorInfo`
 
-- `name`: 球先验名称
 - `color_hex`: 球颜色，使用 HEX 码表示
 - `radius_mm`: 球半径，单位 mm
-- `model_center_mm`: 球在球坐标系中的模型中心，单位 mm
+- `model_center_mm`: 预留字段，检测端不参与坐标系构建
 
 ## 输出数据
 
 ### `BallPoseDetectionResponse`
 
-- `pose_transform`: 4x4 刚体变换矩阵，球坐标系到相机坐标系
-- `pose_rotation`: 3x3 旋转矩阵
-- `pose_translation_mm`: 3 维平移
-- `residual_mm`: 拟合残差
-- `matched_count`: 成功匹配到并参与位姿计算的球数量
-- `detections`: 每个球的检测结果摘要
+- `matched_count`: 成功检测到并估计出圆心的球数量
+- `detections`: 每个球的检测结果摘要，包含：
+  - `color_hex`
+  - `detected`
+  - `center_px`
+  - `center_mm`
+  - `radius_mm`
+  - `radius_px`
+  - `center_norm`
+  - `radius_norm`
+  - `point_count`
+  - `status`
 - `debug`: 调试数据
 - `error`: 错误信息
 
@@ -56,11 +58,22 @@
 - `color_bgr`: 原始彩色图
 - `depth_mm`: 原始深度图
 - `camera_intrinsics`: 相机内参 `(fx, fy, cx, cy)`
-- `overlay_bgr`: 叠加了球检测结果和最终位姿的图
-- `detection_overlay_bgr`: 仅叠加球检测结果的图
-- `detections`: 每个球的 debug 字典，包含颜色、半径、中心位置、像素半径、归一化几何、点数和状态
+- `overlay_bgr`: 仅叠加检测结果的图
+- `detection_overlay_bgr`: 仅叠加检测结果的图
+- `detections`: 每个球的 debug 字典
 
-## 说明
+当 `enable_debug=False` 时，不再生成这些大对象。
+
+## 坐标系说明
+
+坐标系构建由 `test/wuji/ball_pose_detection.py` 在本地完成：
+
+- 黄球圆心作为原点
+- 红球圆心定义 `x` 轴
+- 紫球圆心约束在 `xoy` 平面
+
+服务端只返回三个球的圆心坐标，后续位姿、相对变换、对比和可视化都由本地脚本处理。
+
+## 备注
 
 该模块不负责相机采集、不负责 RPC 端点配置，也不负责先验采集脚本。
-先验采集和位姿对比应由 `test/wuji/collect_ball_opening_relative_pose.py` 和 `test/wuji/ball_pose_detection.py` 完成。

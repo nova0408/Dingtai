@@ -39,10 +39,10 @@ from test.wuji.xcoresdk_arm_cli_test import (  # noqa: E402
 )
 
 
-# T_prior_base_board=T_newTcp@T_tool_cam@T_cam_board
+# T_prior_base_board=T_tcp@T_tool_cam@T_cam_board
 # T_new_base_board=T_off@T_prior_base_board =T_tcp@T_tool_cam@T_cam_board
 # T_off=T_tcp@T_tool_cam@T_cam_board@inv(T_prior_base_board)
-# T_newTcp=inv(T_off)@T_tcp
+# T_new_tcp=inv(T_off)@T_tcp
 
 # region 默认参数
 DEFAULT_WINDOW_NAME = "Charuco Rebase Jog"

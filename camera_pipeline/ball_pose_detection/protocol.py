@@ -24,7 +24,6 @@ class BallPoseDetectionRequest:
     frame_id: int = -1
     enable_debug: bool = True
     priors: Tuple[BallPosePriorInfo, ...] = field(default_factory=tuple)
-    reference_relative_transform_mm: Optional[Tuple[Tuple[float, float, float, float], ...]] = None
 
 
 @dataclass(frozen=True)
@@ -49,10 +48,6 @@ class BallPoseDetectionResponse:
     timestamp_ms: float
     source_meta: Dict[str, Any] = field(default_factory=dict)
     elapsed_ms: float = 0.0
-    pose_transform: Optional[Any] = None
-    pose_translation_mm: Optional[Any] = None
-    pose_rotation: Optional[Any] = None
-    residual_mm: Optional[float] = None
     matched_count: int = 0
     detections: Tuple[Dict[str, Any], ...] = field(default_factory=tuple)
     debug: Optional[BallPoseDetectionDebugArtifacts] = None

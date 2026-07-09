@@ -46,10 +46,6 @@ class BallObservation:
 @dataclass(frozen=True)
 class BallPoseDetectionResult:
     detections: list[BallObservation]
-    pose_translation_mm: np.ndarray | None
-    pose_rotation: np.ndarray | None
-    pose_transform: np.ndarray | None
-    residual_mm: float | None
     matched_count: int
     debug_ball_colors_bgr: dict[str, np.ndarray]
     debug_ball_radii_mm: dict[str, float]
@@ -68,8 +64,6 @@ class BallPoseDetectionConfig:
     depth_trim_ratio: float = 0.18
     min_depth_points: int = 18
     min_center_distance_ratio: float = 1.35
-    max_pair_distance_error_mm: float = 12.0
-    max_pose_residual_mm: float = 10.0
     color_ranges: dict[str, tuple[tuple[int, int, int, int, int, int], ...]] = field(
         default_factory=lambda: {
             "#ff0000": ((0, 75, 55, 10, 255, 255), (170, 75, 55, 179, 255, 255)),

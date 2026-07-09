@@ -21,7 +21,6 @@ def encode_request(packet: BallPoseDetectionRequest) -> List[bytes]:
         "frame_id": int(packet.frame_id),
         "enable_debug": bool(packet.enable_debug),
         "priors": [_encode_prior(item) for item in packet.priors],
-        "reference_relative_transform_mm": packet.reference_relative_transform_mm,
     }
     return [b"ball_pose_detection_request", json.dumps(meta, ensure_ascii=False).encode("utf-8")]
 
@@ -39,17 +38,6 @@ def decode_request(parts: List[bytes]) -> BallPoseDetectionRequest:
         frame_id=int(meta.get("frame_id", -1)),
         enable_debug=bool(meta.get("enable_debug", False)),
         priors=tuple(_decode_prior(item) for item in meta.get("priors", [])),
-        reference_relative_transform_mm=None
-        if meta.get("reference_relative_transform_mm") is None
-        else tuple(
-            (
-                float(row[0]),
-                float(row[1]),
-                float(row[2]),
-                float(row[3]),
-            )
-            for row in meta["reference_relative_transform_mm"]
-        ),
     )
 
 
@@ -61,10 +49,6 @@ def encode_response(packet: BallPoseDetectionResponse) -> List[bytes]:
         "timestamp_ms": float(packet.timestamp_ms),
         "source_meta": dict(packet.source_meta),
         "elapsed_ms": float(packet.elapsed_ms),
-        "pose_transform": packet.pose_transform,
-        "pose_translation_mm": packet.pose_translation_mm,
-        "pose_rotation": packet.pose_rotation,
-        "residual_mm": packet.residual_mm,
         "matched_count": int(packet.matched_count),
         "detections": list(packet.detections),
         "error": packet.error,
@@ -103,9 +87,6 @@ def decode_response(parts: List[bytes]) -> BallPoseDetectionResponse:
             detection_overlay_bgr=_decode_jpeg(detection_overlay_bytes),
             detections=tuple(meta.get("debug_detections", [])),
         )
-    pose_transform = None if meta.get("pose_transform") is None else tuple(tuple(float(v) for v in row) for row in meta["pose_transform"])
-    pose_translation_mm = None if meta.get("pose_translation_mm") is None else _decode_point3(meta["pose_translation_mm"])
-    pose_rotation = None if meta.get("pose_rotation") is None else tuple(tuple(float(v) for v in row) for row in meta["pose_rotation"])
     return BallPoseDetectionResponse(
         request_id=int(meta.get("request_id", 0)),
         frame_id=int(meta["frame_id"]),
@@ -113,10 +94,6 @@ def decode_response(parts: List[bytes]) -> BallPoseDetectionResponse:
         timestamp_ms=float(meta["timestamp_ms"]),
         source_meta=dict(meta.get("source_meta", {})),
         elapsed_ms=float(meta["elapsed_ms"]),
-        pose_transform=pose_transform,
-        pose_translation_mm=pose_translation_mm,
-        pose_rotation=pose_rotation,
-        residual_mm=meta.get("residual_mm"),
         matched_count=int(meta.get("matched_count", 0)),
         detections=tuple(meta.get("detections", [])),
         debug=debug,
@@ -175,11 +152,6 @@ def _decode_png_depth(data: bytes) -> Optional[np.ndarray]:
     if arr is None:
         raise RuntimeError("failed to decode ball pose depth png")
     return np.asarray(arr, dtype=np.uint16)
-
-
-def _decode_point3(values: Any) -> tuple[float, float, float]:
-    return float(values[0]), float(values[1]), float(values[2])
-
 
 def _decode_point4(values: Any) -> tuple[float, float, float, float]:
     return float(values[0]), float(values[1]), float(values[2]), float(values[3])

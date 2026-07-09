@@ -3,7 +3,6 @@ from __future__ import annotations
 import ast
 import csv
 import gc
-import math
 import sys
 import time
 from dataclasses import dataclass
@@ -11,6 +10,7 @@ from pathlib import Path
 
 import numpy as np
 from loguru import logger
+from scipy.spatial.transform import Rotation
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
@@ -21,7 +21,6 @@ from camera_pipeline.client import CameraPipelineClient  # noqa: E402
 from sdk.xcoresdk import xCoreSDK_python  # noqa: E402
 from test.wuji.ball_pose_detection import (  # noqa: E402
     DEFAULT_CAMERA_NAME as DEFAULT_BALL_POSE_CAMERA_NAME,
-    DEFAULT_PRIOR_CAPTURE_PATH,
     DEFAULT_SERVICE_ADDR as DEFAULT_BALL_POSE_SERVICE_ADDR,
     _build_three_ball_basis_transform,
     _build_priors_from_capture,
@@ -106,20 +105,31 @@ DEFAULT_OFFSET_SERVICE_ADDR = DEFAULT_BALL_POSE_SERVICE_ADDR
 DEFAULT_OFFSET_CAMERA_NAME = DEFAULT_BALL_POSE_CAMERA_NAME
 "计算全局 offset 时使用的相机名称。"
 
-DEFAULT_OFFSET_PRIOR_CAPTURE_PATH = DEFAULT_PRIOR_CAPTURE_PATH
+DEFAULT_OFFSET_PRIOR_CAPTURE_PATH = PROJECT_ROOT / "test" / "wuji" / ".archive" / "ball_pose_detection_capture" / "summary.json"
 "计算全局 offset 时使用的先验采集结果路径。"
 
-DEFAULT_TOOL_CAMERA_EXTRINSIC_MM = (
-    (0.75054136, 0.40327305, 0.52350598, -36.64847077),
-    (-0.66038493, 0.48657678, 0.57195698, -35.16431312),
-    (-0.02407102, -0.77499283, 0.63151144, 99.39447113),
-    (0.0, 0.0, 0.0, 1.0),
-)
-"eye-in-hand 手眼外参 `T_tool_camera`，平移单位 mm。"
+DEFAULT_HAND_EYE_RESULT_PATH = PROJECT_ROOT / "experiments" / "hand_eye" / "runs" / "20260708_152829" / "hand_eye_result.txt"
+"计算全局 offset 时使用的手眼标定结果文件。"
 
+OFFSET_CAPTURE_SETTLE_DELAY_S = 5.0
+"到达 offset 触发 CSV 后，等待机械臂和相机画面稳定的时间。"
+
+OFFSET_BALL_CAPTURE_SAMPLE_COUNT = 20
+"计算 offset 时连续采集三球坐标的次数。"
+
+OFFSET_BALL_OUTLIER_MAD_SCALE = 3.5
+"三球 9 维坐标鲁棒剔除的 MAD 倍数阈值。"
+
+OFFSET_BALL_OUTLIER_MIN_THRESHOLD_MM = 2.0
+"三球坐标鲁棒剔除的最小距离阈值，避免 MAD 过小时误删正常样本。"
+
+# 统一使用米单位：
+# T_prior_base_ball = T_tcp @ T_tool_cam @ T_cam_ball
+# T_off = T_tcp @ T_tool_cam @ T_cam_ball @ inv(T_prior_base_ball)
+# T_new_tcp = T_off @ T_tcp
 
 # region 数据结构
-
+# 实测最终应用公式统一使用：T_new_tcp = T_off @ T_tcp
 
 @dataclass(frozen=True, slots=True)
 class ReplayRow:
@@ -159,6 +169,7 @@ class ReplayRuntime:
     offset_service_addr: str = DEFAULT_OFFSET_SERVICE_ADDR
     offset_camera_name: str = DEFAULT_OFFSET_CAMERA_NAME
     offset_prior_capture_path: Path = DEFAULT_OFFSET_PRIOR_CAPTURE_PATH
+    hand_eye_result_path: Path = DEFAULT_HAND_EYE_RESULT_PATH
     joint_speed_deg_s: float = DEFAULT_REPLAY_JOINT_SPEED
     cartesian_speed_mm_s: float = DEFAULT_REPLAY_CARTESIAN_SPEED
     auto_execute_remaining: bool = False
@@ -227,6 +238,10 @@ def _parse_pose_values(pose_text: str) -> ParsedArmPose:
 def _extract_csv_sequence(csv_name: str) -> int:
     prefix = csv_name.split("_", maxsplit=1)[0]
     return int(prefix)
+
+
+def _should_apply_global_cartesian_offset(csv_name: str) -> bool:
+    return _extract_csv_sequence(csv_name) in CSV_CARTESIAN_OFFSET_TARGETS
 
 
 def _format_optional_csv_sequence(sequence: int | None) -> str:
@@ -371,22 +386,27 @@ def _build_cartesian_target(runtime: ReplayRuntime, row: ReplayRow) -> xCoreSDK_
         target_pose.elbow = _deg_to_rad([parsed_pose.elbow_deg])[0]
     if parsed_pose.conf_data is not None:
         target_pose.confData = list(parsed_pose.conf_data)
-    csv_sequence = _extract_csv_sequence(row.csv_name)
-    if csv_sequence in CSV_CARTESIAN_OFFSET_TARGETS:
+    if _should_apply_global_cartesian_offset(row.csv_name):
         target_pose = _apply_global_cartesian_offset(runtime, row, target_pose)
     return target_pose
 
 
 def _frame_to_homogeneous_matrix(frame: xCoreSDK_python.CartesianPosition) -> list[list[float]]:
-    rx, ry, rz = (float(value) for value in frame.rpy)
-    cx, sx = math.cos(rx), math.sin(rx)
-    cy, sy = math.cos(ry), math.sin(ry)
-    cz, sz = math.cos(rz), math.sin(rz)
-    rotation = [
-        [cz * cy, cz * sy * sx - sz * cx, cz * sy * cx + sz * sx],
-        [sz * cy, sz * sy * sx + cz * cx, sz * sy * cx - cz * sx],
-        [-sy, cy * sx, cy * cx],
-    ]
+    """把 SDK 返回的 `CartesianPosition` 转为内部计算矩阵。
+
+    来源与单位：
+    - `frame.trans`：SDK 原始单位 `m`
+    - `frame.rpy`：SDK 原始单位 `rad`
+    - 欧拉解释：与 hand_eye_orin_left_arm_drag.py 的实际手眼求解链路一致，使用 scipy `from_euler("xyz")`
+    - 返回矩阵平移：`m`
+    - 返回矩阵姿态：无量纲旋转矩阵
+    """
+
+    rotation = Rotation.from_euler(
+        "xyz",
+        np.asarray(frame.rpy, dtype=np.float64).reshape(3),
+        degrees=False,
+    ).as_matrix()
     matrix = [
         [rotation[0][0], rotation[0][1], rotation[0][2], float(frame.trans[0])],
         [rotation[1][0], rotation[1][1], rotation[1][2], float(frame.trans[1])],
@@ -394,6 +414,12 @@ def _frame_to_homogeneous_matrix(frame: xCoreSDK_python.CartesianPosition) -> li
         [0.0, 0.0, 0.0, 1.0],
     ]
     return matrix
+
+
+def _frame_to_homogeneous_matrix_m(frame: xCoreSDK_python.CartesianPosition) -> np.ndarray:
+    """返回 `m` 单位的 4x4 齐次矩阵。"""
+
+    return np.asarray(_frame_to_homogeneous_matrix(frame), dtype=np.float64)
 
 
 def _multiply_homogeneous_matrix(
@@ -410,26 +436,28 @@ def _multiply_homogeneous_matrix(
     return result
 
 
-def _homogeneous_matrix_to_rpy(matrix: list[list[float]]) -> tuple[float, float, float]:
-    sy = -float(matrix[2][0])
-    cy = math.sqrt(max(0.0, 1.0 - sy * sy))
-    if cy > 1e-9:
-        rx = math.atan2(float(matrix[2][1]), float(matrix[2][2]))
-        ry = math.atan2(sy, cy)
-        rz = math.atan2(float(matrix[1][0]), float(matrix[0][0]))
-        return rx, ry, rz
-    rx = math.atan2(-float(matrix[1][2]), float(matrix[1][1]))
-    ry = math.atan2(sy, cy)
-    rz = 0.0
-    return rx, ry, rz
+def _homogeneous_matrix_to_rpy(matrix: np.ndarray | list[list[float]]) -> tuple[float, float, float]:
+    matrix_np = np.asarray(matrix, dtype=np.float64)
+    rpy_rad = Rotation.from_matrix(matrix_np[:3, :3]).as_euler("xyz", degrees=False)
+    return float(rpy_rad[0]), float(rpy_rad[1]), float(rpy_rad[2])
 
 
 def _homogeneous_matrix_to_cartesian_position(
     source_pose: xCoreSDK_python.CartesianPosition,
-    matrix: list[list[float]],
+    matrix: np.ndarray | list[list[float]],
 ) -> xCoreSDK_python.CartesianPosition:
-    xyz_m = [float(matrix[0][3]), float(matrix[1][3]), float(matrix[2][3])]
-    rpy_rad = list(_homogeneous_matrix_to_rpy(matrix))
+    """把内部 `m` 矩阵回写成 SDK 可接收的 `CartesianPosition`。
+
+    说明：
+    - 输入矩阵平移必须是 `m`
+    - 输入矩阵姿态必须是标准旋转矩阵
+    - 返回给 SDK 的 `trans` 仍是 `m`
+    - 返回给 SDK 的 `rpy` 仍是 `rad`，欧拉顺序与手眼求解链路保持 `"xyz"`
+    """
+
+    matrix_np = np.asarray(matrix, dtype=np.float64)
+    xyz_m = [float(matrix_np[0][3]), float(matrix_np[1][3]), float(matrix_np[2][3])]
+    rpy_rad = list(_homogeneous_matrix_to_rpy(matrix_np))
     target_pose = xCoreSDK_python.CartesianPosition(xyz_m + rpy_rad)
     target_pose.hasElbow = source_pose.hasElbow
     target_pose.elbow = source_pose.elbow
@@ -442,35 +470,96 @@ def _apply_global_cartesian_offset(
     row: ReplayRow,
     target_pose: xCoreSDK_python.CartesianPosition,
 ) -> xCoreSDK_python.CartesianPosition:
+    """将全局 offset 左乘到目标 TCP 上。
+
+    链路：
+    - 目标 TCP 由 CSV 目标构造，内部以 `m/rad` 进入 `CartesianPosition`
+    - `runtime.global_cartesian_offset` 以 `m` 保存
+    - 应用公式固定为 `T_new_tcp = T_off @ T_tcp`
+    - 最终返回给 SDK 的 `CartesianPosition` 仍保持 `m/rad`
+    """
+
     if runtime.global_cartesian_offset is None:
         raise RuntimeError(
             f"CSV {row.csv_name} 需要使用全局笛卡尔纠偏，但当前尚未在 "
             f"{_format_optional_csv_sequence(CSV_CARTESIAN_OFFSET_CALCULATE_AT)}_*.csv 末尾计算 offset"
-        )
+    )
     original_matrix = _frame_to_homogeneous_matrix(target_pose)
-    offset_matrix_m = _offset_matrix_mm_to_pose_matrix_m(runtime.global_cartesian_offset)
-    corrected_matrix = _multiply_homogeneous_matrix(offset_matrix_m, original_matrix)
+    offset_matrix_m = np.asarray(runtime.global_cartesian_offset, dtype=np.float64)
+    corrected_matrix = offset_matrix_m @ np.asarray(original_matrix, dtype=np.float64)
     corrected_pose = _homogeneous_matrix_to_cartesian_position(target_pose, corrected_matrix)
     logger.info(
-        "已对笛卡尔目标应用全局左乘纠偏 file={} row={} base=tool:{} wobj:{}",
+        "已对笛卡尔目标应用全局左乘纠偏矩阵 T_new_tcp=T_off@T_tcp file={} row={} base=tool:{} wobj:{} {}",
         row.csv_name,
         row.row_index,
         DEFAULT_TOOL_NAME,
         DEFAULT_WOBJ_NAME,
+        _format_matrix_xyzrpy_mm_deg("T_new_tcp", corrected_matrix),
     )
     return corrected_pose
 
 
-def _load_prior_three_ball_basis_transform(prior_capture_path: Path) -> np.ndarray:
+def _load_prior_base_ball_transform(prior_capture_path: Path, hand_eye_result_path: Path) -> np.ndarray:
+    """从先验捕获文件重建 `T_prior_base_ball`，单位统一为 `m`。
+
+    文件来源：
+    - `tcp_pose_matrix`：记录时的 `T_tcp`，由 SDK `cartPosture(endInRef)` 的 `trans(m)+rpy(rad)` 重建，已经是 `m`
+    - `local_pose_transform`：记录时的 `T_cam_ball`，文件落盘为 `mm`
+    - `hand_eye_result.txt`：记录时使用的 `T_tool_cam`，原始单位 `m`
+    """
+
     prior_capture = _load_prior_capture(prior_capture_path)
-    recorded_balls = prior_capture.get("balls", {}).get("ballinfo", [])
-    if not isinstance(recorded_balls, list) or len(recorded_balls) < 3:
-        raise RuntimeError(f"先验文件缺少三球位置: {prior_capture_path}")
-    detections = [{"center_mm": item.get("position_camera_mm")} for item in recorded_balls[:3]]
-    basis_transform = _build_three_ball_basis_transform(detections)
-    if basis_transform is None:
-        raise RuntimeError(f"先验三球基础坐标系构造失败: {prior_capture_path}")
-    return basis_transform
+    tcp_pose_matrix = prior_capture.get("tcp_pose_matrix")
+    local_pose_transform = prior_capture.get("local_pose_transform")
+    if tcp_pose_matrix is None:
+        raise RuntimeError(
+            f"先验文件缺少 tcp_pose_matrix: {prior_capture_path}。"
+            "请先重新运行 ball_pose_detection.py 生成包含 tcp_pose_matrix 的 summary.json"
+        )
+    if local_pose_transform is None:
+        raise RuntimeError(f"先验文件缺少 local_pose_transform: {prior_capture_path}")
+    tcp_matrix_m = np.asarray(tcp_pose_matrix, dtype=np.float64)
+    ball_matrix_m = np.asarray(local_pose_transform, dtype=np.float64)
+    if tcp_matrix_m.shape != (4, 4) or not np.all(np.isfinite(tcp_matrix_m)):
+        raise RuntimeError(f"先验 tcp_pose_matrix 格式无效: {prior_capture_path}")
+    if ball_matrix_m.shape != (4, 4) or not np.all(np.isfinite(ball_matrix_m)):
+        raise RuntimeError(f"先验 local_pose_transform 格式无效: {prior_capture_path}")
+    ball_matrix_m = ball_matrix_m.copy()
+    tcp_matrix_m = tcp_matrix_m.copy()
+    # tcp_pose_matrix 已经是内部计算单位 m，不能再次做 mm -> m 缩放。
+    ball_matrix_m[:3, 3] *= 0.001
+    tool_camera_matrix_m = _load_tool_camera_transform_m(hand_eye_result_path)
+    prior_base_ball_transform = tcp_matrix_m @ tool_camera_matrix_m @ ball_matrix_m
+    return prior_base_ball_transform
+
+
+def _load_tool_camera_transform_m(hand_eye_result_path: Path) -> np.ndarray:
+    """从 hand-eye 结果文件加载 `T_tool_cam`，单位保持为 `m`。"""
+
+    if not hand_eye_result_path.is_file():
+        raise FileNotFoundError(f"手眼结果文件不存在: {hand_eye_result_path}")
+    lines = hand_eye_result_path.read_text(encoding="utf-8").splitlines()
+    matrix_rows: list[list[float]] = []
+    collecting = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped == "T_tool_cam:":
+            collecting = True
+            continue
+        if collecting:
+            if stripped == "":
+                break
+            cleaned = stripped.replace("[", " ").replace("]", " ")
+            values = [float(token) for token in cleaned.split() if token]
+            if len(values) != 4:
+                raise ValueError(f"手眼矩阵行格式错误: {line}")
+            matrix_rows.append(values)
+            if len(matrix_rows) == 4:
+                break
+    matrix = np.asarray(matrix_rows, dtype=np.float64)
+    if matrix.shape != (4, 4) or not np.all(np.isfinite(matrix)):
+        raise ValueError(f"手眼矩阵维度错误: shape={matrix.shape}, path={hand_eye_result_path}")
+    return matrix
 
 
 def _detect_current_three_ball_basis_transform(
@@ -478,48 +567,177 @@ def _detect_current_three_ball_basis_transform(
     camera_name: str,
     prior_capture_path: Path,
 ) -> np.ndarray:
+    """连续采样三球坐标，剔除异常值后返回均值 `T_cam_ball`。
+
+    检测服务返回的 `center_mm` 单位是 `mm`；本函数最终返回矩阵平移统一为 `m`。
+    """
+
     prior_capture = _load_prior_capture(prior_capture_path)
     priors = _build_priors_from_capture(prior_capture)
+    samples_mm: list[np.ndarray] = []
+    frame_ids: list[int] = []
     client = CameraPipelineClient(service_addr=str(service_addr), timeout_ms=30_000)
     try:
-        response = client.request_ball_pose_detection(
-            BallPoseDetectionRequest(
-                request_id=1,
-                camera_name=str(camera_name),
-                frame_id=-1,
-                enable_debug=True,
-                priors=tuple(priors),
+        for sample_index in range(OFFSET_BALL_CAPTURE_SAMPLE_COUNT):
+            response = client.request_ball_pose_detection(
+                BallPoseDetectionRequest(
+                    request_id=sample_index + 1,
+                    camera_name=str(camera_name),
+                    frame_id=-1,
+                    enable_debug=True,
+                    priors=tuple(priors),
+                )
             )
-        )
+            logger.info(
+                "ball pose detection sample response {}/{} frame_id={} matched_count={} valid_so_far={} error={}",
+                sample_index + 1,
+                OFFSET_BALL_CAPTURE_SAMPLE_COUNT,
+                response.frame_id,
+                response.matched_count,
+                len(samples_mm),
+                response.error,
+            )
+            if response.error is not None:
+                logger.warning("ball pose detection sample failed index={} error={}", sample_index + 1, response.error)
+                continue
+            if response.matched_count < 3:
+                logger.warning(
+                    "ball pose detection sample insufficient index={} matched_count={}",
+                    sample_index + 1,
+                    response.matched_count,
+                )
+                continue
+            sample_mm = _extract_ordered_three_ball_centers_mm(response.detections)
+            if sample_mm is None:
+                logger.warning("ball pose detection sample basis invalid index={}", sample_index + 1)
+                continue
+            samples_mm.append(sample_mm)
+            frame_ids.append(int(response.frame_id))
+            logger.info(
+                "ball pose detection sample accepted {}/{} valid={} {}",
+                sample_index + 1,
+                OFFSET_BALL_CAPTURE_SAMPLE_COUNT,
+                len(samples_mm),
+                _format_three_ball_centers_mm(sample_mm),
+            )
     finally:
         client.close()
-    if response.error is not None:
-        raise RuntimeError(f"ball pose detection 返回错误: {response.error}")
-    if response.matched_count < 3:
-        raise RuntimeError("ball pose detection 未返回足够的三球检测结果")
-    basis_transform = _build_three_ball_basis_transform(response.detections)
+    if not samples_mm:
+        raise RuntimeError("ball pose detection 连续采样未得到可用三球检测结果")
+    mean_detections, kept_count, rejected_count, mean_distance_mm, max_distance_mm = _build_mean_three_ball_detections(
+        samples_mm
+    )
+    basis_transform = _build_three_ball_basis_transform(mean_detections)
     if basis_transform is None:
-        raise RuntimeError("当前三球基础坐标系构造失败")
+        raise RuntimeError("均值三球基础坐标系构造失败")
+    # ball_pose_detection 的检测结果以 mm 输出，这里统一转换为 m 再参与链路。
+    basis_transform = basis_transform.copy()
+    basis_transform[:3, 3] *= 0.001
     logger.info(
-        "ball pose detection 完成 frame_id={} matched_count={} camera={}",
-        response.frame_id,
-        response.matched_count,
+        "ball pose detection 均值采样完成 camera={} requested={} valid={} kept={} rejected={} "
+        "frame_first={} frame_last={} mean_dist_mm={:.3f} max_dist_mm={:.3f}",
         camera_name,
+        OFFSET_BALL_CAPTURE_SAMPLE_COUNT,
+        len(samples_mm),
+        kept_count,
+        rejected_count,
+        frame_ids[0] if frame_ids else "NA",
+        frame_ids[-1] if frame_ids else "NA",
+        mean_distance_mm,
+        max_distance_mm,
     )
     return basis_transform
+
+
+def _extract_ordered_three_ball_centers_mm(detections: object) -> np.ndarray | None:
+    if not isinstance(detections, list | tuple):
+        return None
+    by_color: dict[str, np.ndarray] = {}
+    for item in detections:
+        if not isinstance(item, dict):
+            continue
+        color_hex = str(item.get("color_hex"))
+        center = np.asarray(item.get("center_mm"), dtype=np.float64)
+        if center.shape == (3,) and np.all(np.isfinite(center)):
+            by_color[color_hex] = center
+    ordered_centers = [by_color.get(color_hex) for color_hex in ("#ffff00", "#ff0000", "#ff00ff")]
+    if any(center is None for center in ordered_centers):
+        return None
+    return np.stack([np.asarray(center, dtype=np.float64) for center in ordered_centers], axis=0)
+
+
+def _format_three_ball_centers_mm(centers_mm: np.ndarray) -> str:
+    centers = np.asarray(centers_mm, dtype=np.float64).reshape(3, 3)
+    labels = ("yellow", "red", "purple")
+    values = []
+    for label, center in zip(labels, centers, strict=True):
+        values.append(f"{label}_xyz_mm=[{_format_sequence(center.tolist())}]")
+    return " ".join(values)
+
+
+def _build_mean_three_ball_detections(
+    samples_mm: list[np.ndarray],
+) -> tuple[list[dict[str, object]], int, int, float, float]:
+    sample_stack = np.stack(samples_mm, axis=0)
+    flattened = sample_stack.reshape(sample_stack.shape[0], 9)
+    median = np.median(flattened, axis=0)
+    distances = np.linalg.norm(flattened - median.reshape(1, 9), axis=1)
+    median_distance = float(np.median(distances))
+    mad = float(np.median(np.abs(distances - median_distance)))
+    threshold = max(OFFSET_BALL_OUTLIER_MIN_THRESHOLD_MM, median_distance + OFFSET_BALL_OUTLIER_MAD_SCALE * mad)
+    keep_mask = distances <= threshold
+    if not np.any(keep_mask):
+        keep_mask[int(np.argmin(distances))] = True
+    kept_samples = sample_stack[keep_mask]
+    mean_centers = np.mean(kept_samples, axis=0)
+    kept_distances = distances[keep_mask]
+    detections = [
+        {"color_hex": "#ffff00", "center_mm": mean_centers[0].tolist()},
+        {"color_hex": "#ff0000", "center_mm": mean_centers[1].tolist()},
+        {"color_hex": "#ff00ff", "center_mm": mean_centers[2].tolist()},
+    ]
+    kept_count = int(np.count_nonzero(keep_mask))
+    return (
+        detections,
+        kept_count,
+        int(sample_stack.shape[0] - kept_count),
+        float(np.mean(kept_distances)),
+        float(np.max(kept_distances)),
+    )
 
 
 def _calculate_global_cartesian_offset(
     runtime: ReplayRuntime,
     csv_path: Path,
 ) -> tuple[tuple[float, float, float, float], ...]:
-    prior_three_ball_basis_transform = _load_prior_three_ball_basis_transform(runtime.offset_prior_capture_path)
-    current_three_ball_basis_transform = _detect_current_three_ball_basis_transform(
+    """严格按下式计算全局偏移矩阵，所有矩阵统一为 `m`：
+
+    - `T_prior_base_ball = T_prior_tcp @ T_tool_cam @ T_prior_cam_ball`
+    - `T_off = T_curr_tcp @ T_tool_cam @ T_curr_cam_ball @ inv(T_prior_base_ball)`
+    - `T_new_tcp = T_off @ T_curr_tcp`
+    """
+
+    prior_base_ball_transform = _load_prior_base_ball_transform(
+        runtime.offset_prior_capture_path,
+        runtime.hand_eye_result_path,
+    )
+    current_cam_ball_transform = _detect_current_three_ball_basis_transform(
         service_addr=runtime.offset_service_addr,
         camera_name=runtime.offset_camera_name,
         prior_capture_path=runtime.offset_prior_capture_path,
     )
-    offset_matrix = prior_three_ball_basis_transform @ np.linalg.inv(current_three_ball_basis_transform)
+    if _apply_named_toolset(runtime.connected_arm.robot, runtime.connected_arm.ec) is None:
+        raise RuntimeError(f"设置固定 toolset 失败: tool={DEFAULT_TOOL_NAME}, wobj={DEFAULT_WOBJ_NAME}")
+    tcp_pose = runtime.connected_arm.robot.cartPosture(xCoreSDK_python.endInRef, runtime.connected_arm.ec)
+    _print_sdk_result("cartPosture(endInRef, offset-calc)", runtime.connected_arm.ec)
+    if runtime.connected_arm.ec.get("ec", 0) != 0:
+        raise RuntimeError("读取当前 TCP 位姿失败，无法计算全局 offset")
+    # SDK 原始输出：trans(m), rpy(rad)，这里重建成内部计算矩阵(m)。
+    tcp_matrix_m = _frame_to_homogeneous_matrix_m(tcp_pose)
+    tool_camera_matrix_m = _load_tool_camera_transform_m(runtime.hand_eye_result_path)
+    current_base_ball_m = tcp_matrix_m @ tool_camera_matrix_m @ current_cam_ball_transform
+    offset_matrix_m = current_base_ball_m @ np.linalg.inv(prior_base_ball_transform)
+    new_tcp_matrix_m = offset_matrix_m @ tcp_matrix_m
     logger.success(
         "全局 offset 已计算 file={} trigger=csv_end_state base=tool:{} wobj:{}",
         csv_path.name,
@@ -527,61 +745,54 @@ def _calculate_global_cartesian_offset(
         DEFAULT_WOBJ_NAME,
     )
     logger.info(
-        "offset 来源=先验三球基础坐标系 左乘 当前三球基础坐标系逆 translation(mm)=[{}]",
-        _format_sequence(
-            [
-                float(offset_matrix[0, 3]),
-                float(offset_matrix[1, 3]),
-                float(offset_matrix[2, 3]),
-            ]
-        ),
+        "offset 来源=T_tcp@T_tool_cam@T_cam_ball@inv(T_prior_base_ball) {}",
+        _format_matrix_xyzrpy_mm_deg("T_off", offset_matrix_m),
     )
     logger.info(
-        "offset rotation(deg)=[{}]",
-        _format_sequence(_rotation_matrix_to_rpy_deg(offset_matrix[:3, :3])),
+        "{}",
+        _format_matrix_xyzrpy_mm_deg("T_prior_base_ball", prior_base_ball_transform),
     )
-    offset_distance_mm = float(np.linalg.norm(offset_matrix[:3, 3]))
-    logger.info("offset distance={:.3f} mm", offset_distance_mm)
-    if offset_distance_mm > 50.0:
-        logger.warning("offset 平移明显偏大，请检查拍摄时机/三球识别/先验是否一致 distance={:.3f} mm", offset_distance_mm)
+    logger.info(
+        "T_current_base_ball=T_tcp@T_tool_cam@T_cam_ball {}",
+        _format_matrix_xyzrpy_mm_deg("T_current_base_ball", current_base_ball_m),
+    )
+    logger.info(
+        "{}",
+        _format_matrix_xyzrpy_mm_deg("T_new_tcp=T_off@T_tcp", new_tcp_matrix_m),
+    )
+    offset_distance_m = float(np.linalg.norm(offset_matrix_m[:3, 3]))
+    logger.info("offset_norm_mm={:.3f} {}", offset_distance_m * 1000.0, _format_matrix_xyzrpy_mm_deg("T_off", offset_matrix_m))
+    if offset_distance_m > 0.05:
+        logger.warning(
+            "offset 平移明显偏大，请检查拍摄时机/三球识别/先验是否一致 distance_mm={:.3f} {}",
+            offset_distance_m * 1000.0,
+            _format_matrix_xyzrpy_mm_deg("T_off", offset_matrix_m),
+        )
     return (
         (
-            float(offset_matrix[0, 0]),
-            float(offset_matrix[0, 1]),
-            float(offset_matrix[0, 2]),
-            float(offset_matrix[0, 3]),
+            float(offset_matrix_m[0, 0]),
+            float(offset_matrix_m[0, 1]),
+            float(offset_matrix_m[0, 2]),
+            float(offset_matrix_m[0, 3]),
         ),
         (
-            float(offset_matrix[1, 0]),
-            float(offset_matrix[1, 1]),
-            float(offset_matrix[1, 2]),
-            float(offset_matrix[1, 3]),
+            float(offset_matrix_m[1, 0]),
+            float(offset_matrix_m[1, 1]),
+            float(offset_matrix_m[1, 2]),
+            float(offset_matrix_m[1, 3]),
         ),
         (
-            float(offset_matrix[2, 0]),
-            float(offset_matrix[2, 1]),
-            float(offset_matrix[2, 2]),
-            float(offset_matrix[2, 3]),
+            float(offset_matrix_m[2, 0]),
+            float(offset_matrix_m[2, 1]),
+            float(offset_matrix_m[2, 2]),
+            float(offset_matrix_m[2, 3]),
         ),
         (
-            float(offset_matrix[3, 0]),
-            float(offset_matrix[3, 1]),
-            float(offset_matrix[3, 2]),
-            float(offset_matrix[3, 3]),
+            float(offset_matrix_m[3, 0]),
+            float(offset_matrix_m[3, 1]),
+            float(offset_matrix_m[3, 2]),
+            float(offset_matrix_m[3, 3]),
         ),
-    )
-
-
-def _offset_matrix_mm_to_pose_matrix_m(
-    offset_matrix_mm: tuple[tuple[float, float, float, float], ...],
-) -> tuple[tuple[float, float, float, float], ...]:
-    matrix = np.asarray(offset_matrix_mm, dtype=np.float64).copy()
-    matrix[:3, 3] = matrix[:3, 3] * 0.001
-    return (
-        (float(matrix[0, 0]), float(matrix[0, 1]), float(matrix[0, 2]), float(matrix[0, 3])),
-        (float(matrix[1, 0]), float(matrix[1, 1]), float(matrix[1, 2]), float(matrix[1, 3])),
-        (float(matrix[2, 0]), float(matrix[2, 1]), float(matrix[2, 2]), float(matrix[2, 3])),
-        (float(matrix[3, 0]), float(matrix[3, 1]), float(matrix[3, 2]), float(matrix[3, 3])),
     )
 
 
@@ -591,59 +802,93 @@ def _rotation_matrix_to_rpy_deg(rotation: np.ndarray) -> list[float]:
     return _rad_to_deg(list(_homogeneous_matrix_to_rpy(matrix.tolist())))
 
 
+def _format_matrix_xyzrpy_mm_deg(name: str, matrix: np.ndarray) -> str:
+    matrix_np = np.asarray(matrix, dtype=np.float64)
+    xyz_mm = [
+        float(matrix_np[0, 3]) * 1000.0,
+        float(matrix_np[1, 3]) * 1000.0,
+        float(matrix_np[2, 3]) * 1000.0,
+    ]
+    rpy_deg = _rad_to_deg(list(_homogeneous_matrix_to_rpy(matrix_np)))
+    return f"{name} xyzrpy(mm,deg)=[{_format_sequence(xyz_mm + rpy_deg)}]"
+
+
 def _execute_cartesian_row(
     runtime: ReplayRuntime,
     row: ReplayRow,
 ) -> None:
     robot = runtime.connected_arm.robot
     ec = runtime.connected_arm.ec
+    applies_offset = _should_apply_global_cartesian_offset(row.csv_name)
+    # 只有 CSV_CARTESIAN_OFFSET_TARGETS 指定的 CSV 才执行：
+    # T_new_tcp = T_off @ T_tcp，其余 CSV 保持原始 TCP。
     target_pose = _build_cartesian_target(runtime, row)
-    robot_model = robot.model()
-    toolset = robot.toolset(ec)
-    _print_sdk_result("toolset(replay-cartesian)", ec)
-    if ec.get("ec", 0) != 0:
-        raise RuntimeError("回放笛卡尔读取 toolset 失败")
-    target_joint = robot_model.calcIk(target_pose, toolset, ec)
-    _print_sdk_result("calcIk(replay-cartesian)", ec)
-    if ec.get("ec", 0) != 0:
-        fallback_joint_deg: list[float] | None = None
-        try:
-            fallback_joint_deg = _parse_joint_values(row.joints_text)
-        except ValueError:
-            fallback_joint_deg = None
-        if fallback_joint_deg is not None:
-            logger.warning(
-                "回放笛卡尔目标逆解失败，改用记录关节值兜底 file={} row={} ec={} message={}",
-                row.csv_name,
-                row.row_index,
-                ec.get("ec", 0),
-                ec.get("message", ""),
-            )
-            target_joint = xCoreSDK_python.JointPosition(_deg_to_rad(fallback_joint_deg))
-        else:
-            logger.warning(
-                "回放笛卡尔目标逆解失败 file={} row={} ec={} message={}",
-                row.csv_name,
-                row.row_index,
-                ec.get("ec", 0),
-                ec.get("message", ""),
-            )
-            raise RuntimeError("回放笛卡尔目标逆解失败，且无可用 joints 兜底")
     cmd_id = xCoreSDK_python.PyString()
-    should_fallback_to_move_abs_j = bool(ec.get("ec", 0) != 0) or not _validate_cartesian_target(robot, ec, target_pose)
+    target_joint: xCoreSDK_python.JointPosition | None = None
+    should_fallback_to_move_abs_j = not _validate_cartesian_target(robot, ec, target_pose)
     if should_fallback_to_move_abs_j:
         logger.warning(
-            "回放 MoveL 路径检查失败，回退 MoveAbsJ file={} row={} xyz(mm)=[{}] rpy(deg)=[{}]",
+            "回放 MoveL 路径检查失败，将对 {} 计算逆解并回退 MoveAbsJ "
+            "file={} row={} xyz(mm)=[{}] rpy(deg)=[{}]",
+            "offset 后 T_new_tcp" if applies_offset else "原始 T_tcp",
             row.csv_name,
             row.row_index,
             _format_sequence(_m_to_mm(target_pose.trans)),
             _format_sequence(_rad_to_deg(target_pose.rpy)),
         )
+        robot_model = robot.model()
+        toolset = robot.toolset(ec)
+        _print_sdk_result("toolset(replay-cartesian-fallback)", ec)
+        if ec.get("ec", 0) != 0:
+            raise RuntimeError("回放笛卡尔读取 toolset 失败")
+        target_joint = robot_model.calcIk(target_pose, toolset, ec)
+        _print_sdk_result("calcIk(replay-cartesian-fallback-new-tcp)", ec)
+        if ec.get("ec", 0) != 0:
+            failed_ec = ec.get("ec", 0)
+            failed_message = ec.get("message", "")
+            if not applies_offset:
+                try:
+                    fallback_joint_deg = _parse_joint_values(row.joints_text)
+                except ValueError as exc:
+                    logger.warning(
+                        "原始笛卡尔目标逆解失败，且 CSV 记录关节值不可用 file={} row={} ec={} message={} parse_error={}",
+                        row.csv_name,
+                        row.row_index,
+                        failed_ec,
+                        failed_message,
+                        exc,
+                    )
+                    raise RuntimeError("原始笛卡尔目标 MoveL/IK 均失败，且 CSV joints 兜底不可用") from exc
+                target_joint = xCoreSDK_python.JointPosition(_deg_to_rad(fallback_joint_deg))
+                ec["ec"] = 0
+                ec["message"] = "原始笛卡尔目标逆解失败，已改用 CSV 记录关节值"
+                logger.warning(
+                    "原始笛卡尔目标逆解失败，最终兜底为 CSV joints MoveAbsJ file={} row={} "
+                    "ik_ec={} ik_message={} joints(deg)=[{}]",
+                    row.csv_name,
+                    row.row_index,
+                    failed_ec,
+                    failed_message,
+                    _format_sequence(fallback_joint_deg),
+                )
+            else:
+                logger.warning(
+                    "offset 后 T_new_tcp 逆解失败，无法回退 MoveAbsJ file={} row={} ec={} message={}",
+                    row.csv_name,
+                    row.row_index,
+                    ec.get("ec", 0),
+                    ec.get("message", ""),
+                )
+                raise RuntimeError("offset 后 T_new_tcp 逆解失败，无法回退 MoveAbsJ")
     robot.moveReset(ec)
     _print_sdk_result("moveReset(replay-cartesian)", ec)
     if ec.get("ec", 0) != 0:
         raise RuntimeError("回放笛卡尔 moveReset 失败")
     if should_fallback_to_move_abs_j:
+        if target_joint is None:
+            if applies_offset:
+                raise RuntimeError("MoveAbsJ 回退缺少 offset 后 T_new_tcp 的逆解结果")
+            raise RuntimeError("MoveAbsJ 回退缺少原始 T_tcp 的逆解或 CSV joints 兜底结果")
         robot.moveAppend(
             [xCoreSDK_python.MoveAbsJCommand(target_joint, runtime.joint_speed_deg_s, DEFAULT_JOINT_ZONE)],
             cmd_id,
@@ -865,6 +1110,7 @@ def _confirm_runtime_config(
     offset_service_addr: str,
     offset_camera_name: str,
     offset_prior_capture_path: Path,
+    hand_eye_result_path: Path,
     joint_speed_deg_s: float,
     cartesian_speed_mm_s: float,
 ) -> str:
@@ -879,6 +1125,7 @@ def _confirm_runtime_config(
         print(f"当前 offset 服务: {offset_service_addr}")
         print(f"当前 offset 相机: {offset_camera_name}")
         print(f"当前 offset 先验: {offset_prior_capture_path}")
+        print(f"当前手眼结果: {hand_eye_result_path}")
         print("输入回车确认当前配置并继续")
         print("输入 a 使用当前配置全自动开始")
         print("输入 l 切换左右臂")
@@ -1031,6 +1278,7 @@ def main(
     offset_service_addr: str = DEFAULT_OFFSET_SERVICE_ADDR,
     offset_camera_name: str = DEFAULT_OFFSET_CAMERA_NAME,
     offset_prior_capture_path: Path = DEFAULT_OFFSET_PRIOR_CAPTURE_PATH,
+    hand_eye_result_path: Path = DEFAULT_HAND_EYE_RESULT_PATH,
 ) -> int:
     selected_arm_side = str(arm_side)
     selected_record_dir = Path(record_dir)
@@ -1046,6 +1294,7 @@ def main(
             offset_service_addr=offset_service_addr,
             offset_camera_name=offset_camera_name,
             offset_prior_capture_path=offset_prior_capture_path,
+            hand_eye_result_path=hand_eye_result_path,
             joint_speed_deg_s=selected_joint_speed_deg_s,
             cartesian_speed_mm_s=selected_cartesian_speed_mm_s,
         )
@@ -1086,12 +1335,15 @@ def main(
         runtime.offset_service_addr = str(offset_service_addr)
         runtime.offset_camera_name = str(offset_camera_name)
         runtime.offset_prior_capture_path = Path(offset_prior_capture_path)
+        runtime.hand_eye_result_path = Path(hand_eye_result_path)
         runtime.joint_speed_deg_s = selected_joint_speed_deg_s
         runtime.cartesian_speed_mm_s = selected_cartesian_speed_mm_s
         runtime.auto_execute_remaining = start_mode == "auto"
         _configure_initial_replay_speeds(runtime, selected_auto_start)
         _prepare_runtime(runtime)
         for csv_path in csv_paths:
+            csv_sequence = _extract_csv_sequence(csv_path.name)
+            is_offset_trigger_csv = csv_sequence == CSV_CARTESIAN_OFFSET_CALCULATE_AT
             if not selected_auto_start and not runtime.auto_execute_remaining:
                 file_choice = _confirm_each_file(csv_path)
                 if file_choice == "q":
@@ -1102,31 +1354,65 @@ def main(
                     continue
             rows = _load_replay_rows(csv_path)
             logger.info("开始执行文件 {}，共 {} 行", csv_path.name, len(rows))
-            for row in rows:
-                if not selected_auto_start and not runtime.auto_execute_remaining:
-                    while True:
-                        action_choice = _confirm_each_action(runtime, row)
-                        if action_choice == "q":
-                            logger.warning("用户终止执行")
-                            return 0
-                        if action_choice == "a":
-                            runtime.auto_execute_remaining = True
-                            logger.success("已切换为全自动执行模式，后续动作将连续执行到结束")
+            original_joint_speed_deg_s = runtime.joint_speed_deg_s
+            original_cartesian_speed_mm_s = runtime.cartesian_speed_mm_s
+            if is_offset_trigger_csv:
+                runtime.joint_speed_deg_s = 100.0
+                runtime.cartesian_speed_mm_s = 100.0
+                logger.info(
+                    "offset 触发 CSV 临时速度调整 file={} joint_speed {:.2f}->100.00 deg/s "
+                    "cartesian_speed {:.2f}->100.00 mm/s",
+                    csv_path.name,
+                    original_joint_speed_deg_s,
+                    original_cartesian_speed_mm_s,
+                )
+            try:
+                for row in rows:
+                    if not selected_auto_start and not runtime.auto_execute_remaining:
+                        while True:
+                            action_choice = _confirm_each_action(runtime, row)
+                            if action_choice == "q":
+                                logger.warning("用户终止执行")
+                                return 0
+                            if action_choice == "a":
+                                runtime.auto_execute_remaining = True
+                                logger.success("已切换为全自动执行模式，后续动作将连续执行到结束")
+                                break
+                            if action_choice == "s":
+                                _configure_replay_speeds(runtime)
+                                continue
+                            if action_choice == "j":
+                                logger.warning(
+                                    "跳过动作 file={} row={} type={}",
+                                    row.csv_name,
+                                    row.row_index,
+                                    row.action_type,
+                                )
+                                break
                             break
-                        if action_choice == "s":
-                            _configure_replay_speeds(runtime)
-                            continue
                         if action_choice == "j":
-                            logger.warning("跳过动作 file={} row={} type={}", row.csv_name, row.row_index, row.action_type)
-                            break
-                        break
-                    if action_choice == "j":
-                        continue
-                _execute_row(runtime, row)
-            csv_sequence = _extract_csv_sequence(csv_path.name)
-            if csv_sequence == CSV_CARTESIAN_OFFSET_CALCULATE_AT:
-                runtime.global_cartesian_offset = _calculate_global_cartesian_offset(runtime, csv_path)
-                logger.success("已更新全局笛卡尔纠偏矩阵，后续目标 CSV 将按左乘方式应用")
+                            continue
+                    _execute_row(runtime, row)
+                if is_offset_trigger_csv:
+                    logger.info(
+                        "已到达 offset 触发 CSV，等待 {:.1f}s 后开始连续采集三球坐标 file={}",
+                        OFFSET_CAPTURE_SETTLE_DELAY_S,
+                        csv_path.name,
+                    )
+                    time.sleep(OFFSET_CAPTURE_SETTLE_DELAY_S)
+                    runtime.global_cartesian_offset = _calculate_global_cartesian_offset(runtime, csv_path)
+                    logger.success("已更新全局笛卡尔纠偏矩阵，后续目标 CSV 将按 T_off@T_tcp 左乘方式应用")
+            finally:
+                if is_offset_trigger_csv:
+                    runtime.joint_speed_deg_s = original_joint_speed_deg_s
+                    runtime.cartesian_speed_mm_s = original_cartesian_speed_mm_s
+                    logger.info(
+                        "offset 触发 CSV 结束，恢复回放速度 file={} joint_speed={:.2f} deg/s "
+                        "cartesian_speed={:.2f} mm/s",
+                        csv_path.name,
+                        runtime.joint_speed_deg_s,
+                        runtime.cartesian_speed_mm_s,
+                    )
             logger.success("文件执行完成 {}", csv_path.name)
         logger.success("全部 CSV 执行完成")
         return 0
