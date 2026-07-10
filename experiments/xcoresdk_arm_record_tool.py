@@ -16,7 +16,7 @@ if str(PROJECT_ROOT) not in sys.path:
 if str(SDK_ROOT) not in sys.path:
     sys.path.insert(0, str(SDK_ROOT))
 
-from sdk.xcoresdk import xCoreSDK_python  # noqa: E402
+from sdk.xcoresdk import xCoreSDK_python
 
 LOCAL_IP = "192.168.1.116"
 EXPECTED_ARM_TYPES = {

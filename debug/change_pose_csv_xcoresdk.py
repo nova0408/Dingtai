@@ -43,8 +43,7 @@ if str(PROJECT_ROOT) not in sys.path:
 if str(SDK_ROOT) not in sys.path:
     sys.path.insert(0, str(SDK_ROOT))
 
-from sdk.xcoresdk import xCoreSDK_python  # noqa: E402
-
+from sdk.xcoresdk import xCoreSDK_python
 
 # region 数据结构
 
@@ -100,7 +99,7 @@ def _parse_list_field(raw_text: str) -> list[Any]:
 
     parsed = ast.literal_eval(raw_text)
     if not isinstance(parsed, list):
-        raise ValueError(f"字段不是列表: {raw_text!r}")
+        raise ValueError(f"字段不是列表：{raw_text!r}")
     return parsed
 
 
@@ -112,7 +111,7 @@ def _infer_arm_side_from_csv_path(csv_path: Path) -> str:
         return "left"
     if "record_right" in lowered or "_right_" in lowered:
         return "right"
-    raise ValueError(f"无法从路径判断左右臂: {csv_path}")
+    raise ValueError(f"无法从路径判断左右臂：{csv_path}")
 
 
 def _read_pose_csv(csv_path: Path) -> tuple[list[PoseCsvRow], list[str]]:
@@ -260,7 +259,7 @@ def _create_robot_and_toolset(csv_path: Path) -> tuple[Any, Any]:
     toolset = robot.setToolset(DEFAULT_TOOL_NAME, DEFAULT_WOBJ_NAME, ec)
     if _error_code(ec) != 0:
         raise RuntimeError(
-            f"setToolset 失败: tool={DEFAULT_TOOL_NAME} wobj={DEFAULT_WOBJ_NAME} "
+            f"setToolset 失败：tool={DEFAULT_TOOL_NAME} wobj={DEFAULT_WOBJ_NAME} "
             f"ec={ec.get('ec', 0)} message={ec.get('message', '')}"
         )
     return robot.model(), toolset
@@ -285,7 +284,7 @@ def _recompute_pose_rows(rows: list[PoseCsvRow], robot_model: Any, toolset: Any)
             joints_rad = [float(np.deg2rad(value)) for value in row.joints_deg]
             fk_pose = robot_model.calcFk(joints_rad, toolset, ec)
             if _error_code(ec) != 0:
-                raise RuntimeError(f"calcFk 失败: ec={ec.get('ec', 0)} message={ec.get('message', '')}")
+                raise RuntimeError(f"calcFk 失败：ec={ec.get('ec', 0)} message={ec.get('message', '')}")
             pose_values = _joint_values_to_pose_values(fk_pose, row.pose_values)
             results.append(RecomputedPoseRow(pose_values=pose_values, status="ok"))
         except Exception as exc:
@@ -336,7 +335,7 @@ class PoseCsvViewer(QMainWindow):
         root_layout.setSpacing(10)
 
         top_layout = QHBoxLayout()
-        top_layout.addWidget(QLabel("CSV 文件:", self))
+        top_layout.addWidget(QLabel("CSV 文件：", self))
         top_layout.addWidget(self._file_combo, stretch=1)
         top_layout.addWidget(self._refresh_files_button)
         root_layout.addLayout(top_layout)
@@ -411,7 +410,7 @@ class PoseCsvViewer(QMainWindow):
             self._rows = []
             self._recomputed_rows = []
             self._refresh_tables()
-            self._status_label.setText(f"加载失败: {exc}")
+            self._status_label.setText(f"加载失败：{exc}")
             QMessageBox.warning(self, "加载失败", str(exc))
 
     def _recompute_current_file(self, show_error_dialog: bool = True) -> None:
@@ -426,13 +425,11 @@ class PoseCsvViewer(QMainWindow):
             self._recomputed_rows = _recompute_pose_rows(self._rows, robot_model, toolset)
             self._refresh_tables()
             ok_count = sum(1 for item in self._recomputed_rows if item.status == "ok")
-            self._status_label.setText(
-                f"已使用 {DEFAULT_TOOL_NAME} / {DEFAULT_WOBJ_NAME} 重算 {ok_count} 行"
-            )
+            self._status_label.setText(f"已使用 {DEFAULT_TOOL_NAME} / {DEFAULT_WOBJ_NAME} 重算 {ok_count} 行")
         except Exception as exc:
             self._recomputed_rows = []
             self._refresh_tables()
-            self._status_label.setText(f"重算失败: {exc}")
+            self._status_label.setText(f"重算失败：{exc}")
             if show_error_dialog:
                 QMessageBox.warning(self, "重算失败", str(exc))
 
@@ -551,7 +548,7 @@ class PoseCsvViewer(QMainWindow):
             self._refresh_tables()
             self._status_label.setText(f"已覆盖保存 {self._csv_path.name}，更新 pose {updated_count} 行，joints 未改动")
         except Exception as exc:
-            self._status_label.setText(f"保存失败: {exc}")
+            self._status_label.setText(f"保存失败：{exc}")
             QMessageBox.warning(self, "保存失败", str(exc))
 
 

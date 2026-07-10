@@ -11,26 +11,27 @@ from typing import Any
 
 import cv2
 import numpy as np
-from PIL import Image, ImageDraw, ImageFont
 from loguru import logger
+from PIL import Image, ImageDraw, ImageFont
 from scipy.spatial.transform import Rotation as Rotation3D
 
 PROJECT_ROOT = next(parent for parent in Path(__file__).resolve().parents if (parent / "camera_pipeline").is_dir())
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from camera_pipeline.client import CameraPipelineClient  # noqa: E402
-from sdk.xcoresdk import xCoreSDK_python  # noqa: E402
-from src.calibration import CHARUCO_200_12_9, CharucoPoseEstimator  # noqa: E402
-from test.wuji.charuco_detect import (  # noqa: E402
+from test.wuji.charuco_detect import (
     DEFAULT_CAMERA_NAME,
     DEFAULT_MIN_CHARUCO_CORNERS,
     DEFAULT_ORIN_SERVICE_ADDR,
     _read_camera_calibration,
     _validate_runtime_requirements,
 )
-from test.wuji.charuco_pose_offset_interactive import DEFAULT_ARM_IP  # noqa: E402
-from test.wuji.xcoresdk_arm_cli_test import _print_sdk_result, _shutdown_robot  # noqa: E402
+from test.wuji.charuco_pose_offset_interactive import DEFAULT_ARM_IP
+from test.wuji.xcoresdk_arm_cli_test import _print_sdk_result, _shutdown_robot
+
+from camera_pipeline.client import CameraPipelineClient
+from sdk.xcoresdk import xCoreSDK_python
+from src.calibration import CHARUCO_200_12_9, CharucoPoseEstimator
 
 # region 默认参数
 DEFAULT_WINDOW_NAME = "Charuco Pose Drag"
@@ -74,6 +75,8 @@ class PoseSnapshot:
 class RuntimeState:
     reference_base_board: PoseSnapshot | None = None
     last_action_text: str = "等待有效板位姿，按空格记录基准帧"
+
+
 # endregion
 
 
@@ -143,6 +146,8 @@ def main(
         client.close()
         cv2.destroyAllWindows()
         _shutdown_robot(robot, ec)
+
+
 # endregion
 
 
@@ -186,6 +191,8 @@ def _load_tool_cam_from_result(result_path: Path) -> np.ndarray:
     if len(numbers) != 16:
         raise ValueError(f"无法从 {result_path} 解析出 16 个矩阵元素，实际解析到 {len(numbers)} 个")
     return np.asarray(numbers, dtype=np.float64).reshape(4, 4)
+
+
 # endregion
 
 
@@ -200,7 +207,9 @@ def _draw_preview(
 ) -> np.ndarray:
     canvas = frame_bgr.copy()
     if charuco_result is not None and charuco_result.marker_corners_px:
-        cv2.aruco.drawDetectedMarkers(canvas, charuco_result.marker_corners_px, charuco_result.marker_ids, borderColor=(255, 180, 0))
+        cv2.aruco.drawDetectedMarkers(
+            canvas, charuco_result.marker_corners_px, charuco_result.marker_ids, borderColor=(255, 180, 0)
+        )
     if charuco_result is not None and charuco_result.rvec is not None and charuco_result.tvec is not None:
         cv2.drawFrameAxes(
             canvas,
@@ -231,7 +240,11 @@ def _build_overlay_lines(
 ) -> list[str]:
     marker_count = 0 if charuco_result is None else int(charuco_result.marker_count)
     charuco_count = 0 if charuco_result is None else int(charuco_result.charuco_count)
-    reproj = "NA" if charuco_result is None or charuco_result.reprojection_error_px is None else f"{float(charuco_result.reprojection_error_px):.4f}"
+    reproj = (
+        "NA"
+        if charuco_result is None or charuco_result.reprojection_error_px is None
+        else f"{float(charuco_result.reprojection_error_px):.4f}"
+    )
     lines = [
         f"board_visible={bool(board_pose_camera_board is not None)} marker={marker_count} charuco={charuco_count} reproj={reproj}",
         f"action={state.last_action_text}",
@@ -265,6 +278,8 @@ def _draw_text_block(
         draw.text((x, y), line, font=font, fill=(255, 255, 255), stroke_fill=(0, 0, 0), stroke_width=2)
         y += 26
     return cv2.cvtColor(np.asarray(image), cv2.COLOR_RGB2BGR)
+
+
 # endregion
 
 
@@ -348,6 +363,8 @@ def _camera_board_matrix_m(camera_board_mm: np.ndarray | None) -> np.ndarray:
     matrix = np.asarray(camera_board_mm, dtype=np.float64).reshape(4, 4).copy()
     matrix[:3, 3] *= 0.001
     return matrix
+
+
 # endregion
 
 
@@ -375,6 +392,8 @@ def _parse_cli(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--arm-ip", type=str, default=DEFAULT_ARM_IP)
     parser.add_argument("--min-charuco-corners", type=int, default=DEFAULT_MIN_CHARUCO_CORNERS)
     return parser.parse_args(argv)
+
+
 # endregion
 
 

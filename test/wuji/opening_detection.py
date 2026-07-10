@@ -19,9 +19,9 @@ DEFAULT_SERVICE_ADDR = "tcp://192.168.1.118:6200"
 DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "test" / "wuji" / ".archive" / "opening_detection_capture"
 DEFAULT_RETRY_TIMEOUT_S = 60.0
 
-from camera_pipeline.client import CameraPipelineClient  # noqa: E402
-from camera_pipeline.opening_detection.protocol import OpeningDetectionPipelineRequest  # noqa: E402
-from camera_pipeline.tray_detection.protocol import OrinTrayDetectionRequest  # noqa: E402
+from camera_pipeline.client import CameraPipelineClient
+from camera_pipeline.opening_detection.protocol import OpeningDetectionPipelineRequest
+from camera_pipeline.tray_detection.protocol import OrinTrayDetectionRequest
 
 
 def main(
@@ -70,7 +70,11 @@ def main(
                     request_id += 1
                     continue
                 request_id += 1
-                if response.error is None and response.selected_result is not None and response.selected_result.pose is not None:
+                if (
+                    response.error is None
+                    and response.selected_result is not None
+                    and response.selected_result.pose is not None
+                ):
                     _save_capture(output_dir, response)
                     print(_format_summary(response))
                     return 0
@@ -82,20 +86,48 @@ def main(
 
 
 def _save_capture(output_dir: Path, response: Any) -> None:
-    selected = None if response.selected_result is None else {
-        "tray_index": response.selected_result.tray_index,
-        "tray_bbox_xywh": list(response.selected_result.tray_bbox_xywh),
-        "tray_center_uv": list(response.selected_result.tray_center_uv),
-        "opening_center_uv": None if response.selected_result.opening_center_uv is None else list(response.selected_result.opening_center_uv),
-        "opening_quad_uv": None if response.selected_result.opening_quad_uv is None else [list(item) for item in response.selected_result.opening_quad_uv],
-        "top_quad_uv": None if response.selected_result.top_quad_uv is None else [list(item) for item in response.selected_result.top_quad_uv],
-        "pose": None if response.selected_result.pose is None else {
-            "grasp_point_mm": list(response.selected_result.pose.grasp_point_mm),
-            "pre_grasp_point_mm": list(response.selected_result.pose.pre_grasp_point_mm),
-            "rotation": None if response.selected_result.pose.rotation is None else [list(row) for row in response.selected_result.pose.rotation],
-            "rpy_deg": None if response.selected_result.pose.rpy_deg is None else list(response.selected_result.pose.rpy_deg),
-        },
-    }
+    selected = (
+        None
+        if response.selected_result is None
+        else {
+            "tray_index": response.selected_result.tray_index,
+            "tray_bbox_xywh": list(response.selected_result.tray_bbox_xywh),
+            "tray_center_uv": list(response.selected_result.tray_center_uv),
+            "opening_center_uv": (
+                None
+                if response.selected_result.opening_center_uv is None
+                else list(response.selected_result.opening_center_uv)
+            ),
+            "opening_quad_uv": (
+                None
+                if response.selected_result.opening_quad_uv is None
+                else [list(item) for item in response.selected_result.opening_quad_uv]
+            ),
+            "top_quad_uv": (
+                None
+                if response.selected_result.top_quad_uv is None
+                else [list(item) for item in response.selected_result.top_quad_uv]
+            ),
+            "pose": (
+                None
+                if response.selected_result.pose is None
+                else {
+                    "grasp_point_mm": list(response.selected_result.pose.grasp_point_mm),
+                    "pre_grasp_point_mm": list(response.selected_result.pose.pre_grasp_point_mm),
+                    "rotation": (
+                        None
+                        if response.selected_result.pose.rotation is None
+                        else [list(row) for row in response.selected_result.pose.rotation]
+                    ),
+                    "rpy_deg": (
+                        None
+                        if response.selected_result.pose.rpy_deg is None
+                        else list(response.selected_result.pose.rpy_deg)
+                    ),
+                }
+            ),
+        }
+    )
     payload = {
         "frame_id": response.frame_id,
         "camera_name": response.camera_name,
@@ -116,14 +148,25 @@ def _save_capture(output_dir: Path, response: Any) -> None:
     if response.debug is not None and response.debug.contrast_bgr is not None:
         cv2.imwrite(str(output_dir / "contrast.jpg"), np.asarray(response.debug.contrast_bgr, dtype=np.uint8))
     if response.debug is not None and response.debug.selected_tray_mask is not None:
-        cv2.imwrite(str(output_dir / "selected_tray_mask.png"), np.asarray(response.debug.selected_tray_mask, dtype=np.uint8))
+        cv2.imwrite(
+            str(output_dir / "selected_tray_mask.png"), np.asarray(response.debug.selected_tray_mask, dtype=np.uint8)
+        )
     if response.debug is not None and response.debug.near_plane_mask is not None:
         cv2.imwrite(str(output_dir / "near_plane_mask.png"), np.asarray(response.debug.near_plane_mask, dtype=np.uint8))
     if response.debug is not None and response.debug.no_hole_mask is not None:
         cv2.imwrite(str(output_dir / "no_hole_mask.png"), np.asarray(response.debug.no_hole_mask, dtype=np.uint8))
     if response.debug is not None and response.debug.selected_tray_mask is not None:
-        cv2.imwrite(str(output_dir / "selected_tray_mask_overlay.jpg"), _build_mask_overlay(response.debug.color_bgr, response.debug.selected_tray_mask))
-    if response.debug is not None and response.debug.color_bgr is not None and response.debug.camera_intrinsics is not None and response.selected_result is not None and response.selected_result.pose is not None:
+        cv2.imwrite(
+            str(output_dir / "selected_tray_mask_overlay.jpg"),
+            _build_mask_overlay(response.debug.color_bgr, response.debug.selected_tray_mask),
+        )
+    if (
+        response.debug is not None
+        and response.debug.color_bgr is not None
+        and response.debug.camera_intrinsics is not None
+        and response.selected_result is not None
+        and response.selected_result.pose is not None
+    ):
         compare_overlay = _build_pose_uv_compare_overlay(response)
         if compare_overlay is not None:
             cv2.imwrite(str(output_dir / "pose_uv_compare.jpg"), compare_overlay)
@@ -139,9 +182,21 @@ def _format_summary(response: Any) -> str:
         "selected_tray_index": response.selected_tray_index,
         "elapsed_ms": response.elapsed_ms,
         "error": response.error,
-        "opening_center_uv": None if response.selected_result is None or response.selected_result.opening_center_uv is None else [float(v) for v in response.selected_result.opening_center_uv],
-        "opening_quad_uv": None if response.selected_result is None or response.selected_result.opening_quad_uv is None else [[float(v) for v in pt] for pt in response.selected_result.opening_quad_uv],
-        "top_quad_uv": None if response.selected_result is None or response.selected_result.top_quad_uv is None else [[float(v) for v in pt] for pt in response.selected_result.top_quad_uv],
+        "opening_center_uv": (
+            None
+            if response.selected_result is None or response.selected_result.opening_center_uv is None
+            else [float(v) for v in response.selected_result.opening_center_uv]
+        ),
+        "opening_quad_uv": (
+            None
+            if response.selected_result is None or response.selected_result.opening_quad_uv is None
+            else [[float(v) for v in pt] for pt in response.selected_result.opening_quad_uv]
+        ),
+        "top_quad_uv": (
+            None
+            if response.selected_result is None or response.selected_result.top_quad_uv is None
+            else [[float(v) for v in pt] for pt in response.selected_result.top_quad_uv]
+        ),
         "grasp_point_mm": [float(v) for v in pose.grasp_point_mm],
         "pre_grasp_point_mm": [float(v) for v in pose.pre_grasp_point_mm],
         "rotation": None if pose.rotation is None else [[float(v) for v in row] for row in pose.rotation],
@@ -184,9 +239,36 @@ def _build_pose_uv_compare_overlay(response: Any) -> np.ndarray | None:
     cv2.circle(canvas, uv_uv, 8, (0, 255, 255), 2, cv2.LINE_AA)
     cv2.circle(canvas, pose_uv, 8, (0, 0, 255), 2, cv2.LINE_AA)
     cv2.line(canvas, uv_uv, pose_uv, (255, 0, 0), 2, cv2.LINE_AA)
-    cv2.putText(canvas, f"uv={uv_uv}", (uv_uv[0] + 10, uv_uv[1] - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2, cv2.LINE_AA)
-    cv2.putText(canvas, f"pose={pose_uv}", (pose_uv[0] + 10, pose_uv[1] - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2, cv2.LINE_AA)
-    cv2.putText(canvas, f"delta=({pose_uv[0] - uv_uv[0]}, {pose_uv[1] - uv_uv[1]})px", (40, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
+    cv2.putText(
+        canvas,
+        f"uv={uv_uv}",
+        (uv_uv[0] + 10, uv_uv[1] - 10),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.6,
+        (0, 255, 255),
+        2,
+        cv2.LINE_AA,
+    )
+    cv2.putText(
+        canvas,
+        f"pose={pose_uv}",
+        (pose_uv[0] + 10, pose_uv[1] - 10),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.6,
+        (0, 0, 255),
+        2,
+        cv2.LINE_AA,
+    )
+    cv2.putText(
+        canvas,
+        f"delta=({pose_uv[0] - uv_uv[0]}, {pose_uv[1] - uv_uv[1]})px",
+        (40, 60),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.8,
+        (255, 255, 255),
+        2,
+        cv2.LINE_AA,
+    )
     return canvas
 
 
@@ -204,7 +286,9 @@ def _build_depth_view(depth_mm: np.ndarray) -> np.ndarray:
     return cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
 
 
-def _rgbd_to_points(depth_mm: np.ndarray, color_bgr: np.ndarray, fx: float, fy: float, cx: float, cy: float) -> tuple[np.ndarray, np.ndarray]:
+def _rgbd_to_points(
+    depth_mm: np.ndarray, color_bgr: np.ndarray, fx: float, fy: float, cx: float, cy: float
+) -> tuple[np.ndarray, np.ndarray]:
     h, w = depth_mm.shape[:2]
     v, u = np.indices((h, w))
     z = np.asarray(depth_mm, dtype=np.float64)
@@ -217,7 +301,9 @@ def _rgbd_to_points(depth_mm: np.ndarray, color_bgr: np.ndarray, fx: float, fy: 
     return pts, colors
 
 
-def _project_points_to_image(xyz: np.ndarray, fx: float, fy: float, cx: float, cy: float, width: int, height: int) -> tuple[np.ndarray, np.ndarray]:
+def _project_points_to_image(
+    xyz: np.ndarray, fx: float, fy: float, cx: float, cy: float, width: int, height: int
+) -> tuple[np.ndarray, np.ndarray]:
     xyz = np.asarray(xyz, dtype=np.float64)
     z = xyz[:, 2]
     valid = np.isfinite(z) & (z > 1e-6)

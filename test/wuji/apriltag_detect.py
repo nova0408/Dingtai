@@ -13,14 +13,14 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
 import math
+import shutil
 import sys
 import time
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
-import json
-import shutil
 
 import cv2
 import numpy as np
@@ -30,7 +30,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from camera_pipeline.client import CameraPipelineClient  # noqa: E402
+from camera_pipeline.client import CameraPipelineClient
 
 # region 默认参数（优先在这里直接改）
 DEFAULT_WINDOW_NAME = "AprilTag Color Eval"
@@ -211,7 +211,9 @@ def main(config: AppConfig) -> None:
                 DEFAULT_CAMERA_NAME,
                 DEFAULT_CAMERA_NAME,
             )
-        if int(status_response.width) != int(calibration.width) or int(status_response.height) != int(calibration.height):
+        if int(status_response.width) != int(calibration.width) or int(status_response.height) != int(
+            calibration.height
+        ):
             logger.warning(
                 "相机状态分辨率 {}x{} 与内参分辨率 {}x{} 不一致，以内参为准",
                 int(status_response.width),
@@ -304,10 +306,15 @@ def main(config: AppConfig) -> None:
                 {
                     "frame_index": int(frame_index),
                     "elapsed_ms": float(elapsed_ms),
-                    "temporal_tag_ids": [int(item.tag_id) for item in frame_results.get("TemporalFusion", VariantDetections([], [])).results],
+                    "temporal_tag_ids": [
+                        int(item.tag_id)
+                        for item in frame_results.get("TemporalFusion", VariantDetections([], [])).results
+                    ],
                 }
             )
-            if _has_stable_target_tags(frame_results.get("TemporalFusion", VariantDetections([], [])).results, DEFAULT_TARGET_TAG_IDS):
+            if _has_stable_target_tags(
+                frame_results.get("TemporalFusion", VariantDetections([], [])).results, DEFAULT_TARGET_TAG_IDS
+            ):
                 logger.success("已稳定识别到目标 tag 3,4,5，结束采集。")
                 final_state["final_result"] = _build_final_result_payload(frame_index, elapsed_ms, frame_results)
                 final_preview = _annotate_final_preview(preview, frame_results["TemporalFusion"].results)
@@ -665,7 +672,9 @@ def _annotate_final_preview(preview: np.ndarray, detections: list[DetectionResul
         color = (0, 220, 0)
         cv2.polylines(canvas, [polygon], True, color, 3, cv2.LINE_AA)
         center = tuple(int(v) for v in np.round(np.mean(result.corners_px, axis=0)))
-        _draw_text(canvas, f"target {result.tag_id}", (center[0] + 8, center[1] - 8), scale=_panel_text_scale(canvas, 0.75))
+        _draw_text(
+            canvas, f"target {result.tag_id}", (center[0] + 8, center[1] - 8), scale=_panel_text_scale(canvas, 0.75)
+        )
     return canvas
 
 
@@ -839,8 +848,7 @@ def _save_frame_artifacts(
     summary_payload = {
         "frame_index": int(frame_index),
         "variant_summary": {
-            name: [int(item.tag_id) for item in detections.results]
-            for name, detections in frame_results.items()
+            name: [int(item.tag_id) for item in detections.results] for name, detections in frame_results.items()
         },
     }
     summary_path.write_text(json.dumps(summary_payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -1061,7 +1069,7 @@ def _read_camera_calibration(intrinsics_response) -> CameraCalibration:
 
 
 def _create_session_dir(output_root: Path) -> Path:
-    session_dir = Path(output_root) 
+    session_dir = Path(output_root)
     if session_dir.exists():
         shutil.rmtree(session_dir)
     session_dir.mkdir(parents=True, exist_ok=False)

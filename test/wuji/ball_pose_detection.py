@@ -19,17 +19,23 @@ if str(PROJECT_ROOT) not in sys.path:
 DEFAULT_CAMERA_NAME = "left_hand_camera"
 DEFAULT_SERVICE_ADDR = "tcp://192.168.1.118:6200"
 DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "test" / "wuji" / ".archive" / "ball_pose_detection_capture"
-DEFAULT_PRIOR_CAPTURE_PATH = PROJECT_ROOT / "test" / "wuji" / ".archive" / "collect_ball_opening_relative_pose" / "summary.json"
+DEFAULT_PRIOR_CAPTURE_PATH = (
+    PROJECT_ROOT / "test" / "wuji" / ".archive" / "collect_ball_opening_relative_pose" / "summary.json"
+)
 DEFAULT_PRIOR_COMPARE_DIR = PROJECT_ROOT / "test" / "wuji" / ".archive" / "ball_pose_detection_priori"
 
-from camera_pipeline.ball_pose_detection.protocol import BallPoseDetectionRequest, BallPosePriorInfo  # noqa: E402
-from camera_pipeline.client import CameraPipelineClient  # noqa: E402
-from sdk.xcoresdk import xCoreSDK_python  # noqa: E402
-from test.wuji.xcoresdk_arm_cli_test import (  # noqa: E402
+from test.wuji.xcoresdk_arm_cli_test import (
     LEFT_ARM_IP,
     _print_sdk_result,
     _shutdown_robot,
 )
+
+from camera_pipeline.ball_pose_detection.protocol import (
+    BallPoseDetectionRequest,
+    BallPosePriorInfo,
+)
+from camera_pipeline.client import CameraPipelineClient
+from sdk.xcoresdk import xCoreSDK_python
 
 DEFAULT_ARM_IP = LEFT_ARM_IP
 
@@ -173,12 +179,16 @@ def _save_capture(
             "x_axis_ball": "red",
             "xoy_plane_ball": "purple",
         },
-        "debug": None
-        if response.debug is None
-        else {
-            "camera_intrinsics": None if response.debug.camera_intrinsics is None else list(response.debug.camera_intrinsics),
-            "detections": list(response.debug.detections),
-        },
+        "debug": (
+            None
+            if response.debug is None
+            else {
+                "camera_intrinsics": (
+                    None if response.debug.camera_intrinsics is None else list(response.debug.camera_intrinsics)
+                ),
+                "detections": list(response.debug.detections),
+            }
+        ),
     }
     (output_dir / "summary.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     if response.debug is not None and response.debug.color_bgr is not None:
@@ -189,7 +199,9 @@ def _save_capture(
         cv2.imwrite(str(output_dir / "overlay.jpg"), local_overlay_bgr)
         cv2.imwrite(str(output_dir / "local_pose_overlay.jpg"), local_overlay_bgr)
     if response.debug is not None and response.debug.detection_overlay_bgr is not None:
-        cv2.imwrite(str(output_dir / "detection_overlay.jpg"), np.asarray(response.debug.detection_overlay_bgr, dtype=np.uint8))
+        cv2.imwrite(
+            str(output_dir / "detection_overlay.jpg"), np.asarray(response.debug.detection_overlay_bgr, dtype=np.uint8)
+        )
 
 
 def _build_priors_from_capture(captured: dict[str, Any]) -> list[BallPosePriorInfo]:
@@ -269,7 +281,9 @@ def _print_prior_comparison(
         logger.warning("当前结果或先验结果缺少本地坐标系平移，跳过坐标偏移对比")
         return
     current_pose_transform = local_pose_transform
-    prior_pose_transform = _as_transform_matrix(prior_summary.get("local_pose_transform", prior_summary.get("pose_transform")))
+    prior_pose_transform = _as_transform_matrix(
+        prior_summary.get("local_pose_transform", prior_summary.get("pose_transform"))
+    )
     current_three_ball_transform = local_pose_transform
     prior_three_ball_transform = _build_three_ball_basis_transform(prior_summary.get("detections"))
     camera_intrinsics = _load_camera_intrinsics(prior_summary, response)
@@ -486,7 +500,9 @@ def _build_three_ball_basis_transform(detections: Any) -> np.ndarray | None:
     return transform
 
 
-def _build_transform_comparison(current_transform: np.ndarray | None, prior_transform: np.ndarray | None) -> dict[str, Any] | None:
+def _build_transform_comparison(
+    current_transform: np.ndarray | None, prior_transform: np.ndarray | None
+) -> dict[str, Any] | None:
     if current_transform is None or prior_transform is None:
         return None
     delta_transform = current_transform @ np.linalg.inv(prior_transform)

@@ -7,9 +7,9 @@ import sys
 from pathlib import Path
 from typing import Any, cast
 
+import numpy as np
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.figure import Figure
-import numpy as np
 from mpl_toolkits.mplot3d.axes3d import Axes3D
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QKeyEvent
@@ -33,7 +33,7 @@ if str(CURRENT_DIR) not in sys.path:
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from ar5_matplotlib_interactive_sim import (  # noqa: E402
+from ar5_matplotlib_interactive_sim import (
     DEFAULT_URDF_PATH,
     IKSolveResult,
     JointSpec,
@@ -45,7 +45,8 @@ from ar5_matplotlib_interactive_sim import (  # noqa: E402
     _find_tcp_offset_m,
     _solve_target_ik,
 )
-from src.robotics.urdf_interface import UrdfConverter  # noqa: E402
+
+from src.robotics.urdf_interface import UrdfConverter
 
 
 class Ar5QtSimulatorWidget(QWidget):
@@ -68,9 +69,7 @@ class Ar5QtSimulatorWidget(QWidget):
         model = UrdfConverter().from_file(urdf_path)
         self._joint_specs: list[JointSpec] = _build_joint_specs(model)
         self._tcp_offset_m = _find_tcp_offset_m(model)
-        self._plot_radius_m = _estimate_plot_radius_m(
-            self._joint_specs, self._tcp_offset_m
-        )
+        self._plot_radius_m = _estimate_plot_radius_m(self._joint_specs, self._tcp_offset_m)
         self._axis_draw_length_m = max(0.05, self._plot_radius_m * 0.08)
         self._state = RobotState(
             joint_values_rad=np.array(
@@ -80,13 +79,9 @@ class Ar5QtSimulatorWidget(QWidget):
             target_xyz_m=np.zeros(3, dtype=np.float64),
             target_rpy_rad=np.zeros(3, dtype=np.float64),
         )
-        _, _, _, tcp_tf = _compute_robot_geometry(
-            self._joint_specs, self._tcp_offset_m, self._state
-        )
+        _, _, _, tcp_tf = _compute_robot_geometry(self._joint_specs, self._tcp_offset_m, self._state)
         self._state.target_xyz_m[:] = tcp_tf[:3, 3]
-        self._state.target_rpy_rad[:] = R.from_matrix(tcp_tf[:3, :3]).as_euler(
-            "xyz", degrees=False
-        )
+        self._state.target_rpy_rad[:] = R.from_matrix(tcp_tf[:3, :3]).as_euler("xyz", degrees=False)
         self._last_ik_result = IKSolveResult(
             success=True,
             method="init",
@@ -96,9 +91,7 @@ class Ar5QtSimulatorWidget(QWidget):
         self._figure = Figure(figsize=(9.0, 7.2))
         self._figure.subplots_adjust(left=0.04, right=0.98, bottom=0.06, top=0.96)
         self._canvas = FigureCanvasQTAgg(self._figure)
-        self._canvas.setSizePolicy(
-            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
-        )
+        self._canvas.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self._canvas.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._axes = cast(Axes3D, self._figure.add_subplot(111, projection="3d"))
         self._axes.mouse_init(rotate_btn=[1], zoom_btn=[3])  # type: ignore
@@ -114,9 +107,7 @@ class Ar5QtSimulatorWidget(QWidget):
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.resize(1480, 920)
 
-        self._status_label.setTextInteractionFlags(
-            Qt.TextInteractionFlag.TextSelectableByMouse
-        )
+        self._status_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self._status_label.setWordWrap(True)
 
         self._hint_text.setReadOnly(True)
@@ -203,11 +194,7 @@ class Ar5QtSimulatorWidget(QWidget):
         ]
         for text, key, row, column in button_specs:
             button = QPushButton(f"{text}\n[{key}]", self._control_panel)
-            button.clicked.connect(
-                lambda _checked=False, command_key=key: self._on_control_button_clicked(
-                    command_key
-                )
-            )
+            button.clicked.connect(lambda _checked=False, command_key=key: self._on_control_button_clicked(command_key))
             layout.addWidget(button, row, column)
         return self._control_panel
 
@@ -317,9 +304,7 @@ class Ar5QtSimulatorWidget(QWidget):
     def _apply_joint_delta(self, joint_index: int, delta_rad: float) -> None:
         spec = self._joint_specs[joint_index]
         next_value = self._state.joint_values_rad[joint_index] + delta_rad
-        self._state.joint_values_rad[joint_index] = float(
-            np.clip(next_value, spec.lower_rad, spec.upper_rad)
-        )
+        self._state.joint_values_rad[joint_index] = float(np.clip(next_value, spec.lower_rad, spec.upper_rad))
         self._last_ik_result = IKSolveResult(
             success=True,
             method="manual-joint",
@@ -333,13 +318,9 @@ class Ar5QtSimulatorWidget(QWidget):
             self._state.joint_values_rad[:] = result.joint_values_rad
 
     def _sync_target_to_current_tcp(self) -> None:
-        _, _, _, tcp_tf = _compute_robot_geometry(
-            self._joint_specs, self._tcp_offset_m, self._state
-        )
+        _, _, _, tcp_tf = _compute_robot_geometry(self._joint_specs, self._tcp_offset_m, self._state)
         self._state.target_xyz_m[:] = tcp_tf[:3, 3]
-        self._state.target_rpy_rad[:] = R.from_matrix(tcp_tf[:3, :3]).as_euler(
-            "xyz", degrees=False
-        )
+        self._state.target_rpy_rad[:] = R.from_matrix(tcp_tf[:3, :3]).as_euler("xyz", degrees=False)
         self._last_ik_result = IKSolveResult(
             success=True,
             method="sync",
@@ -348,19 +329,15 @@ class Ar5QtSimulatorWidget(QWidget):
 
     def _reset_state(self) -> None:
         for index, spec in enumerate(self._joint_specs):
-            self._state.joint_values_rad[index] = (
-                spec.lower_rad + spec.upper_rad
-            ) * 0.5
+            self._state.joint_values_rad[index] = (spec.lower_rad + spec.upper_rad) * 0.5
         self._sync_target_to_current_tcp()
 
     def _refresh_scene(self) -> None:
         self._axes.cla()
-        joint_origins_world, joint_axes_world, skeleton_points_world, tcp_tf = (
-            _compute_robot_geometry(
-                self._joint_specs,
-                self._tcp_offset_m,
-                self._state,
-            )
+        joint_origins_world, joint_axes_world, skeleton_points_world, tcp_tf = _compute_robot_geometry(
+            self._joint_specs,
+            self._tcp_offset_m,
+            self._state,
         )
         target_tf = _build_target_transform(self._state)
         self._draw_world_frame()
@@ -400,13 +377,9 @@ class Ar5QtSimulatorWidget(QWidget):
         )
         tcp = skeleton_points_world[-1]
         plot_axes = cast(Any, self._axes)
-        plot_axes.scatter(
-            [tcp[0]], [tcp[1]], [tcp[2]], color="#ff7f0e", s=70, label="TCP"
-        )
+        plot_axes.scatter([tcp[0]], [tcp[1]], [tcp[2]], color="#ff7f0e", s=70, label="TCP")
 
-    def _draw_joint_axes(
-        self, joint_origins_world: np.ndarray, joint_axes_world: np.ndarray
-    ) -> None:
+    def _draw_joint_axes(self, joint_origins_world: np.ndarray, joint_axes_world: np.ndarray) -> None:
         plot_axes = cast(Any, self._axes)
         plot_axes.quiver(
             joint_origins_world[:, 0],
@@ -506,23 +479,13 @@ class Ar5QtSimulatorWidget(QWidget):
                         "Current TCP rpy(deg): "
                         f"[{current_rpy_deg[0]:.1f}, {current_rpy_deg[1]:.1f}, {current_rpy_deg[2]:.1f}]"
                     ),
-                    (
-                        "Target xyz(mm): "
-                        f"[{target_xyz_mm[0]:.1f}, {target_xyz_mm[1]:.1f}, {target_xyz_mm[2]:.1f}]"
-                    ),
+                    ("Target xyz(mm): " f"[{target_xyz_mm[0]:.1f}, {target_xyz_mm[1]:.1f}, {target_xyz_mm[2]:.1f}]"),
                     (
                         "Target rpy(deg): "
                         f"[{target_rpy_deg[0]:.1f}, {target_rpy_deg[1]:.1f}, {target_rpy_deg[2]:.1f}]"
                     ),
-                    "Joints(deg): "
-                    + ", ".join(
-                        f"J{index + 1}={value:.1f}"
-                        for index, value in enumerate(joint_deg)
-                    ),
-                    (
-                        "IK status: "
-                        f"{self._last_ik_result.method} | {self._last_ik_result.message}"
-                    ),
+                    "Joints(deg): " + ", ".join(f"J{index + 1}={value:.1f}" for index, value in enumerate(joint_deg)),
+                    ("IK status: " f"{self._last_ik_result.method} | {self._last_ik_result.message}"),
                     (
                         "Steps: "
                         f"xyz={self._translation_step_m * 1000.0:.1f} mm, "
@@ -535,9 +498,7 @@ class Ar5QtSimulatorWidget(QWidget):
 
 
 def _build_argument_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description="基于 PySide6 + matplotlib 的 AR5-5LR 交互式仿真。"
-    )
+    parser = argparse.ArgumentParser(description="基于 PySide6 + matplotlib 的 AR5-5LR 交互式仿真。")
     parser.add_argument(
         "--urdf",
         type=Path,

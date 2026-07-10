@@ -18,8 +18,8 @@ DEFAULT_CAMERA_NAME = "left_hand_camera"
 DEFAULT_SERVICE_ADDR = "tcp://192.168.1.118:6200"
 DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "test" / "wuji" / ".archive" / "tray_detection_capture"
 
-from camera_pipeline.client import CameraPipelineClient  # noqa: E402
-from camera_pipeline.tray_detection.protocol import OrinTrayDetectionRequest  # noqa: E402
+from camera_pipeline.client import CameraPipelineClient
+from camera_pipeline.tray_detection.protocol import OrinTrayDetectionRequest
 
 
 def main(
@@ -95,4 +95,6 @@ def _parse_cli(argv: list[str]) -> argparse.Namespace:
 
 if __name__ == "__main__":
     args = _parse_cli(sys.argv[1:])
-    raise SystemExit(main(service_addr=str(args.service_addr), camera_name=str(args.camera_name), output_dir=Path(args.output_dir)))
+    raise SystemExit(
+        main(service_addr=str(args.service_addr), camera_name=str(args.camera_name), output_dir=Path(args.output_dir))
+    )

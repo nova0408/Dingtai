@@ -10,10 +10,11 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from common import AGV_HOST, DEFAULT_PORT, create_wuyou_channel, stop_ssh_process  # noqa: E402
-from src.wuji.agv_client import WujiAgvClient  # noqa: E402
-from src.wuji.qmlinker_session import WujiQmlinkerSession  # noqa: E402
-from network_discovery import get_cached_orin_host  # noqa: E402
+from common import AGV_HOST, DEFAULT_PORT, create_wuyou_channel, stop_ssh_process
+from network_discovery import get_cached_orin_host
+
+from src.wuji.agv_client import WujiAgvClient
+from src.wuji.qmlinker_session import WujiQmlinkerSession
 
 SSH_ALIAS = "orin"
 QMLINKER_HOST = get_cached_orin_host()

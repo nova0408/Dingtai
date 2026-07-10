@@ -18,14 +18,15 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from camera_pipeline.client import CameraPipelineClient  # noqa: E402
-from camera_pipeline.camera_stream import CameraColorFramePacket  # noqa: E402
-from sdk.xcoresdk import xCoreSDK_python  # noqa: E402
-from src.calibration import CHARUCO_200_12_9  # noqa: E402
-from src.calibration import CharucoPoseEstimator  # noqa: E402
-from src.calibration.hand_eye import HandEyeMultiMethodResult  # noqa: E402
-from src.calibration.hand_eye import calibrate_hand_eye_multi_method  # noqa: E402
-from src.calibration.hand_eye import PoseLike  # noqa: E402
+from camera_pipeline.camera_stream import CameraColorFramePacket
+from camera_pipeline.client import CameraPipelineClient
+from sdk.xcoresdk import xCoreSDK_python
+from src.calibration import CHARUCO_200_12_9, CharucoPoseEstimator
+from src.calibration.hand_eye import (
+    HandEyeMultiMethodResult,
+    PoseLike,
+    calibrate_hand_eye_multi_method,
+)
 
 # region 默认参数
 DEFAULT_WINDOW_NAME = "Left Arm Hand-Eye Calibration"
@@ -271,8 +272,7 @@ def _connect_left_arm(robot_ip: str) -> ConnectedLeftArm:
         raise RuntimeError(f"读取左臂机器人信息失败: ip={robot_ip}")
     if str(robot_info.type) != EXPECTED_LEFT_ARM_TYPE:
         raise RuntimeError(
-            "连接到的机器人不是左臂控制器: "
-            f"expected={EXPECTED_LEFT_ARM_TYPE}, actual={robot_info.type}"
+            "连接到的机器人不是左臂控制器: " f"expected={EXPECTED_LEFT_ARM_TYPE}, actual={robot_info.type}"
         )
     logger.success(f"左臂已连接: ip={robot_ip}, type={robot_info.type}, uid={robot_info.id}")
     return ConnectedLeftArm(
@@ -456,9 +456,9 @@ def _capture_sample(
         board_visible=bool(charuco_result.board_visible),
         marker_count=int(charuco_result.marker_count),
         charuco_count=int(charuco_result.charuco_count),
-        reprojection_error_px=None
-        if charuco_result.reprojection_error_px is None
-        else float(charuco_result.reprojection_error_px),
+        reprojection_error_px=(
+            None if charuco_result.reprojection_error_px is None else float(charuco_result.reprojection_error_px)
+        ),
         robot_snapshot=robot_snapshot,
         board_pose_camera_board=board_pose_camera_board,
         camera_pose_board_camera=camera_pose_board_camera,
@@ -570,8 +570,16 @@ def _write_extrinsic_result_file(
 ) -> None:
     board_to_camera = result.board_to_camera
     camera_to_board = result.camera_to_board
-    board_to_camera_matrix = None if board_to_camera is None else np.asarray(board_to_camera.transform_matrix, dtype=np.float64).reshape(4, 4)
-    camera_to_board_matrix = None if camera_to_board is None else np.asarray(camera_to_board.transform_matrix, dtype=np.float64).reshape(4, 4)
+    board_to_camera_matrix = (
+        None
+        if board_to_camera is None
+        else np.asarray(board_to_camera.transform_matrix, dtype=np.float64).reshape(4, 4)
+    )
+    camera_to_board_matrix = (
+        None
+        if camera_to_board is None
+        else np.asarray(camera_to_board.transform_matrix, dtype=np.float64).reshape(4, 4)
+    )
     lines = [
         "T_end_camera 外参结果",
         f"generated_at={datetime.now().isoformat(timespec='seconds')}",
@@ -664,19 +672,24 @@ def _write_sample_guidance_file(output_path: Path, samples: list[SampleRecord]) 
 def _maybe_update_extrinsic_result(
     output_path: Path,
     samples: list[SampleRecord],
-)-> DualHandEyeSolveResult | None:
+) -> DualHandEyeSolveResult | None:
     valid_samples = [
         sample
         for sample in samples
-        if sample.board_pose_camera_board is not None
-        and sample.camera_pose_board_camera is not None
+        if sample.board_pose_camera_board is not None and sample.camera_pose_board_camera is not None
     ]
     if len(valid_samples) < 3:
         return None
-    robot_poses: list[PoseLike] = [_cartesian_pose_to_matrix(sample.robot_snapshot.cartesian_pose) for sample in valid_samples]
+    robot_poses: list[PoseLike] = [
+        _cartesian_pose_to_matrix(sample.robot_snapshot.cartesian_pose) for sample in valid_samples
+    ]
     filtered_samples = valid_samples
-    board_poses: list[PoseLike] = [sample.board_pose_camera_board for sample in filtered_samples if sample.board_pose_camera_board is not None]
-    camera_poses: list[PoseLike] = [sample.camera_pose_board_camera for sample in filtered_samples if sample.camera_pose_board_camera is not None]
+    board_poses: list[PoseLike] = [
+        sample.board_pose_camera_board for sample in filtered_samples if sample.board_pose_camera_board is not None
+    ]
+    camera_poses: list[PoseLike] = [
+        sample.camera_pose_board_camera for sample in filtered_samples if sample.camera_pose_board_camera is not None
+    ]
     board_to_camera_result = _solve_hand_eye_multi_method(
         robot_poses=robot_poses,
         board_poses=board_poses,
@@ -714,7 +727,11 @@ def _solve_hand_eye_multi_method(
         group_a_poses=robot_poses,
         group_b_poses=board_poses,
     )
-    if multi_result.best_result is None or multi_result.best_result.transform is None or multi_result.best_result.residual is None:
+    if (
+        multi_result.best_result is None
+        or multi_result.best_result.transform is None
+        or multi_result.best_result.residual is None
+    ):
         raise RuntimeError("手眼标定失败，未找到有效候选方法")
     transform_matrix = np.asarray(multi_result.best_result.transform.as_SE3(), dtype=np.float64).reshape(4, 4)
     residual = multi_result.best_result.residual
@@ -855,10 +872,7 @@ def _build_overlay_lines(
     joint_text = ", ".join(f"J{index + 1}={value:.1f}" for index, value in enumerate(robot_snapshot.joint_degrees))
     tcp_matrix = _cartesian_pose_to_matrix(robot_snapshot.cartesian_pose)
     tcp_rpy_deg = Rotation3D.from_matrix(tcp_matrix[:3, :3]).as_euler("XYZ", degrees=True)
-    robot_rpy_text = (
-        f"({float(tcp_rpy_deg[0]):.1f}, {float(tcp_rpy_deg[1]):.1f}, "
-        f"{float(tcp_rpy_deg[2]):.1f})"
-    )
+    robot_rpy_text = f"({float(tcp_rpy_deg[0]):.1f}, {float(tcp_rpy_deg[1]):.1f}, " f"{float(tcp_rpy_deg[2]):.1f})"
     board_pose_camera_board = None
     if charuco_result.transform_se3 is not None:
         board_pose_camera_board = np.asarray(charuco_result.transform_se3, dtype=np.float64).reshape(4, 4)
@@ -872,10 +886,7 @@ def _build_overlay_lines(
         f"sample_count={sample_count} host_time={robot_snapshot.host_timestamp_iso}",
         "capture: Enter/Space/P    quit: Esc/Q",
     ]
-    lines.append(
-        "T_board_camera="
-        + _format_pose_text(board_pose_camera_board)
-    )
+    lines.append("T_board_camera=" + _format_pose_text(board_pose_camera_board))
     if board_pose_camera_board is not None:
         lines.append("T_camera_board=" + _format_pose_text(_invert_se3(board_pose_camera_board)))
     if coverage is not None:
@@ -932,7 +943,9 @@ def _draw_marker_corners(
         points_i32 = np.round(points).astype(np.int32).reshape(-1, 1, 2)
         cv2.polylines(canvas, [points_i32], True, (255, 255, 0), 2, cv2.LINE_AA)
         center = np.mean(points, axis=0)
-        marker_label = "" if marker_ids is None or marker_index >= len(marker_ids) else str(int(marker_ids[marker_index]))
+        marker_label = (
+            "" if marker_ids is None or marker_index >= len(marker_ids) else str(int(marker_ids[marker_index]))
+        )
         _draw_single_text(canvas, f"M{marker_label}", (int(round(center[0])), int(round(center[1]))), (0, 255, 255))
 
 
@@ -1111,11 +1124,18 @@ def _format_optional_float(value: float | None, digits: int) -> str:
 
 def _parse_cli() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="左臂拖动示教 + Orin 左手相机流手眼标定实采页")
-    parser.add_argument("--service-addr", type=str, default=DEFAULT_ORIN_SERVICE_ADDR, help="Orin camera_pipeline_service 地址")
+    parser.add_argument(
+        "--service-addr", type=str, default=DEFAULT_ORIN_SERVICE_ADDR, help="Orin camera_pipeline_service 地址"
+    )
     parser.add_argument("--camera-name", type=str, default=DEFAULT_CAMERA_NAME, help="逻辑相机名，默认使用左手相机")
     parser.add_argument("--left-arm-ip", type=str, default=DEFAULT_LEFT_ARM_IP, help="左臂控制器 IP")
     parser.add_argument("--output-root", type=str, default=str(DEFAULT_OUTPUT_ROOT), help="运行输出根目录")
-    parser.add_argument("--min-charuco-corners", type=int, default=DEFAULT_MIN_CHARUCO_CORNERS, help="进入位姿估计所需的最小 ChArUco 角点数")
+    parser.add_argument(
+        "--min-charuco-corners",
+        type=int,
+        default=DEFAULT_MIN_CHARUCO_CORNERS,
+        help="进入位姿估计所需的最小 ChArUco 角点数",
+    )
     return parser.parse_args()
 
 

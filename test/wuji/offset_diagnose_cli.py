@@ -14,25 +14,28 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from sdk.xcoresdk import xCoreSDK_python  # noqa: E402
-from test.wuji.ball_pose_detection import (  # noqa: E402
+from test.wuji.ball_pose_detection import (
     DEFAULT_CAMERA_NAME as DEFAULT_BALL_CAMERA_NAME,
+)
+from test.wuji.ball_pose_detection import (
     DEFAULT_SERVICE_ADDR as DEFAULT_BALL_SERVICE_ADDR,
-    _build_three_ball_basis_transform,
+)
+from test.wuji.ball_pose_detection import (
     _build_priors_from_capture,
+    _build_three_ball_basis_transform,
     _load_prior_capture,
 )
-from test.wuji.record_left_replay_cli import (  # noqa: E402
+from test.wuji.record_left_replay_cli import (
     DEFAULT_HAND_EYE_RESULT_PATH,
     _format_sequence,
     _homogeneous_matrix_to_cartesian_position,
     _homogeneous_matrix_to_rpy,
     _load_tool_camera_transform_m,
 )
-from test.wuji.xcoresdk_arm_cli_test import (  # noqa: E402
+from test.wuji.xcoresdk_arm_cli_test import (
     DEFAULT_CARTESIAN_ZONE,
-    DEFAULT_JOINT_ZONE,
     DEFAULT_JOINT_SPEED,
+    DEFAULT_JOINT_ZONE,
     DEFAULT_TOOL_NAME,
     DEFAULT_WOBJ_NAME,
     LEFT_ARM_IP,
@@ -46,9 +49,13 @@ from test.wuji.xcoresdk_arm_cli_test import (  # noqa: E402
     _validate_cartesian_target,
 )
 
+from sdk.xcoresdk import xCoreSDK_python
+
 DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "test" / "wuji" / ".archive" / "offset_diagnose_cli"
 DEFAULT_ARM_IP = LEFT_ARM_IP
-DEFAULT_PRIOR_CAPTURE_PATH = PROJECT_ROOT / "test" / "wuji" / ".archive" / "ball_pose_detection_capture" / "summary.json"
+DEFAULT_PRIOR_CAPTURE_PATH = (
+    PROJECT_ROOT / "test" / "wuji" / ".archive" / "ball_pose_detection_capture" / "summary.json"
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -159,7 +166,9 @@ def _execute_joint_target(
     _print_sdk_result("moveReset(joint)", ec)
     if ec.get("ec", 0) != 0:
         raise RuntimeError("关节运动 moveReset 失败")
-    robot.moveAppend([xCoreSDK_python.MoveAbsJCommand(target_joint, DEFAULT_JOINT_SPEED, DEFAULT_JOINT_ZONE)], cmd_id, ec)
+    robot.moveAppend(
+        [xCoreSDK_python.MoveAbsJCommand(target_joint, DEFAULT_JOINT_SPEED, DEFAULT_JOINT_ZONE)], cmd_id, ec
+    )
     _print_sdk_result("moveAppend(MoveAbsJ-joint-no-offset)", ec)
     if ec.get("ec", 0) != 0:
         raise RuntimeError("关节运动 moveAppend 失败")
@@ -229,8 +238,8 @@ def _run_camera_preview(
     ec: dict[str, object],
     state: RuntimeState,
 ) -> None:
-    from camera_pipeline.ball_pose_detection.protocol import BallPoseDetectionRequest  # noqa: E402
-    from camera_pipeline.client import CameraPipelineClient  # noqa: E402
+    from camera_pipeline.ball_pose_detection.protocol import BallPoseDetectionRequest
+    from camera_pipeline.client import CameraPipelineClient
 
     prior_capture = _load_prior_capture(prior_capture_path)
     priors = _build_priors_from_capture(prior_capture)
@@ -533,13 +542,15 @@ def _format_xyz_mm(matrix: np.ndarray) -> str:
 
 
 def _format_rpy_deg(matrix: np.ndarray) -> str:
-    rpy = np.degrees(np.asarray(_homogeneous_matrix_to_rpy(np.asarray(matrix, dtype=np.float64).tolist()), dtype=np.float64))
+    rpy = np.degrees(
+        np.asarray(_homogeneous_matrix_to_rpy(np.asarray(matrix, dtype=np.float64).tolist()), dtype=np.float64)
+    )
     return f"({float(rpy[0]):.2f}, {float(rpy[1]):.2f}, {float(rpy[2]):.2f})"
 
 
 def _detect_current_cam_ball_m(service_addr: str, camera_name: str, prior_capture_path: Path) -> np.ndarray:
-    from camera_pipeline.ball_pose_detection.protocol import BallPoseDetectionRequest  # noqa: E402
-    from camera_pipeline.client import CameraPipelineClient  # noqa: E402
+    from camera_pipeline.ball_pose_detection.protocol import BallPoseDetectionRequest
+    from camera_pipeline.client import CameraPipelineClient
 
     prior_capture = _load_prior_capture(prior_capture_path)
     priors = _build_priors_from_capture(prior_capture)
@@ -592,7 +603,9 @@ def _cartesian_to_matrix_m(cart_pose: xCoreSDK_python.CartesianPosition) -> np.n
     matrix = np.eye(4, dtype=np.float64)
     # hand_eye_orin_left_arm_drag.py 的实际求解链路等价于使用
     # scipy Rotation.from_euler("xyz", SDK rpy(rad), degrees=False) 重建 T_tcp。
-    matrix[:3, :3] = Rotation.from_euler("xyz", np.asarray(cart_pose.rpy, dtype=np.float64).reshape(3), degrees=False).as_matrix()
+    matrix[:3, :3] = Rotation.from_euler(
+        "xyz", np.asarray(cart_pose.rpy, dtype=np.float64).reshape(3), degrees=False
+    ).as_matrix()
     matrix[:3, 3] = np.asarray(cart_pose.trans, dtype=np.float64).reshape(3)
     return matrix
 

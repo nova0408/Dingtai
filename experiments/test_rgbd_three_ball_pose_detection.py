@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-# pyright: reportMissingImports=false
-
 import argparse
 import itertools
 import queue
@@ -17,6 +15,9 @@ import open3d as o3d
 from loguru import logger
 from pyorbbecsdk import OBFormat
 
+# pyright: reportMissingImports=false
+
+
 try:
     import cv2
 except Exception as exc:  # pragma: no cover
@@ -26,8 +27,12 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.rgbd_camera import Gemini305, OrbbecSession, SessionOptions, set_point_cloud_filter_format  # noqa: E402
-
+from src.rgbd_camera import (
+    Gemini305,
+    OrbbecSession,
+    SessionOptions,
+    set_point_cloud_filter_format,
+)
 
 # region 默认参数（优先在这里直接改）
 DEFAULT_TIMEOUT_MS = 120  # 等待相机帧超时，单位 ms
@@ -492,13 +497,9 @@ def _build_detector_config(
     use_first_valid_frame_as_reference: bool,
     require_known_model_pose: bool,
 ) -> BallDetectorConfig:
-    model_points = {
-        name: np.asarray(point, dtype=np.float64)
-        for name, point in DEFAULT_MODEL_POINTS_MM.items()
-    }
+    model_points = {name: np.asarray(point, dtype=np.float64) for name, point in DEFAULT_MODEL_POINTS_MM.items()}
     color_ranges: dict[str, tuple[tuple[int, int, int, int, int, int], ...]] = {
-        name: tuple(_normalize_hsv_range(bound) for bound in ranges)
-        for name, ranges in DEFAULT_COLOR_RANGES.items()
+        name: tuple(_normalize_hsv_range(bound) for bound in ranges) for name, ranges in DEFAULT_COLOR_RANGES.items()
     }
     return BallDetectorConfig(
         ball_diameter_mm=float(ball_diameter_mm),
@@ -688,13 +689,7 @@ def _rank_ball_candidates(
         circle_score = float(np.clip(candidate.circularity, 0.0, 1.0))
         fill_score = float(np.clip(candidate.fill_ratio, 0.0, 1.0))
         border_score = _score_inside_image(candidate.center_px, candidate.radius_px, image_shape)
-        score = (
-            0.32 * radius_score
-            + 0.24 * depth_score
-            + 0.20 * circle_score
-            + 0.14 * fill_score
-            + 0.10 * border_score
-        )
+        score = 0.32 * radius_score + 0.24 * depth_score + 0.20 * circle_score + 0.14 * fill_score + 0.10 * border_score
         if status != "detected":
             score *= 0.72
         detections.append(
@@ -780,9 +775,7 @@ def _make_relative_distances(
     distances: dict[tuple[str, str], float] = {}
     for left_index, left_name in enumerate(BALL_ORDER):
         for right_name in BALL_ORDER[left_index + 1 :]:
-            distances[(left_name, right_name)] = float(
-                np.linalg.norm(centers[left_name] - centers[right_name])
-            )
+            distances[(left_name, right_name)] = float(np.linalg.norm(centers[left_name] - centers[right_name]))
     return distances
 
 
@@ -879,10 +872,7 @@ def _is_same_physical_ball(
     if left.center_mm is None or right.center_mm is None:
         return False
     distance_mm = float(
-        np.linalg.norm(
-            np.asarray(left.center_mm, dtype=np.float64)
-            - np.asarray(right.center_mm, dtype=np.float64)
-        )
+        np.linalg.norm(np.asarray(left.center_mm, dtype=np.float64) - np.asarray(right.center_mm, dtype=np.float64))
     )
     return distance_mm <= float(config.ball_diameter_mm) * float(config.min_center_distance_ratio)
 
@@ -1098,12 +1088,7 @@ def _project_points_to_image(
         zz = z[valid_depth]
         uu = np.rint(float(intrinsics.fx) * x / zz + float(intrinsics.cx)).astype(np.int32)
         vv = np.rint(float(intrinsics.fy) * y / zz + float(intrinsics.cy)).astype(np.int32)
-        in_bounds = (
-            (uu >= 0)
-            & (uu < int(intrinsics.width))
-            & (vv >= 0)
-            & (vv < int(intrinsics.height))
-        )
+        in_bounds = (uu >= 0) & (uu < int(intrinsics.width)) & (vv >= 0) & (vv < int(intrinsics.height))
         original_idx = np.where(valid_depth)[0][in_bounds]
         u[original_idx] = uu[in_bounds]
         v[original_idx] = vv[in_bounds]
@@ -1211,6 +1196,7 @@ def _draw_mask_panel_stats(
         cv2.LINE_AA,
     )
 
+
 def _draw_detected_links(
     canvas: np.ndarray,
     detections: dict[str, BallDetection],
@@ -1294,8 +1280,7 @@ def _draw_status_text(
     if pose is not None:
         origin = pose.origin_mm
         lines.append(
-            f"pose {pose.source} XYZ={origin[0]:.1f},{origin[1]:.1f},{origin[2]:.1f}mm "
-            f"res={pose.residual_mm:.2f}mm"
+            f"pose {pose.source} XYZ={origin[0]:.1f},{origin[1]:.1f},{origin[2]:.1f}mm " f"res={pose.residual_mm:.2f}mm"
         )
     else:
         lines.append("pose unavailable")

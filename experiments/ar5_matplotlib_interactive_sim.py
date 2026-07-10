@@ -27,10 +27,12 @@ if str(PROJECT_ROOT) not in sys.path:
 if str(SDK_PACKAGE_ROOT) not in sys.path:
     sys.path.insert(0, str(SDK_PACKAGE_ROOT))
 
-from src.robotics.urdf_interface import UrdfConverter, UrdfModel  # noqa: E402
+from src.robotics.urdf_interface import UrdfConverter, UrdfModel
 
 try:
-    from sdk.xcoresdk import xCoreSDK_python as IMPORTED_XCORE_SDK  # type: ignore[attr-defined]  # noqa: E402
+    from sdk.xcoresdk import (
+        xCoreSDK_python as IMPORTED_XCORE_SDK,  # type: ignore[attr-defined]
+    )
 except Exception:
     IMPORTED_XCORE_SDK = None
 
@@ -86,21 +88,13 @@ class KeyboardBinding:
 def _build_joint_specs(model: UrdfModel) -> list[JointSpec]:
     """从 URDF 中提取按定义顺序排列的转动关节。"""
 
-    revolute_joints = [
-        joint for joint in model.joints if joint.joint_type == "revolute"
-    ]
+    revolute_joints = [joint for joint in model.joints if joint.joint_type == "revolute"]
     if len(revolute_joints) != 7:
-        raise ValueError(
-            f"期望 AR5 具有 7 个 revolute 关节，当前为 {len(revolute_joints)}"
-        )
+        raise ValueError(f"期望 AR5 具有 7 个 revolute 关节，当前为 {len(revolute_joints)}")
 
     specs: list[JointSpec] = []
     for joint in revolute_joints:
-        if (
-            joint.limit is None
-            or joint.limit.lower is None
-            or joint.limit.upper is None
-        ):
+        if joint.limit is None or joint.limit.lower is None or joint.limit.upper is None:
             raise ValueError(f"关节 {joint.name} 缺少完整的 limit 上下限")
         specs.append(
             JointSpec(
@@ -179,9 +173,7 @@ def _compute_robot_geometry(
         joint_origins_world.append(origin_world)
         joint_axes_world.append(axis_world)
 
-        joint_motion_tf = _make_axis_rotation(
-            spec.axis_xyz, float(state.joint_values_rad[index])
-        )
+        joint_motion_tf = _make_axis_rotation(spec.axis_xyz, float(state.joint_values_rad[index]))
         current_tf = joint_frame_tf @ joint_motion_tf
 
     tcp_world = _transform_point(current_tf, tcp_offset_m)
@@ -195,15 +187,10 @@ def _compute_robot_geometry(
     )
 
 
-def _estimate_plot_radius_m(
-    joint_specs: list[JointSpec], tcp_offset_m: np.ndarray
-) -> float:
+def _estimate_plot_radius_m(joint_specs: list[JointSpec], tcp_offset_m: np.ndarray) -> float:
     """估算绘图半径。"""
 
-    reach = float(
-        sum(np.linalg.norm(spec.origin_xyz_m) for spec in joint_specs)
-        + np.linalg.norm(tcp_offset_m)
-    )
+    reach = float(sum(np.linalg.norm(spec.origin_xyz_m) for spec in joint_specs) + np.linalg.norm(tcp_offset_m))
     return max(0.5, reach * 1.4)
 
 
@@ -211,9 +198,7 @@ def _pose_error_vector(target_tf: np.ndarray, current_tf: np.ndarray) -> np.ndar
     """返回 6 维位姿误差，[dx, dy, dz, dRx, dRy, dRz]。"""
 
     position_error = target_tf[:3, 3] - current_tf[:3, 3]
-    rotation_error = (
-        R.from_matrix(target_tf[:3, :3]) * R.from_matrix(current_tf[:3, :3]).inv()
-    ).as_rotvec()
+    rotation_error = (R.from_matrix(target_tf[:3, :3]) * R.from_matrix(current_tf[:3, :3]).inv()).as_rotvec()
     return np.concatenate([position_error, rotation_error])
 
 
@@ -237,9 +222,7 @@ def _compute_pose_jacobian(
         target_rpy_rad=np.zeros(3, dtype=np.float64),
     )
     _, _, _, tcp_tf = _compute_robot_geometry(joint_specs, tcp_offset_m, state)
-    current_pose = np.concatenate(
-        [tcp_tf[:3, 3], R.from_matrix(tcp_tf[:3, :3]).as_rotvec()]
-    )
+    current_pose = np.concatenate([tcp_tf[:3, 3], R.from_matrix(tcp_tf[:3, :3]).as_rotvec()])
 
     jacobian = np.zeros((6, len(joint_specs)), dtype=np.float64)
     for index in range(len(joint_specs)):
@@ -250,9 +233,7 @@ def _compute_pose_jacobian(
             target_xyz_m=np.zeros(3, dtype=np.float64),
             target_rpy_rad=np.zeros(3, dtype=np.float64),
         )
-        _, _, _, perturbed_tf = _compute_robot_geometry(
-            joint_specs, tcp_offset_m, perturbed_state
-        )
+        _, _, _, perturbed_tf = _compute_robot_geometry(joint_specs, tcp_offset_m, perturbed_state)
         perturbed_pose = np.concatenate(
             [
                 perturbed_tf[:3, 3],
@@ -269,9 +250,7 @@ def _make_cartesian_position_from_transform(
 ) -> Any:
     """构造 SDK `CartesianPosition`。"""
 
-    pose6 = list(target_tf[:3, 3]) + list(
-        R.from_matrix(target_tf[:3, :3]).as_euler("xyz", degrees=False)
-    )
+    pose6 = list(target_tf[:3, 3]) + list(R.from_matrix(target_tf[:3, :3]).as_euler("xyz", degrees=False))
     try:
         return xcore_sdk.CartesianPosition(pose6)
     except Exception:
@@ -316,9 +295,7 @@ def _try_solve_with_xcore_sdk(target_tf: np.ndarray) -> IKSolveResult:
     except Exception as exc:
         return IKSolveResult(False, "xcore-sdk", f"SDK load failed: {exc}")
     if xcore_sdk is None:
-        return IKSolveResult(
-            False, "xcore-sdk", "SDK extension not available for current Python"
-        )
+        return IKSolveResult(False, "xcore-sdk", "SDK extension not available for current Python")
 
     try:
         robot_model = None
@@ -332,15 +309,11 @@ def _try_solve_with_xcore_sdk(target_tf: np.ndarray) -> IKSolveResult:
             except Exception:
                 continue
         if robot_model is None:
-            return IKSolveResult(
-                False, "xcore-sdk", "cannot create offline robot model"
-            )
+            return IKSolveResult(False, "xcore-sdk", "cannot create offline robot model")
         toolset = xcore_sdk.Toolset()
         posture = _make_cartesian_position_from_transform(xcore_sdk, target_tf)
         ec: dict[str, object] = {}
-        joint_values = np.asarray(
-            robot_model.calcIk(posture, toolset, ec), dtype=np.float64
-        )
+        joint_values = np.asarray(robot_model.calcIk(posture, toolset, ec), dtype=np.float64)
         ec_value = ec.get("ec", 0)
         ec_code = int(ec_value) if isinstance(ec_value, int | float | str) else 0
         if ec_code != 0:
@@ -369,10 +342,7 @@ def _solve_with_newton(
     for iteration in range(max_iterations):
         jacobian, current_tf = _compute_pose_jacobian(joint_specs, tcp_offset_m, joints)
         error = _pose_error_vector(target_tf, current_tf)
-        if (
-            float(np.linalg.norm(error[:3])) <= position_tol_m
-            and float(np.linalg.norm(error[3:])) <= rotation_tol_rad
-        ):
+        if float(np.linalg.norm(error[:3])) <= position_tol_m and float(np.linalg.norm(error[3:])) <= rotation_tol_rad:
             return IKSolveResult(
                 True,
                 "newton",
@@ -445,9 +415,7 @@ class MatplotlibRobotSimulator:
         model = UrdfConverter().from_file(urdf_path)
         self._joint_specs = _build_joint_specs(model)
         self._tcp_offset_m = _find_tcp_offset_m(model)
-        self._plot_radius_m = _estimate_plot_radius_m(
-            self._joint_specs, self._tcp_offset_m
-        )
+        self._plot_radius_m = _estimate_plot_radius_m(self._joint_specs, self._tcp_offset_m)
         self._axis_draw_length_m = max(0.05, self._plot_radius_m * 0.08)
         self._state = RobotState(
             joint_values_rad=np.array(
@@ -457,13 +425,9 @@ class MatplotlibRobotSimulator:
             target_xyz_m=np.zeros(3, dtype=np.float64),
             target_rpy_rad=np.zeros(3, dtype=np.float64),
         )
-        _, _, _, tcp_tf = _compute_robot_geometry(
-            self._joint_specs, self._tcp_offset_m, self._state
-        )
+        _, _, _, tcp_tf = _compute_robot_geometry(self._joint_specs, self._tcp_offset_m, self._state)
         self._state.target_xyz_m[:] = tcp_tf[:3, 3]
-        self._state.target_rpy_rad[:] = R.from_matrix(tcp_tf[:3, :3]).as_euler(
-            "xyz", degrees=False
-        )
+        self._state.target_rpy_rad[:] = R.from_matrix(tcp_tf[:3, :3]).as_euler("xyz", degrees=False)
         self._bindings = self._build_bindings()
         self._figure = plt.figure(figsize=(12, 9))
         self._axes = cast(Axes3D, self._figure.add_subplot(111, projection="3d"))
@@ -595,9 +559,7 @@ class MatplotlibRobotSimulator:
     def _apply_joint_delta(self, joint_index: int, delta_rad: float) -> None:
         spec = self._joint_specs[joint_index]
         next_value = self._state.joint_values_rad[joint_index] + delta_rad
-        self._state.joint_values_rad[joint_index] = float(
-            np.clip(next_value, spec.lower_rad, spec.upper_rad)
-        )
+        self._state.joint_values_rad[joint_index] = float(np.clip(next_value, spec.lower_rad, spec.upper_rad))
         self._last_ik_result = IKSolveResult(
             success=True,
             method="manual-joint",
@@ -611,13 +573,9 @@ class MatplotlibRobotSimulator:
             self._state.joint_values_rad[:] = result.joint_values_rad
 
     def _sync_target_to_current_tcp(self) -> None:
-        _, _, _, tcp_tf = _compute_robot_geometry(
-            self._joint_specs, self._tcp_offset_m, self._state
-        )
+        _, _, _, tcp_tf = _compute_robot_geometry(self._joint_specs, self._tcp_offset_m, self._state)
         self._state.target_xyz_m[:] = tcp_tf[:3, 3]
-        self._state.target_rpy_rad[:] = R.from_matrix(tcp_tf[:3, :3]).as_euler(
-            "xyz", degrees=False
-        )
+        self._state.target_rpy_rad[:] = R.from_matrix(tcp_tf[:3, :3]).as_euler("xyz", degrees=False)
         self._last_ik_result = IKSolveResult(
             success=True,
             method="sync",
@@ -626,19 +584,15 @@ class MatplotlibRobotSimulator:
 
     def _reset_state(self) -> None:
         for index, spec in enumerate(self._joint_specs):
-            self._state.joint_values_rad[index] = (
-                spec.lower_rad + spec.upper_rad
-            ) * 0.5
+            self._state.joint_values_rad[index] = (spec.lower_rad + spec.upper_rad) * 0.5
         self._sync_target_to_current_tcp()
 
     def _draw(self) -> None:
         self._axes.cla()
-        joint_origins_world, joint_axes_world, skeleton_points_world, tcp_tf = (
-            _compute_robot_geometry(
-                self._joint_specs,
-                self._tcp_offset_m,
-                self._state,
-            )
+        joint_origins_world, joint_axes_world, skeleton_points_world, tcp_tf = _compute_robot_geometry(
+            self._joint_specs,
+            self._tcp_offset_m,
+            self._state,
         )
 
         self._draw_world_frame(self._axes)
@@ -681,9 +635,7 @@ class MatplotlibRobotSimulator:
         )
         tcp = skeleton_points_world[-1]
         plot_axes = cast(Any, axes)
-        plot_axes.scatter(
-            [tcp[0]], [tcp[1]], [tcp[2]], color="#ff7f0e", s=70, label="TCP"
-        )
+        plot_axes.scatter([tcp[0]], [tcp[1]], [tcp[2]], color="#ff7f0e", s=70, label="TCP")
 
     def _draw_tcp_frame(self, axes: Axes3D, tcp_tf: np.ndarray) -> None:
         plot_axes = cast(Any, axes)
@@ -785,18 +737,9 @@ class MatplotlibRobotSimulator:
         joint_deg = np.degrees(self._state.joint_values_rad)
         state_lines = [
             f"URDF: {self._urdf_path.name}",
-            (
-                "target xyz(mm): "
-                f"[{target_xyz_mm[0]:.1f}, {target_xyz_mm[1]:.1f}, {target_xyz_mm[2]:.1f}]"
-            ),
-            (
-                "target rpy(deg): "
-                f"[{target_rpy_deg[0]:.1f}, {target_rpy_deg[1]:.1f}, {target_rpy_deg[2]:.1f}]"
-            ),
-            "joints(deg): "
-            + ", ".join(
-                f"J{index + 1}={value:.1f}" for index, value in enumerate(joint_deg)
-            ),
+            ("target xyz(mm): " f"[{target_xyz_mm[0]:.1f}, {target_xyz_mm[1]:.1f}, {target_xyz_mm[2]:.1f}]"),
+            ("target rpy(deg): " f"[{target_rpy_deg[0]:.1f}, {target_rpy_deg[1]:.1f}, {target_rpy_deg[2]:.1f}]"),
+            "joints(deg): " + ", ".join(f"J{index + 1}={value:.1f}" for index, value in enumerate(joint_deg)),
             f"ik status: {self._last_ik_result.method} | {self._last_ik_result.message}",
             (
                 "steps: "
@@ -805,9 +748,7 @@ class MatplotlibRobotSimulator:
                 f"joint={math.degrees(self._joint_step_rad):.1f} deg"
             ),
         ]
-        binding_lines = [
-            f"{binding.key}: {binding.description}" for binding in self._bindings
-        ]
+        binding_lines = [f"{binding.key}: {binding.description}" for binding in self._bindings]
         self._annotation_artists.append(
             self._figure.text(
                 0.02,
@@ -840,9 +781,7 @@ class MatplotlibRobotSimulator:
 
 
 def _build_argument_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description="基于 matplotlib 的 AR5-5LR 交互式骨架仿真。"
-    )
+    parser = argparse.ArgumentParser(description="基于 matplotlib 的 AR5-5LR 交互式骨架仿真。")
     parser.add_argument(
         "--urdf",
         type=Path,
@@ -867,9 +806,7 @@ def _build_argument_parser() -> argparse.ArgumentParser:
         default=5.0,
         help="关节每次按键旋转步长，单位 deg。",
     )
-    parser.add_argument(
-        "--save-preview", type=Path, default=None, help="保存当前窗口图像到指定路径。"
-    )
+    parser.add_argument("--save-preview", type=Path, default=None, help="保存当前窗口图像到指定路径。")
     parser.add_argument(
         "--no-show",
         action="store_true",

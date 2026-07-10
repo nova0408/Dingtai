@@ -19,12 +19,13 @@ if str(PROJECT_ROOT) not in sys.path:
 if str(SDK_ROOT) not in sys.path:
     sys.path.insert(0, str(SDK_ROOT))
 
-from sdk.xcoresdk import xCoreSDK_python  # noqa: E402
-from pynput import keyboard  # noqa: E402
-from rich.console import Console, Group  # noqa: E402
-from rich.live import Live  # noqa: E402
-from rich.panel import Panel  # noqa: E402
-from rich.text import Text  # noqa: E402
+from pynput import keyboard
+from rich.console import Console, Group
+from rich.live import Live
+from rich.panel import Panel
+from rich.text import Text
+
+from sdk.xcoresdk import xCoreSDK_python
 
 # region 顶部默认常量
 # 本机网卡 IP 地址；若现场不需要双网卡显式指定，可改为 `None`。
@@ -388,9 +389,7 @@ def _log_jog_failure_diagnostics(
     )
     CONSOLE.print(failure_summary)
     CONSOLE.print(
-        "失败上下文: "
-        f"mode={operate_mode} state={operation_state} "
-        f"power={_describe_power_state(power_state)}"
+        "失败上下文: " f"mode={operate_mode} state={operation_state} " f"power={_describe_power_state(power_state)}"
     )
     CONSOLE.print(f"失败关节值(deg): [{_format_values(_rad_to_deg(joint_values))}]")
     CONSOLE.print(
@@ -414,11 +413,7 @@ def _render_status(
     active_axis = "None" if active_jog is None else active_jog.binding.axis_name
     power_style = "green" if snapshot.power_state == xCoreSDK_python.PowerState.on else "yellow"
     mode_style = "green" if snapshot.operate_mode == xCoreSDK_python.OperateMode.manual else "yellow"
-    jog_hint = (
-        "cart: WS AD RF JL IK YH"
-        if jog_mode == "cartesian"
-        else "joint: AZ SX DC FV GB HN JM"
-    )
+    jog_hint = "cart: WS AD RF JL IK YH" if jog_mode == "cartesian" else "joint: AZ SX DC FV GB HN JM"
     line_extra = Text()
     line_extra.append("INFO ", style="bold cyan")
     line_extra.append(f"Q exit | O switch arm | P toggle cart/joint jog | ] set rate | {jog_hint}", style="white")
@@ -622,9 +617,7 @@ def _configure_jog_rates(active_arm_state: ActiveArmState) -> None:
     active_arm_state.joint_rate = joint_rate
     active_arm_state.xyz_rate = xyz_rate
     active_arm_state.rpy_rate = rpy_rate
-    active_arm_state.last_notice = (
-        f"api rate 已更新 joint={joint_rate:.2f} xyz={xyz_rate:.2f} rpy={rpy_rate:.2f}"
-    )
+    active_arm_state.last_notice = f"api rate 已更新 joint={joint_rate:.2f} xyz={xyz_rate:.2f} rpy={rpy_rate:.2f}"
     CONSOLE.print(active_arm_state.last_notice)
 
 
@@ -638,11 +631,7 @@ def _start_jog(
 
     robot = connected_arm.robot
     ec = connected_arm.ec
-    jog_space = (
-        xCoreSDK_python.JogOptSpace.jointSpace
-        if jog_mode == "joint"
-        else xCoreSDK_python.JogOptSpace.baseFrame
-    )
+    jog_space = xCoreSDK_python.JogOptSpace.jointSpace if jog_mode == "joint" else xCoreSDK_python.JogOptSpace.baseFrame
     jog_rate = _resolve_jog_rate(binding, jog_mode, active_arm_state)
     robot.startJog(jog_space, jog_rate, binding.step, binding.index, binding.direction, ec)
     if ec.get("ec", 0) != 0:
@@ -798,10 +787,7 @@ def _switch_active_arm(connected_arms: dict[str, ConnectedArm], active_arm_state
         connected_arm.robot_type,
         connected_arm.robot_uid,
     )
-    active_arm_state.last_notice = (
-        f"已切换到 {connected_arm.arm_side} arm "
-        f"ip={connected_arm.config.robot_ip}"
-    )
+    active_arm_state.last_notice = f"已切换到 {connected_arm.arm_side} arm " f"ip={connected_arm.config.robot_ip}"
 
 
 def _run_keyboard_loop(connected_arms: dict[str, ConnectedArm]) -> None:

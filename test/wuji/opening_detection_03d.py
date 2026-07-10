@@ -15,9 +15,9 @@ PROJECT_ROOT = next(parent for parent in Path(__file__).resolve().parents if (pa
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from camera_pipeline.client import CameraPipelineClient  # noqa: E402
-from camera_pipeline.opening_detection.protocol import OpeningDetectionPipelineRequest  # noqa: E402
-from camera_pipeline.tray_detection.protocol import OrinTrayDetectionRequest  # noqa: E402
+from camera_pipeline.client import CameraPipelineClient
+from camera_pipeline.opening_detection.protocol import OpeningDetectionPipelineRequest
+from camera_pipeline.tray_detection.protocol import OrinTrayDetectionRequest
 
 # region 默认参数
 DEFAULT_SERVICE_ADDR = "tcp://192.168.1.118:6200"
@@ -140,10 +140,21 @@ def main(
                         enable_debug=True,
                     )
                 )
-                if response.error is None and response.selected_result is not None and response.selected_result.pose is not None:
+                if (
+                    response.error is None
+                    and response.selected_result is not None
+                    and response.selected_result.pose is not None
+                ):
                     break
-            if response is None or response.error is not None or response.selected_result is None or response.selected_result.pose is None:
-                logger.warning("frame {} opening 检测失败：{}", frame.frame_id, None if response is None else response.error)
+            if (
+                response is None
+                or response.error is not None
+                or response.selected_result is None
+                or response.selected_result.pose is None
+            ):
+                logger.warning(
+                    "frame {} opening 检测失败：{}", frame.frame_id, None if response is None else response.error
+                )
                 if frame_idx >= int(max_frames):
                     logger.warning("达到最大帧数 {} 仍未稳定识别到开口", int(max_frames))
                     break
@@ -180,23 +191,35 @@ def main(
                     "height": int(intrinsics.height),
                 },
                 opening_detection=_serialize_response(response),
-                raw_pose=None if response.selected_result is None or response.selected_result.pose is None else {
-                    "grasp_point_mm": [float(v) for v in response.selected_result.pose.grasp_point_mm],
-                    "pre_grasp_point_mm": [float(v) for v in response.selected_result.pose.pre_grasp_point_mm],
-                    "rotation": None
-                    if response.selected_result.pose.rotation is None
-                    else [[float(v) for v in row] for row in response.selected_result.pose.rotation],
-                    "rpy_deg": None
-                    if response.selected_result.pose.rpy_deg is None
-                    else [float(v) for v in response.selected_result.pose.rpy_deg],
-                },
-                pose_transform_camera_frame=None if transform is None else np.asarray(transform, dtype=np.float64).tolist(),
+                raw_pose=(
+                    None
+                    if response.selected_result is None or response.selected_result.pose is None
+                    else {
+                        "grasp_point_mm": [float(v) for v in response.selected_result.pose.grasp_point_mm],
+                        "pre_grasp_point_mm": [float(v) for v in response.selected_result.pose.pre_grasp_point_mm],
+                        "rotation": (
+                            None
+                            if response.selected_result.pose.rotation is None
+                            else [[float(v) for v in row] for row in response.selected_result.pose.rotation]
+                        ),
+                        "rpy_deg": (
+                            None
+                            if response.selected_result.pose.rpy_deg is None
+                            else [float(v) for v in response.selected_result.pose.rpy_deg]
+                        ),
+                    }
+                ),
+                pose_transform_camera_frame=(
+                    None if transform is None else np.asarray(transform, dtype=np.float64).tolist()
+                ),
                 error=None,
                 depth_shape=(int(frame.depth_mm.shape[0]), int(frame.depth_mm.shape[1])),
             )
 
             _show_snapshot(snapshot)
-            logger.success("frame {} 已识别开口并显示结果，等待 {:.1f} s 后关闭窗口", frame.frame_id, float(wait_after_detected_s))
+            logger.success(
+                "frame {} 已识别开口并显示结果，等待 {:.1f} s 后关闭窗口", frame.frame_id, float(wait_after_detected_s)
+            )
             deadline = time.perf_counter() + float(wait_after_detected_s)
             while time.perf_counter() < deadline:
                 if not vis.poll_events():
@@ -282,21 +305,39 @@ def _serialize_response(response: Any) -> dict[str, Any]:
             "tray_index": int(response.selected_result.tray_index),
             "tray_bbox_xywh": list(response.selected_result.tray_bbox_xywh),
             "tray_center_uv": list(response.selected_result.tray_center_uv),
-            "opening_center_uv": None if response.selected_result.opening_center_uv is None else list(response.selected_result.opening_center_uv),
-            "opening_quad_uv": None
-            if response.selected_result.opening_quad_uv is None
-            else [list(item) for item in response.selected_result.opening_quad_uv],
-            "top_quad_uv": None if response.selected_result.top_quad_uv is None else [list(item) for item in response.selected_result.top_quad_uv],
-            "pose": None
-            if response.selected_result.pose is None
-            else {
-                "grasp_point_mm": [float(v) for v in response.selected_result.pose.grasp_point_mm],
-                "pre_grasp_point_mm": [float(v) for v in response.selected_result.pose.pre_grasp_point_mm],
-                "rotation": None
-                if response.selected_result.pose.rotation is None
-                else [[float(v) for v in row] for row in response.selected_result.pose.rotation],
-                "rpy_deg": None if response.selected_result.pose.rpy_deg is None else [float(v) for v in response.selected_result.pose.rpy_deg],
-            },
+            "opening_center_uv": (
+                None
+                if response.selected_result.opening_center_uv is None
+                else list(response.selected_result.opening_center_uv)
+            ),
+            "opening_quad_uv": (
+                None
+                if response.selected_result.opening_quad_uv is None
+                else [list(item) for item in response.selected_result.opening_quad_uv]
+            ),
+            "top_quad_uv": (
+                None
+                if response.selected_result.top_quad_uv is None
+                else [list(item) for item in response.selected_result.top_quad_uv]
+            ),
+            "pose": (
+                None
+                if response.selected_result.pose is None
+                else {
+                    "grasp_point_mm": [float(v) for v in response.selected_result.pose.grasp_point_mm],
+                    "pre_grasp_point_mm": [float(v) for v in response.selected_result.pose.pre_grasp_point_mm],
+                    "rotation": (
+                        None
+                        if response.selected_result.pose.rotation is None
+                        else [[float(v) for v in row] for row in response.selected_result.pose.rotation]
+                    ),
+                    "rpy_deg": (
+                        None
+                        if response.selected_result.pose.rpy_deg is None
+                        else [float(v) for v in response.selected_result.pose.rpy_deg]
+                    ),
+                }
+            ),
         }
     return {
         "frame_id": int(response.frame_id),

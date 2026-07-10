@@ -16,11 +16,14 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from common import WUYOU_HOST, WUYOU_SSH_ALIAS, start_ssh_tunnel, stop_ssh_process  # noqa: E402
-from src.wuji import SUPPORTED_WUJI_ZMQ_CAMERAS_LOCAL  # noqa: E402
-from src.wuji import WujiCameraFrame  # noqa: E402
-from src.wuji import WujiCameraName  # noqa: E402
-from src.wuji import WujiZmqCameraClient  # noqa: E402
+from common import WUYOU_HOST, WUYOU_SSH_ALIAS, start_ssh_tunnel, stop_ssh_process
+
+from src.wuji import (
+    SUPPORTED_WUJI_ZMQ_CAMERAS_LOCAL,
+    WujiCameraFrame,
+    WujiCameraName,
+    WujiZmqCameraClient,
+)
 
 # endregion
 
