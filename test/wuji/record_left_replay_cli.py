@@ -78,10 +78,10 @@ DEFAULT_ARM_SIDE = "left"
 DEFAULT_MAX_FILES: int | None = None
 "默认加载的 CSV 文件数量；`None` 表示全部。"
 
-DEFAULT_REPLAY_JOINT_SPEED = 400.0
+DEFAULT_REPLAY_JOINT_SPEED = 600.0
 "回放关节空间速度，单位 deg/s。"
 
-DEFAULT_REPLAY_CARTESIAN_SPEED = 20.0
+DEFAULT_REPLAY_CARTESIAN_SPEED = 30.0
 "回放笛卡尔空间速度，单位 mm/s。"
 
 DEFAULT_REPLAY_LIFT_SETTLE_DELAY_S = 1.0
@@ -111,11 +111,17 @@ DEFAULT_OFFSET_PRIOR_CAPTURE_PATH = PROJECT_ROOT / "test" / "wuji" / ".archive" 
 DEFAULT_HAND_EYE_RESULT_PATH = PROJECT_ROOT / "experiments" / "hand_eye" / "runs" / "20260708_152829" / "hand_eye_result.txt"
 "计算全局 offset 时使用的手眼标定结果文件。"
 
-OFFSET_CAPTURE_SETTLE_DELAY_S = 5.0
+OFFSET_CAPTURE_SETTLE_DELAY_S = 3.0
 "到达 offset 触发 CSV 后，等待机械臂和相机画面稳定的时间。"
 
-OFFSET_BALL_CAPTURE_SAMPLE_COUNT = 20
+OFFSET_BALL_CAPTURE_SAMPLE_COUNT = 10
 "计算 offset 时连续采集三球坐标的次数。"
+
+OFFSET_TRIGGER_TEMP_JOINT_SPEED_DEG_S = 200.0
+"执行 offset 触发 CSV 时临时使用的关节速度，单位 deg/s。"
+
+OFFSET_TRIGGER_TEMP_CARTESIAN_SPEED_MM_S = 20.0
+"执行 offset 触发 CSV 时临时使用的笛卡尔速度，单位 mm/s。"
 
 OFFSET_BALL_OUTLIER_MAD_SCALE = 3.5
 "三球 9 维坐标鲁棒剔除的 MAD 倍数阈值。"
@@ -1357,14 +1363,16 @@ def main(
             original_joint_speed_deg_s = runtime.joint_speed_deg_s
             original_cartesian_speed_mm_s = runtime.cartesian_speed_mm_s
             if is_offset_trigger_csv:
-                runtime.joint_speed_deg_s = 100.0
-                runtime.cartesian_speed_mm_s = 100.0
+                runtime.joint_speed_deg_s = OFFSET_TRIGGER_TEMP_JOINT_SPEED_DEG_S
+                runtime.cartesian_speed_mm_s = OFFSET_TRIGGER_TEMP_CARTESIAN_SPEED_MM_S
                 logger.info(
-                    "offset 触发 CSV 临时速度调整 file={} joint_speed {:.2f}->100.00 deg/s "
-                    "cartesian_speed {:.2f}->100.00 mm/s",
+                    "offset 触发 CSV 临时速度调整 file={} joint_speed {:.2f}->{:.2f} deg/s "
+                    "cartesian_speed {:.2f}->{:.2f} mm/s",
                     csv_path.name,
                     original_joint_speed_deg_s,
+                    OFFSET_TRIGGER_TEMP_JOINT_SPEED_DEG_S,
                     original_cartesian_speed_mm_s,
+                    OFFSET_TRIGGER_TEMP_CARTESIAN_SPEED_MM_S,
                 )
             try:
                 for row in rows:
