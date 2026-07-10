@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import ast
 import csv
 import gc
 import math
 import sys
 import time
-import ast
-from datetime import datetime
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
+
 from loguru import logger
 
 if sys.platform == "win32":
@@ -19,12 +20,19 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from sdk.xcoresdk import xCoreSDK_python  # noqa: E402
-from common import DEFAULT_PORT, GRIPPER_PORT, SshTunnelGroup, close_wuyou_channel, create_wuyou_channel, stop_ssh_process  # noqa: E402
-from src.wuji.body_client import WujiBodyClient  # noqa: E402
-from src.wuji.dahuan_gripper_client import DahuanGripperClient  # noqa: E402
-from src.wuji.right_hand_client import WujiRightHandClient  # noqa: E402
+from common import (
+    DEFAULT_PORT,
+    GRIPPER_PORT,
+    SshTunnelGroup,
+    close_wuyou_channel,
+    create_wuyou_channel,
+    stop_ssh_process,
+)
 
+from sdk.xcoresdk import xCoreSDK_python
+from src.wuji.body_client import WujiBodyClient
+from src.wuji.dahuan_gripper_client import DahuanGripperClient
+from src.wuji.right_hand_client import WujiRightHandClient
 
 LEFT_ARM_IP = "192.168.1.161"
 RIGHT_ARM_IP = "192.168.1.160"
@@ -146,6 +154,7 @@ INTERLOCK_RIGHT_TARGETS: tuple[InterlockTarget, ...] = (
         hand_root_tip={"root": [1.0, 1.0, 1.0, 1.0], "tip": [0.0, 0.0, 0.0, 0.0]},
     ),
 )
+
 
 # region 基础解析
 def _parse_float_list(raw_text: str, expected_len: int | None = None) -> list[float]:
@@ -277,8 +286,7 @@ def _validate_m11_positions(positions: list[float]) -> None:
     required_max_id = max(*M11_ROOT_ACTUATOR_IDS, *M11_TIP_ACTUATOR_IDS)
     if len(positions) <= required_max_id:
         raise RuntimeError(
-            "右手状态执行器数量不足以覆盖 m11 索引，"
-            f"required_max_id={required_max_id}, actual_len={len(positions)}"
+            "右手状态执行器数量不足以覆盖 m11 索引，" f"required_max_id={required_max_id}, actual_len={len(positions)}"
         )
 
 
@@ -531,8 +539,12 @@ def _print_current_arm_state(connected_arm: ConnectedArm) -> None:
     operate_mode = robot.operateMode(ec)
     operation_state = robot.operationState(ec)
     power_state = robot.powerState(ec)
-    print(f"当前机械臂: {connected_arm.arm_side} (ip={connected_arm.robot_ip}, type={connected_arm.robot_type}, uid={connected_arm.robot_uid})")
-    print(f"当前模式/状态/电机: {operate_mode} / {operation_state} / {power_state} ({_describe_power_state(power_state)})")
+    print(
+        f"当前机械臂: {connected_arm.arm_side} (ip={connected_arm.robot_ip}, type={connected_arm.robot_type}, uid={connected_arm.robot_uid})"
+    )
+    print(
+        f"当前模式/状态/电机: {operate_mode} / {operation_state} / {power_state} ({_describe_power_state(power_state)})"
+    )
     toolset = robot.toolset(ec)
     _print_sdk_result("toolset", ec)
     if ec.get("ec", 0) == 0:
@@ -671,7 +683,9 @@ def _drag_record_loop(
     print("已进入记录模式。")
     try:
         while True:
-            print("直接回车记录当前臂的 joints / pose，输入 h 进入手掌手动记录，输入 l 进入 lift 控制，输入 q 退出并保存。")
+            print(
+                "直接回车记录当前臂的 joints / pose，输入 h 进入手掌手动记录，输入 l 进入 lift 控制，输入 q 退出并保存。"
+            )
             raw_text = input("请输入: ").strip().lower()
             if raw_text == "q":
                 print("退出记录模式")
@@ -1047,7 +1061,9 @@ def _connect_arms() -> dict[str, ConnectedArm]:
                 )
             arm_side = _detect_arm_side(robot_info.type)
             if arm_side != expected_side:
-                raise RuntimeError(f"机器人型号与预期侧别不匹配: ip={robot_ip}, expected={expected_side}, actual={arm_side}")
+                raise RuntimeError(
+                    f"机器人型号与预期侧别不匹配: ip={robot_ip}, expected={expected_side}, actual={arm_side}"
+                )
             if arm_side in connected_arms:
                 raise RuntimeError(
                     f"检测到重复的 {arm_side} 机械臂: "
@@ -1062,10 +1078,7 @@ def _connect_arms() -> dict[str, ConnectedArm]:
                 ec=ec,
             )
             connected_arms[arm_side] = connected_arm
-            print(
-                f"已连接 {arm_side} arm: ip={robot_ip}, "
-                f"type={robot_info.type}, uid={robot_info.id}"
-            )
+            print(f"已连接 {arm_side} arm: ip={robot_ip}, " f"type={robot_info.type}, uid={robot_info.id}")
         missing_arm_sides = [arm_side for arm_side in EXPECTED_ARM_TYPES if arm_side not in connected_arms]
         if missing_arm_sides:
             raise RuntimeError(f"缺少目标机械臂连接: {', '.join(missing_arm_sides)}")
@@ -1127,7 +1140,7 @@ def _toggle_drag(connected_arm: ConnectedArm, hand_clients: PersistentHandClient
             int(xCoreSDK_python.DragParameterSpace.cartesianSpace),
             int(xCoreSDK_python.DragParameterType.freely),
             ec,
-            enable_drag_button=False
+            enable_drag_button=False,
         )
         _print_sdk_result("enableDrag(cartesianSpace, freely, ec)", ec)
 
@@ -1385,7 +1398,9 @@ def _single_joint_control_loop(
                 _print_sdk_result("moveReset", ec)
                 if ec.get("ec", 0) != 0:
                     continue
-                robot.moveAppend([xCoreSDK_python.MoveAbsJCommand(target_joint, single_joint_speed, single_joint_zone)], cmd_id, ec)
+                robot.moveAppend(
+                    [xCoreSDK_python.MoveAbsJCommand(target_joint, single_joint_speed, single_joint_zone)], cmd_id, ec
+                )
                 _print_sdk_result("moveAppend(MoveAbsJ)", ec)
                 if ec.get("ec", 0) != 0:
                     continue
@@ -1428,10 +1443,7 @@ def _loop_predefined_joint_motion(robot: xCoreSDK_python.xMateErProRobot, ec: di
     joint_count = len(robot.jointPos(ec))
     for index, target_values in enumerate(waypoints, start=1):
         if len(target_values) != joint_count:
-            print(
-                f"第 {index} 个 waypoint 关节数不匹配，"
-                f"expected={joint_count}, actual={len(target_values)}"
-            )
+            print(f"第 {index} 个 waypoint 关节数不匹配，" f"expected={joint_count}, actual={len(target_values)}")
             return
 
     print("开始循环移动。按 Ctrl+C 中断并退出。")
@@ -1451,7 +1463,11 @@ def _loop_predefined_joint_motion(robot: xCoreSDK_python.xMateErProRobot, ec: di
                 _print_sdk_result("moveReset", ec)
                 if ec.get("ec", 0) != 0:
                     return
-                robot.moveAppend([xCoreSDK_python.MoveAbsJCommand(target_joint, predefined_joint_speed, predefined_joint_zone)], cmd_id, ec)
+                robot.moveAppend(
+                    [xCoreSDK_python.MoveAbsJCommand(target_joint, predefined_joint_speed, predefined_joint_zone)],
+                    cmd_id,
+                    ec,
+                )
                 _print_sdk_result("moveAppend(MoveAbsJ)", ec)
                 if ec.get("ec", 0) != 0:
                     return
@@ -1461,7 +1477,9 @@ def _loop_predefined_joint_motion(robot: xCoreSDK_python.xMateErProRobot, ec: di
                     current_power_state = robot.powerState(ec)
                     current_operate_mode = robot.operateMode(ec)
                     current_operation_state = robot.operationState(ec)
-                    print(f"moveStart 失败时电机状态: {current_power_state} ({_describe_power_state(current_power_state)})")
+                    print(
+                        f"moveStart 失败时电机状态: {current_power_state} ({_describe_power_state(current_power_state)})"
+                    )
                     print(f"moveStart 失败时模式: {current_operate_mode}")
                     print(f"moveStart 失败时操作状态: {current_operation_state}")
                     return

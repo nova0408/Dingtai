@@ -5,10 +5,11 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-import cv2  
+
+import cv2
 import numpy as np
 from loguru import logger
-from pyorbbecsdk import OBFormat  
+from pyorbbecsdk import OBFormat
 from PySide6.QtCore import QObject, Qt, QThread, Signal, Slot
 from PySide6.QtGui import QImage, QKeyEvent, QPixmap
 from PySide6.QtWidgets import (
@@ -24,10 +25,10 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.calibration import calibrate_hand_eye_from_pose_sequences  # noqa: E402
-from src.calibration.hand_eye import PoseLike  # noqa: E402
-from src.rgbd_camera import Gemini305, OrbbecSession, SessionOptions  # noqa: E402
-from src.utils.datas import Quaternion, Transform, Translation  # noqa: E402
+from src.calibration import calibrate_hand_eye_from_pose_sequences
+from src.calibration.hand_eye import PoseLike
+from src.rgbd_camera import Gemini305, OrbbecSession, SessionOptions
+from src.utils.datas import Quaternion, Transform, Translation
 
 # region 默认参数
 DEFAULT_WINDOW_NAME = "Charuco Hand-Eye Test"

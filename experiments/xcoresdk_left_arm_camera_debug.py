@@ -13,8 +13,8 @@ from typing import Any
 
 import cv2
 import numpy as np
-from PIL import Image, ImageDraw, ImageFont
 from loguru import logger
+from PIL import Image, ImageDraw, ImageFont
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -23,8 +23,12 @@ TEST_WUJI_ROOT = PROJECT_ROOT / "test" / "wuji"
 if str(TEST_WUJI_ROOT) not in sys.path:
     sys.path.insert(0, str(TEST_WUJI_ROOT))
 
-from sdk.xcoresdk import xCoreSDK_python  # noqa: E402
-from src.wuji import SUPPORTED_WUJI_ZMQ_CAMERAS_LOCAL, WujiCameraName, WujiZmqCameraClient  # noqa: E402
+from sdk.xcoresdk import xCoreSDK_python
+from src.wuji import (
+    SUPPORTED_WUJI_ZMQ_CAMERAS_LOCAL,
+    WujiCameraName,
+    WujiZmqCameraClient,
+)
 
 WUYOU_HOST = "192.168.100.60"
 WUYOU_SSH_ALIAS = "wuyou"
@@ -193,7 +197,9 @@ def start_ssh_tunnel(remote_port: int, remote_host: str, ssh_alias: str) -> subp
         f"127.0.0.1:{remote_port - 1}:{remote_host}:{remote_port}",
         ssh_alias,
     ]
-    logger.info("启动 SSH 隧道: local=127.0.0.1:{} remote={}:{} alias={}", remote_port - 1, remote_host, remote_port, ssh_alias)
+    logger.info(
+        "启动 SSH 隧道: local=127.0.0.1:{} remote={}:{} alias={}", remote_port - 1, remote_host, remote_port, ssh_alias
+    )
     return subprocess.Popen(command, stderr=subprocess.PIPE)
 
 
@@ -320,19 +326,93 @@ def _draw_camera_overlay(frame: Any, snapshot: RobotSnapshot, jog_mode: str) -> 
     title_color = (255, 255, 255)
     x0, y0 = 18, 18
     left_stroke = (255, 110, 0) if jog_mode == "cartesian" else (0, 180, 255)
-    _draw_stroked_text(draw, (x0, y0), "左臂实时相机调试", font=font_title, fill=title_color, stroke_fill=left_stroke, stroke_width=2)
-    _draw_stroked_text(draw, (x0, y0 + 28), "Q 退出  |  P 切换笛卡尔 / 轴坐标", font=font_body, fill=title_color, stroke_fill=(90, 90, 90), stroke_width=2)
+    _draw_stroked_text(
+        draw, (x0, y0), "左臂实时相机调试", font=font_title, fill=title_color, stroke_fill=left_stroke, stroke_width=2
+    )
+    _draw_stroked_text(
+        draw,
+        (x0, y0 + 28),
+        "Q 退出  |  P 切换笛卡尔 / 轴坐标",
+        font=font_body,
+        fill=title_color,
+        stroke_fill=(90, 90, 90),
+        stroke_width=2,
+    )
 
     if jog_mode == "cartesian":
-        _draw_stroked_text(draw, (x0, y0 + 62), "W A R J I Y", font=font_body, fill=title_color, stroke_fill=(255, 110, 0), stroke_width=2)
-        _draw_stroked_text(draw, (x0, y0 + 89), "X+ Y+ Z+ Rx+ Ry+ Rz+", font=font_body, fill=title_color, stroke_fill=(0, 180, 255), stroke_width=2)
-        _draw_stroked_text(draw, (x0, y0 + 116), "S D F L K H", font=font_body, fill=title_color, stroke_fill=(255, 110, 0), stroke_width=2)
-        _draw_stroked_text(draw, (x0, y0 + 143), "X- Y- Z- Rx- Ry- Rz-", font=font_body, fill=title_color, stroke_fill=(0, 180, 255), stroke_width=2)
+        _draw_stroked_text(
+            draw,
+            (x0, y0 + 62),
+            "W A R J I Y",
+            font=font_body,
+            fill=title_color,
+            stroke_fill=(255, 110, 0),
+            stroke_width=2,
+        )
+        _draw_stroked_text(
+            draw,
+            (x0, y0 + 89),
+            "X+ Y+ Z+ Rx+ Ry+ Rz+",
+            font=font_body,
+            fill=title_color,
+            stroke_fill=(0, 180, 255),
+            stroke_width=2,
+        )
+        _draw_stroked_text(
+            draw,
+            (x0, y0 + 116),
+            "S D F L K H",
+            font=font_body,
+            fill=title_color,
+            stroke_fill=(255, 110, 0),
+            stroke_width=2,
+        )
+        _draw_stroked_text(
+            draw,
+            (x0, y0 + 143),
+            "X- Y- Z- Rx- Ry- Rz-",
+            font=font_body,
+            fill=title_color,
+            stroke_fill=(0, 180, 255),
+            stroke_width=2,
+        )
     else:
-        _draw_stroked_text(draw, (x0, y0 + 62), "A S D F G H J", font=font_body, fill=title_color, stroke_fill=(0, 180, 255), stroke_width=2)
-        _draw_stroked_text(draw, (x0, y0 + 89), "J1+ J2+ J3+ J4+ J5+ J6+ J7+", font=font_body, fill=title_color, stroke_fill=(80, 220, 255), stroke_width=2)
-        _draw_stroked_text(draw, (x0, y0 + 116), "Z X C V B N M", font=font_body, fill=title_color, stroke_fill=(0, 180, 255), stroke_width=2)
-        _draw_stroked_text(draw, (x0, y0 + 143), "J1- J2- J3- J4- J5- J6- J7-", font=font_body, fill=title_color, stroke_fill=(80, 220, 255), stroke_width=2)
+        _draw_stroked_text(
+            draw,
+            (x0, y0 + 62),
+            "A S D F G H J",
+            font=font_body,
+            fill=title_color,
+            stroke_fill=(0, 180, 255),
+            stroke_width=2,
+        )
+        _draw_stroked_text(
+            draw,
+            (x0, y0 + 89),
+            "J1+ J2+ J3+ J4+ J5+ J6+ J7+",
+            font=font_body,
+            fill=title_color,
+            stroke_fill=(80, 220, 255),
+            stroke_width=2,
+        )
+        _draw_stroked_text(
+            draw,
+            (x0, y0 + 116),
+            "Z X C V B N M",
+            font=font_body,
+            fill=title_color,
+            stroke_fill=(0, 180, 255),
+            stroke_width=2,
+        )
+        _draw_stroked_text(
+            draw,
+            (x0, y0 + 143),
+            "J1- J2- J3- J4- J5- J6- J7-",
+            font=font_body,
+            fill=title_color,
+            stroke_fill=(80, 220, 255),
+            stroke_width=2,
+        )
 
     _, w = frame.shape[:2]
     right_x = max(18, w - 560)
@@ -467,11 +547,7 @@ def _start_jog(
 ) -> tuple[bool, str]:
     robot = connected_arm.robot
     ec = connected_arm.ec
-    jog_space = (
-        xCoreSDK_python.JogOptSpace.jointSpace
-        if jog_mode == "joint"
-        else xCoreSDK_python.JogOptSpace.wobjFrame
-    )
+    jog_space = xCoreSDK_python.JogOptSpace.jointSpace if jog_mode == "joint" else xCoreSDK_python.JogOptSpace.wobjFrame
     robot.startJog(
         jog_space,
         binding.rate,

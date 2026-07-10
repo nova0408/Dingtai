@@ -28,7 +28,7 @@ if str(PROJECT_ROOT) not in sys.path:
 if str(SDK_ROOT) not in sys.path:
     sys.path.insert(0, str(SDK_ROOT))
 
-from sdk.xcoresdk import xCoreSDK_python  # noqa: E402
+from sdk.xcoresdk import xCoreSDK_python
 
 
 @dataclass(frozen=True, slots=True)
@@ -180,18 +180,106 @@ def main() -> int:
     robot_model = _connect_robot_model(csv_path)
 
     cases: list[tuple[str, xCoreSDK_python.CartesianPosition, bool]] = [
-        ("6d_only/no_toolset", _to_cartesian_position(target_row.pose_values, include_has_elbow=False, include_elbow=False, include_conf_data=False), False),
-        ("6d_only/with_toolset", _to_cartesian_position(target_row.pose_values, include_has_elbow=False, include_elbow=False, include_conf_data=False), True),
-        ("elbow_only/no_toolset", _to_cartesian_position(target_row.pose_values, include_has_elbow=False, include_elbow=True, include_conf_data=False), False),
-        ("elbow_only/with_toolset", _to_cartesian_position(target_row.pose_values, include_has_elbow=False, include_elbow=True, include_conf_data=False), True),
-        ("hasElbow_true+elbow/no_toolset", _to_cartesian_position(target_row.pose_values, include_has_elbow=True, include_elbow=True, include_conf_data=False, forced_has_elbow=True), False),
-        ("hasElbow_true+elbow/with_toolset", _to_cartesian_position(target_row.pose_values, include_has_elbow=True, include_elbow=True, include_conf_data=False, forced_has_elbow=True), True),
-        ("conf_only/no_toolset", _to_cartesian_position(target_row.pose_values, include_has_elbow=False, include_elbow=False, include_conf_data=True), False),
-        ("conf_only/with_toolset", _to_cartesian_position(target_row.pose_values, include_has_elbow=False, include_elbow=False, include_conf_data=True), True),
-        ("full_raw/no_toolset", _to_cartesian_position(target_row.pose_values, include_has_elbow=True, include_elbow=True, include_conf_data=True), False),
-        ("full_raw/with_toolset", _to_cartesian_position(target_row.pose_values, include_has_elbow=True, include_elbow=True, include_conf_data=True), True),
-        ("hasElbow_false+elbow+conf/no_toolset", _to_cartesian_position(target_row.pose_values, include_has_elbow=True, include_elbow=True, include_conf_data=True, forced_has_elbow=False), False),
-        ("hasElbow_false+elbow+conf/with_toolset", _to_cartesian_position(target_row.pose_values, include_has_elbow=True, include_elbow=True, include_conf_data=True, forced_has_elbow=False), True),
+        (
+            "6d_only/no_toolset",
+            _to_cartesian_position(
+                target_row.pose_values, include_has_elbow=False, include_elbow=False, include_conf_data=False
+            ),
+            False,
+        ),
+        (
+            "6d_only/with_toolset",
+            _to_cartesian_position(
+                target_row.pose_values, include_has_elbow=False, include_elbow=False, include_conf_data=False
+            ),
+            True,
+        ),
+        (
+            "elbow_only/no_toolset",
+            _to_cartesian_position(
+                target_row.pose_values, include_has_elbow=False, include_elbow=True, include_conf_data=False
+            ),
+            False,
+        ),
+        (
+            "elbow_only/with_toolset",
+            _to_cartesian_position(
+                target_row.pose_values, include_has_elbow=False, include_elbow=True, include_conf_data=False
+            ),
+            True,
+        ),
+        (
+            "hasElbow_true+elbow/no_toolset",
+            _to_cartesian_position(
+                target_row.pose_values,
+                include_has_elbow=True,
+                include_elbow=True,
+                include_conf_data=False,
+                forced_has_elbow=True,
+            ),
+            False,
+        ),
+        (
+            "hasElbow_true+elbow/with_toolset",
+            _to_cartesian_position(
+                target_row.pose_values,
+                include_has_elbow=True,
+                include_elbow=True,
+                include_conf_data=False,
+                forced_has_elbow=True,
+            ),
+            True,
+        ),
+        (
+            "conf_only/no_toolset",
+            _to_cartesian_position(
+                target_row.pose_values, include_has_elbow=False, include_elbow=False, include_conf_data=True
+            ),
+            False,
+        ),
+        (
+            "conf_only/with_toolset",
+            _to_cartesian_position(
+                target_row.pose_values, include_has_elbow=False, include_elbow=False, include_conf_data=True
+            ),
+            True,
+        ),
+        (
+            "full_raw/no_toolset",
+            _to_cartesian_position(
+                target_row.pose_values, include_has_elbow=True, include_elbow=True, include_conf_data=True
+            ),
+            False,
+        ),
+        (
+            "full_raw/with_toolset",
+            _to_cartesian_position(
+                target_row.pose_values, include_has_elbow=True, include_elbow=True, include_conf_data=True
+            ),
+            True,
+        ),
+        (
+            "hasElbow_false+elbow+conf/no_toolset",
+            _to_cartesian_position(
+                target_row.pose_values,
+                include_has_elbow=True,
+                include_elbow=True,
+                include_conf_data=True,
+                forced_has_elbow=False,
+            ),
+            False,
+        ),
+        (
+            "hasElbow_false+elbow+conf/with_toolset",
+            _to_cartesian_position(
+                target_row.pose_values,
+                include_has_elbow=True,
+                include_elbow=True,
+                include_conf_data=True,
+                forced_has_elbow=False,
+            ),
+            True,
+        ),
     ]
 
     for label, pose, with_toolset in cases:
@@ -202,4 +290,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

@@ -18,11 +18,7 @@ PROJECT_ROOT = next(parent for parent in Path(__file__).resolve().parents if (pa
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from camera_pipeline.client import CameraPipelineClient  # noqa: E402
-from sdk.xcoresdk import xCoreSDK_python  # noqa: E402
-from src.calibration import CHARUCO_200_12_9, CharucoPoseEstimator  # noqa: E402
-from src.utils.datas import Quaternion, Transform, Translation  # noqa: E402
-from test.wuji.ball_pose_offset_interactive import (  # noqa: E402
+from test.wuji.ball_pose_offset_interactive import (
     DEFAULT_ARM_IP,
     DEFAULT_BODY_FONT_SIZE,
     DEFAULT_CAMERA_NAME,
@@ -35,16 +31,20 @@ from test.wuji.ball_pose_offset_interactive import (  # noqa: E402
     _shutdown_robot,
     _vector_norm,
 )
-from test.wuji.charuco_detect import (  # noqa: E402
+from test.wuji.charuco_detect import (
     DEFAULT_MIN_CHARUCO_CORNERS,
     DEFAULT_ORIN_SERVICE_ADDR,
     _read_camera_calibration,
     _validate_runtime_requirements,
 )
-from test.wuji.xcoresdk_arm_cli_test import (  # noqa: E402
+from test.wuji.xcoresdk_arm_cli_test import (
     _ensure_nrt_motion_ready,
 )
 
+from camera_pipeline.client import CameraPipelineClient
+from sdk.xcoresdk import xCoreSDK_python
+from src.calibration import CHARUCO_200_12_9, CharucoPoseEstimator
+from src.utils.datas import Quaternion, Transform, Translation
 
 # region 默认参数
 DEFAULT_WINDOW_NAME = "Charuco Board Pose Drag Verification"
@@ -210,7 +210,9 @@ def main(
             )
             detection_result = frame_detection.charuco_result
             robot_snapshot = _read_robot_snapshot(robot, ec)
-            detection_snapshot = _build_detection_snapshot(frame_id=int(frame.frame_id), timestamp_ms=float(frame.timestamp_ms), result=detection_result)
+            detection_snapshot = _build_detection_snapshot(
+                frame_id=int(frame.frame_id), timestamp_ms=float(frame.timestamp_ms), result=detection_result
+            )
             if detection_snapshot is not None:
                 if state.latest_verification is None:
                     state.last_action_text = f"已进入实时验算 frame={detection_snapshot.frame_id}"
@@ -324,7 +326,9 @@ def _enable_drag(robot: xCoreSDK_python.xMateErProRobot, ec: dict[str, object]) 
         raise RuntimeError("开启拖动失败")
 
 
-def _wait_for_power_off(robot: xCoreSDK_python.xMateErProRobot, ec: dict[str, object], timeout_s: float = DEFAULT_DRAG_POWER_OFF_TIMEOUT_S) -> bool:
+def _wait_for_power_off(
+    robot: xCoreSDK_python.xMateErProRobot, ec: dict[str, object], timeout_s: float = DEFAULT_DRAG_POWER_OFF_TIMEOUT_S
+) -> bool:
     deadline = time.perf_counter() + timeout_s
     while time.perf_counter() < deadline:
         power_state = robot.powerState(ec)
@@ -424,14 +428,25 @@ def _build_overlay_canvas(preview_base_bgr: np.ndarray, detection_result: Any) -
     if detection_result is None:
         return canvas
     if detection_result.marker_corners_px:
-        cv2.aruco.drawDetectedMarkers(canvas, detection_result.marker_corners_px, detection_result.marker_ids, borderColor=(255, 180, 0))
+        cv2.aruco.drawDetectedMarkers(
+            canvas, detection_result.marker_corners_px, detection_result.marker_ids, borderColor=(255, 180, 0)
+        )
     if detection_result.charuco_corners_px is not None:
         for corner_index, corner in enumerate(detection_result.charuco_corners_px):
             point = tuple(int(v) for v in np.round(corner))
             cv2.circle(canvas, point, 4, (0, 255, 255), -1, cv2.LINE_AA)
             if detection_result.charuco_ids is not None and corner_index < len(detection_result.charuco_ids):
                 charuco_id = int(detection_result.charuco_ids.flatten()[corner_index])
-                cv2.putText(canvas, str(charuco_id), (point[0] + 6, point[1] - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 0), 1, cv2.LINE_AA)
+                cv2.putText(
+                    canvas,
+                    str(charuco_id),
+                    (point[0] + 6, point[1] - 6),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.45,
+                    (255, 255, 0),
+                    1,
+                    cv2.LINE_AA,
+                )
     if detection_result.board_visible and detection_result.rvec is not None and detection_result.tvec is not None:
         cv2.drawFrameAxes(
             canvas,
@@ -599,7 +614,9 @@ def _build_joint_verification_snapshot(
     current_pose_camera_board = current_detection_snapshot.pose_camera_board
     if current_pose_camera_board is None:
         return None
-    estimated_base_board = current_robot_snapshot.flange_pose_in_base @ hand_eye_result.flange_camera @ current_pose_camera_board
+    estimated_base_board = (
+        current_robot_snapshot.flange_pose_in_base @ hand_eye_result.flange_camera @ current_pose_camera_board
+    )
     reference_base_board = hand_eye_result.base_board
     delta = _inverse_transform(reference_base_board) @ estimated_base_board
     translation_error_mm = (
@@ -650,6 +667,7 @@ def _write_latest_comparison_json(path: Path, verification_snapshot: JointVerifi
         "rotation_error_deg": verification_snapshot.rotation_error_deg,
     }
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
 
 # endregion
 

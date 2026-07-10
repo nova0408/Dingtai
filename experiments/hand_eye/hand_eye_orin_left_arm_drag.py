@@ -18,11 +18,10 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from camera_pipeline.client import CameraPipelineClient  # noqa: E402
-from camera_pipeline.camera_stream import CameraColorFramePacket  # noqa: E402
-from sdk.xcoresdk import xCoreSDK_python  # noqa: E402
-from src.calibration import CHARUCO_200_12_9  # noqa: E402
-from src.calibration import CharucoPoseEstimator  # noqa: E402
+from camera_pipeline.camera_stream import CameraColorFramePacket
+from camera_pipeline.client import CameraPipelineClient
+from sdk.xcoresdk import xCoreSDK_python
+from src.calibration import CHARUCO_200_12_9, CharucoPoseEstimator
 
 # region 默认参数
 DEFAULT_WINDOW_NAME = "Left Arm Hand-Eye Calibration"
@@ -149,7 +148,7 @@ def main() -> int:
         return 0
     _validate_runtime_requirements()
     session_dir = _create_session_dir(Path(args.output_root))
-    logger.info(f"输出目录: {session_dir}")
+    logger.info(f"输出目录：{session_dir}")
 
     left_arm = _connect_left_arm(
         robot_ip=str(args.left_arm_ip),
@@ -267,7 +266,7 @@ def _run_calibration_session(
 def _run_replay(run_dir: Path) -> None:
     csv_path = run_dir / "samples.csv"
     output_dir = run_dir / "handeyeCali_replay"
-    logger.info("使用 handeyeCali 同款链路离线复算: {}", csv_path)
+    logger.info("使用 handeyeCali 同款链路离线复算：{}", csv_path)
     base_tool_list, cam_board_list, used_indices, robot_source = _load_replay_samples(csv_path)
     result = _solve_park_hand_eye(
         base_tool_list=base_tool_list,
@@ -281,7 +280,7 @@ def _run_replay(run_dir: Path) -> None:
         result=result,
     )
     summary_path = output_dir / "board_in_base_mean.txt"
-    logger.success("离线复算完成，结果已写入: {}", summary_path)
+    logger.success("离线复算完成，结果已写入：{}", summary_path)
     print(summary_path.read_text(encoding="utf-8"))
 
 
@@ -324,26 +323,29 @@ def _load_replay_samples(
         used_indices.append(sample_index)
 
     if len(used_indices) < 6:
-        raise RuntimeError(f"有效样本太少，无法按旧算法复算: {len(used_indices)}")
+        raise RuntimeError(f"有效样本太少，无法按旧算法复算：{len(used_indices)}")
     return base_tool_list, cam_board_list, used_indices, robot_prefix
 
 
 def _require_csv_value(row: dict[str, str | None], key: str) -> str:
     value = row.get(key)
     if value is None or value == "":
-        raise ValueError(f"CSV 缺少有效字段值: {key}")
+        raise ValueError(f"CSV 缺少有效字段值：{key}")
     return value
 
 
 def _read_robot_transform_from_csv_row(row: dict[str, str | None], robot_prefix: str) -> np.ndarray:
-    translation = np.array(
-        [
-            float(_require_csv_value(row, f"{robot_prefix}_x_mm")),
-            float(_require_csv_value(row, f"{robot_prefix}_y_mm")),
-            float(_require_csv_value(row, f"{robot_prefix}_z_mm")),
-        ],
-        dtype=np.float64,
-    ) * 0.001
+    translation = (
+        np.array(
+            [
+                float(_require_csv_value(row, f"{robot_prefix}_x_mm")),
+                float(_require_csv_value(row, f"{robot_prefix}_y_mm")),
+                float(_require_csv_value(row, f"{robot_prefix}_z_mm")),
+            ],
+            dtype=np.float64,
+        )
+        * 0.001
+    )
     rotation = Rotation3D.from_euler(
         "xyz",
         [
@@ -425,7 +427,9 @@ def _compute_board_in_base_stats(base_board_list: list[np.ndarray]) -> BoardInBa
     rotation_errors_deg: list[float] = []
     for transform in base_board_list:
         rotation_delta = reference_rotation.T @ transform[:3, :3]
-        rotation_errors_deg.append(float(np.linalg.norm(Rotation3D.from_matrix(rotation_delta).as_rotvec()) * 180.0 / np.pi))
+        rotation_errors_deg.append(
+            float(np.linalg.norm(Rotation3D.from_matrix(rotation_delta).as_rotvec()) * 180.0 / np.pi)
+        )
     rotation_errors = np.asarray(rotation_errors_deg, dtype=np.float64)
     return BoardInBaseStats(
         mean_translation_m=mean_translation,
@@ -528,14 +532,13 @@ def _connect_left_arm(robot_ip: str) -> ConnectedLeftArm:
     robot_info = robot.robotInfo(ec)
     _print_sdk_result(f"robotInfo({robot_ip})", ec)
     if ec.get("ec", 0) != 0:
-        raise RuntimeError(f"读取左臂机器人信息失败: ip={robot_ip}")
+        raise RuntimeError(f"读取左臂机器人信息失败：ip={robot_ip}")
     if str(robot_info.type) != EXPECTED_LEFT_ARM_TYPE:
         raise RuntimeError(
-            "连接到的机器人不是左臂控制器: "
-            f"expected={EXPECTED_LEFT_ARM_TYPE}, actual={robot_info.type}"
+            "连接到的机器人不是左臂控制器：" f"expected={EXPECTED_LEFT_ARM_TYPE}, actual={robot_info.type}"
         )
     _apply_fixed_toolset(robot, ec)
-    logger.success(f"左臂已连接: ip={robot_ip}, type={robot_info.type}, uid={robot_info.id}")
+    logger.success(f"左臂已连接：ip={robot_ip}, type={robot_info.type}, uid={robot_info.id}")
     return ConnectedLeftArm(
         robot_ip=robot_ip,
         robot=robot,
@@ -629,10 +632,7 @@ def _apply_fixed_toolset(
     toolset = robot.setToolset(DEFAULT_TOOL_NAME, DEFAULT_WOBJ_NAME, ec)
     _print_sdk_result(f"setToolset({DEFAULT_TOOL_NAME}, {DEFAULT_WOBJ_NAME})", ec)
     if ec.get("ec", 0) != 0:
-        raise RuntimeError(
-            "设置固定 toolset 失败: "
-            f"tool={DEFAULT_TOOL_NAME}, wobj={DEFAULT_WOBJ_NAME}"
-        )
+        raise RuntimeError("设置固定 toolset 失败：" f"tool={DEFAULT_TOOL_NAME}, wobj={DEFAULT_WOBJ_NAME}")
     return toolset
 
 
@@ -740,9 +740,9 @@ def _capture_sample(
         board_visible=bool(charuco_result.board_visible),
         marker_count=int(charuco_result.marker_count),
         charuco_count=int(charuco_result.charuco_count),
-        reprojection_error_px=None
-        if charuco_result.reprojection_error_px is None
-        else float(charuco_result.reprojection_error_px),
+        reprojection_error_px=(
+            None if charuco_result.reprojection_error_px is None else float(charuco_result.reprojection_error_px)
+        ),
         robot_snapshot=robot_snapshot,
         board_pose_camera_board=board_pose_camera_board,
         raw_frame_path=raw_frame_path.relative_to(session_dir),
@@ -971,12 +971,8 @@ def _write_sample_guidance_file(output_path: Path, samples: list[SampleRecord]) 
 def _maybe_update_hand_eye_result(
     output_path: Path,
     samples: list[SampleRecord],
-)-> HandEyeCalibrationResult | None:
-    valid_samples = [
-        sample
-        for sample in samples
-        if sample.board_pose_camera_board is not None
-    ]
+) -> HandEyeCalibrationResult | None:
+    valid_samples = [sample for sample in samples if sample.board_pose_camera_board is not None]
     if len(valid_samples) < 6:
         return None
     base_tool_list: list[np.ndarray] = []
@@ -993,7 +989,7 @@ def _maybe_update_hand_eye_result(
         cam_board_list.append(cam_board)
         used_indices.append(sample.sample_index)
     if len(used_indices) < 6:
-        logger.warning("有效右手系样本不足 6 个，暂不计算手眼: {}", used_indices)
+        logger.warning("有效右手系样本不足 6 个，暂不计算手眼：{}", used_indices)
         return None
     try:
         result = _solve_park_hand_eye(
@@ -1004,10 +1000,10 @@ def _maybe_update_hand_eye_result(
             toolset_source=_format_toolset_source(valid_samples[0].robot_snapshot),
         )
     except cv2.error as exc:
-        logger.warning("PARK 手眼求解失败，继续采样: {}", exc)
+        logger.warning("PARK 手眼求解失败，继续采样：{}", exc)
         return None
     except ValueError as exc:
-        logger.warning("PARK 手眼求解输入无效，继续采样: {}", exc)
+        logger.warning("PARK 手眼求解输入无效，继续采样：{}", exc)
         return None
     _write_hand_eye_result_file(output_path=output_path, result=result)
     logger.info(
@@ -1130,7 +1126,9 @@ def _build_overlay_lines(
         "capture: Enter/Space/P    quit: Esc/Q",
     ]
     try:
-        cam_board_text = _format_pose_text(None if board_pose_camera_board is None else _camera_board_matrix_m(board_pose_camera_board))
+        cam_board_text = _format_pose_text(
+            None if board_pose_camera_board is None else _camera_board_matrix_m(board_pose_camera_board)
+        )
     except ValueError as exc:
         cam_board_text = f"invalid({exc})"
     lines.append("T_cam_board=" + cam_board_text)
@@ -1183,7 +1181,9 @@ def _draw_marker_corners(
         points_i32 = np.round(points).astype(np.int32).reshape(-1, 1, 2)
         cv2.polylines(canvas, [points_i32], True, (255, 255, 0), 2, cv2.LINE_AA)
         center = np.mean(points, axis=0)
-        marker_label = "" if marker_ids is None or marker_index >= len(marker_ids) else str(int(marker_ids[marker_index]))
+        marker_label = (
+            "" if marker_ids is None or marker_index >= len(marker_ids) else str(int(marker_ids[marker_index]))
+        )
         _draw_single_text(canvas, f"M{marker_label}", (int(round(center[0])), int(round(center[1]))), (0, 255, 255))
 
 
@@ -1362,12 +1362,21 @@ def _format_optional_float(value: float | None, digits: int) -> str:
 
 def _parse_cli() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="左臂拖动示教 + Orin 左手相机流手眼标定实采页")
-    parser.add_argument("--replay-run-dir", type=str, default="", help="离线复算模式：指定 runs 目录，按 handeyeCali.py 同款链路重算")
-    parser.add_argument("--service-addr", type=str, default=DEFAULT_ORIN_SERVICE_ADDR, help="Orin camera_pipeline_service 地址")
+    parser.add_argument(
+        "--replay-run-dir", type=str, default="", help="离线复算模式：指定 runs 目录，按 handeyeCali.py 同款链路重算"
+    )
+    parser.add_argument(
+        "--service-addr", type=str, default=DEFAULT_ORIN_SERVICE_ADDR, help="Orin camera_pipeline_service 地址"
+    )
     parser.add_argument("--camera-name", type=str, default=DEFAULT_CAMERA_NAME, help="逻辑相机名，默认使用左手相机")
     parser.add_argument("--left-arm-ip", type=str, default=DEFAULT_LEFT_ARM_IP, help="左臂控制器 IP")
     parser.add_argument("--output-root", type=str, default=str(DEFAULT_OUTPUT_ROOT), help="运行输出根目录")
-    parser.add_argument("--min-charuco-corners", type=int, default=DEFAULT_MIN_CHARUCO_CORNERS, help="进入位姿估计所需的最小 ChArUco 角点数")
+    parser.add_argument(
+        "--min-charuco-corners",
+        type=int,
+        default=DEFAULT_MIN_CHARUCO_CORNERS,
+        help="进入位姿估计所需的最小 ChArUco 角点数",
+    )
     return parser.parse_args()
 
 
@@ -1421,10 +1430,10 @@ def _validate_right_handed_rotation(name: str, rotation: np.ndarray) -> None:
     matrix = np.asarray(rotation, dtype=np.float64).reshape(3, 3)
     determinant = float(np.linalg.det(matrix))
     if determinant <= 0.0:
-        raise ValueError(f"{name} 旋转矩阵不是右手系: det={determinant:.9f}")
+        raise ValueError(f"{name} 旋转矩阵不是右手系：det={determinant:.9f}")
     orthogonality_error = float(np.linalg.norm(matrix.T @ matrix - np.eye(3, dtype=np.float64)))
     if orthogonality_error > 1e-3:
-        raise ValueError(f"{name} 旋转矩阵不正交: error={orthogonality_error:.9f}")
+        raise ValueError(f"{name} 旋转矩阵不正交：error={orthogonality_error:.9f}")
 
 
 def _rotation_matrix_to_quaternion_wxyz(rotation: np.ndarray) -> tuple[float, float, float, float]:

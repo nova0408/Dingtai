@@ -21,7 +21,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.rgbd_camera import Gemini305, SessionOptions  # noqa: E402
+from src.rgbd_camera import Gemini305, SessionOptions
 
 # region 默认参数（优先在这里直接改）
 DEFAULT_PRIOR_ROOT = Path("experiments/rect_marker_prior_sessions")
@@ -148,9 +148,7 @@ def main(
     capture_fps: int,
     config: DetectionConfig,
 ) -> None:
-    resolved_prior_path = (
-        prior_path if prior_path is not None else _find_latest_prior(DEFAULT_PRIOR_ROOT)
-    )
+    resolved_prior_path = prior_path if prior_path is not None else _find_latest_prior(DEFAULT_PRIOR_ROOT)
     prior = _load_prior(resolved_prior_path)
     camera_matrix, dist_coeffs = _build_camera_matrix(prior.camera)
 
@@ -163,9 +161,7 @@ def main(
     )
     with Gemini305(options=options) as session:
         cv2.namedWindow(DEFAULT_WINDOW_NAME, cv2.WINDOW_NORMAL)
-        cv2.resizeWindow(
-            DEFAULT_WINDOW_NAME, DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT
-        )
+        cv2.resizeWindow(DEFAULT_WINDOW_NAME, DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT)
         frame_index = 0
         try:
             while True:
@@ -180,10 +176,7 @@ def main(
                 undistorted = cv2.undistort(color_bgr, camera_matrix, dist_coeffs)
                 started = time.perf_counter()
                 prepared = _prepare_frame(undistorted, config)
-                results = [
-                    _detect_one_marker(prepared, marker, config)
-                    for marker in prior.markers
-                ]
+                results = [_detect_one_marker(prepared, marker, config) for marker in prior.markers]
                 elapsed_ms = (time.perf_counter() - started) * 1000.0
 
                 frame_index += 1
@@ -254,19 +247,13 @@ def _detect_one_marker(
     edge_quad_local: np.ndarray | None = None
     edge_support = 0.0
     if not occluded:
-        edge_quad_local, edge_support = _fit_quad_from_edges(
-            roi_edges, initial_rect, config
-        )
+        edge_quad_local, edge_support = _fit_quad_from_edges(roi_edges, initial_rect, config)
 
     # 目前实测 initial rect 比后续遮挡匹配更稳定，最终结果以 initial rect 为准。
     # edge fit 和遮挡匹配只保留为诊断阶段，避免调权重时把中心点拉偏。
     quad_local = initial_rect.astype(np.float64)
     quad_global = quad_local + np.array([x0, y0], dtype=np.float64)
-    edge_quad_global = (
-        None
-        if edge_quad_local is None
-        else edge_quad_local + np.array([x0, y0], dtype=np.float64)
-    )
+    edge_quad_global = None if edge_quad_local is None else edge_quad_local + np.array([x0, y0], dtype=np.float64)
     score, reasons = _score_quad(
         quad=quad_global,
         marker=marker,
@@ -280,11 +267,7 @@ def _detect_one_marker(
     status = (
         "detected"
         if detected
-        else (
-            "occluded"
-            if occluded
-            else ("uncertain" if score >= config.min_score * 0.65 else "missing")
-        )
+        else ("occluded" if occluded else ("uncertain" if score >= config.min_score * 0.65 else "missing"))
     )
     center = tuple(float(v) for v in np.mean(quad_global, axis=0))
 
@@ -317,12 +300,8 @@ def _compute_color_mask(
 ) -> tuple[np.ndarray, float]:
     prior_rgb_u8 = np.asarray(marker.rgb_prior, dtype=np.uint8).reshape(1, 1, 3)
     prior_bgr_u8 = prior_rgb_u8[:, :, ::-1]
-    prior_lab = (
-        cv2.cvtColor(prior_bgr_u8, cv2.COLOR_BGR2LAB).reshape(3).astype(np.float32)
-    )
-    prior_hsv = (
-        cv2.cvtColor(prior_bgr_u8, cv2.COLOR_BGR2HSV).reshape(3).astype(np.float32)
-    )
+    prior_lab = cv2.cvtColor(prior_bgr_u8, cv2.COLOR_BGR2LAB).reshape(3).astype(np.float32)
+    prior_hsv = cv2.cvtColor(prior_bgr_u8, cv2.COLOR_BGR2HSV).reshape(3).astype(np.float32)
 
     lab_diff = roi_lab.astype(np.float32) - prior_lab.reshape(1, 1, 3)
     lab_distance = np.linalg.norm(lab_diff, axis=2)
@@ -358,9 +337,7 @@ def _compute_visible_area_ratio(mask: np.ndarray, local_prior: np.ndarray) -> fl
     return float(visible_pixels) / float(prior_pixels)
 
 
-def _build_occluded_prior_rect(
-    mask: np.ndarray, local_prior: np.ndarray
-) -> tuple[np.ndarray, bool]:
+def _build_occluded_prior_rect(mask: np.ndarray, local_prior: np.ndarray) -> tuple[np.ndarray, bool]:
     """遮挡时用颜色碎片和完整先验模板做不完整匹配。
 
     任意油污遮挡会让颜色质心和碎片外接框偏向未遮挡区域，不能直接用于拟合矩形。
@@ -426,11 +403,7 @@ def _build_occluded_prior_rect(
         for candidate_score, candidate_rect in scored_rects[1:]:
             if top_score - candidate_score >= 0.10:
                 break
-            center_delta = float(
-                np.linalg.norm(
-                    np.mean(top_rect, axis=0) - np.mean(candidate_rect, axis=0)
-                )
-            )
+            center_delta = float(np.linalg.norm(np.mean(top_rect, axis=0) - np.mean(candidate_rect, axis=0)))
             if center_delta > diagonal * 0.18:
                 return prior.astype(np.float64), True
     return _order_quad_points_array(best_rect), False
@@ -445,10 +418,7 @@ def _score_color_points_inside_rect(mask: np.ndarray, rect: np.ndarray) -> float
     contour = np.round(rect).astype(np.float32)
     inside = 0
     for point in points:
-        if (
-            cv2.pointPolygonTest(contour, (float(point[0]), float(point[1])), False)
-            >= 0
-        ):
+        if cv2.pointPolygonTest(contour, (float(point[0]), float(point[1])), False) >= 0:
             inside += 1
     coverage = float(inside) / float(max(1, points.shape[0]))
     rect_area = max(1.0, abs(_polygon_area(rect)))
@@ -472,12 +442,7 @@ def _score_partial_color_edge_contact(points: np.ndarray, rect: np.ndarray) -> f
     rel = points - origin
     u_values = rel @ u_unit
     v_values = rel @ v_unit
-    inside = (
-        (u_values >= 0.0)
-        & (u_values <= width)
-        & (v_values >= 0.0)
-        & (v_values <= height)
-    )
+    inside = (u_values >= 0.0) & (u_values <= width) & (v_values >= 0.0) & (v_values <= height)
     if not np.any(inside):
         return 0.0
 
@@ -509,9 +474,7 @@ def _build_initial_rect(mask: np.ndarray, local_prior: np.ndarray) -> np.ndarray
     return _refine_rect_from_color_bounds(gated_mask, union_rect)
 
 
-def _build_prior_template_rect(
-    mask: np.ndarray, local_prior: np.ndarray
-) -> np.ndarray | None:
+def _build_prior_template_rect(mask: np.ndarray, local_prior: np.ndarray) -> np.ndarray | None:
     """用先验矩形模板在颜色 mask 中找最佳平移位置。
 
     该步骤不要求颜色区域连通，适合油污遮挡导致的碎片化颜色支持。
@@ -528,9 +491,7 @@ def _build_prior_template_rect(
     y1 = int(np.clip(max_xy[1] + 3, y0 + 2, mask.shape[0]))
 
     template = np.zeros((y1 - y0, x1 - x0), dtype=np.uint8)
-    template_points = np.round(
-        local_prior - np.array([x0, y0], dtype=np.float64)
-    ).astype(np.int32)
+    template_points = np.round(local_prior - np.array([x0, y0], dtype=np.float64)).astype(np.int32)
     cv2.fillConvexPoly(template, template_points, 255)
     if np.count_nonzero(template) < 6:
         return None
@@ -560,9 +521,7 @@ def _build_prior_template_rect(
         max_loc[1] : max_loc[1] + template.shape[0],
         max_loc[0] : max_loc[0] + template.shape[1],
     ]
-    overlap_ratio = float(np.count_nonzero(overlap * templ)) / float(
-        max(1, np.count_nonzero(templ))
-    )
+    overlap_ratio = float(np.count_nonzero(overlap * templ)) / float(max(1, np.count_nonzero(templ)))
     if overlap_ratio < 0.06:
         return None
 
@@ -570,9 +529,7 @@ def _build_prior_template_rect(
     return local_prior.astype(np.float64) + shift
 
 
-def _build_component_union_rect(
-    mask: np.ndarray, local_prior: np.ndarray
-) -> np.ndarray | None:
+def _build_component_union_rect(mask: np.ndarray, local_prior: np.ndarray) -> np.ndarray | None:
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if not contours:
         return None
@@ -604,15 +561,11 @@ def _build_component_union_rect(
     return _order_quad_points_array(box)
 
 
-def _build_prior_gate_mask(
-    image_shape: tuple[int, int], local_prior: np.ndarray
-) -> np.ndarray:
+def _build_prior_gate_mask(image_shape: tuple[int, int], local_prior: np.ndarray) -> np.ndarray:
     gate = np.zeros(image_shape, dtype=np.uint8)
     points = np.round(local_prior).astype(np.int32)
     cv2.fillConvexPoly(gate, points, 255)
-    edge_lengths = np.linalg.norm(
-        np.roll(local_prior, -1, axis=0) - local_prior, axis=1
-    )
+    edge_lengths = np.linalg.norm(np.roll(local_prior, -1, axis=0) - local_prior, axis=1)
     dilate_px = int(round(max(6.0, float(np.min(edge_lengths)) * 0.65)))
     kernel = np.ones((dilate_px * 2 + 1, dilate_px * 2 + 1), dtype=np.uint8)
     return cv2.dilate(gate, kernel, iterations=1)
@@ -681,9 +634,7 @@ def _fit_quad_from_edges(
     for side_index in range(4):
         p0 = initial_rect[side_index]
         p1 = initial_rect[(side_index + 1) % 4]
-        points = _collect_edge_points_near_side(
-            edges, p0, p1, float(config.edge_band_px)
-        )
+        points = _collect_edge_points_near_side(edges, p0, p1, float(config.edge_band_px))
         if points.shape[0] < int(config.min_edge_points_per_side):
             fitted_lines.append(_line_from_two_points(p0, p1))
             continue
@@ -771,15 +722,11 @@ def _score_quad(
     reasons: list[str] = []
     area = abs(_polygon_area(quad))
     area_ratio = area / max(1.0, float(marker.expected_area_px))
-    center_shift = float(
-        np.linalg.norm(np.mean(quad, axis=0) - np.mean(marker.corners_px, axis=0))
-    )
+    center_shift = float(np.linalg.norm(np.mean(quad, axis=0) - np.mean(marker.corners_px, axis=0)))
     angle = _quad_angle_deg(quad)
     angle_delta = abs(_normalize_angle_delta(angle - marker.expected_angle_deg))
     aspect = _quad_aspect_ratio(quad)
-    aspect_delta = abs(
-        np.log(max(1e-6, aspect) / max(1e-6, marker.expected_aspect_ratio))
-    )
+    aspect_delta = abs(np.log(max(1e-6, aspect) / max(1e-6, marker.expected_aspect_ratio)))
 
     if color_support < float(config.min_color_support):
         reasons.append("color_support_low")
@@ -796,9 +743,7 @@ def _score_quad(
     area_score = max(0.0, 1.0 - abs(area_ratio - 1.0) / 0.65)
     angle_score = max(0.0, 1.0 - angle_delta / max(1.0, marker.max_angle_delta_deg))
     aspect_score = max(0.0, 1.0 - aspect_delta / 0.6)
-    color_score = min(
-        1.0, color_support / max(1e-6, float(config.min_color_support) * 2.0)
-    )
+    color_score = min(1.0, color_support / max(1e-6, float(config.min_color_support) * 2.0))
     edge_score = float(edge_support)
 
     score = (
@@ -910,9 +855,7 @@ def _draw_final_panel(
     return canvas
 
 
-def _draw_color_stage_panel(
-    image_bgr: np.ndarray, results: list[MarkerDetectionResult]
-) -> np.ndarray:
+def _draw_color_stage_panel(image_bgr: np.ndarray, results: list[MarkerDetectionResult]) -> np.ndarray:
     canvas = np.zeros_like(image_bgr)
     canvas[:] = (25, 25, 25)
     for result in results:
@@ -921,9 +864,7 @@ def _draw_color_stage_panel(
         if result.clean_mask is not None:
             roi_vis = cv2.cvtColor(result.clean_mask, cv2.COLOR_GRAY2BGR)
             roi_vis[:, :, 1] = np.maximum(roi_vis[:, :, 1], result.clean_mask)
-            canvas[y0:y1, x0:x1] = cv2.addWeighted(
-                canvas[y0:y1, x0:x1], 0.35, roi_vis, 0.65, 0
-            )
+            canvas[y0:y1, x0:x1] = cv2.addWeighted(canvas[y0:y1, x0:x1], 0.35, roi_vis, 0.65, 0)
         _draw_stage_text(
             canvas,
             f"{result.marker_id} color={result.color_support:.2f}",
@@ -932,9 +873,7 @@ def _draw_color_stage_panel(
     return canvas
 
 
-def _draw_initial_stage_panel(
-    image_bgr: np.ndarray, results: list[MarkerDetectionResult]
-) -> np.ndarray:
+def _draw_initial_stage_panel(image_bgr: np.ndarray, results: list[MarkerDetectionResult]) -> np.ndarray:
     canvas = image_bgr.copy()
     for result in results:
         x0, y0, x1, y1 = result.roi_rect
@@ -949,15 +888,11 @@ def _draw_initial_stage_panel(
                 thickness=2,
                 lineType=cv2.LINE_AA,
             )
-        _draw_stage_text(
-            canvas, f"{result.marker_id} minAreaRect", (max(4, x0), max(18, y0 - 8))
-        )
+        _draw_stage_text(canvas, f"{result.marker_id} minAreaRect", (max(4, x0), max(18, y0 - 8)))
     return canvas
 
 
-def _draw_edge_stage_panel(
-    image_bgr: np.ndarray, results: list[MarkerDetectionResult]
-) -> np.ndarray:
+def _draw_edge_stage_panel(image_bgr: np.ndarray, results: list[MarkerDetectionResult]) -> np.ndarray:
     canvas = np.zeros_like(image_bgr)
     for result in results:
         x0, y0, x1, y1 = result.roi_rect
@@ -1025,9 +960,7 @@ def _draw_panel_title(canvas: np.ndarray, title: str) -> None:
 
 
 def _draw_stage_text(canvas: np.ndarray, text: str, anchor: tuple[int, int]) -> None:
-    cv2.putText(
-        canvas, text, anchor, cv2.FONT_HERSHEY_SIMPLEX, 0.48, (0, 0, 0), 3, cv2.LINE_AA
-    )
+    cv2.putText(canvas, text, anchor, cv2.FONT_HERSHEY_SIMPLEX, 0.48, (0, 0, 0), 3, cv2.LINE_AA)
     cv2.putText(
         canvas,
         text,
@@ -1082,9 +1015,7 @@ def _order_quad_points_array(points: np.ndarray) -> np.ndarray:
     start = int(np.argmin(ordered[:, 0] + ordered[:, 1]))
     ordered = np.roll(ordered, -start, axis=0)
     if _polygon_area(ordered) < 0:
-        ordered = np.array(
-            [ordered[0], ordered[3], ordered[2], ordered[1]], dtype=np.float64
-        )
+        ordered = np.array([ordered[0], ordered[3], ordered[2], ordered[1]], dtype=np.float64)
     return ordered
 
 
@@ -1123,9 +1054,7 @@ def _quad_inside_image(quad: np.ndarray, image_shape: tuple[int, int]) -> bool:
     )
 
 
-def _failed_result(
-    marker_id: str, roi_rect: tuple[int, int, int, int], reason: str
-) -> MarkerDetectionResult:
+def _failed_result(marker_id: str, roi_rect: tuple[int, int, int, int], reason: str) -> MarkerDetectionResult:
     return MarkerDetectionResult(
         marker_id=marker_id,
         detected=False,
@@ -1212,9 +1141,7 @@ def _load_prior(path: Path) -> RectMarkerSetPrior:
         markers.append(
             RectMarkerPrior(
                 marker_id=str(item["marker_id"]),
-                corners_px=np.asarray(item["corners_px"], dtype=np.float64).reshape(
-                    4, 2
-                ),
+                corners_px=np.asarray(item["corners_px"], dtype=np.float64).reshape(4, 2),
                 rgb_prior=np.asarray(item["rgb_prior"], dtype=np.uint8).reshape(3),
                 expected_area_px=float(item["expected_area_px"]),
                 expected_angle_deg=float(item["expected_angle_deg"]),
@@ -1292,9 +1219,7 @@ def _decode_color_frame_bgr(color_frame) -> np.ndarray | None:
 # region CLI
 def _parse_cli() -> tuple[Path | None, int, int, DetectionConfig]:
     parser = argparse.ArgumentParser(description="矩形标记件实时识别实验脚本")
-    parser.add_argument(
-        "--prior", type=Path, default=None, help="prior.json 路径；默认读取最新采集结果"
-    )
+    parser.add_argument("--prior", type=Path, default=None, help="prior.json 路径；默认读取最新采集结果")
     parser.add_argument(
         "--timeout-ms",
         type=int,
@@ -1349,15 +1274,9 @@ def _parse_cli() -> tuple[Path | None, int, int, DetectionConfig]:
         default=DEFAULT_EDGE_BAND_PX,
         help="四边边缘搜索带宽",
     )
-    parser.add_argument(
-        "--canny-low", type=int, default=DEFAULT_CANNY_LOW, help="Canny 低阈值"
-    )
-    parser.add_argument(
-        "--canny-high", type=int, default=DEFAULT_CANNY_HIGH, help="Canny 高阈值"
-    )
-    parser.add_argument(
-        "--min-score", type=float, default=DEFAULT_MIN_SCORE, help="最终通过分数阈值"
-    )
+    parser.add_argument("--canny-low", type=int, default=DEFAULT_CANNY_LOW, help="Canny 低阈值")
+    parser.add_argument("--canny-high", type=int, default=DEFAULT_CANNY_HIGH, help="Canny 高阈值")
+    parser.add_argument("--min-score", type=float, default=DEFAULT_MIN_SCORE, help="最终通过分数阈值")
     args = parser.parse_args()
     config = DetectionConfig(
         roi_extra_px=int(args.roi_extra_px),

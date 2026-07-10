@@ -26,8 +26,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from camera_pipeline.client import CameraPipelineClient  # noqa: E402
-from src.calibration.charuco import CharucoPoseEstimator  # noqa: E402
+from camera_pipeline.client import CameraPipelineClient
+from src.calibration.charuco import CharucoPoseEstimator
 
 # region 默认参数
 DEFAULT_WINDOW_NAME = "Charuco Detect"
@@ -213,7 +213,13 @@ def _evaluate_variants(
 
     results: list[CharucoVariantResult] = []
     for mode, image_bgr in variants:
-        result = _detect_charuco_variant(mode=mode, image_bgr=image_bgr, calibration=calibration, estimator=estimator, min_charuco_corners=min_charuco_corners)
+        result = _detect_charuco_variant(
+            mode=mode,
+            image_bgr=image_bgr,
+            calibration=calibration,
+            estimator=estimator,
+            min_charuco_corners=min_charuco_corners,
+        )
         results.append(result)
     return results
 
@@ -232,13 +238,26 @@ def _detect_charuco_variant(
         min_charuco_corners=int(min_charuco_corners),
     )
     marker_corners_list = [np.asarray(item, dtype=np.float32).reshape(4, 1, 2) for item in result.marker_corners_px]
-    marker_ids_norm = None if result.marker_ids is None else np.asarray(result.marker_ids, dtype=np.int32).reshape(-1, 1)
-    charuco_corners_norm = None if result.charuco_corners_px is None else np.asarray(result.charuco_corners_px, dtype=np.float64).reshape(-1, 2)
-    charuco_ids_norm = None if result.charuco_ids is None else np.asarray(result.charuco_ids, dtype=np.int32).reshape(-1, 1)
+    marker_ids_norm = (
+        None if result.marker_ids is None else np.asarray(result.marker_ids, dtype=np.int32).reshape(-1, 1)
+    )
+    charuco_corners_norm = (
+        None
+        if result.charuco_corners_px is None
+        else np.asarray(result.charuco_corners_px, dtype=np.float64).reshape(-1, 2)
+    )
+    charuco_ids_norm = (
+        None if result.charuco_ids is None else np.asarray(result.charuco_ids, dtype=np.int32).reshape(-1, 1)
+    )
     marker_count = int(result.marker_count)
     charuco_count = int(result.charuco_count)
 
-    if not result.board_visible or charuco_count < int(min_charuco_corners) or charuco_corners_norm is None or charuco_ids_norm is None:
+    if (
+        not result.board_visible
+        or charuco_count < int(min_charuco_corners)
+        or charuco_corners_norm is None
+        or charuco_ids_norm is None
+    ):
         return CharucoVariantResult(
             mode=mode,
             image_bgr=image_bgr,
@@ -341,7 +360,9 @@ def _draw_variant_overlay(canvas: np.ndarray, result: CharucoVariantResult, cali
     if result.charuco_corners_px is not None and result.charuco_ids is not None:
         board_corners = np.round(result.charuco_corners_px).astype(np.int32).reshape(-1, 1, 2)
         if board_corners.shape[0] >= 2:
-            cv2.polylines(canvas, [board_corners], isClosed=False, color=(0, 220, 255), thickness=1, lineType=cv2.LINE_AA)
+            cv2.polylines(
+                canvas, [board_corners], isClosed=False, color=(0, 220, 255), thickness=1, lineType=cv2.LINE_AA
+            )
         for corner, charuco_id in zip(result.charuco_corners_px, result.charuco_ids.flatten(), strict=True):
             point = tuple(int(v) for v in np.round(corner))
             cv2.circle(canvas, point, 4, (0, 255, 255), -1, cv2.LINE_AA)
@@ -379,7 +400,14 @@ def _draw_board_overlay(canvas: np.ndarray, result: CharucoVariantResult, calibr
     if result.charuco_corners_px is not None and result.charuco_ids is not None:
         corners = np.round(result.charuco_corners_px).astype(np.int32)
         if corners.shape[0] >= 2:
-            cv2.polylines(canvas, [corners.reshape(-1, 1, 2)], isClosed=False, color=(0, 220, 255), thickness=1, lineType=cv2.LINE_AA)
+            cv2.polylines(
+                canvas,
+                [corners.reshape(-1, 1, 2)],
+                isClosed=False,
+                color=(0, 220, 255),
+                thickness=1,
+                lineType=cv2.LINE_AA,
+            )
         for corner in corners:
             cv2.circle(canvas, tuple(int(v) for v in corner), 5, (0, 220, 0), -1, cv2.LINE_AA)
     if result.transform_se3 is not None:
@@ -425,7 +453,9 @@ def _draw_pose_status(canvas: np.ndarray, result: CharucoVariantResult, color: t
     overlay = canvas.copy()
     cv2.rectangle(overlay, (0, 0), (canvas.shape[1], bar_h), color, -1)
     cv2.addWeighted(overlay, 0.24, canvas, 0.76, 0.0, canvas)
-    cv2.putText(canvas, label, (14, 20), cv2.FONT_HERSHEY_SIMPLEX, _panel_text_scale(canvas, 0.7), color, 2, cv2.LINE_AA)
+    cv2.putText(
+        canvas, label, (14, 20), cv2.FONT_HERSHEY_SIMPLEX, _panel_text_scale(canvas, 0.7), color, 2, cv2.LINE_AA
+    )
 
 
 def _draw_pose_metrics(canvas: np.ndarray, result: CharucoVariantResult) -> None:
@@ -507,7 +537,9 @@ def _save_frame_artifacts(
                 "marker_count": int(item.marker_count),
                 "charuco_count": int(item.charuco_count),
                 "board_visible": bool(item.board_visible),
-                "reprojection_error_px": None if item.reprojection_error_px is None else float(item.reprojection_error_px),
+                "reprojection_error_px": (
+                    None if item.reprojection_error_px is None else float(item.reprojection_error_px)
+                ),
                 "tvec_mm": None if item.tvec is None else [float(v) for v in item.tvec],
             }
             for item in variant_results
@@ -527,7 +559,9 @@ def _write_pose_snapshot(
         "best_mode": best_result.mode,
         "marker_count": int(best_result.marker_count),
         "charuco_count": int(best_result.charuco_count),
-        "reprojection_error_px": None if best_result.reprojection_error_px is None else float(best_result.reprojection_error_px),
+        "reprojection_error_px": (
+            None if best_result.reprojection_error_px is None else float(best_result.reprojection_error_px)
+        ),
         "tvec_mm": None if best_result.tvec is None else [float(v) for v in best_result.tvec],
         "transform_se3": None if best_result.transform_se3 is None else best_result.transform_se3.tolist(),
         "all_modes": [item.mode for item in variant_results],
@@ -637,6 +671,7 @@ def _parse_cli() -> AppConfig:
         min_charuco_corners=int(args.min_charuco_corners),
         max_frames=int(args.max_frames),
     )
+
 
 # endregion
 if __name__ == "__main__":

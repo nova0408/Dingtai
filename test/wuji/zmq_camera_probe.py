@@ -15,8 +15,14 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from common import WUYOU_HOST  # noqa: E402
-from src.wuji import SUPPORTED_WUJI_CAMERAS, WujiCameraFrame, WujiCameraName, WujiZmqCameraClient  # noqa: E402
+from common import WUYOU_HOST
+
+from src.wuji import (
+    SUPPORTED_WUJI_CAMERAS,
+    WujiCameraFrame,
+    WujiCameraName,
+    WujiZmqCameraClient,
+)
 
 # endregion
 
@@ -304,10 +310,18 @@ def _parse_cli(argv: list[str]) -> tuple[str, Path, str, bool, bool, int, int]:
     parser.add_argument("--camera", type=str, default=DEFAULT_CAMERA_NAME, help="all 或单个逻辑相机名")
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR, help="输出目录")
     parser.add_argument("--host", type=str, default=DEFAULT_HOST, help="ZMQ 相机服务主机地址")
-    parser.add_argument("--capture-rgb", action=argparse.BooleanOptionalAction, default=DEFAULT_CAPTURE_RGB, help="是否采集 RGB 首帧")
-    parser.add_argument("--capture-rgbd", action=argparse.BooleanOptionalAction, default=DEFAULT_CAPTURE_RGBD, help="是否采集 RGBD 首帧")
-    parser.add_argument("--request-timeout-ms", type=int, default=DEFAULT_REQUEST_TIMEOUT_MS, help="控制命令超时，单位 ms")
-    parser.add_argument("--stream-timeout-ms", type=int, default=DEFAULT_STREAM_TIMEOUT_MS, help="首帧等待超时，单位 ms")
+    parser.add_argument(
+        "--capture-rgb", action=argparse.BooleanOptionalAction, default=DEFAULT_CAPTURE_RGB, help="是否采集 RGB 首帧"
+    )
+    parser.add_argument(
+        "--capture-rgbd", action=argparse.BooleanOptionalAction, default=DEFAULT_CAPTURE_RGBD, help="是否采集 RGBD 首帧"
+    )
+    parser.add_argument(
+        "--request-timeout-ms", type=int, default=DEFAULT_REQUEST_TIMEOUT_MS, help="控制命令超时，单位 ms"
+    )
+    parser.add_argument(
+        "--stream-timeout-ms", type=int, default=DEFAULT_STREAM_TIMEOUT_MS, help="首帧等待超时，单位 ms"
+    )
     args = parser.parse_args(argv)
     return (
         str(args.camera),

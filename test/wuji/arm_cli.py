@@ -13,11 +13,11 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.wuji.arm_client import WujiArmClient  # noqa: E402
-from src.wuji.client_base import WujiQmlinkerBaseClient  # noqa: E402
-from src.wuji.protocol import WujiQmlinkerConfig  # noqa: E402
-from network_discovery import get_cached_orin_host  # noqa: E402
+from network_discovery import get_cached_orin_host
 
+from src.wuji.arm_client import WujiArmClient
+from src.wuji.client_base import WujiQmlinkerBaseClient
+from src.wuji.protocol import WujiQmlinkerConfig
 
 DEFAULT_HOST = get_cached_orin_host()
 DEFAULT_PORT = 50062
@@ -86,8 +86,7 @@ def _wait_angles_stable(
 
         if last_angles is not None:
             max_delta_deg = max(
-                abs(current_angle - last_angle)
-                for current_angle, last_angle in zip(current_angles, last_angles)
+                abs(current_angle - last_angle) for current_angle, last_angle in zip(current_angles, last_angles)
             )
 
             if max_delta_deg <= JOINT_STABLE_EPS_DEG:
@@ -251,7 +250,9 @@ def main() -> None:
                         continue
 
                     if not 0 <= axis_index < len(current_angles):
-                        logger.warning("axis index 越界：index={}，合法范围=[0, {}]", axis_index, len(current_angles) - 1)
+                        logger.warning(
+                            "axis index 越界：index={}，合法范围=[0, {}]", axis_index, len(current_angles) - 1
+                        )
                         continue
 
                     refreshed_angles = _read_angles(arm_client, arm_name)
@@ -346,7 +347,9 @@ def main() -> None:
                         continue
 
                     try:
-                        current_x, current_y, current_z, current_roll, current_pitch, current_yaw = arm_client.current_fk_xyzrpy(arm_name)
+                        current_x, current_y, current_z, current_roll, current_pitch, current_yaw = (
+                            arm_client.current_fk_xyzrpy(arm_name)
+                        )
                     except Exception as exc:
                         logger.warning("FK 正解读取失败：{}", exc)
                         continue
@@ -458,7 +461,9 @@ def main() -> None:
                         continue
 
                     try:
-                        actual_x, actual_y, actual_z, actual_roll, actual_pitch, actual_yaw = arm_client.current_fk_xyzrpy(arm_name)
+                        actual_x, actual_y, actual_z, actual_roll, actual_pitch, actual_yaw = (
+                            arm_client.current_fk_xyzrpy(arm_name)
+                        )
                     except Exception as exc:
                         logger.warning("执行后 FK 正解读取失败：{}", exc)
                         continue
@@ -480,10 +485,7 @@ def main() -> None:
                     pitch_error = abs((actual_pitch - target_pitch_deg + 180.0) % 360.0 - 180.0)
                     yaw_error = abs((actual_yaw - target_yaw_deg + 180.0) % 360.0 - 180.0)
 
-                    joint_errors = [
-                        abs(actual - target)
-                        for actual, target in zip(after_angles, target_angles)
-                    ]
+                    joint_errors = [abs(actual - target) for actual, target in zip(after_angles, target_angles)]
 
                     logger.info(
                         "xyzrpy 控制结果：返回={}，稳定={}，等待={:.3f}s，采样={}",

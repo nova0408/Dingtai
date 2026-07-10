@@ -16,8 +16,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.calibration.hand_eye import HandEyeMethodName  # noqa: E402
-from src.calibration.hand_eye import calibrate_hand_eye_multi_method  # noqa: E402
+from src.calibration.hand_eye import HandEyeMethodName, calibrate_hand_eye_multi_method
 
 PairMode = Literal["adjacent", "all"]
 
@@ -158,7 +157,9 @@ def _pose_from_csv(row: dict[str, str], prefix: str) -> np.ndarray | None:
     if row.get(x_key, "") == "":
         return None
     translation = np.array([float(row[x_key]), float(row[y_key]), float(row[z_key])], dtype=np.float64)
-    quat_wxyz = np.array([float(row[qw_key]), float(row[qx_key]), float(row[qy_key]), float(row[qz_key])], dtype=np.float64)
+    quat_wxyz = np.array(
+        [float(row[qw_key]), float(row[qx_key]), float(row[qy_key]), float(row[qz_key])], dtype=np.float64
+    )
     rotation = Rotation3D.from_quat([quat_wxyz[1], quat_wxyz[2], quat_wxyz[3], quat_wxyz[0]]).as_matrix()
     pose = np.eye(4, dtype=np.float64)
     pose[:3, :3] = rotation
@@ -221,8 +222,12 @@ def _evaluate_variants(
                     method_name=best.method_name,
                     rotation_rmse_deg=best.residual.rotation_rmse_deg,
                     translation_rmse_mm=best.residual.translation_rmse,
-                    cv_rotation_rmse_deg=None if best.cv_residual is None else best.cv_residual.val_rotation_rmse_deg_mean,
-                    cv_translation_rmse_mm=None if best.cv_residual is None else best.cv_residual.val_translation_rmse_mean,
+                    cv_rotation_rmse_deg=(
+                        None if best.cv_residual is None else best.cv_residual.val_rotation_rmse_deg_mean
+                    ),
+                    cv_translation_rmse_mm=(
+                        None if best.cv_residual is None else best.cv_residual.val_translation_rmse_mean
+                    ),
                     score=best.score,
                     error_message=None,
                     transform_matrix=np.asarray(best.transform.as_SE3(), dtype=np.float64).reshape(4, 4),
@@ -285,8 +290,12 @@ def _evaluate_subsets(
                     method_name=best.method_name,
                     rotation_rmse_deg=best.residual.rotation_rmse_deg,
                     translation_rmse_mm=best.residual.translation_rmse,
-                    cv_rotation_rmse_deg=None if best.cv_residual is None else best.cv_residual.val_rotation_rmse_deg_mean,
-                    cv_translation_rmse_mm=None if best.cv_residual is None else best.cv_residual.val_translation_rmse_mean,
+                    cv_rotation_rmse_deg=(
+                        None if best.cv_residual is None else best.cv_residual.val_rotation_rmse_deg_mean
+                    ),
+                    cv_translation_rmse_mm=(
+                        None if best.cv_residual is None else best.cv_residual.val_translation_rmse_mean
+                    ),
                     score=best.score,
                     error_message=None,
                 )

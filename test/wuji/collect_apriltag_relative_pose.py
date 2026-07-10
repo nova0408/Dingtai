@@ -15,12 +15,12 @@ from __future__ import annotations
 
 import argparse
 import json
-import time
 import sys
 import threading
-from queue import Empty, Queue
+import time
 from dataclasses import dataclass
 from pathlib import Path
+from queue import Empty, Queue
 from typing import Any
 
 import cv2
@@ -34,9 +34,10 @@ TEST_WUJI_ROOT = PROJECT_ROOT / "test" / "wuji"
 if str(TEST_WUJI_ROOT) not in sys.path:
     sys.path.insert(0, str(TEST_WUJI_ROOT))
 
-import apriltag_detect as apriltag_eval  # noqa: E402
-from camera_pipeline.client import CameraPipelineClient  # noqa: E402
-from camera_pipeline.opening_detection.protocol import OpeningDetectionPipelineRequest  # noqa: E402
+import apriltag_detect as apriltag_eval
+
+from camera_pipeline.client import CameraPipelineClient
+from camera_pipeline.opening_detection.protocol import OpeningDetectionPipelineRequest
 
 DEFAULT_SERVICE_ADDR = "tcp://192.168.1.118:6200"
 DEFAULT_CAMERA_NAME = "left_hand_camera"
@@ -238,9 +239,7 @@ def _collect_once(
             opening_pose_samples.append(opening_pose_sample)
 
     averaged_tag_poses = {
-        tag_id: _average_transform(samples)
-        for tag_id, samples in tag_pose_samples.items()
-        if samples
+        tag_id: _average_transform(samples) for tag_id, samples in tag_pose_samples.items() if samples
     }
     averaged_opening_pose = _average_transform(opening_pose_samples) if opening_pose_samples else None
     opening_T_tag0 = None
@@ -373,7 +372,9 @@ def _process_frame_task(
         tag_size_mm=DEFAULT_TAG_SIZE_MM,
     )
     elapsed_ms = (cv2.getTickCount() - started) * 1000.0 / cv2.getTickFrequency()
-    temporal_fusion_history.append((time.monotonic(), list(frame_results.get("Fusion", apriltag_eval.VariantDetections([], [])).results)))
+    temporal_fusion_history.append(
+        (time.monotonic(), list(frame_results.get("Fusion", apriltag_eval.VariantDetections([], [])).results))
+    )
     _prune_history(temporal_fusion_history, DEFAULT_STABLE_WINDOW_S)
     frame_results["TemporalFusion"] = apriltag_eval._fuse_temporal_detections(
         fusion_history=list(temporal_fusion_history),
@@ -437,7 +438,9 @@ def _detection_to_transform(detection: apriltag_eval.DetectionResult) -> np.ndar
 def _average_transform(transforms: list[np.ndarray]) -> np.ndarray | None:
     if not transforms:
         return None
-    mats = [np.asarray(transform, dtype=np.float64) for transform in transforms if np.asarray(transform).shape == (4, 4)]
+    mats = [
+        np.asarray(transform, dtype=np.float64) for transform in transforms if np.asarray(transform).shape == (4, 4)
+    ]
     if not mats:
         return None
     translations = np.stack([mat[:3, 3] for mat in mats], axis=0)
@@ -521,17 +524,39 @@ def _save_overlay(session_dir: Path, result: CollectResult) -> Path | None:
         overlay = np.zeros((720, 1280, 3), dtype=np.uint8)
     title_color = (0, 255, 255)
     cv2.putText(overlay, "apriltag relative pose", (40, 60), cv2.FONT_HERSHEY_SIMPLEX, 1.0, title_color, 2, cv2.LINE_AA)
-    cv2.putText(overlay, f"frame={result.frame_index}", (40, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
-    cv2.putText(overlay, f"tags={result.detected_tag_ids}", (40, 135), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
+    cv2.putText(
+        overlay,
+        f"frame={result.frame_index}",
+        (40, 100),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.8,
+        (255, 255, 255),
+        2,
+        cv2.LINE_AA,
+    )
+    cv2.putText(
+        overlay,
+        f"tags={result.detected_tag_ids}",
+        (40, 135),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.8,
+        (255, 255, 255),
+        2,
+        cv2.LINE_AA,
+    )
     for tag_id in DEFAULT_TARGET_TAG_IDS:
         pose = result.tag_poses_camera_frame.get(int(tag_id))
         if pose is None:
             continue
         _draw_axis_on_image(overlay, pose, result.camera_intrinsics, (0, 220, 0), f"tag {tag_id}")
     if result.opening_pose_camera_frame is not None:
-        _draw_axis_on_image(overlay, result.opening_pose_camera_frame, result.camera_intrinsics, (0, 180, 255), "opening")
+        _draw_axis_on_image(
+            overlay, result.opening_pose_camera_frame, result.camera_intrinsics, (0, 180, 255), "opening"
+        )
     if result.relative_base_pose is not None and result.relative_transform is not None:
-        final_pose = np.asarray(result.relative_base_pose, dtype=np.float64) @ np.asarray(result.relative_transform, dtype=np.float64)
+        final_pose = np.asarray(result.relative_base_pose, dtype=np.float64) @ np.asarray(
+            result.relative_transform, dtype=np.float64
+        )
         _draw_axis_on_image(overlay, final_pose, result.camera_intrinsics, (255, 180, 0), "final")
     overlay_path = session_dir / "final_overlay.png"
     cv2.imwrite(str(overlay_path), overlay)
@@ -552,7 +577,9 @@ def _draw_axis_on_image(
         return
     rvec, _ = cv2.Rodrigues(pose[:3, :3])
     tvec = pose[:3, 3].reshape(3, 1)
-    cv2.drawFrameAxes(canvas, np.asarray(camera_matrix, dtype=np.float64), np.zeros((8,), dtype=np.float64), rvec, tvec, 40.0, 3)
+    cv2.drawFrameAxes(
+        canvas, np.asarray(camera_matrix, dtype=np.float64), np.zeros((8,), dtype=np.float64), rvec, tvec, 40.0, 3
+    )
     origin = tuple(int(v) for v in np.round(_project_point(canvas, camera_matrix, rvec, tvec)))
     cv2.putText(canvas, label, (origin[0] + 8, origin[1] - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2, cv2.LINE_AA)
 
@@ -580,17 +607,35 @@ def _serialize_result(result: CollectResult, overlay_path: Path | None) -> dict[
         "frame_index": result.frame_index,
         "detected_tag_ids": result.detected_tag_ids,
         "camera": {
-            "intrinsics": None if result.camera_intrinsics is None else np.asarray(result.camera_intrinsics, dtype=np.float64).tolist(),
+            "intrinsics": (
+                None
+                if result.camera_intrinsics is None
+                else np.asarray(result.camera_intrinsics, dtype=np.float64).tolist()
+            ),
         },
         "pose": {
             "tag_poses_camera_frame": {
                 str(tag_id): np.asarray(pose, dtype=np.float64).tolist()
                 for tag_id, pose in sorted(result.tag_poses_camera_frame.items())
             },
-            "opening_pose_camera_frame": None if result.opening_pose_camera_frame is None else np.asarray(result.opening_pose_camera_frame, dtype=np.float64).tolist(),
-            "opening_T_tag0": None if result.opening_T_tag0 is None else np.asarray(result.opening_T_tag0, dtype=np.float64).tolist(),
-            "relative_transform": None if result.relative_transform is None else np.asarray(result.relative_transform, dtype=np.float64).tolist(),
-            "relative_base_pose": None if result.relative_base_pose is None else np.asarray(result.relative_base_pose, dtype=np.float64).tolist(),
+            "opening_pose_camera_frame": (
+                None
+                if result.opening_pose_camera_frame is None
+                else np.asarray(result.opening_pose_camera_frame, dtype=np.float64).tolist()
+            ),
+            "opening_T_tag0": (
+                None if result.opening_T_tag0 is None else np.asarray(result.opening_T_tag0, dtype=np.float64).tolist()
+            ),
+            "relative_transform": (
+                None
+                if result.relative_transform is None
+                else np.asarray(result.relative_transform, dtype=np.float64).tolist()
+            ),
+            "relative_base_pose": (
+                None
+                if result.relative_base_pose is None
+                else np.asarray(result.relative_base_pose, dtype=np.float64).tolist()
+            ),
         },
         "opening_raw_result": result.opening_raw_result,
         "layout_path": str(result.layout_path),
@@ -608,15 +653,39 @@ def _serialize_opening_response(response: Any) -> dict[str, Any] | None:
             "tray_index": response.selected_result.tray_index,
             "tray_bbox_xywh": list(response.selected_result.tray_bbox_xywh),
             "tray_center_uv": list(response.selected_result.tray_center_uv),
-            "opening_center_uv": None if response.selected_result.opening_center_uv is None else list(response.selected_result.opening_center_uv),
-            "opening_quad_uv": None if response.selected_result.opening_quad_uv is None else [list(item) for item in response.selected_result.opening_quad_uv],
-            "top_quad_uv": None if response.selected_result.top_quad_uv is None else [list(item) for item in response.selected_result.top_quad_uv],
-            "pose": None if response.selected_result.pose is None else {
-                "grasp_point_mm": list(response.selected_result.pose.grasp_point_mm),
-                "pre_grasp_point_mm": list(response.selected_result.pose.pre_grasp_point_mm),
-                "rotation": None if response.selected_result.pose.rotation is None else [list(row) for row in response.selected_result.pose.rotation],
-                "rpy_deg": None if response.selected_result.pose.rpy_deg is None else list(response.selected_result.pose.rpy_deg),
-            },
+            "opening_center_uv": (
+                None
+                if response.selected_result.opening_center_uv is None
+                else list(response.selected_result.opening_center_uv)
+            ),
+            "opening_quad_uv": (
+                None
+                if response.selected_result.opening_quad_uv is None
+                else [list(item) for item in response.selected_result.opening_quad_uv]
+            ),
+            "top_quad_uv": (
+                None
+                if response.selected_result.top_quad_uv is None
+                else [list(item) for item in response.selected_result.top_quad_uv]
+            ),
+            "pose": (
+                None
+                if response.selected_result.pose is None
+                else {
+                    "grasp_point_mm": list(response.selected_result.pose.grasp_point_mm),
+                    "pre_grasp_point_mm": list(response.selected_result.pose.pre_grasp_point_mm),
+                    "rotation": (
+                        None
+                        if response.selected_result.pose.rotation is None
+                        else [list(row) for row in response.selected_result.pose.rotation]
+                    ),
+                    "rpy_deg": (
+                        None
+                        if response.selected_result.pose.rpy_deg is None
+                        else list(response.selected_result.pose.rpy_deg)
+                    ),
+                }
+            ),
         }
     return {
         "frame_id": response.frame_id,

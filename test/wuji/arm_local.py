@@ -11,10 +11,10 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from common import DEFAULT_PORT, create_orin_channel, stop_ssh_process  # noqa: E402
+from common import DEFAULT_PORT, create_orin_channel, stop_ssh_process
 from qmlinker import create_channel
 
-from src.wuji.arm_client import WujiArmClient  # noqa: E402
+from src.wuji.arm_client import WujiArmClient
 
 DEFAULT_ARM_NAME = "left_arm"
 MOVE_WAIT_S = 3.0

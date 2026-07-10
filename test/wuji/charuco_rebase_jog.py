@@ -11,26 +11,23 @@ from typing import Any
 
 import cv2
 import numpy as np
-from PIL import Image, ImageDraw, ImageFont
 from loguru import logger
+from PIL import Image, ImageDraw, ImageFont
 from scipy.spatial.transform import Rotation as Rotation3D
 
 PROJECT_ROOT = next(parent for parent in Path(__file__).resolve().parents if (parent / "camera_pipeline").is_dir())
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from camera_pipeline.client import CameraPipelineClient  # noqa: E402
-from sdk.xcoresdk import xCoreSDK_python  # noqa: E402
-from src.calibration import CHARUCO_200_12_9, CharucoPoseEstimator  # noqa: E402
-from test.wuji.charuco_detect import (  # noqa: E402
+from test.wuji.charuco_detect import (
     DEFAULT_CAMERA_NAME,
     DEFAULT_MIN_CHARUCO_CORNERS,
     DEFAULT_ORIN_SERVICE_ADDR,
     _read_camera_calibration,
     _validate_runtime_requirements,
 )
-from test.wuji.charuco_pose_offset_interactive import DEFAULT_ARM_IP  # noqa: E402
-from test.wuji.xcoresdk_arm_cli_test import (  # noqa: E402
+from test.wuji.charuco_pose_offset_interactive import DEFAULT_ARM_IP
+from test.wuji.xcoresdk_arm_cli_test import (
     DEFAULT_TOOL_NAME,
     DEFAULT_WOBJ_NAME,
     _apply_named_toolset,
@@ -38,6 +35,9 @@ from test.wuji.xcoresdk_arm_cli_test import (  # noqa: E402
     _shutdown_robot,
 )
 
+from camera_pipeline.client import CameraPipelineClient
+from sdk.xcoresdk import xCoreSDK_python
+from src.calibration import CHARUCO_200_12_9, CharucoPoseEstimator
 
 # T_prior_base_board=T_tcp@T_tool_cam@T_cam_board
 # T_new_base_board=T_off@T_prior_base_board =T_tcp@T_tool_cam@T_cam_board
@@ -94,6 +94,8 @@ class RuntimeState:
     reference_offset_pose: PoseSnapshot | None = None
     latest_snapshot: RebaseSnapshot | None = None
     last_action_text: str = "等待有效 ChArUco 位姿，启动后已自动进入拖动模式，空格记录 offset 基准"
+
+
 # endregion
 
 
@@ -177,6 +179,8 @@ def main(
         client.close()
         cv2.destroyAllWindows()
         _shutdown_robot(robot, ec)
+
+
 # endregion
 
 
@@ -187,7 +191,9 @@ def _load_prior_knowledge(result_path: Path) -> PriorKnowledge:
     lines = result_path.read_text(encoding="utf-8").splitlines()
     tool_cam_m = _parse_matrix_after_header(lines, "T_tool_cam:")
     calibration_base_board_m = _parse_base_board_mean_from_result(lines)
-    return PriorKnowledge(tool_cam_m=tool_cam_m, calibration_base_board_m=calibration_base_board_m, source_path=result_path)
+    return PriorKnowledge(
+        tool_cam_m=tool_cam_m, calibration_base_board_m=calibration_base_board_m, source_path=result_path
+    )
 
 
 def _parse_matrix_after_header(lines: list[str], header: str) -> np.ndarray:
@@ -204,7 +210,9 @@ def _parse_matrix_after_header(lines: list[str], header: str) -> np.ndarray:
                     break
     if not matrix_lines:
         raise ValueError(f"无法找到矩阵头: {header}")
-    numbers = [float(value) for value in re.findall(r"[-+]?\d*\.\d+(?:[eE][-+]?\d+)?|[-+]?\d+", "\n".join(matrix_lines))]
+    numbers = [
+        float(value) for value in re.findall(r"[-+]?\d*\.\d+(?:[eE][-+]?\d+)?|[-+]?\d+", "\n".join(matrix_lines))
+    ]
     if len(numbers) != 16:
         raise ValueError(f"{header} 解析出的矩阵元素数量不是 16，而是 {len(numbers)}")
     return np.asarray(numbers, dtype=np.float64).reshape(4, 4)
@@ -228,9 +236,7 @@ def _parse_base_board_mean_from_result(lines: list[str]) -> np.ndarray:
         if match is None:
             continue
         x_mm, y_mm, z_mm, roll_deg, pitch_deg, yaw_deg = [float(value) for value in match.groups()]
-        sample_rotations.append(
-            Rotation3D.from_euler("XYZ", [roll_deg, pitch_deg, yaw_deg], degrees=True).as_matrix()
-        )
+        sample_rotations.append(Rotation3D.from_euler("XYZ", [roll_deg, pitch_deg, yaw_deg], degrees=True).as_matrix())
     if mean_translation_m is None or not sample_rotations:
         raise ValueError("hand_eye_result.txt 中缺少 [per_sample_base_board] 段，无法恢复 T_base_board")
     mean_rotation = _mean_rotation_matrix(sample_rotations)
@@ -268,6 +274,8 @@ def _mean_rotation_matrix(rotations: list[np.ndarray]) -> np.ndarray:
         accumulator += aligned
     accumulator /= np.linalg.norm(accumulator)
     return Rotation3D.from_quat(accumulator).as_matrix()
+
+
 # endregion
 
 
@@ -292,6 +300,8 @@ def _read_camera_board_matrix_m(charuco_result: Any) -> np.ndarray | None:
     matrix[:3, :3] = source[:3, :3]
     matrix[:3, 3] = source[:3, 3] * 0.001
     return matrix
+
+
 # endregion
 
 
@@ -351,7 +361,7 @@ def _compute_base_board_matrix_m(
 def _enable_drag_mode(
     robot: xCoreSDK_python.xMateErProRobot,
     ec: dict[str, object],
- ) -> None:
+) -> None:
     _ensure_fixed_toolset(robot, ec)
     robot.setMotionControlMode(xCoreSDK_python.MotionControlMode.NrtCommandMode, ec)
     _print_sdk_result("setMotionControlMode(NrtCommandMode)", ec)
@@ -386,9 +396,7 @@ def _ensure_fixed_toolset(
 ) -> xCoreSDK_python.Toolset:
     toolset = _apply_named_toolset(robot, ec)
     if toolset is None:
-        raise RuntimeError(
-            f"设置默认工具/工件失败: tool={DEFAULT_TOOL_NAME}, wobj={DEFAULT_WOBJ_NAME}"
-        )
+        raise RuntimeError(f"设置默认工具/工件失败: tool={DEFAULT_TOOL_NAME}, wobj={DEFAULT_WOBJ_NAME}")
     return toolset
 
 
@@ -403,6 +411,8 @@ def _read_current_toolset_text(
         f"tool={DEFAULT_TOOL_NAME} end={_format_pose_line(end_snapshot)} "
         f"wobj={DEFAULT_WOBJ_NAME} ref={_format_pose_line(ref_snapshot)}"
     )
+
+
 # endregion
 
 
@@ -416,7 +426,9 @@ def _draw_preview(
 ) -> np.ndarray:
     canvas = frame_bgr.copy()
     if charuco_result is not None and charuco_result.marker_corners_px:
-        cv2.aruco.drawDetectedMarkers(canvas, charuco_result.marker_corners_px, charuco_result.marker_ids, borderColor=(255, 180, 0))
+        cv2.aruco.drawDetectedMarkers(
+            canvas, charuco_result.marker_corners_px, charuco_result.marker_ids, borderColor=(255, 180, 0)
+        )
     if charuco_result is not None and charuco_result.rvec is not None and charuco_result.tvec is not None:
         cv2.drawFrameAxes(
             canvas,
@@ -438,7 +450,11 @@ def _build_overlay_lines(
 ) -> list[str]:
     marker_count = 0 if charuco_result is None else int(charuco_result.marker_count)
     charuco_count = 0 if charuco_result is None else int(charuco_result.charuco_count)
-    reproj = "NA" if charuco_result is None or charuco_result.reprojection_error_px is None else f"{float(charuco_result.reprojection_error_px):.4f}"
+    reproj = (
+        "NA"
+        if charuco_result is None or charuco_result.reprojection_error_px is None
+        else f"{float(charuco_result.reprojection_error_px):.4f}"
+    )
     lines = [
         f"board_visible={bool(state.latest_snapshot is not None)} marker={marker_count} charuco={charuco_count} reproj={reproj}",
         f"prior={prior.source_path.name}",
@@ -463,7 +479,8 @@ def _build_overlay_lines(
                 "current_base_board=" + _format_pose_line(state.latest_snapshot.current_base_board_pose),
                 "offset=" + _format_pose_line(state.latest_snapshot.offset_pose),
                 "delta_offset=" + _format_pose_line(state.latest_snapshot.delta_offset_pose),
-                "prior_to_current_base_board=" + _format_pose_line(state.latest_snapshot.prior_to_current_base_board_pose),
+                "prior_to_current_base_board="
+                + _format_pose_line(state.latest_snapshot.prior_to_current_base_board_pose),
             ]
         )
     lines.append("启动即拖动模式   Space=记录 offset 基准   观察 delta_offset 是否接近 0   Q/Esc=quit")
@@ -483,6 +500,8 @@ def _draw_text_block(
         draw.text((x, y), line, font=font, fill=(255, 255, 255), stroke_fill=(0, 0, 0), stroke_width=2)
         y += 26
     return cv2.cvtColor(np.asarray(image), cv2.COLOR_RGB2BGR)
+
+
 # endregion
 
 
@@ -520,6 +539,8 @@ def _pose_snapshot_from_frame(frame: xCoreSDK_python.Frame) -> PoseSnapshot:
     matrix[:3, :3] = rotation
     matrix[:3, 3] = np.asarray(frame.trans, dtype=np.float64).reshape(3)
     return _pose_snapshot_from_matrix_m(matrix)
+
+
 # endregion
 
 
@@ -548,6 +569,8 @@ def _parse_cli(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--min-charuco-corners", type=int, default=DEFAULT_MIN_CHARUCO_CORNERS)
     parser.add_argument("--hand-eye-result-path", type=Path, default=DEFAULT_HAND_EYE_RESULT_PATH)
     return parser.parse_args(argv)
+
+
 # endregion
 
 
