@@ -3,7 +3,9 @@ from __future__ import annotations
 import ast
 import csv
 import gc
+import re
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,17 +18,18 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from camera_pipeline.ball_pose_detection.protocol import BallPoseDetectionRequest  # noqa: E402
-from camera_pipeline.client import CameraPipelineClient  # noqa: E402
-from sdk.xcoresdk import xCoreSDK_python  # noqa: E402
-from test.wuji.ball_pose_detection import (  # noqa: E402
+from test.wuji.ball_pose_detection import (
     DEFAULT_CAMERA_NAME as DEFAULT_BALL_POSE_CAMERA_NAME,
+)
+from test.wuji.ball_pose_detection import (
     DEFAULT_SERVICE_ADDR as DEFAULT_BALL_POSE_SERVICE_ADDR,
-    _build_three_ball_basis_transform,
+)
+from test.wuji.ball_pose_detection import (
     _build_priors_from_capture,
+    _build_three_ball_basis_transform,
     _load_prior_capture,
 )
-from test.wuji.common import (  # noqa: E402
+from test.wuji.common import (
     DEFAULT_PORT,
     GRIPPER_PORT,
     SshTunnelGroup,
@@ -34,7 +37,7 @@ from test.wuji.common import (  # noqa: E402
     create_wuyou_channel,
     stop_ssh_process,
 )
-from test.wuji.xcoresdk_arm_cli_test import (  # noqa: E402
+from test.wuji.xcoresdk_arm_cli_test import (
     DEFAULT_CARTESIAN_ZONE,
     DEFAULT_JOINT_ZONE,
     DEFAULT_TOOL_NAME,
@@ -45,23 +48,27 @@ from test.wuji.xcoresdk_arm_cli_test import (  # noqa: E402
     RIGHT_ARM_IP,
     ConnectedArm,
     DahuanGripperClient,
-    WujiRightHandClient,
     WujiBodyClient,
+    WujiRightHandClient,
     _apply_named_toolset,
     _copy_cartesian_pose_context,
+    _deg_to_rad,
     _detect_arm_side,
     _ensure_nrt_motion_ready,
     _format_sequence,
-    _parse_cartesian_pose_input,
-    _mm_to_m,
     _m_to_mm,
-    _deg_to_rad,
+    _mm_to_m,
+    _parse_cartesian_pose_input,
     _print_sdk_result,
     _rad_to_deg,
     _shutdown_robot,
     _validate_cartesian_target,
     _wait_until_idle,
 )
+
+from camera_pipeline.ball_pose_detection.protocol import BallPoseDetectionRequest
+from camera_pipeline.client import CameraPipelineClient
+from sdk.xcoresdk import xCoreSDK_python
 
 DEFAULT_LEFT_RECORD_DIR = PROJECT_ROOT / "record_left"
 "默认左臂拖动示教 CSV 目录。"
@@ -93,10 +100,10 @@ DEFAULT_REPLAY_LIFT_RETRY_COUNT = 4
 DEFAULT_REPLAY_LIFT_HEIGHT_TOLERANCE_MM = 4.0
 "回放 lift 到位误差容忍，单位 mm。"
 
-CSV_CARTESIAN_OFFSET_TARGETS: list[int] = [4,6]
+CSV_CARTESIAN_OFFSET_TARGETS: list[int] = [4, 6]
 "需要应用全局笛卡尔纠偏的 CSV 序号列表。"
 
-CSV_CARTESIAN_OFFSET_CALCULATE_AT:int = 3
+CSV_CARTESIAN_OFFSET_CALCULATE_AT: int = 3
 "在该 CSV 的最后一个 arm pose 处计算一次全局笛卡尔纠偏。"
 
 DEFAULT_OFFSET_SERVICE_ADDR = DEFAULT_BALL_POSE_SERVICE_ADDR
@@ -105,16 +112,20 @@ DEFAULT_OFFSET_SERVICE_ADDR = DEFAULT_BALL_POSE_SERVICE_ADDR
 DEFAULT_OFFSET_CAMERA_NAME = DEFAULT_BALL_POSE_CAMERA_NAME
 "计算全局 offset 时使用的相机名称。"
 
-DEFAULT_OFFSET_PRIOR_CAPTURE_PATH = PROJECT_ROOT / "test" / "wuji" / ".archive" / "ball_pose_detection_capture" / "summary.json"
+DEFAULT_OFFSET_PRIOR_CAPTURE_PATH = (
+    PROJECT_ROOT / "test" / "wuji" / ".archive" / "ball_pose_detection_capture" / "summary.json"
+)
 "计算全局 offset 时使用的先验采集结果路径。"
 
-DEFAULT_HAND_EYE_RESULT_PATH = PROJECT_ROOT / "experiments" / "hand_eye" / "runs" / "20260708_152829" / "hand_eye_result.txt"
+DEFAULT_HAND_EYE_RESULT_PATH = (
+    PROJECT_ROOT / "experiments" / "hand_eye" / "runs" / "20260708_152829" / "hand_eye_result.txt"
+)
 "计算全局 offset 时使用的手眼标定结果文件。"
 
 OFFSET_CAPTURE_SETTLE_DELAY_S = 5.0
 "到达 offset 触发 CSV 后，等待机械臂和相机画面稳定的时间。"
 
-OFFSET_BALL_CAPTURE_SAMPLE_COUNT = 20
+OFFSET_BALL_CAPTURE_SAMPLE_COUNT = 10
 "计算 offset 时连续采集三球坐标的次数。"
 
 OFFSET_BALL_OUTLIER_MAD_SCALE = 3.5
@@ -130,6 +141,7 @@ OFFSET_BALL_OUTLIER_MIN_THRESHOLD_MM = 2.0
 
 # region 数据结构
 # 实测最终应用公式统一使用：T_new_tcp = T_off @ T_tcp
+
 
 @dataclass(frozen=True, slots=True)
 class ReplayRow:
@@ -175,14 +187,35 @@ class ReplayRuntime:
     auto_execute_remaining: bool = False
 
 
+@dataclass(frozen=True, slots=True)
+class CsvExecutionPlan:
+    """单个左臂阶段与右臂阶段的执行计划。"""
+
+    left_csv_path: Path
+    right_start_csv_path: Path | None = None
+    right_pre_stage_csv_paths: tuple[Path, ...] = ()
+    right_sync_csv_path: Path | None = None
+    right_post_stage_csv_paths: tuple[Path, ...] = ()
+    start_together: bool = False
+
+    @property
+    def has_sync(self) -> bool:
+        return self.right_sync_csv_path is not None
+
+    @property
+    def has_parallel_start(self) -> bool:
+        return self.start_together or self.has_sync
+
+
 # endregion
 
 
 # region CSV 解析
 
+
 def _discover_csv_paths(record_dir: Path, max_files: int | None) -> list[Path]:
     if not record_dir.is_dir():
-        raise FileNotFoundError(f"CSV 目录不存在: {record_dir}")
+        raise FileNotFoundError(f"CSV 目录不存在：{record_dir}")
     csv_paths = sorted(path for path in record_dir.iterdir() if path.is_file() and path.suffix.lower() == ".csv")
     if max_files is not None:
         return csv_paths[:max_files]
@@ -209,7 +242,7 @@ def _load_replay_rows(csv_path: Path) -> list[ReplayRow]:
                 )
             )
     if not rows:
-        raise ValueError(f"CSV 没有可执行数据: {csv_path}")
+        raise ValueError(f"CSV 没有可执行数据：{csv_path}")
     return rows
 
 
@@ -218,7 +251,7 @@ def _parse_joint_values(joints_text: str, expected_len: int = 7) -> list[float]:
         raise ValueError("关节列为 NaN，不能解析为关节目标")
     parsed = ast.literal_eval(joints_text)
     if not isinstance(parsed, list) or len(parsed) != expected_len:
-        raise ValueError(f"关节列长度无效: {joints_text}")
+        raise ValueError(f"关节列长度无效：{joints_text}")
     return [float(value) for value in parsed]
 
 
@@ -240,6 +273,16 @@ def _extract_csv_sequence(csv_name: str) -> int:
     return int(prefix)
 
 
+def _extract_sync_csv_sequence(csv_name: str) -> int | None:
+    parts = csv_name.split("_")
+    if len(parts) < 2:
+        return None
+    match = re.fullmatch(r"S(\d+)", parts[1])
+    if match is None:
+        return None
+    return int(match.group(1))
+
+
 def _should_apply_global_cartesian_offset(csv_name: str) -> bool:
     return _extract_csv_sequence(csv_name) in CSV_CARTESIAN_OFFSET_TARGETS
 
@@ -248,6 +291,91 @@ def _format_optional_csv_sequence(sequence: int | None) -> str:
     if sequence is None:
         return "None"
     return f"{sequence:02d}"
+
+
+def _build_csv_execution_plans(
+    left_csv_paths: list[Path],
+    right_csv_paths: list[Path],
+) -> list[CsvExecutionPlan]:
+    right_csv_by_sequence = {_extract_csv_sequence(path.name): path for path in right_csv_paths}
+    right_sequences = sorted(right_csv_by_sequence)
+    consumed_right_sequences: set[int] = set()
+    stage_specs: list[tuple[Path, Path | None, tuple[Path, ...], Path | None, bool]] = []
+    for left_index, left_csv_path in enumerate(left_csv_paths):
+        left_sequence = _extract_csv_sequence(left_csv_path.name)
+        right_sync_sequence = _extract_sync_csv_sequence(left_csv_path.name)
+        right_pre_stage_sequences: list[int] = []
+        right_sync_csv_path = None
+        start_together = False
+        right_start_csv_path = None
+
+        if left_index == 0 and left_sequence in right_csv_by_sequence:
+            start_together = True
+            right_start_csv_path = right_csv_by_sequence[left_sequence]
+            consumed_right_sequences.add(left_sequence)
+
+        if right_sync_sequence is not None:
+            right_sync_csv_path = right_csv_by_sequence.get(right_sync_sequence)
+            if right_sync_csv_path is None:
+                raise RuntimeError(
+                    "左臂 CSV 声明了同步右臂文件，但右臂目录中不存在对应序号："
+                    f" left={left_csv_path.name} right_seq={right_sync_sequence:02d}"
+                )
+            for right_sequence in right_sequences:
+                if right_sequence in consumed_right_sequences:
+                    continue
+                if right_sequence >= right_sync_sequence:
+                    break
+                right_pre_stage_sequences.append(right_sequence)
+                consumed_right_sequences.add(right_sequence)
+            consumed_right_sequences.add(right_sync_sequence)
+        elif left_index > 0:
+            next_sync_sequence = None
+            for future_left_csv_path in left_csv_paths[left_index + 1 :]:
+                next_sync_sequence = _extract_sync_csv_sequence(future_left_csv_path.name)
+                if next_sync_sequence is not None:
+                    break
+            upper_bound = left_sequence if next_sync_sequence is None else next_sync_sequence
+            for right_sequence in right_sequences:
+                if right_sequence in consumed_right_sequences:
+                    continue
+                if right_sequence >= upper_bound:
+                    break
+                right_pre_stage_sequences.append(right_sequence)
+                consumed_right_sequences.add(right_sequence)
+
+        stage_specs.append(
+            (
+                left_csv_path,
+                right_start_csv_path,
+                tuple(right_csv_by_sequence[sequence] for sequence in right_pre_stage_sequences),
+                right_sync_csv_path,
+                start_together,
+            )
+        )
+    trailing_right_csv_paths = tuple(
+        right_csv_by_sequence[sequence] for sequence in right_sequences if sequence not in consumed_right_sequences
+    )
+    plans: list[CsvExecutionPlan] = []
+    for plan_index, (
+        left_csv_path,
+        right_start_csv_path,
+        right_pre_stage_csv_paths,
+        right_sync_csv_path,
+        start_together,
+    ) in enumerate(stage_specs):
+        right_post_stage_csv_paths = trailing_right_csv_paths if plan_index == len(stage_specs) - 1 else ()
+        plans.append(
+            CsvExecutionPlan(
+                left_csv_path=left_csv_path,
+                right_start_csv_path=right_start_csv_path,
+                right_pre_stage_csv_paths=right_pre_stage_csv_paths,
+                right_sync_csv_path=right_sync_csv_path,
+                right_post_stage_csv_paths=right_post_stage_csv_paths,
+                start_together=start_together,
+            )
+        )
+    return plans
 
 
 # endregion
@@ -271,14 +399,12 @@ def _connect_arm(arm_side: str) -> ConnectedArm:
     robot_info = robot.robotInfo(ec)
     _print_sdk_result(f"robotInfo({robot_ip})", ec)
     if ec.get("ec", 0) != 0:
-        raise RuntimeError(f"读取机械臂机器人信息失败: arm_side={arm_side}, ip={robot_ip}")
+        raise RuntimeError(f"读取机械臂机器人信息失败：arm_side={arm_side}, ip={robot_ip}")
     if _apply_named_toolset(robot, ec) is None:
-        raise RuntimeError(
-            f"设置默认工具/工件失败: ip={robot_ip}, tool={DEFAULT_TOOL_NAME}, wobj={DEFAULT_WOBJ_NAME}"
-        )
+        raise RuntimeError(f"设置默认工具/工件失败：ip={robot_ip}, tool={DEFAULT_TOOL_NAME}, wobj={DEFAULT_WOBJ_NAME}")
     detected_arm_side = _detect_arm_side(robot_info.type)
     if detected_arm_side != arm_side:
-        raise RuntimeError(f"连接到的机械臂侧别不匹配: expected={arm_side}, ip={robot_ip}, actual={detected_arm_side}")
+        raise RuntimeError(f"连接到的机械臂侧别不匹配：expected={arm_side}, ip={robot_ip}, actual={detected_arm_side}")
     logger.success(
         "已连接机械臂 arm_side={} ip={} type={} uid={} tool={} wobj={}",
         arm_side,
@@ -430,8 +556,7 @@ def _multiply_homogeneous_matrix(
     for row_index in range(4):
         for col_index in range(4):
             result[row_index][col_index] = sum(
-                float(left[row_index][term_index]) * float(right[term_index][col_index])
-                for term_index in range(4)
+                float(left[row_index][term_index]) * float(right[term_index][col_index]) for term_index in range(4)
             )
     return result
 
@@ -483,7 +608,7 @@ def _apply_global_cartesian_offset(
         raise RuntimeError(
             f"CSV {row.csv_name} 需要使用全局笛卡尔纠偏，但当前尚未在 "
             f"{_format_optional_csv_sequence(CSV_CARTESIAN_OFFSET_CALCULATE_AT)}_*.csv 末尾计算 offset"
-    )
+        )
     original_matrix = _frame_to_homogeneous_matrix(target_pose)
     offset_matrix_m = np.asarray(runtime.global_cartesian_offset, dtype=np.float64)
     corrected_matrix = offset_matrix_m @ np.asarray(original_matrix, dtype=np.float64)
@@ -521,9 +646,9 @@ def _load_prior_base_ball_transform(prior_capture_path: Path, hand_eye_result_pa
     tcp_matrix_m = np.asarray(tcp_pose_matrix, dtype=np.float64)
     ball_matrix_m = np.asarray(local_pose_transform, dtype=np.float64)
     if tcp_matrix_m.shape != (4, 4) or not np.all(np.isfinite(tcp_matrix_m)):
-        raise RuntimeError(f"先验 tcp_pose_matrix 格式无效: {prior_capture_path}")
+        raise RuntimeError(f"先验 tcp_pose_matrix 格式无效：{prior_capture_path}")
     if ball_matrix_m.shape != (4, 4) or not np.all(np.isfinite(ball_matrix_m)):
-        raise RuntimeError(f"先验 local_pose_transform 格式无效: {prior_capture_path}")
+        raise RuntimeError(f"先验 local_pose_transform 格式无效：{prior_capture_path}")
     ball_matrix_m = ball_matrix_m.copy()
     tcp_matrix_m = tcp_matrix_m.copy()
     # tcp_pose_matrix 已经是内部计算单位 m，不能再次做 mm -> m 缩放。
@@ -537,7 +662,7 @@ def _load_tool_camera_transform_m(hand_eye_result_path: Path) -> np.ndarray:
     """从 hand-eye 结果文件加载 `T_tool_cam`，单位保持为 `m`。"""
 
     if not hand_eye_result_path.is_file():
-        raise FileNotFoundError(f"手眼结果文件不存在: {hand_eye_result_path}")
+        raise FileNotFoundError(f"手眼结果文件不存在：{hand_eye_result_path}")
     lines = hand_eye_result_path.read_text(encoding="utf-8").splitlines()
     matrix_rows: list[list[float]] = []
     collecting = False
@@ -552,13 +677,13 @@ def _load_tool_camera_transform_m(hand_eye_result_path: Path) -> np.ndarray:
             cleaned = stripped.replace("[", " ").replace("]", " ")
             values = [float(token) for token in cleaned.split() if token]
             if len(values) != 4:
-                raise ValueError(f"手眼矩阵行格式错误: {line}")
+                raise ValueError(f"手眼矩阵行格式错误：{line}")
             matrix_rows.append(values)
             if len(matrix_rows) == 4:
                 break
     matrix = np.asarray(matrix_rows, dtype=np.float64)
     if matrix.shape != (4, 4) or not np.all(np.isfinite(matrix)):
-        raise ValueError(f"手眼矩阵维度错误: shape={matrix.shape}, path={hand_eye_result_path}")
+        raise ValueError(f"手眼矩阵维度错误：shape={matrix.shape}, path={hand_eye_result_path}")
     return matrix
 
 
@@ -727,12 +852,12 @@ def _calculate_global_cartesian_offset(
         prior_capture_path=runtime.offset_prior_capture_path,
     )
     if _apply_named_toolset(runtime.connected_arm.robot, runtime.connected_arm.ec) is None:
-        raise RuntimeError(f"设置固定 toolset 失败: tool={DEFAULT_TOOL_NAME}, wobj={DEFAULT_WOBJ_NAME}")
+        raise RuntimeError(f"设置固定 toolset 失败：tool={DEFAULT_TOOL_NAME}, wobj={DEFAULT_WOBJ_NAME}")
     tcp_pose = runtime.connected_arm.robot.cartPosture(xCoreSDK_python.endInRef, runtime.connected_arm.ec)
     _print_sdk_result("cartPosture(endInRef, offset-calc)", runtime.connected_arm.ec)
     if runtime.connected_arm.ec.get("ec", 0) != 0:
         raise RuntimeError("读取当前 TCP 位姿失败，无法计算全局 offset")
-    # SDK 原始输出：trans(m), rpy(rad)，这里重建成内部计算矩阵(m)。
+    # SDK 原始输出：trans(m), rpy(rad)，这里重建成内部计算矩阵 (m)。
     tcp_matrix_m = _frame_to_homogeneous_matrix_m(tcp_pose)
     tool_camera_matrix_m = _load_tool_camera_transform_m(runtime.hand_eye_result_path)
     current_base_ball_m = tcp_matrix_m @ tool_camera_matrix_m @ current_cam_ball_transform
@@ -761,7 +886,9 @@ def _calculate_global_cartesian_offset(
         _format_matrix_xyzrpy_mm_deg("T_new_tcp=T_off@T_tcp", new_tcp_matrix_m),
     )
     offset_distance_m = float(np.linalg.norm(offset_matrix_m[:3, 3]))
-    logger.info("offset_norm_mm={:.3f} {}", offset_distance_m * 1000.0, _format_matrix_xyzrpy_mm_deg("T_off", offset_matrix_m))
+    logger.info(
+        "offset_norm_mm={:.3f} {}", offset_distance_m * 1000.0, _format_matrix_xyzrpy_mm_deg("T_off", offset_matrix_m)
+    )
     if offset_distance_m > 0.05:
         logger.warning(
             "offset 平移明显偏大，请检查拍摄时机/三球识别/先验是否一致 distance_mm={:.3f} {}",
@@ -828,8 +955,7 @@ def _execute_cartesian_row(
     should_fallback_to_move_abs_j = not _validate_cartesian_target(robot, ec, target_pose)
     if should_fallback_to_move_abs_j:
         logger.warning(
-            "回放 MoveL 路径检查失败，将对 {} 计算逆解并回退 MoveAbsJ "
-            "file={} row={} xyz(mm)=[{}] rpy(deg)=[{}]",
+            "回放 MoveL 路径检查失败，将对 {} 计算逆解并回退 MoveAbsJ " "file={} row={} xyz(mm)=[{}] rpy(deg)=[{}]",
             "offset 后 T_new_tcp" if applies_offset else "原始 T_tcp",
             row.csv_name,
             row.row_index,
@@ -994,10 +1120,10 @@ def _read_lift_height_mm(result: object) -> float:
         first_value = result[0]
         if isinstance(first_value, int | float):
             return float(first_value)
-        raise TypeError(f"lift 返回值首元素类型无效: {type(first_value)!r}")
+        raise TypeError(f"lift 返回值首元素类型无效：{type(first_value)!r}")
     if isinstance(result, int | float):
         return float(result)
-    raise TypeError(f"lift 返回值类型无效: {type(result)!r}")
+    raise TypeError(f"lift 返回值类型无效：{type(result)!r}")
 
 
 def _wait_replay_lift_until_near_target(body: WujiBodyClient, target_height_mm: int) -> float:
@@ -1033,7 +1159,7 @@ def _wait_replay_lift_until_near_target(body: WujiBodyClient, target_height_mm: 
 def _execute_lift_row(runtime: ReplayRuntime, row: ReplayRow) -> None:
     target_height_mm = int(round(float(row.pose_text)))
     if target_height_mm < 0:
-        raise ValueError(f"lift 目标高度非法: {target_height_mm}")
+        raise ValueError(f"lift 目标高度非法：{target_height_mm}")
     runtime.body.lift.set_lift_physical_height(target_height_mm)
     actual_height_mm = _wait_replay_lift_until_near_target(runtime.body, target_height_mm)
     logger.info(
@@ -1072,7 +1198,7 @@ def _execute_row(
     if row.action_type == "lift":
         _execute_lift_row(runtime, row)
         return
-    raise ValueError(f"当前脚本暂不支持的记录类型: {row.action_type}")
+    raise ValueError(f"当前脚本暂不支持的记录类型：{row.action_type}")
 
 
 def _cleanup_runtime(runtime: ReplayRuntime | None) -> None:
@@ -1089,6 +1215,170 @@ def _cleanup_runtime(runtime: ReplayRuntime | None) -> None:
         stop_ssh_process(preserved_body_process)
         del runtime
         gc.collect()
+
+
+def _run_rows_with_optional_prompt(
+    runtime: ReplayRuntime,
+    rows: list[ReplayRow],
+    selected_auto_start: bool,
+) -> None:
+    for row in rows:
+        if not selected_auto_start and not runtime.auto_execute_remaining:
+            while True:
+                action_choice = _confirm_each_action(runtime, row)
+                if action_choice == "q":
+                    raise RuntimeError("用户终止执行")
+                if action_choice == "a":
+                    runtime.auto_execute_remaining = True
+                    logger.success("已切换为全自动执行模式，后续动作将连续执行到结束")
+                    break
+                if action_choice == "s":
+                    _configure_replay_speeds(runtime)
+                    continue
+                if action_choice == "j":
+                    logger.warning(
+                        "跳过动作 file={} row={} type={}",
+                        row.csv_name,
+                        row.row_index,
+                        row.action_type,
+                    )
+                    break
+                break
+            if action_choice == "j":
+                continue
+        _execute_row(runtime, row)
+
+
+def _execute_single_csv(
+    runtime: ReplayRuntime,
+    csv_path: Path,
+    selected_auto_start: bool,
+) -> None:
+    csv_sequence = _extract_csv_sequence(csv_path.name)
+    is_offset_trigger_csv = csv_sequence == CSV_CARTESIAN_OFFSET_CALCULATE_AT
+    rows = _load_replay_rows(csv_path)
+    logger.info(
+        "开始执行文件 {} arm_side={} 共 {} 行",
+        csv_path.name,
+        runtime.connected_arm.arm_side,
+        len(rows),
+    )
+    original_joint_speed_deg_s = runtime.joint_speed_deg_s
+    original_cartesian_speed_mm_s = runtime.cartesian_speed_mm_s
+    if is_offset_trigger_csv:
+        runtime.joint_speed_deg_s = 100.0
+        runtime.cartesian_speed_mm_s = 100.0
+        logger.info(
+            "offset 触发 CSV 临时速度调整 file={} joint_speed {:.2f}->100.00 deg/s "
+            "cartesian_speed {:.2f}->100.00 mm/s",
+            csv_path.name,
+            original_joint_speed_deg_s,
+            original_cartesian_speed_mm_s,
+        )
+    try:
+        _run_rows_with_optional_prompt(runtime, rows, selected_auto_start)
+        if is_offset_trigger_csv:
+            logger.info(
+                "已到达 offset 触发 CSV，等待 {:.1f}s 后开始连续采集三球坐标 file={}",
+                OFFSET_CAPTURE_SETTLE_DELAY_S,
+                csv_path.name,
+            )
+            time.sleep(OFFSET_CAPTURE_SETTLE_DELAY_S)
+            runtime.global_cartesian_offset = _calculate_global_cartesian_offset(runtime, csv_path)
+            logger.success("已更新全局笛卡尔纠偏矩阵，后续目标 CSV 将按 T_off@T_tcp 左乘方式应用")
+    finally:
+        if is_offset_trigger_csv:
+            runtime.joint_speed_deg_s = original_joint_speed_deg_s
+            runtime.cartesian_speed_mm_s = original_cartesian_speed_mm_s
+            logger.info(
+                "offset 触发 CSV 结束，恢复回放速度 file={} joint_speed={:.2f} deg/s " "cartesian_speed={:.2f} mm/s",
+                csv_path.name,
+                runtime.joint_speed_deg_s,
+                runtime.cartesian_speed_mm_s,
+            )
+    logger.success("文件执行完成 {} arm_side={}", csv_path.name, runtime.connected_arm.arm_side)
+
+
+def _execute_parallel_csv_pair(
+    left_runtime: ReplayRuntime,
+    left_csv_path: Path,
+    right_runtime: ReplayRuntime,
+    right_csv_path: Path,
+    phase_label: str,
+) -> None:
+    logger.info("开始并行执行 phase={} left={} right={}", phase_label, left_csv_path.name, right_csv_path.name)
+    errors: list[BaseException] = []
+
+    def _worker(runtime: ReplayRuntime, csv_path: Path) -> None:
+        try:
+            _execute_single_csv(runtime, csv_path, selected_auto_start=True)
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    left_thread = threading.Thread(
+        target=_worker,
+        args=(left_runtime, left_csv_path),
+        name=f"left-sync-{left_csv_path.stem}",
+        daemon=False,
+    )
+    right_thread = threading.Thread(
+        target=_worker,
+        args=(right_runtime, right_csv_path),
+        name=f"right-sync-{right_csv_path.stem}",
+        daemon=False,
+    )
+    left_thread.start()
+    right_thread.start()
+    left_thread.join()
+    right_thread.join()
+    if errors:
+        raise RuntimeError(
+            f"并行执行失败 phase={phase_label} left={left_csv_path.name} right={right_csv_path.name}: {errors[0]}"
+        ) from errors[0]
+    logger.success("并行执行完成 phase={} left={} right={}", phase_label, left_csv_path.name, right_csv_path.name)
+
+
+def _execute_csv_execution_plan(
+    left_runtime: ReplayRuntime,
+    plan: CsvExecutionPlan,
+    right_runtime: ReplayRuntime | None,
+    selected_auto_start: bool,
+) -> None:
+    left_executed = False
+    if plan.start_together:
+        if right_runtime is None:
+            raise RuntimeError(f"启动并行阶段缺少右臂 runtime：{plan.left_csv_path.name}")
+        if plan.right_start_csv_path is None:
+            raise RuntimeError(f"启动并行阶段缺少右臂首个同序号 CSV：{plan.left_csv_path.name}")
+        _execute_parallel_csv_pair(
+            left_runtime=left_runtime,
+            left_csv_path=plan.left_csv_path,
+            right_runtime=right_runtime,
+            right_csv_path=plan.right_start_csv_path,
+            phase_label="bootstrap",
+        )
+        left_executed = True
+    for right_csv_path in plan.right_pre_stage_csv_paths:
+        if right_runtime is None:
+            raise RuntimeError(f"右臂阶段执行缺少 runtime：{right_csv_path.name}")
+        _execute_single_csv(right_runtime, right_csv_path, selected_auto_start=True)
+    if plan.right_sync_csv_path is not None:
+        if right_runtime is None:
+            raise RuntimeError(f"同步阶段缺少右臂 runtime：{plan.right_sync_csv_path.name}")
+        _execute_parallel_csv_pair(
+            left_runtime=left_runtime,
+            left_csv_path=plan.left_csv_path,
+            right_runtime=right_runtime,
+            right_csv_path=plan.right_sync_csv_path,
+            phase_label="sync",
+        )
+        left_executed = True
+    if not left_executed:
+        _execute_single_csv(left_runtime, plan.left_csv_path, selected_auto_start)
+    if right_runtime is None:
+        return
+    for right_csv_path in plan.right_post_stage_csv_paths:
+        _execute_single_csv(right_runtime, right_csv_path, selected_auto_start=True)
 
 
 # endregion
@@ -1117,21 +1407,21 @@ def _confirm_runtime_config(
     while True:
         print("")
         print("========== 回放配置 ==========")
-        print(f"当前机械臂侧别: {arm_side}")
-        print(f"当前 CSV 目录: {record_dir}")
-        print(f"当前最大文件数: {'全部' if max_files is None else max_files}")
-        print(f"当前关节回放速度: {joint_speed_deg_s:.2f} deg/s")
-        print(f"当前笛卡尔回放速度: {cartesian_speed_mm_s:.2f} mm/s")
-        print(f"当前 offset 服务: {offset_service_addr}")
-        print(f"当前 offset 相机: {offset_camera_name}")
-        print(f"当前 offset 先验: {offset_prior_capture_path}")
-        print(f"当前手眼结果: {hand_eye_result_path}")
+        print(f"当前机械臂侧别：{arm_side}")
+        print(f"当前 CSV 目录：{record_dir}")
+        print(f"当前最大文件数：{'全部' if max_files is None else max_files}")
+        print(f"当前关节回放速度：{joint_speed_deg_s:.2f} deg/s")
+        print(f"当前笛卡尔回放速度：{cartesian_speed_mm_s:.2f} mm/s")
+        print(f"当前 offset 服务：{offset_service_addr}")
+        print(f"当前 offset 相机：{offset_camera_name}")
+        print(f"当前 offset 先验：{offset_prior_capture_path}")
+        print(f"当前手眼结果：{hand_eye_result_path}")
         print("输入回车确认当前配置并继续")
         print("输入 a 使用当前配置全自动开始")
         print("输入 l 切换左右臂")
         print("输入 s 调整初始速度")
         print("输入 q 退出")
-        choice = input("请选择: ").strip().lower()
+        choice = input("请选择：").strip().lower()
         if choice == "q":
             return "quit"
         if choice == "a":
@@ -1142,25 +1432,45 @@ def _confirm_runtime_config(
             return "speed"
         if choice == "":
             return "confirm"
-        print(f"未知输入: {choice}")
+        print(f"未知输入：{choice}")
 
 
 def _print_csv_summary(csv_paths: list[Path], joint_speed_deg_s: float, cartesian_speed_mm_s: float) -> None:
     print("本次将按以下顺序执行 CSV：")
     for index, csv_path in enumerate(csv_paths, start=1):
         print(f"  {index:02d}. {csv_path.name}")
-    print(f"关节回放速度: {joint_speed_deg_s:.1f} deg/s")
-    print(f"笛卡尔回放速度: {cartesian_speed_mm_s:.1f} mm/s")
+    print(f"关节回放速度：{joint_speed_deg_s:.1f} deg/s")
+    print(f"笛卡尔回放速度：{cartesian_speed_mm_s:.1f} mm/s")
     print(
-        "全局笛卡尔纠偏配置: "
+        "全局笛卡尔纠偏配置："
         f"calculate_at={_format_optional_csv_sequence(CSV_CARTESIAN_OFFSET_CALCULATE_AT)}, "
         f"targets={[f'{value:02d}' for value in CSV_CARTESIAN_OFFSET_TARGETS]}"
     )
 
 
+def _print_execution_plan_summary(plans: list[CsvExecutionPlan]) -> None:
+    if not plans:
+        return
+    print("双臂执行计划：")
+    for index, plan in enumerate(plans, start=1):
+        right_parts: list[str] = []
+        if plan.right_start_csv_path is not None:
+            right_parts.append(f"start={plan.right_start_csv_path.name}")
+        if plan.right_pre_stage_csv_paths:
+            right_parts.append("pre=[" + ", ".join(csv_path.name for csv_path in plan.right_pre_stage_csv_paths) + "]")
+        if plan.right_sync_csv_path is not None:
+            right_parts.append(f"sync={plan.right_sync_csv_path.name}")
+        if plan.right_post_stage_csv_paths:
+            right_parts.append(
+                "post=[" + ", ".join(csv_path.name for csv_path in plan.right_post_stage_csv_paths) + "]"
+            )
+        right_plan_text = " ".join(right_parts) if right_parts else "无右臂阶段"
+        print(f"  {index:02d}. left={plan.left_csv_path.name} -> {right_plan_text}")
+
+
 def _prompt_positive_speed(current_value: float, label: str, unit_text: str) -> float:
     while True:
-        raw_text = input(f"请输入新的{label}速度，当前 {current_value:.2f} {unit_text}，输入 q 返回: ").strip().lower()
+        raw_text = input(f"请输入新的{label}速度，当前 {current_value:.2f} {unit_text}，输入 q 返回：").strip().lower()
         if raw_text == "q":
             return current_value
         try:
@@ -1175,8 +1485,8 @@ def _prompt_positive_speed(current_value: float, label: str, unit_text: str) -> 
 
 
 def _configure_replay_speeds(runtime: ReplayRuntime) -> None:
-    print(f"当前关节回放速度: {runtime.joint_speed_deg_s:.2f} deg/s")
-    print(f"当前笛卡尔回放速度: {runtime.cartesian_speed_mm_s:.2f} mm/s")
+    print(f"当前关节回放速度：{runtime.joint_speed_deg_s:.2f} deg/s")
+    print(f"当前笛卡尔回放速度：{runtime.cartesian_speed_mm_s:.2f} mm/s")
     runtime.joint_speed_deg_s = _prompt_positive_speed(runtime.joint_speed_deg_s, "关节回放", "deg/s")
     runtime.cartesian_speed_mm_s = _prompt_positive_speed(runtime.cartesian_speed_mm_s, "笛卡尔回放", "mm/s")
     logger.info(
@@ -1186,9 +1496,11 @@ def _configure_replay_speeds(runtime: ReplayRuntime) -> None:
     )
 
 
-def _configure_speed_values(current_joint_speed_deg_s: float, current_cartesian_speed_mm_s: float) -> tuple[float, float]:
-    print(f"当前关节回放速度: {current_joint_speed_deg_s:.2f} deg/s")
-    print(f"当前笛卡尔回放速度: {current_cartesian_speed_mm_s:.2f} mm/s")
+def _configure_speed_values(
+    current_joint_speed_deg_s: float, current_cartesian_speed_mm_s: float
+) -> tuple[float, float]:
+    print(f"当前关节回放速度：{current_joint_speed_deg_s:.2f} deg/s")
+    print(f"当前笛卡尔回放速度：{current_cartesian_speed_mm_s:.2f} mm/s")
     new_joint_speed_deg_s = _prompt_positive_speed(current_joint_speed_deg_s, "关节回放", "deg/s")
     new_cartesian_speed_mm_s = _prompt_positive_speed(current_cartesian_speed_mm_s, "笛卡尔回放", "mm/s")
     logger.info(
@@ -1200,8 +1512,8 @@ def _configure_speed_values(current_joint_speed_deg_s: float, current_cartesian_
 
 
 def _configure_initial_replay_speeds(runtime: ReplayRuntime, auto_start: bool) -> None:
-    print(f"初始关节回放速度: {runtime.joint_speed_deg_s:.2f} deg/s")
-    print(f"初始笛卡尔回放速度: {runtime.cartesian_speed_mm_s:.2f} mm/s")
+    print(f"初始关节回放速度：{runtime.joint_speed_deg_s:.2f} deg/s")
+    print(f"初始笛卡尔回放速度：{runtime.cartesian_speed_mm_s:.2f} mm/s")
     if auto_start:
         logger.info(
             "自动启动模式保留默认速度 joint={:.2f} deg/s cartesian={:.2f} mm/s",
@@ -1209,31 +1521,33 @@ def _configure_initial_replay_speeds(runtime: ReplayRuntime, auto_start: bool) -
             runtime.cartesian_speed_mm_s,
         )
         return
-    raw_text = input("输入回车保留默认速度，输入 s 立即调整速度，输入 q 退出: ").strip().lower()
+    raw_text = input("输入回车保留默认速度，输入 s 立即调整速度，输入 q 退出：").strip().lower()
     if raw_text == "q":
         raise RuntimeError("用户在启动阶段取消执行")
     if raw_text == "s":
         _configure_replay_speeds(runtime)
 
 
-def _confirm_start(csv_paths: list[Path], auto_start: bool, joint_speed_deg_s: float, cartesian_speed_mm_s: float) -> str:
+def _confirm_start(
+    csv_paths: list[Path], auto_start: bool, joint_speed_deg_s: float, cartesian_speed_mm_s: float
+) -> str:
     _print_csv_summary(csv_paths, joint_speed_deg_s, cartesian_speed_mm_s)
     arm_side = "right" if "record_right" in str(csv_paths[0].parent) else "left"
     print(f"{arm_side} 臂基坐标固定为 tool={DEFAULT_TOOL_NAME}, wobj={DEFAULT_WOBJ_NAME}")
-    print("arm 动作策略: pose=NaN -> MoveAbsJ；否则 MoveL，失败自动回退 MoveAbsJ")
+    print("arm 动作策略：pose=NaN -> MoveAbsJ；否则 MoveL，失败自动回退 MoveAbsJ")
     if arm_side == "left":
-        print("gripper 动作策略: 仅下发，不等待到位")
+        print("gripper 动作策略：仅下发，不等待到位")
     else:
-        print("m11 动作策略: 读取当前 11 轴状态后整体下发，不等待到位")
+        print("m11 动作策略：读取当前 11 轴状态后整体下发，不等待到位")
     print(
-        "lift 动作策略: 等待到位后才允许继续下一步，"
+        "lift 动作策略：等待到位后才允许继续下一步，"
         f"delay={DEFAULT_REPLAY_LIFT_SETTLE_DELAY_S:.1f}s "
         f"retry={DEFAULT_REPLAY_LIFT_RETRY_COUNT} "
         f"tolerance={DEFAULT_REPLAY_LIFT_HEIGHT_TOLERANCE_MM:.1f}mm"
     )
     if auto_start:
         return "auto"
-    raw_text = input("输入回车开始单步模式，输入 a 全自动执行全部 CSV，输入 q 退出: ").strip().lower()
+    raw_text = input("输入回车开始单步模式，输入 a 全自动执行全部 CSV，输入 q 退出：").strip().lower()
     if raw_text == "q":
         return "quit"
     if raw_text == "a":
@@ -1244,15 +1558,14 @@ def _confirm_start(csv_paths: list[Path], auto_start: bool, joint_speed_deg_s: f
 def _confirm_each_file(csv_path: Path) -> str:
     print("")
     print(f"准备执行 {csv_path.name}")
-    return input("输入回车执行该文件，输入 s 跳过，输入 q 终止: ").strip().lower()
+    return input("输入回车执行该文件，输入 s 跳过，输入 q 终止：").strip().lower()
 
 
 def _confirm_each_action(runtime: ReplayRuntime, row: ReplayRow) -> str:
     print("")
-    print(f"下一动作: file={row.csv_name} row={row.row_index} type={row.action_type}")
+    print(f"下一动作：file={row.csv_name} row={row.row_index} type={row.action_type}")
     print(
-        f"当前速度: joint={runtime.joint_speed_deg_s:.2f} deg/s, "
-        f"cartesian={runtime.cartesian_speed_mm_s:.2f} mm/s"
+        f"当前速度：joint={runtime.joint_speed_deg_s:.2f} deg/s, " f"cartesian={runtime.cartesian_speed_mm_s:.2f} mm/s"
     )
     if row.action_type == "arm":
         if row.pose_text.strip().lower() == "nan":
@@ -1266,8 +1579,12 @@ def _confirm_each_action(runtime: ReplayRuntime, row: ReplayRow) -> str:
     elif row.action_type == "lift":
         print(f"目标 lift(mm): {row.pose_text}")
     else:
-        print(f"目标值: joints={row.joints_text} pose={row.pose_text}")
-    return input("输入回车执行下一动作，输入 a 全自动执行，输入 s 修改速度，输入 j 跳过该动作，输入 q 终止: ").strip().lower()
+        print(f"目标值：joints={row.joints_text} pose={row.pose_text}")
+    return (
+        input("输入回车执行下一动作，输入 a 全自动执行，输入 s 修改速度，输入 j 跳过该动作，输入 q 终止：")
+        .strip()
+        .lower()
+    )
 
 
 def main(
@@ -1319,6 +1636,12 @@ def main(
     csv_paths = _discover_csv_paths(resolved_record_dir, max_files)
     if not csv_paths:
         raise RuntimeError(f"没有在目录中发现 CSV: {record_dir}")
+    execution_plans = [CsvExecutionPlan(left_csv_path=csv_path) for csv_path in csv_paths]
+    if selected_arm_side == "left":
+        has_sync_csv = any(_extract_sync_csv_sequence(csv_path.name) is not None for csv_path in csv_paths)
+        if has_sync_csv:
+            right_csv_paths = _discover_csv_paths(DEFAULT_RIGHT_RECORD_DIR, max_files=None)
+            execution_plans = _build_csv_execution_plans(csv_paths, right_csv_paths)
     start_mode = _confirm_start(
         csv_paths,
         selected_auto_start,
@@ -1328,8 +1651,10 @@ def main(
     if start_mode == "quit":
         logger.info("用户取消执行")
         return 0
+    _print_execution_plan_summary(execution_plans)
 
     runtime: ReplayRuntime | None = None
+    right_runtime: ReplayRuntime | None = None
     try:
         runtime = _create_runtime(selected_arm_side)
         runtime.offset_service_addr = str(offset_service_addr)
@@ -1341,9 +1666,20 @@ def main(
         runtime.auto_execute_remaining = start_mode == "auto"
         _configure_initial_replay_speeds(runtime, selected_auto_start)
         _prepare_runtime(runtime)
-        for csv_path in csv_paths:
-            csv_sequence = _extract_csv_sequence(csv_path.name)
-            is_offset_trigger_csv = csv_sequence == CSV_CARTESIAN_OFFSET_CALCULATE_AT
+        if selected_arm_side == "left" and any(
+            plan.right_start_csv_path is not None
+            or plan.right_pre_stage_csv_paths
+            or plan.right_sync_csv_path is not None
+            or plan.right_post_stage_csv_paths
+            for plan in execution_plans
+        ):
+            right_runtime = _create_runtime("right")
+            right_runtime.joint_speed_deg_s = selected_joint_speed_deg_s
+            right_runtime.cartesian_speed_mm_s = selected_cartesian_speed_mm_s
+            right_runtime.auto_execute_remaining = True
+            _prepare_runtime(right_runtime)
+        for plan in execution_plans:
+            csv_path = plan.left_csv_path
             if not selected_auto_start and not runtime.auto_execute_remaining:
                 file_choice = _confirm_each_file(csv_path)
                 if file_choice == "q":
@@ -1352,71 +1688,11 @@ def main(
                 if file_choice == "s":
                     logger.warning("跳过文件 {}", csv_path.name)
                     continue
-            rows = _load_replay_rows(csv_path)
-            logger.info("开始执行文件 {}，共 {} 行", csv_path.name, len(rows))
-            original_joint_speed_deg_s = runtime.joint_speed_deg_s
-            original_cartesian_speed_mm_s = runtime.cartesian_speed_mm_s
-            if is_offset_trigger_csv:
-                runtime.joint_speed_deg_s = 100.0
-                runtime.cartesian_speed_mm_s = 100.0
-                logger.info(
-                    "offset 触发 CSV 临时速度调整 file={} joint_speed {:.2f}->100.00 deg/s "
-                    "cartesian_speed {:.2f}->100.00 mm/s",
-                    csv_path.name,
-                    original_joint_speed_deg_s,
-                    original_cartesian_speed_mm_s,
-                )
-            try:
-                for row in rows:
-                    if not selected_auto_start and not runtime.auto_execute_remaining:
-                        while True:
-                            action_choice = _confirm_each_action(runtime, row)
-                            if action_choice == "q":
-                                logger.warning("用户终止执行")
-                                return 0
-                            if action_choice == "a":
-                                runtime.auto_execute_remaining = True
-                                logger.success("已切换为全自动执行模式，后续动作将连续执行到结束")
-                                break
-                            if action_choice == "s":
-                                _configure_replay_speeds(runtime)
-                                continue
-                            if action_choice == "j":
-                                logger.warning(
-                                    "跳过动作 file={} row={} type={}",
-                                    row.csv_name,
-                                    row.row_index,
-                                    row.action_type,
-                                )
-                                break
-                            break
-                        if action_choice == "j":
-                            continue
-                    _execute_row(runtime, row)
-                if is_offset_trigger_csv:
-                    logger.info(
-                        "已到达 offset 触发 CSV，等待 {:.1f}s 后开始连续采集三球坐标 file={}",
-                        OFFSET_CAPTURE_SETTLE_DELAY_S,
-                        csv_path.name,
-                    )
-                    time.sleep(OFFSET_CAPTURE_SETTLE_DELAY_S)
-                    runtime.global_cartesian_offset = _calculate_global_cartesian_offset(runtime, csv_path)
-                    logger.success("已更新全局笛卡尔纠偏矩阵，后续目标 CSV 将按 T_off@T_tcp 左乘方式应用")
-            finally:
-                if is_offset_trigger_csv:
-                    runtime.joint_speed_deg_s = original_joint_speed_deg_s
-                    runtime.cartesian_speed_mm_s = original_cartesian_speed_mm_s
-                    logger.info(
-                        "offset 触发 CSV 结束，恢复回放速度 file={} joint_speed={:.2f} deg/s "
-                        "cartesian_speed={:.2f} mm/s",
-                        csv_path.name,
-                        runtime.joint_speed_deg_s,
-                        runtime.cartesian_speed_mm_s,
-                    )
-            logger.success("文件执行完成 {}", csv_path.name)
+            _execute_csv_execution_plan(runtime, plan, right_runtime, selected_auto_start)
         logger.success("全部 CSV 执行完成")
         return 0
     finally:
+        _cleanup_runtime(right_runtime)
         _cleanup_runtime(runtime)
 
 
