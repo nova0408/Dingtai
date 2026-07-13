@@ -1,33 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Protocol
-
 import numpy as np
 
 
-class BallPoseFrame(Protocol):
-    @property
-    def color_bgr(self) -> np.ndarray: ...
-
-    @property
-    def depth_mm(self) -> np.ndarray: ...
-
-    @property
-    def fx(self) -> float: ...
-
-    @property
-    def fy(self) -> float: ...
-
-    @property
-    def cx(self) -> float: ...
-
-    @property
-    def cy(self) -> float: ...
-
-
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class BallObservation:
+    """单个球的内部二维、三维和 debug 观测。"""
+
     color_hex: str
     detected: bool
     center_px: np.ndarray | None
@@ -43,8 +23,10 @@ class BallObservation:
     status: str
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class BallPoseDetectionResult:
+    """一次多球检测的内部汇总结果。"""
+
     detections: list[BallObservation]
     matched_count: int
     debug_ball_colors_bgr: dict[str, np.ndarray]
@@ -55,8 +37,10 @@ class BallPoseDetectionResult:
     timings_ms: dict[str, float] = field(default_factory=dict)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class BallPoseDetectionConfig:
+    """颜色连通域、圆形筛选和深度估计参数。"""
+
     min_component_area_px: int = 28
     max_color_components: int = 6
     min_circularity: float = 0.46

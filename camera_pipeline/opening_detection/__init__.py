@@ -3,8 +3,6 @@
 from .protocol import (
     DebugArtifacts,
     GraspPoseInfo,
-    GraspPoseRequest,
-    GraspPoseResponse,
     OpeningDetectionPipelineRequest,
     OpeningDetectionPipelineResponse,
     TrayPoseInfo,
@@ -13,8 +11,6 @@ from .protocol import (
 __all__ = [
     "DebugArtifacts",
     "GraspPoseInfo",
-    "GraspPoseRequest",
-    "GraspPoseResponse",
     "OpeningDetectionPipelineRequest",
     "OpeningDetectionPipelineResponse",
     "TrayPoseInfo",

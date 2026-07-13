@@ -5,7 +5,7 @@ from dataclasses import dataclass
 import numpy as np
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class BallPosePrior:
     """单个小球的先验信息。
 
@@ -24,7 +24,7 @@ class BallPosePrior:
     model_center_mm: np.ndarray
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class BallPoseReferencePose:
     """用于采集先验时的参考位姿。"""
 

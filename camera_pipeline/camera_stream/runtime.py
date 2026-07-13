@@ -1,24 +1,26 @@
 from __future__ import annotations
 
+# pyright: reportMissingImports=false
+
 import queue
 import logging
 import struct
 import threading
 import time
-from dataclasses import dataclass, field
-from typing import Dict, Optional
+from dataclasses import dataclass
 
 import cv2
 import lz4.block
 import numpy as np
 import zmq
 
+from ..protocol import CameraFramePacket
 
 LOGGER = logging.getLogger("..camera_stream.runtime")
 
 
 # region 数据结构
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class CameraStreamRuntimeConfig:
     """共享相机流运行配置。"""
 
@@ -53,71 +55,6 @@ class CameraStreamRuntimeConfig:
     "自愈后再次尝试前的最小间隔，单位 s。"
 
 
-@dataclass(frozen=True)
-class CameraFramePacket:
-    """共享相机流中的单帧数据包。"""
-
-    frame_id: int
-    "真实相机帧号。优先使用流 sequence。"
-
-    camera_name: str
-    "逻辑相机名。"
-
-    timestamp_ms: float
-    "帧时间戳，单位 ms。"
-
-    color_bgr: np.ndarray
-    "彩色图像，形状 `(H, W, 3)`，dtype `uint8`。"
-
-    depth_mm: np.ndarray
-    "深度图，形状 `(H, W)`，dtype `uint16`，单位 mm。"
-
-    fx: float
-    "X 方向焦距，单位 像素。"
-
-    fy: float
-    "Y 方向焦距，单位 像素。"
-
-    cx: float
-    "主点 X 坐标，单位 像素。"
-
-    cy: float
-    "主点 Y 坐标，单位 像素。"
-
-    source_meta: Dict[str, str] = field(default_factory=dict)
-    "来源元信息。"
-
-
-@dataclass(frozen=True)
-class CameraColorFramePacket:
-    """仅包含 RGB 载荷的轻量彩色帧数据包。"""
-
-    frame_id: int
-    camera_name: str
-    timestamp_ms: float
-    color_bgr: np.ndarray
-    fx: float
-    fy: float
-    cx: float
-    cy: float
-    source_meta: Dict[str, str] = field(default_factory=dict)
-
-
-@dataclass(frozen=True)
-class CameraDepthFramePacket:
-    """仅包含深度载荷的轻量深度帧数据包。"""
-
-    frame_id: int
-    camera_name: str
-    timestamp_ms: float
-    depth_mm: np.ndarray
-    fx: float
-    fy: float
-    cx: float
-    cy: float
-    source_meta: Dict[str, str] = field(default_factory=dict)
-
-
 # endregion
 
 
@@ -134,17 +71,19 @@ class CameraStreamRuntime:
     _FRAME_HEADER_STRUCT = struct.Struct("<4sBBBBIIIIIIIQI")
     _FRAME_HEADER_SIZE = _FRAME_HEADER_STRUCT.size
 
-    def __init__(self, config: Optional[CameraStreamRuntimeConfig] = None) -> None:
+    def __init__(self, config: CameraStreamRuntimeConfig | None = None) -> None:
         self._config = CameraStreamRuntimeConfig() if config is None else config
         self._context = zmq.Context()
         self._control_socket = self._create_control_socket()
-        self._stream_socket: Optional[zmq.Socket] = None
+        self._stream_socket: zmq.Socket | None = None
         self._lock = threading.Lock()
-        self._latest_frame: Optional[CameraFramePacket] = None
-        self._frame_cache: Dict[int, CameraFramePacket] = {}
-        self._frame_order: queue.Queue[int] = queue.Queue(maxsize=max(1, int(self._config.cache_size)))
+        self._latest_frame: CameraFramePacket | None = None
+        self._frame_cache: dict[int, CameraFramePacket] = {}
+        self._frame_order: queue.Queue[int] = queue.Queue(
+            maxsize=max(1, int(self._config.cache_size))
+        )
         self._running = False
-        self._thread: Optional[threading.Thread] = None
+        self._thread: threading.Thread | None = None
         self._cached_intrinsics: tuple[float, float, float, float] | None = None
         self._last_recover_time = 0.0
 
@@ -164,7 +103,9 @@ class CameraStreamRuntime:
             self._cached_intrinsics = None
         self._stream_socket = self._create_stream_socket()
         self._running = True
-        self._thread = threading.Thread(target=self._capture_loop, name="orin-camera-stream", daemon=True)
+        self._thread = threading.Thread(
+            target=self._capture_loop, name="orin-camera-stream", daemon=True
+        )
         self._thread.start()
 
     def stop(self) -> None:
@@ -185,13 +126,13 @@ class CameraStreamRuntime:
         self._context.term()
         self._cached_intrinsics = None
 
-    def get_latest_frame(self) -> Optional[CameraFramePacket]:
+    def get_latest_frame(self) -> CameraFramePacket | None:
         """获取最新一帧缓存。"""
 
         with self._lock:
             return self._latest_frame
 
-    def get_frame_by_id(self, frame_id: int) -> Optional[CameraFramePacket]:
+    def get_frame_by_id(self, frame_id: int) -> CameraFramePacket | None:
         """按帧号查询缓存帧。"""
 
         with self._lock:
@@ -219,7 +160,9 @@ class CameraStreamRuntime:
                 packet = self._decode_frame(raw_message)
             except zmq.error.Again:
                 consecutive_timeouts += 1
-                if consecutive_timeouts >= max(1, int(self._config.max_consecutive_timeouts)):
+                if consecutive_timeouts >= max(
+                    1, int(self._config.max_consecutive_timeouts)
+                ):
                     self._recover_stream_runtime(
                         "stream recv timeout x{0}".format(consecutive_timeouts)
                     )
@@ -273,7 +216,11 @@ class CameraStreamRuntime:
         except Exception as exc:  # noqa: BLE001
             LOGGER.warning("recreate stream socket failed: %s", exc)
 
-    def _send_control_command(self, command_name: str, params: Optional[Dict[str, object]] = None) -> Dict[str, object]:
+    def _send_control_command(
+        self,
+        command_name: str,
+        params: dict[str, object] | None = None,
+    ) -> dict[str, object]:
         payload = {
             "cmd": command_name,
             "camera": self._config.camera_id,
@@ -288,7 +235,9 @@ class CameraStreamRuntime:
         if not isinstance(response, dict):
             raise RuntimeError("invalid camera control response")
         if not bool(response.get("success", False)):
-            raise RuntimeError(str(response.get("error", "unknown camera control error")))
+            raise RuntimeError(
+                str(response.get("error", "unknown camera control error"))
+            )
         return dict(response)
 
     def _decode_frame(self, raw_message: bytes) -> CameraFramePacket:
@@ -296,7 +245,9 @@ class CameraStreamRuntime:
             raise RuntimeError("ZMQ camera frame too short")
         if raw_message[:4] != b"ZCAM":
             raise RuntimeError("invalid ZMQ camera frame magic")
-        frame_header = self._FRAME_HEADER_STRUCT.unpack(raw_message[: self._FRAME_HEADER_SIZE])
+        frame_header = self._FRAME_HEADER_STRUCT.unpack(
+            raw_message[: self._FRAME_HEADER_SIZE]
+        )
         color_data_size = int(frame_header[7])
         depth_width = int(frame_header[8])
         depth_height = int(frame_header[9])
@@ -307,14 +258,22 @@ class CameraStreamRuntime:
         color_start = self._FRAME_HEADER_SIZE
         color_end = color_start + color_data_size
         color_jpeg = raw_message[color_start:color_end]
-        color_bgr = cv2.imdecode(np.frombuffer(color_jpeg, dtype=np.uint8), cv2.IMREAD_COLOR)
+        color_bgr = cv2.imdecode(
+            np.frombuffer(color_jpeg, dtype=np.uint8), cv2.IMREAD_COLOR
+        )
         if color_bgr is None:
             raise RuntimeError("camera jpeg decode failed")
         depth_start = color_end
         depth_end = depth_start + depth_data_size
         depth_bytes = raw_message[depth_start:depth_end]
-        depth_raw = lz4.block.decompress(depth_bytes, uncompressed_size=depth_original_size)
-        depth_mm = np.frombuffer(depth_raw, dtype=np.uint16).reshape((depth_height, depth_width)).copy()
+        depth_raw = lz4.block.decompress(
+            depth_bytes, uncompressed_size=depth_original_size
+        )
+        depth_mm = (
+            np.frombuffer(depth_raw, dtype=np.uint16)
+            .reshape((depth_height, depth_width))
+            .copy()
+        )
         fx, fy, cx, cy = self._get_intrinsics()
         return CameraFramePacket(
             frame_id=int(sequence),
@@ -326,7 +285,6 @@ class CameraStreamRuntime:
             fy=float(fy),
             cx=float(cx),
             cy=float(cy),
-            source_meta={"source": "wuyou", "camera_stream": str(self._config.camera_name)},
         )
 
     def _get_intrinsics(self) -> tuple[float, float, float, float]:

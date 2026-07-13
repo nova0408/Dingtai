@@ -1,13 +1,13 @@
 from __future__ import annotations
 
+# pyright: reportMissingImports=false
+
 import time
 from dataclasses import dataclass, field
-from typing import Optional
-
 import cv2
 import numpy as np
 
-from ..camera_stream import CameraFramePacket
+from ..protocol import RgbdFrameProtocol
 
 from .pipeline import TrayDetectionPipeline
 from .protocol import (
@@ -16,11 +16,13 @@ from .protocol import (
     OrinTrayDetectionRequest,
     OrinTrayDetectionResponse,
 )
-from .types import TrayDetectionConfig, TrayRuntimeState
+from .types import TrayDetection, TrayDetectionConfig, TrayRuntimeState
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class OrinTrayDetectionExecutorConfig:
+    """托盘执行器使用的固定检测配置。"""
+
     detector_config: TrayDetectionConfig = field(
         default_factory=lambda: TrayDetectionConfig(
             prompt="black tray,black pallet,rectangular black tray",
@@ -43,35 +45,45 @@ class OrinTrayDetectionExecutorConfig:
 class OrinTrayDetectionExecutor:
     """独立托盘检测执行器。"""
 
-    def __init__(self, config: Optional[OrinTrayDetectionExecutorConfig] = None) -> None:
+    def __init__(self, config: OrinTrayDetectionExecutorConfig | None = None) -> None:
         self._config = OrinTrayDetectionExecutorConfig() if config is None else config
         detector = TrayDetectionPipeline.build_detector(self._config.detector_config)
         self._pipeline = TrayDetectionPipeline(tray_detector=detector)
         self._state = TrayRuntimeState()
 
-    def compute(self, frame: CameraFramePacket, request: OrinTrayDetectionRequest) -> OrinTrayDetectionResponse:
+    def compute(
+        self, frame: RgbdFrameProtocol, request: OrinTrayDetectionRequest
+    ) -> OrinTrayDetectionResponse:
         t0 = time.perf_counter()
-        detections, from_detector = self._pipeline.segment_trays(np.asarray(frame.color_bgr, dtype=np.uint8), self._state)
+        detections, from_detector = self._pipeline.segment_trays(
+            np.asarray(frame.color_bgr, dtype=np.uint8), self._state
+        )
         filtered_detections = self._prune_container_detections(detections)
         ordered_detections = self._sort_detections_left_to_right(filtered_detections)
-        tray_results = tuple(self._build_result(index, det) for index, det in enumerate(ordered_detections))
+        tray_results = tuple(
+            self._build_result(index, det)
+            for index, det in enumerate(ordered_detections)
+        )
         return OrinTrayDetectionResponse(
             request_id=int(request.request_id),
             frame_id=int(frame.frame_id),
             camera_name=str(frame.camera_name),
             timestamp_ms=float(frame.timestamp_ms),
-            source_meta=dict(frame.source_meta),
             elapsed_ms=float((time.perf_counter() - t0) * 1000.0),
             tray_count=len(tray_results),
             tray_results=tray_results,
-            debug=self._build_debug_artifacts(frame, ordered_detections, request.enable_debug, from_detector),
-            error=None,
+            debug_artifacts=self._build_debug_artifacts(
+                frame, ordered_detections, request.enable_debug, from_detector
+            ),
         )
 
-    def _build_result(self, tray_id: int, det) -> OrinTrayDetectionInfo:
+    def _build_result(self, tray_id: int, det: TrayDetection) -> OrinTrayDetectionInfo:
         mask = np.asarray(det.mask, dtype=np.uint8)
         bbox_xywh = _mask_bbox_xywh(mask)
-        center_uv = (float(bbox_xywh[0] + 0.5 * bbox_xywh[2]), float(bbox_xywh[1] + 0.5 * bbox_xywh[3]))
+        center_uv = (
+            float(bbox_xywh[0] + 0.5 * bbox_xywh[2]),
+            float(bbox_xywh[1] + 0.5 * bbox_xywh[3]),
+        )
         return OrinTrayDetectionInfo(
             tray_id=int(tray_id),
             label_text=str(det.label_text),
@@ -79,18 +91,18 @@ class OrinTrayDetectionExecutor:
             bbox_xywh=bbox_xywh,
             center_uv=center_uv,
             mask_area_px=int(np.count_nonzero(mask)),
-            source=str(getattr(det, "label_text", "fast")),
+            source=det.label_text,
         )
 
     def _build_debug_artifacts(
         self,
-        frame: CameraFramePacket,
-        detections: list,
+        frame: RgbdFrameProtocol,
+        detections: list[TrayDetection],
         enable_debug: bool,
         from_detector: bool,
-    ) -> Optional[OrinTrayDetectionDebugArtifacts]:
+    ) -> tuple[OrinTrayDetectionDebugArtifacts, ...]:
         if not bool(enable_debug):
-            return None
+            return ()
         overlay = np.asarray(frame.color_bgr, dtype=np.uint8).copy()
         mask_preview = np.zeros_like(overlay)
         tray_masks: list[np.ndarray] = []
@@ -120,21 +132,45 @@ class OrinTrayDetectionExecutor:
                 1,
                 cv2.LINE_AA,
             )
-        cv2.putText(overlay, f"frame {frame.frame_id} source {'detector' if from_detector else 'fast'}", (12, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.52, (255, 255, 255), 1, cv2.LINE_AA)
-        cv2.putText(mask_preview, "Tray mask preview", (12, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.52, (255, 255, 255), 1, cv2.LINE_AA)
-        return OrinTrayDetectionDebugArtifacts(
-            overlay_bgr=overlay,
-            mask_bgr=mask_preview,
-            tray_masks=tuple(tray_masks),
+        cv2.putText(
+            overlay,
+            f"frame {frame.frame_id} source {'detector' if from_detector else 'fast'}",
+            (12, 24),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.52,
+            (255, 255, 255),
+            1,
+            cv2.LINE_AA,
+        )
+        cv2.putText(
+            mask_preview,
+            "Tray mask preview",
+            (12, 24),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.52,
+            (255, 255, 255),
+            1,
+            cv2.LINE_AA,
+        )
+        return (
+            OrinTrayDetectionDebugArtifacts(
+                overlay_bgr=overlay,
+                mask_bgr=mask_preview,
+                tray_masks=tuple(tray_masks),
+            ),
         )
 
-    def _sort_detections_left_to_right(self, detections: list) -> list:
+    def _sort_detections_left_to_right(
+        self, detections: list[TrayDetection]
+    ) -> list[TrayDetection]:
         return sorted(
             list(detections),
             key=lambda det: _mask_center_uv(np.asarray(det.mask, dtype=np.uint8))[0],
         )
 
-    def _prune_container_detections(self, detections: list) -> list:
+    def _prune_container_detections(
+        self, detections: list[TrayDetection]
+    ) -> list[TrayDetection]:
         if len(detections) <= 2:
             return list(detections)
         det_infos = [_DetectionBoxInfo.from_detection(det) for det in detections]
@@ -143,7 +179,8 @@ class OrinTrayDetectionExecutor:
             contained_indices = [
                 other_idx
                 for other_idx, other in enumerate(det_infos)
-                if other_idx != idx and _bbox_contains_center(info.bbox_xywh, other.center_uv)
+                if other_idx != idx
+                and _bbox_contains_center(info.bbox_xywh, other.center_uv)
             ]
             if len(contained_indices) < 2:
                 continue
@@ -179,20 +216,26 @@ def _mask_center_uv(mask: np.ndarray) -> tuple[float, float]:
     )
 
 
-def _bbox_contains_center(bbox_xywh: tuple[int, int, int, int], center_uv: tuple[float, float]) -> bool:
+def _bbox_contains_center(
+    bbox_xywh: tuple[int, int, int, int], center_uv: tuple[float, float]
+) -> bool:
     x, y, w, h = bbox_xywh
     cx, cy = center_uv
-    return float(x) <= float(cx) <= float(x + w) and float(y) <= float(cy) <= float(y + h)
+    return float(x) <= float(cx) <= float(x + w) and float(y) <= float(cy) <= float(
+        y + h
+    )
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class _DetectionBoxInfo:
+    """托盘 mask 提取出的二维包围框摘要。"""
+
     bbox_xywh: tuple[int, int, int, int]
     center_uv: tuple[float, float]
     mask_area_px: int
 
     @staticmethod
-    def from_detection(det) -> "_DetectionBoxInfo":
+    def from_detection(det: TrayDetection) -> "_DetectionBoxInfo":
         mask = np.asarray(det.mask, dtype=np.uint8)
         bbox_xywh = _mask_bbox_xywh(mask)
         return _DetectionBoxInfo(
@@ -214,13 +257,22 @@ def _debug_color_bgr(index: int) -> tuple[int, int, int]:
     return palette[int(index) % len(palette)]
 
 
-def _draw_mask_outline(image_bgr: np.ndarray, mask: np.ndarray, color_bgr: tuple[int, int, int]) -> None:
-    contours, _ = cv2.findContours(np.asarray(mask, dtype=np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+def _draw_mask_outline(
+    image_bgr: np.ndarray, mask: np.ndarray, color_bgr: tuple[int, int, int]
+) -> None:
+    contours, _ = cv2.findContours(
+        np.asarray(mask, dtype=np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+    )
     if contours:
         cv2.drawContours(image_bgr, contours, -1, color_bgr, 1, cv2.LINE_AA)
 
 
-def _blend_mask_overlay(base_bgr: np.ndarray, mask: np.ndarray, color_bgr: tuple[int, int, int], alpha: float) -> np.ndarray:
+def _blend_mask_overlay(
+    base_bgr: np.ndarray,
+    mask: np.ndarray,
+    color_bgr: tuple[int, int, int],
+    alpha: float,
+) -> np.ndarray:
     mask_u8 = np.asarray(mask, dtype=np.uint8)
     if mask_u8.ndim != 2 or base_bgr.shape[:2] != mask_u8.shape[:2]:
         return base_bgr

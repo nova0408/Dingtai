@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+# pyright: reportMissingImports=false
+
 import cv2
 import numpy as np
 
@@ -43,7 +45,9 @@ def merge_label_text(raw_label: str, prompt_term: str) -> str:
     return str(raw_label).strip()
 
 
-def resize_for_detection(frame_bgr: np.ndarray, detect_max_side: int) -> tuple[np.ndarray, float]:
+def resize_for_detection(
+    frame_bgr: np.ndarray, detect_max_side: int
+) -> tuple[np.ndarray, float]:
     h, w = frame_bgr.shape[:2]
     m = max(h, w)
     if m <= int(detect_max_side):

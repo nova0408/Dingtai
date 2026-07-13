@@ -33,7 +33,7 @@ class CameraIntrinsicsProtocol(Protocol):
     def height(self) -> int: ...
 
 
-@dataclass
+@dataclass(slots=True)
 class TemporalFilterState:
     """抓取时序稳定状态。
 
@@ -50,7 +50,7 @@ class TemporalFilterState:
     "抓取点历史队列，元素形状 `(3,)`，用于中值滤波抑制跳变。"
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class GraspPoseEstimatorConfig:
     """抓取位姿估计器参数配置。
 
@@ -151,7 +151,11 @@ class GraspPoseEstimator:
             顶面参考法向量，形状 `(3,)`，dtype `float64`。为空时回退到默认方向。
         """
         grasp_point = _pixel_ray_intersect_plane(
-            opening.center_uv[0], opening.center_uv[1], plane.normal, plane.d, intrinsics
+            opening.center_uv[0],
+            opening.center_uv[1],
+            plane.normal,
+            plane.d,
+            intrinsics,
         )
         quad = np.asarray(opening.quad_uv, dtype=np.float64)
         lengths = [float(np.linalg.norm(quad[(i + 1) % 4] - quad[i])) for i in range(4)]
@@ -160,8 +164,12 @@ class GraspPoseEstimator:
         half = 0.45 * float(lengths[best_i])
         left_uv = opening.center_uv - edge_dir * half
         right_uv = opening.center_uv + edge_dir * half
-        p_left = _pixel_ray_intersect_plane(left_uv[0], left_uv[1], plane.normal, plane.d, intrinsics)
-        p_right = _pixel_ray_intersect_plane(right_uv[0], right_uv[1], plane.normal, plane.d, intrinsics)
+        p_left = _pixel_ray_intersect_plane(
+            left_uv[0], left_uv[1], plane.normal, plane.d, intrinsics
+        )
+        p_right = _pixel_ray_intersect_plane(
+            right_uv[0], right_uv[1], plane.normal, plane.d, intrinsics
+        )
         x_axis = _normalize(p_right - p_left)
         if float(np.dot(x_axis, np.array([1.0, 0.0, 0.0], dtype=np.float64))) < 0.0:
             x_axis = -x_axis
@@ -186,9 +194,15 @@ class GraspPoseEstimator:
         z_axis = _normalize(np.cross(x_axis, y_axis))
         y_axis = _normalize(np.cross(z_axis, x_axis))
         rotation = np.column_stack([x_axis, y_axis, z_axis]).astype(np.float64)
-        return GraspResult(grasp_point=grasp_point, pre_grasp_point=grasp_point + z_axis * 80.0, rotation=rotation)
+        return GraspResult(
+            grasp_point=grasp_point,
+            pre_grasp_point=grasp_point + z_axis * 80.0,
+            rotation=rotation,
+        )
 
-    def stabilize_top_normal(self, n: np.ndarray | None, state: TemporalFilterState) -> np.ndarray | None:
+    def stabilize_top_normal(
+        self, n: np.ndarray | None, state: TemporalFilterState
+    ) -> np.ndarray | None:
         """平滑顶面法线。"""
         if n is None:
             return state.last_top_normal
@@ -197,11 +211,16 @@ class GraspPoseEstimator:
             state.last_top_normal = nn
             return nn
         state.last_top_normal = _blend_unit_vector(
-            state.last_top_normal, nn, self._config.top_normal_alpha, self._config.top_normal_max_angle_deg
+            state.last_top_normal,
+            nn,
+            self._config.top_normal_alpha,
+            self._config.top_normal_max_angle_deg,
         )
         return state.last_top_normal
 
-    def stabilize_grasp_result(self, grasp: GraspResult | None, state: TemporalFilterState) -> GraspResult | None:
+    def stabilize_grasp_result(
+        self, grasp: GraspResult | None, state: TemporalFilterState
+    ) -> GraspResult | None:
         """平滑抓取位姿。"""
         if grasp is None:
             return state.last_grasp
@@ -215,34 +234,50 @@ class GraspPoseEstimator:
         prev_p = np.asarray(prev.grasp_point, dtype=np.float64)
         dp = curr_p - prev_p
         dp_norm = float(np.linalg.norm(dp))
-        p_alpha = self._config.grasp_point_alpha * _soft_gate_gain(dp_norm, self._config.grasp_translation_soft_mm)
+        p_alpha = self._config.grasp_point_alpha * _soft_gate_gain(
+            dp_norm, self._config.grasp_translation_soft_mm
+        )
         if dp_norm > self._config.grasp_max_translation_mm:
             p_alpha *= self._config.grasp_max_translation_mm / max(1e-9, dp_norm)
         p_new = prev_p + p_alpha * dp
         state.point_hist.append(p_new)
         if len(state.point_hist) >= 3:
-            p_new = np.median(np.asarray(list(state.point_hist), dtype=np.float64), axis=0)
+            p_new = np.median(
+                np.asarray(list(state.point_hist), dtype=np.float64), axis=0
+            )
         prev_r = np.asarray(prev.rotation, dtype=np.float64)
         curr_r = np.asarray(grasp.rotation, dtype=np.float64)
         x_new = _blend_unit_vector(
             prev_r[:, 0],
             curr_r[:, 0],
             self._config.grasp_axis_alpha
-            * _soft_gate_gain(_vector_angle_deg(prev_r[:, 0], curr_r[:, 0]), self._config.grasp_axis_soft_deg),
+            * _soft_gate_gain(
+                _vector_angle_deg(prev_r[:, 0], curr_r[:, 0]),
+                self._config.grasp_axis_soft_deg,
+            ),
             self._config.grasp_max_axis_angle_deg,
         )
         y_new = _blend_unit_vector(
             prev_r[:, 1],
             curr_r[:, 1],
             self._config.grasp_axis_alpha
-            * _soft_gate_gain(_vector_angle_deg(prev_r[:, 1], curr_r[:, 1]), self._config.grasp_axis_soft_deg),
+            * _soft_gate_gain(
+                _vector_angle_deg(prev_r[:, 1], curr_r[:, 1]),
+                self._config.grasp_axis_soft_deg,
+            ),
             self._config.grasp_max_axis_angle_deg,
         )
         y_new = y_new - float(np.dot(y_new, x_new)) * x_new
-        y_new = _normalize(y_new) if float(np.linalg.norm(y_new)) > 1e-9 else _normalize(np.cross(prev_r[:, 2], x_new))
+        y_new = (
+            _normalize(y_new)
+            if float(np.linalg.norm(y_new)) > 1e-9
+            else _normalize(np.cross(prev_r[:, 2], x_new))
+        )
         z_new = _normalize(np.cross(x_new, y_new))
         y_new = _normalize(np.cross(z_new, x_new))
-        pre_dist = float(np.linalg.norm(np.asarray(grasp.pre_grasp_point, dtype=np.float64) - curr_p))
+        pre_dist = float(
+            np.linalg.norm(np.asarray(grasp.pre_grasp_point, dtype=np.float64) - curr_p)
+        )
         pre_dist = pre_dist if np.isfinite(pre_dist) and pre_dist >= 1e-6 else 80.0
         out = GraspResult(
             grasp_point=p_new,
@@ -290,7 +325,9 @@ def _pixel_ray_intersect_plane(
     return t * ray
 
 
-def _blend_unit_vector(prev: np.ndarray, curr: np.ndarray, alpha: float, max_angle_deg: float) -> np.ndarray:
+def _blend_unit_vector(
+    prev: np.ndarray, curr: np.ndarray, alpha: float, max_angle_deg: float
+) -> np.ndarray:
     """在单位球面上平滑两个方向向量。"""
     p = _normalize(prev)
     c = _normalize(curr)
@@ -305,7 +342,11 @@ def _blend_unit_vector(prev: np.ndarray, curr: np.ndarray, alpha: float, max_ang
 
 def _vector_angle_deg(v0: np.ndarray, v1: np.ndarray) -> float:
     """计算两向量夹角，单位 deg。"""
-    return float(np.degrees(np.arccos(float(np.clip(np.dot(_normalize(v0), _normalize(v1)), -1.0, 1.0)))))
+    return float(
+        np.degrees(
+            np.arccos(float(np.clip(np.dot(_normalize(v0), _normalize(v1)), -1.0, 1.0)))
+        )
+    )
 
 
 def _soft_gate_gain(magnitude: float, soft_threshold: float) -> float:

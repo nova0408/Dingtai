@@ -1,17 +1,21 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Any
+# pyright: reportMissingImports=false
 
+from dataclasses import dataclass, field
 import cv2
 import numpy as np
+
+from ..protocol import RgbdFrameProtocol
 
 from .priors import BallPosePrior
 from .types import BallObservation, BallPoseDetectionConfig, BallPoseDetectionResult
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class _ColorCandidate:
+    """颜色分割产生的单个圆形候选。"""
+
     color_hex: str
     contour: np.ndarray
     mask: np.ndarray
@@ -24,8 +28,10 @@ class _ColorCandidate:
     fill_ratio: float
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class _BallDetection:
+    """完成深度估计和评分后的内部球检测结果。"""
+
     color_hex: str
     detected: bool
     status: str
@@ -48,30 +54,49 @@ class BallPoseDetector:
     def __init__(self, config: BallPoseDetectionConfig | None = None) -> None:
         self._config = BallPoseDetectionConfig() if config is None else config
 
-    def detect(self, frame: Any, priors: list[BallPosePrior]) -> BallPoseDetectionResult:
+    def detect(
+        self, frame: RgbdFrameProtocol, priors: list[BallPosePrior]
+    ) -> BallPoseDetectionResult:
         masks = self._build_color_masks(frame.color_bgr)
         ranked: dict[str, list[_BallDetection]] = {}
         for prior in priors:
-            candidates = self._collect_color_candidates(prior.color_hex, masks[prior.color_hex])
-            ranked[prior.color_hex] = self._rank_ball_candidates(frame, prior, candidates)
+            candidates = self._collect_color_candidates(
+                prior.color_hex, masks[prior.color_hex]
+            )
+            ranked[prior.color_hex] = self._rank_ball_candidates(
+                frame, prior, candidates
+            )
         detections = self._resolve_duplicates(ranked, priors)
-        observations = [self._to_observation(detection, priors) for detection in detections]
-        debug_colors = {prior.color_hex: _hex_to_bgr(prior.color_hex) for prior in priors}
+        observations = [
+            self._to_observation(detection, priors) for detection in detections
+        ]
+        debug_colors = {
+            prior.color_hex: _hex_to_bgr(prior.color_hex) for prior in priors
+        }
         debug_radii = {prior.color_hex: float(prior.radius_mm) for prior in priors}
         debug_positions = {
             item.color_hex: np.asarray(item.center_mm, dtype=np.float64).copy()
             for item in observations
             if item.center_mm is not None
         }
-        debug_model_positions = {prior.color_hex: np.asarray(prior.model_center_mm, dtype=np.float64).copy() for prior in priors}
+        debug_model_positions = {
+            prior.color_hex: np.asarray(prior.model_center_mm, dtype=np.float64).copy()
+            for prior in priors
+        }
         return BallPoseDetectionResult(
             detections=observations,
-            matched_count=sum(1 for item in observations if item.detected and item.center_mm is not None),
+            matched_count=sum(
+                1
+                for item in observations
+                if item.detected and item.center_mm is not None
+            ),
             debug_ball_colors_bgr=debug_colors,
             debug_ball_radii_mm=debug_radii,
             debug_ball_positions_mm=debug_positions,
             debug_ball_model_positions_mm=debug_model_positions,
-            status="detected" if any(item.detected for item in observations) else "missing",
+            status=(
+                "detected" if any(item.detected for item in observations) else "missing"
+            ),
             timings_ms={},
         )
 
@@ -91,7 +116,9 @@ class BallPoseDetector:
             masks[color_hex] = combined
         return masks
 
-    def _collect_color_candidates(self, color_hex: str, mask: np.ndarray) -> list[_ColorCandidate]:
+    def _collect_color_candidates(
+        self, color_hex: str, mask: np.ndarray
+    ) -> list[_ColorCandidate]:
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         candidates: list[_ColorCandidate] = []
         for contour in contours:
@@ -131,20 +158,50 @@ class BallPoseDetector:
         candidates.sort(key=lambda item: item.area_px, reverse=True)
         return candidates[: int(self._config.max_color_components)]
 
-    def _rank_ball_candidates(self, frame: Any, prior: BallPosePrior, candidates: list[_ColorCandidate]) -> list[_BallDetection]:
+    def _rank_ball_candidates(
+        self,
+        frame: RgbdFrameProtocol,
+        prior: BallPosePrior,
+        candidates: list[_ColorCandidate],
+    ) -> list[_BallDetection]:
         if not candidates:
             return [self._missing_detection(prior, "no_color_component")]
         detections: list[_BallDetection] = []
         for candidate in candidates:
             center_mm, ball_points = self._estimate_center_mm(frame, candidate.mask)
-            physical_radius = 0.0 if center_mm is None else self._estimate_physical_radius_mm(center_mm=center_mm, radius_px=candidate.radius_px, intrinsics=frame)
-            expected_radius_norm = float(prior.radius_mm) / max(1e-6, 0.5 * (float(frame.fx) + float(frame.fy)))
-            radius_score = max(0.0, 1.0 - abs(candidate.radius_norm - expected_radius_norm) / max(1.0e-6, expected_radius_norm))
-            depth_score = 0.0 if ball_points <= 0 else min(1.0, ball_points / max(1, self._config.min_depth_points * 12))
+            physical_radius = (
+                0.0
+                if center_mm is None
+                else self._estimate_physical_radius_mm(
+                    center_mm=center_mm, radius_px=candidate.radius_px, intrinsics=frame
+                )
+            )
+            expected_radius_norm = float(prior.radius_mm) / max(
+                1e-6, 0.5 * (float(frame.fx) + float(frame.fy))
+            )
+            radius_score = max(
+                0.0,
+                1.0
+                - abs(candidate.radius_norm - expected_radius_norm)
+                / max(1.0e-6, expected_radius_norm),
+            )
+            depth_score = (
+                0.0
+                if ball_points <= 0
+                else min(1.0, ball_points / max(1, self._config.min_depth_points * 12))
+            )
             circle_score = float(np.clip(candidate.circularity, 0.0, 1.0))
             fill_score = float(np.clip(candidate.fill_ratio, 0.0, 1.0))
-            border_score = self._score_inside_image(candidate.center_px, candidate.radius_px, frame)
-            score = 0.44 * radius_score + 0.06 * depth_score + 0.22 * circle_score + 0.18 * fill_score + 0.10 * border_score
+            border_score = self._score_inside_image(
+                candidate.center_px, candidate.radius_px, frame
+            )
+            score = (
+                0.44 * radius_score
+                + 0.06 * depth_score
+                + 0.22 * circle_score
+                + 0.18 * fill_score
+                + 0.10 * border_score
+            )
             detections.append(
                 _BallDetection(
                     color_hex=prior.color_hex,
@@ -166,7 +223,9 @@ class BallPoseDetector:
         detections.sort(key=lambda item: item.score, reverse=True)
         return detections
 
-    def _estimate_center_mm(self, frame: Any, mask: np.ndarray) -> tuple[np.ndarray | None, int]:
+    def _estimate_center_mm(
+        self, frame: RgbdFrameProtocol, mask: np.ndarray
+    ) -> tuple[np.ndarray | None, int]:
         ys, xs = np.where(mask > 0)
         if xs.size == 0:
             return None, 0
@@ -197,11 +256,17 @@ class BallPoseDetector:
             return None, int(xyz.shape[0])
         return center_mm.astype(np.float64), int(xyz.shape[0])
 
-    def _resolve_duplicates(self, ranked_by_color: dict[str, list[_BallDetection]], priors: list[BallPosePrior]) -> list[_BallDetection]:
+    def _resolve_duplicates(
+        self,
+        ranked_by_color: dict[str, list[_BallDetection]],
+        priors: list[BallPosePrior],
+    ) -> list[_BallDetection]:
         resolved: dict[str, _BallDetection] = {}
         for prior in priors:
             ranked = ranked_by_color.get(prior.color_hex, [])
-            resolved[prior.color_hex] = ranked[0] if ranked else self._missing_detection(prior, "missing")
+            resolved[prior.color_hex] = (
+                ranked[0] if ranked else self._missing_detection(prior, "missing")
+            )
         return list(resolved.values())
 
     def _missing_detection(self, prior: BallPosePrior, reason: str) -> _BallDetection:
@@ -222,18 +287,32 @@ class BallPoseDetector:
             failure_reasons=[reason],
         )
 
-    def _to_observation(self, detection: _BallDetection, priors: list[BallPosePrior]) -> BallObservation:
+    def _to_observation(
+        self, detection: _BallDetection, priors: list[BallPosePrior]
+    ) -> BallObservation:
         prior = next(item for item in priors if item.color_hex == detection.color_hex)
         return BallObservation(
             color_hex=prior.color_hex,
             detected=detection.detected,
-            center_px=None if detection.center_px is None else np.asarray(detection.center_px, dtype=np.float64),
-            center_mm=None if detection.center_mm is None else np.asarray(detection.center_mm, dtype=np.float64),
+            center_px=(
+                None
+                if detection.center_px is None
+                else np.asarray(detection.center_px, dtype=np.float64)
+            ),
+            center_mm=(
+                None
+                if detection.center_mm is None
+                else np.asarray(detection.center_mm, dtype=np.float64)
+            ),
             radius_mm=float(prior.radius_mm),
             radius_px=float(detection.radius_px),
             contour=detection.contour,
             mask=detection.mask,
-            center_norm=None if detection.center_norm is None else np.asarray(detection.center_norm, dtype=np.float64),
+            center_norm=(
+                None
+                if detection.center_norm is None
+                else np.asarray(detection.center_norm, dtype=np.float64)
+            ),
             radius_norm=float(detection.radius_norm),
             point_count=int(detection.depth_points),
             debug_bgr=_hex_to_bgr(prior.color_hex),
@@ -241,12 +320,20 @@ class BallPoseDetector:
         )
 
     @staticmethod
-    def _estimate_physical_radius_mm(center_mm: np.ndarray, radius_px: float, intrinsics: Any) -> float:
+    def _estimate_physical_radius_mm(
+        center_mm: np.ndarray,
+        radius_px: float,
+        intrinsics: RgbdFrameProtocol,
+    ) -> float:
         focal = 0.5 * (float(intrinsics.fx) + float(intrinsics.fy))
         return float(radius_px) * float(center_mm[2]) / max(1e-6, focal)
 
     @staticmethod
-    def _score_inside_image(center_px: tuple[float, float], radius_px: float, frame: Any) -> float:
+    def _score_inside_image(
+        center_px: tuple[float, float],
+        radius_px: float,
+        frame: RgbdFrameProtocol,
+    ) -> float:
         h = int(np.asarray(frame.color_bgr).shape[0])
         w = int(np.asarray(frame.color_bgr).shape[1])
         cx, cy = center_px

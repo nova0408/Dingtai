@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from typing import Optional
-
 from .engine import OrinTrayDetectionExecutor, OrinTrayDetectionExecutorConfig
 from .protocol import OrinTrayDetectionRequest, OrinTrayDetectionResponse
 
@@ -26,10 +24,14 @@ class OrinTrayDetectionService:
     - 不继承业务基类。
     """
 
-    def __init__(self, executor_config: Optional[OrinTrayDetectionExecutorConfig] = None) -> None:
+    def __init__(
+        self, executor_config: OrinTrayDetectionExecutorConfig | None = None
+    ) -> None:
         self._executor = OrinTrayDetectionExecutor(config=executor_config)
 
-    def compute(self, frame, request: OrinTrayDetectionRequest) -> OrinTrayDetectionResponse:
+    def compute(
+        self, frame, request: OrinTrayDetectionRequest
+    ) -> OrinTrayDetectionResponse:
         """基于输入帧和请求计算托盘检测结果。"""
 
         return self._executor.compute(frame, request)

@@ -1,13 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional, Tuple
-
 import numpy as np
 
 
 # region 数据结构
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class OrinTrayDetectionRequest:
     """托盘检测请求。"""
 
@@ -18,13 +16,13 @@ class OrinTrayDetectionRequest:
     "逻辑相机名。"
 
     frame_id: int = -1
-    "请求帧号。`-1` 表示使用最新缓存帧。"
+    "请求帧号。正数表示精确缓存帧；非正数表示等待并使用稳定帧。"
 
     enable_debug: bool = True
     "是否返回调试图和掩码。"
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class OrinTrayDetectionInfo:
     """单个托盘检测结果。"""
 
@@ -37,10 +35,10 @@ class OrinTrayDetectionInfo:
     confidence_2d: float
     "2D 检测置信度。"
 
-    bbox_xywh: Tuple[int, int, int, int]
+    bbox_xywh: tuple[int, int, int, int]
     "托盘包围框 `(x, y, w, h)`，单位 像素。"
 
-    center_uv: Tuple[float, float]
+    center_uv: tuple[float, float]
     "托盘中心像素坐标，单位 像素。"
 
     mask_area_px: int
@@ -50,21 +48,21 @@ class OrinTrayDetectionInfo:
     "托盘结果来源。"
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class OrinTrayDetectionDebugArtifacts:
     """托盘检测调试图与掩码。"""
 
-    overlay_bgr: Optional[np.ndarray] = None
+    overlay_bgr: np.ndarray
     "叠加预览图，形状 `(H, W, 3)`。"
 
-    mask_bgr: Optional[np.ndarray] = None
+    mask_bgr: np.ndarray
     "掩码预览图，形状 `(H, W, 3)`。"
 
-    tray_masks: Tuple[np.ndarray, ...] = field(default_factory=tuple)
+    tray_masks: tuple[np.ndarray, ...] = field(default_factory=tuple)
     "托盘掩码序列，顺序与 `tray_results` 保持一致。"
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class OrinTrayDetectionResponse:
     """托盘检测响应。"""
 
@@ -80,23 +78,19 @@ class OrinTrayDetectionResponse:
     timestamp_ms: float
     "真实帧时间戳，单位 ms。"
 
-    source_meta: Dict[str, Any] = field(default_factory=dict)
-    "来源元信息。"
-
     elapsed_ms: float = 0.0
     "服务端检测耗时，单位 ms。"
 
     tray_count: int = 0
     "托盘数量。"
 
-    tray_results: Tuple[OrinTrayDetectionInfo, ...] = field(default_factory=tuple)
+    tray_results: tuple[OrinTrayDetectionInfo, ...] = field(default_factory=tuple)
     "托盘结果序列。"
 
-    debug: Optional[OrinTrayDetectionDebugArtifacts] = None
-    "调试图与掩码。"
-
-    error: Optional[str] = None
-    "失败信息。"
+    debug_artifacts: tuple[OrinTrayDetectionDebugArtifacts, ...] = field(
+        default_factory=tuple
+    )
+    "调试产物；关闭 debug 时为空元组，启用时包含一个元素。"
 
 
 # endregion

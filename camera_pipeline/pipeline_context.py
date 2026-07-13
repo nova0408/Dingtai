@@ -1,14 +1,16 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, field
 
 from .camera_stream import CameraStreamRuntime, CameraStreamRuntimeConfig
-from .ports import DEFAULT_CAMERA_ID, DEFAULT_CAMERA_NAME
+from .protocol import RgbdFrameProtocol
+from .stable_frame import StableFrameConfig, StableFrameDetector
 
 # region 数据结构
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class PipelineContextConfig:
     """总流程上下文配置。
 
@@ -34,10 +36,10 @@ class PipelineContextConfig:
     camera_stream_port: int = 5562
     "相机数据流端口号，单位 端口号。"
 
-    camera_id: str = DEFAULT_CAMERA_ID
+    camera_id: str = "LEFT"
     "远端相机控制标识。"
 
-    camera_name: str = DEFAULT_CAMERA_NAME
+    camera_name: str = "left_hand_camera"
     "项目内逻辑相机名。"
 
     camera_request_timeout_ms: int = 3000
@@ -45,6 +47,12 @@ class PipelineContextConfig:
 
     camera_stream_timeout_ms: int = 8000
     "相机数据流接收超时，单位 ms。"
+
+    camera_frame_cache_size: int = 64
+    "最近相机帧缓存数量，需要覆盖稳定时间窗中点帧的回取。"
+
+    stable_frame_config: StableFrameConfig = field(default_factory=StableFrameConfig)
+    "稳定帧算法配置。"
 
 
 class PipelineContext:
@@ -76,6 +84,7 @@ class PipelineContext:
                 camera_name=str(config.camera_name),
                 request_timeout_ms=int(config.camera_request_timeout_ms),
                 stream_timeout_ms=int(config.camera_stream_timeout_ms),
+                cache_size=int(config.camera_frame_cache_size),
             )
         )
 
@@ -120,15 +129,63 @@ class PipelineContext:
         return self._frame_runtime.get_frame_by_id(frame_id)
 
     def resolve_frame(self, frame_id: int):
-        """按请求帧号选择可用相机帧。"""
+        """按请求帧号选择相机帧，未指定帧号时默认等待稳定帧。"""
 
-        if int(frame_id) > 0:
-            frame = self.get_frame_by_id(int(frame_id))
+        if frame_id > 0:
+            frame = self.get_frame_by_id(frame_id)
             if frame is not None:
                 return frame
-        frame = self.get_latest_frame()
-        if frame is None:
-            raise RuntimeError("camera frame not ready")
-        return frame
+            raise RuntimeError(f"camera frame {frame_id} is not available")
+        return self.wait_for_stable_frame()
+
+    def wait_for_stable_frame(self, timeout_s: float = 10.0) -> RgbdFrameProtocol:
+        """等待画面连续稳定，并返回稳定时间窗中点的相机帧。
+
+        Parameters
+        ----------
+        timeout_s:
+            等待稳定帧的最长时间，单位 s。
+
+        Returns
+        -------
+        RgbdFrameProtocol
+            稳定时间窗中点附近的缓存相机帧。
+
+        Raises
+        ------
+        ValueError
+            `timeout_s` 不大于零。
+        RuntimeError
+            超时前没有形成稳定时间窗，或中点帧已无法从缓存取回。
+        """
+
+        if timeout_s <= 0.0:
+            raise ValueError("timeout_s must be greater than zero")
+
+        detector = StableFrameDetector(config=self._config.stable_frame_config)
+        deadline = time.monotonic() + timeout_s
+        last_frame_id = -1
+        missing_stable_frame_id: int | None = None
+        while time.monotonic() < deadline:
+            frame = self.get_latest_frame()
+            if frame is None or frame.frame_id == last_frame_id:
+                time.sleep(0.01)
+                continue
+
+            last_frame_id = frame.frame_id
+            stable_frame_id = detector.update(frame)
+            if stable_frame_id is None:
+                continue
+            stable_frame = self.get_frame_by_id(stable_frame_id)
+            if stable_frame is not None:
+                return stable_frame
+            missing_stable_frame_id = stable_frame_id
+
+        if missing_stable_frame_id is not None:
+            raise RuntimeError(
+                f"stable frame {missing_stable_frame_id} is no longer available in camera frame cache"
+            )
+        raise RuntimeError(f"camera did not become stable within {timeout_s:.1f}s")
+
 
 # endregion

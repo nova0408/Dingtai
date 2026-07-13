@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-import cv2  # pyright: ignore[reportMissingImports]
+import cv2
 import numpy as np
 from PIL import Image
 from PySide6.QtCore import QPoint, Qt, Slot

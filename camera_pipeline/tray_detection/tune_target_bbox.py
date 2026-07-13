@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 # pyright: reportMissingImports=false
 
 import argparse
@@ -16,9 +17,10 @@ from ..camera_stream import CameraStreamRuntime, CameraStreamRuntimeConfig
 from .detector import TrayPointExcluder
 from .types import TrayDetection, TrayDetectionConfig
 
-
 # region 常量
-DEFAULT_OUTPUT_DIR = Path(__file__).resolve().parent / "artifacts" / "target_bbox_tuning"
+DEFAULT_OUTPUT_DIR = (
+    Path(__file__).resolve().parent / "artifacts" / "target_bbox_tuning"
+)
 DEFAULT_TARGET_BOX_XYXY = (620, 335, 1060, 473)
 DEFAULT_SAMPLE_FRAME_COUNT = 3
 DEFAULT_EXPECTED_TRAY_COUNT = 2
@@ -27,7 +29,7 @@ DEFAULT_CAMERA_CONFIG = CameraStreamRuntimeConfig()
 
 
 # region 数据结构
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class CandidateSpec:
     """单个候选配置。"""
 
@@ -44,7 +46,7 @@ class CandidateSpec:
     text_threshold: float = 0.08
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class CandidateFrameScore:
     """单帧评分结果。"""
 
@@ -61,7 +63,7 @@ class CandidateFrameScore:
     label_texts: list[str]
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class CandidateRunSummary:
     """单个候选配置的总体结果。"""
 
@@ -86,6 +88,8 @@ class CandidateRunSummary:
     selected_label_texts: list[str]
     selected_frame_id: int
     overlay_path: str
+
+
 # endregion
 
 
@@ -103,7 +107,11 @@ def main(
     candidate_specs = _build_candidate_specs()
     summaries: list[CandidateRunSummary] = []
     for candidate in candidate_specs:
-        summaries.append(_run_candidate(candidate, frames, target_box_xyxy, expected_tray_count, output_dir))
+        summaries.append(
+            _run_candidate(
+                candidate, frames, target_box_xyxy, expected_tray_count, output_dir
+            )
+        )
     summaries.sort(key=lambda item: item.mean_score, reverse=True)
     _write_summary_files(summaries, frames, target_box_xyxy, output_dir)
     _print_top_results(summaries)
@@ -163,7 +171,9 @@ def _run_candidate(
     try:
         for frame in frames:
             detections = detector.detect(np.asarray(frame.color_bgr, dtype=np.uint8))
-            frame_score, overlay = _score_frame(candidate, frame, detections, target_box_xyxy, expected_tray_count)
+            frame_score, overlay = _score_frame(
+                candidate, frame, detections, target_box_xyxy, expected_tray_count
+            )
             frame_scores.append(frame_score)
             if frame_score.score > best_frame_score:
                 best_frame_score = float(frame_score.score)
@@ -178,14 +188,46 @@ def _run_candidate(
             torch.cuda.empty_cache()
     overlay_path = output_dir / f"{candidate.name}.jpg"
     cv2.imwrite(str(overlay_path), selected_overlay)
-    mean_score = float(np.mean([item.score for item in frame_scores])) if len(frame_scores) > 0 else 0.0
-    mean_count_score = float(np.mean([item.count_score for item in frame_scores])) if len(frame_scores) > 0 else 0.0
-    mean_region_score = float(np.mean([item.region_score for item in frame_scores])) if len(frame_scores) > 0 else 0.0
-    mean_ordering_score = float(np.mean([item.ordering_score for item in frame_scores])) if len(frame_scores) > 0 else 0.0
-    mean_split_score = float(np.mean([item.split_score for item in frame_scores])) if len(frame_scores) > 0 else 0.0
-    mean_confidence = float(np.mean([item.confidence for item in frame_scores])) if len(frame_scores) > 0 else 0.0
-    detection_rate = float(np.mean([1.0 if item.has_detection else 0.0 for item in frame_scores])) if len(frame_scores) > 0 else 0.0
-    max_score = float(np.max([item.score for item in frame_scores])) if len(frame_scores) > 0 else 0.0
+    mean_score = (
+        float(np.mean([item.score for item in frame_scores]))
+        if len(frame_scores) > 0
+        else 0.0
+    )
+    mean_count_score = (
+        float(np.mean([item.count_score for item in frame_scores]))
+        if len(frame_scores) > 0
+        else 0.0
+    )
+    mean_region_score = (
+        float(np.mean([item.region_score for item in frame_scores]))
+        if len(frame_scores) > 0
+        else 0.0
+    )
+    mean_ordering_score = (
+        float(np.mean([item.ordering_score for item in frame_scores]))
+        if len(frame_scores) > 0
+        else 0.0
+    )
+    mean_split_score = (
+        float(np.mean([item.split_score for item in frame_scores]))
+        if len(frame_scores) > 0
+        else 0.0
+    )
+    mean_confidence = (
+        float(np.mean([item.confidence for item in frame_scores]))
+        if len(frame_scores) > 0
+        else 0.0
+    )
+    detection_rate = (
+        float(np.mean([1.0 if item.has_detection else 0.0 for item in frame_scores]))
+        if len(frame_scores) > 0
+        else 0.0
+    )
+    max_score = (
+        float(np.max([item.score for item in frame_scores]))
+        if len(frame_scores) > 0
+        else 0.0
+    )
     return CandidateRunSummary(
         name=str(candidate.name),
         prompt=str(candidate.prompt),
@@ -220,9 +262,21 @@ def _score_frame(
 ) -> tuple[CandidateFrameScore, np.ndarray]:
     overlay = np.asarray(frame.color_bgr, dtype=np.uint8).copy()
     _draw_target_box(overlay, target_box_xyxy)
-    sorted_detections = sorted(list(detections), key=lambda det: _mask_center_uv(np.asarray(det.mask, dtype=np.uint8))[0])
+    sorted_detections = sorted(
+        list(detections),
+        key=lambda det: _mask_center_uv(np.asarray(det.mask, dtype=np.uint8))[0],
+    )
     if len(sorted_detections) == 0:
-        cv2.putText(overlay, candidate.name, (14, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1, cv2.LINE_AA)
+        cv2.putText(
+            overlay,
+            candidate.name,
+            (14, 28),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.6,
+            (255, 255, 255),
+            1,
+            cv2.LINE_AA,
+        )
         return (
             CandidateFrameScore(
                 frame_id=int(frame.frame_id),
@@ -264,7 +318,9 @@ def _score_frame(
         )
     cv2.putText(
         overlay,
-        "{0} score {1:.3f} count {2}".format(candidate.name, candidate_score.score, candidate_score.tray_count),
+        "{0} score {1:.3f} count {2}".format(
+            candidate.name, candidate_score.score, candidate_score.tray_count
+        ),
         (14, 28),
         cv2.FONT_HERSHEY_SIMPLEX,
         0.58,
@@ -300,7 +356,9 @@ def _write_summary_files(
         "frame_ids": [int(frame.frame_id) for frame in frames],
         "results": [_summary_to_json(item) for item in summaries],
     }
-    (output_dir / "summary.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    (output_dir / "summary.json").write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
     lines = [
         "target_box_xyxy={0}".format(target_box_xyxy),
         "frame_ids={0}".format([int(frame.frame_id) for frame in frames]),
@@ -321,7 +379,13 @@ def _write_summary_files(
             )
         )
         lines.append("   prompt={0}".format(item.prompt))
-        lines.append("   bboxes={0} labels={1} frame_id={2}".format(item.selected_bbox_xywh_list, item.selected_label_texts, item.selected_frame_id))
+        lines.append(
+            "   bboxes={0} labels={1} frame_id={2}".format(
+                item.selected_bbox_xywh_list,
+                item.selected_label_texts,
+                item.selected_frame_id,
+            )
+        )
     (output_dir / "summary.txt").write_text("\n".join(lines), encoding="utf-8")
 
 
@@ -343,6 +407,7 @@ def _print_top_results(summaries: list[CandidateRunSummary]) -> None:
             )
         )
 
+
 # endregion
 
 
@@ -354,15 +419,31 @@ def _compute_candidate_frame_score(
     expected_tray_count: int,
 ) -> CandidateFrameScore:
     target_x1, target_y1, target_x2, target_y2 = target_box_xyxy
-    bbox_list = [_mask_bbox_xywh(np.asarray(det.mask, dtype=np.uint8)) for det in detections]
+    bbox_list = [
+        _mask_bbox_xywh(np.asarray(det.mask, dtype=np.uint8)) for det in detections
+    ]
     label_texts = [str(det.label_text) for det in detections]
     confidences = [float(det.confidence_2d) for det in detections]
-    centers = [(_mask_center_uv(np.asarray(det.mask, dtype=np.uint8))) for det in detections]
+    centers = [
+        (_mask_center_uv(np.asarray(det.mask, dtype=np.uint8))) for det in detections
+    ]
     tray_count = len(bbox_list)
-    count_score = max(0.0, 1.0 - abs(tray_count - int(expected_tray_count)) / max(1.0, float(expected_tray_count)))
+    count_score = max(
+        0.0,
+        1.0
+        - abs(tray_count - int(expected_tray_count))
+        / max(1.0, float(expected_tray_count)),
+    )
     inside_scores: list[float] = []
     for center_x, center_y in centers:
-        inside_scores.append(1.0 if (target_x1 <= center_x <= target_x2 and target_y1 <= center_y <= target_y2) else 0.0)
+        inside_scores.append(
+            1.0
+            if (
+                target_x1 <= center_x <= target_x2
+                and target_y1 <= center_y <= target_y2
+            )
+            else 0.0
+        )
     region_score = float(np.mean(inside_scores)) if len(inside_scores) > 0 else 0.0
     ordering_score = 0.0
     split_score = 0.0
@@ -410,10 +491,23 @@ def _compute_candidate_frame_score(
     )
 
 
-def _draw_target_box(image_bgr: np.ndarray, target_box_xyxy: tuple[int, int, int, int]) -> None:
+def _draw_target_box(
+    image_bgr: np.ndarray, target_box_xyxy: tuple[int, int, int, int]
+) -> None:
     x1, y1, x2, y2 = target_box_xyxy
-    cv2.rectangle(image_bgr, (int(x1), int(y1)), (int(x2), int(y2)), (0, 255, 0), 2, cv2.LINE_AA)
-    cv2.putText(image_bgr, "target", (int(x1), max(16, int(y1) - 6)), cv2.FONT_HERSHEY_SIMPLEX, 0.58, (0, 255, 0), 1, cv2.LINE_AA)
+    cv2.rectangle(
+        image_bgr, (int(x1), int(y1)), (int(x2), int(y2)), (0, 255, 0), 2, cv2.LINE_AA
+    )
+    cv2.putText(
+        image_bgr,
+        "target",
+        (int(x1), max(16, int(y1) - 6)),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.58,
+        (0, 255, 0),
+        1,
+        cv2.LINE_AA,
+    )
 
 
 def _mask_bbox_xywh(mask: np.ndarray) -> tuple[int, int, int, int]:
@@ -432,7 +526,9 @@ def _mask_center_uv(mask: np.ndarray) -> tuple[float, float]:
     return float(x + 0.5 * w), float(y + 0.5 * h)
 
 
-def _intersection_area_xyxy(box_a: tuple[int, int, int, int], box_b: tuple[int, int, int, int]) -> int:
+def _intersection_area_xyxy(
+    box_a: tuple[int, int, int, int], box_b: tuple[int, int, int, int]
+) -> int:
     x1 = max(int(box_a[0]), int(box_b[0]))
     y1 = max(int(box_a[1]), int(box_b[1]))
     x2 = min(int(box_a[2]), int(box_b[2]))
@@ -442,21 +538,36 @@ def _intersection_area_xyxy(box_a: tuple[int, int, int, int], box_b: tuple[int, 
     return int((x2 - x1) * (y2 - y1))
 
 
-def _box_iou_xyxy(box_a: tuple[int, int, int, int], box_b: tuple[int, int, int, int]) -> float:
+def _box_iou_xyxy(
+    box_a: tuple[int, int, int, int], box_b: tuple[int, int, int, int]
+) -> float:
     inter = float(_intersection_area_xyxy(box_a, box_b))
-    area_a = float(max(0, int(box_a[2]) - int(box_a[0])) * max(0, int(box_a[3]) - int(box_a[1])))
-    area_b = float(max(0, int(box_b[2]) - int(box_b[0])) * max(0, int(box_b[3]) - int(box_b[1])))
+    area_a = float(
+        max(0, int(box_a[2]) - int(box_a[0])) * max(0, int(box_a[3]) - int(box_a[1]))
+    )
+    area_b = float(
+        max(0, int(box_b[2]) - int(box_b[0])) * max(0, int(box_b[3]) - int(box_b[1]))
+    )
     denom = max(1.0, area_a + area_b - inter)
     return inter / denom
 
 
-def _draw_mask_outline(image_bgr: np.ndarray, mask: np.ndarray, color_bgr: tuple[int, int, int]) -> None:
-    contours, _ = cv2.findContours(np.asarray(mask, dtype=np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+def _draw_mask_outline(
+    image_bgr: np.ndarray, mask: np.ndarray, color_bgr: tuple[int, int, int]
+) -> None:
+    contours, _ = cv2.findContours(
+        np.asarray(mask, dtype=np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+    )
     if contours:
         cv2.drawContours(image_bgr, contours, -1, color_bgr, 1, cv2.LINE_AA)
 
 
-def _blend_mask_overlay(base_bgr: np.ndarray, mask: np.ndarray, color_bgr: tuple[int, int, int], alpha: float) -> np.ndarray:
+def _blend_mask_overlay(
+    base_bgr: np.ndarray,
+    mask: np.ndarray,
+    color_bgr: tuple[int, int, int],
+    alpha: float,
+) -> np.ndarray:
     mask_u8 = np.asarray(mask, dtype=np.uint8)
     mask_bool = mask_u8 > 0
     if not np.any(mask_bool):
@@ -482,6 +593,8 @@ def _summary_to_json(item: CandidateRunSummary) -> dict:
     data = asdict(item)
     data["frame_scores"] = [asdict(score) for score in item.frame_scores]
     return data
+
+
 # endregion
 
 
@@ -609,24 +722,35 @@ def _build_candidate_specs() -> list[CandidateSpec]:
             text_threshold=0.04,
         ),
     ]
+
+
 # endregion
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="基于目标框的托盘检测参数筛选")
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
-    parser.add_argument("--sample-frame-count", type=int, default=DEFAULT_SAMPLE_FRAME_COUNT)
+    parser.add_argument(
+        "--sample-frame-count", type=int, default=DEFAULT_SAMPLE_FRAME_COUNT
+    )
     parser.add_argument("--target-x1", type=int, default=DEFAULT_TARGET_BOX_XYXY[0])
     parser.add_argument("--target-y1", type=int, default=DEFAULT_TARGET_BOX_XYXY[1])
     parser.add_argument("--target-x2", type=int, default=DEFAULT_TARGET_BOX_XYXY[2])
     parser.add_argument("--target-y2", type=int, default=DEFAULT_TARGET_BOX_XYXY[3])
-    parser.add_argument("--expected-tray-count", type=int, default=DEFAULT_EXPECTED_TRAY_COUNT)
+    parser.add_argument(
+        "--expected-tray-count", type=int, default=DEFAULT_EXPECTED_TRAY_COUNT
+    )
     args = parser.parse_args()
     raise SystemExit(
         main(
             output_dir=Path(args.output_dir),
             sample_frame_count=int(args.sample_frame_count),
-            target_box_xyxy=(int(args.target_x1), int(args.target_y1), int(args.target_x2), int(args.target_y2)),
+            target_box_xyxy=(
+                int(args.target_x1),
+                int(args.target_y1),
+                int(args.target_x2),
+                int(args.target_y2),
+            ),
             expected_tray_count=int(args.expected_tray_count),
         )
     )

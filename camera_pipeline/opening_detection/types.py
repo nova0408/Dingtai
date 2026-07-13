@@ -7,7 +7,35 @@ import numpy as np
 # region 抓取流程数据契约
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
+class OpeningDetectionConfig:
+    """开口预处理和区域生长使用的固化算法参数。"""
+
+    contrast_sigma: float = 2.6
+    "高斯模糊标准差。"
+    contrast_highpass_source_weight: float = 1.90
+    "高反差增强中原图权重。"
+    contrast_highpass_blur_weight: float = -0.90
+    "高反差增强中模糊图权重。"
+    bilateral_diameter: int = 7
+    "双边滤波邻域直径，单位 pixel。"
+    bilateral_sigma_color: float = 42.0
+    "双边滤波颜色域 sigma。"
+    bilateral_sigma_space: float = 42.0
+    "双边滤波空间域 sigma。"
+    canny_low_threshold: float = 42.0
+    "Canny 低阈值。"
+    canny_high_threshold: float = 118.0
+    "Canny 高阈值。"
+    near_grow_max_pixels: int = 26_000
+    "开口邻近平面区域生长最大像素数。"
+    near_grow_local_diff: int = 14
+    "区域生长局部灰度差阈值。"
+    near_grow_global_diff: int = 30
+    "区域生长全局灰度差阈值。"
+
+
+@dataclass(frozen=True, slots=True)
 class OpeningDetection:
     """开口检测结果。
 
@@ -25,7 +53,7 @@ class OpeningDetection:
     "开口检测置信分数，数值越大表示候选越可靠。"
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class PlaneResult:
     """平面拟合结果。
 
@@ -38,7 +66,7 @@ class PlaneResult:
     "平面常数项，单位 mm。"
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class GraspResult:
     """抓取位姿结果。
 
@@ -53,7 +81,7 @@ class GraspResult:
     "抓取旋转矩阵，形状 `(3, 3)`，dtype `float64`，列向量依次表示 X/Y/Z 轴方向。"
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class TrayMaskResult:
     """托盘掩码结果集合。
 
@@ -73,4 +101,3 @@ class TrayMaskResult:
 
 
 # endregion
-

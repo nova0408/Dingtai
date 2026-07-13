@@ -1,33 +1,19 @@
 from __future__ import annotations
 
-from typing import Any, cast
+# pyright: reportMissingImports=false
+
 
 import cv2
 import numpy as np
 
-from .types import OpeningDetection, TrayMaskResult
-
-# region 预处理默认参数
-
-DEFAULT_CONTRAST_SIGMA = 2.6
-DEFAULT_CONTRAST_HP_A = 1.90
-DEFAULT_CONTRAST_HP_B = -0.90
-DEFAULT_CONTRAST_BILATERAL_D = 7
-DEFAULT_CONTRAST_BILATERAL_SIGMA_COLOR = 42
-DEFAULT_CONTRAST_BILATERAL_SIGMA_SPACE = 42
-DEFAULT_CONTRAST_CANNY_LOW = 42
-DEFAULT_CONTRAST_CANNY_HIGH = 118
-
-# endregion
+from .types import OpeningDetection, OpeningDetectionConfig, TrayMaskResult
 
 
 class OpeningDetectionPipeline:
     """开口检测与开口相关掩码流程。"""
 
-    def __init__(self) -> None:
-        self._near_grow_max_pixels = 26000
-        self._near_grow_local_diff = 14
-        self._near_grow_global_diff = 30
+    def __init__(self, config: OpeningDetectionConfig | None = None) -> None:
+        self._config = OpeningDetectionConfig() if config is None else config
 
     def estimate_from_tray(
         self,
@@ -82,8 +68,9 @@ class OpeningDetectionPipeline:
 
         return self._detect_rect_opening_auto(rgb_bgr, tray_mask, hp_gray, hp_edge)
 
-    @staticmethod
-    def build_high_contrast_domain(bgr: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def build_high_contrast_domain(
+        self, bgr: np.ndarray
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """构造开口检测默认使用的高反差灰度域与边缘图。
 
         Parameters
@@ -106,19 +93,29 @@ class OpeningDetectionPipeline:
         相比其他候选方案更稳定，因此作为 `src` 层标准入口固化。
         """
 
-        blur = cv2.GaussianBlur(bgr, (0, 0), DEFAULT_CONTRAST_SIGMA)
-        highpass = cv2.addWeighted(bgr, DEFAULT_CONTRAST_HP_A, blur, DEFAULT_CONTRAST_HP_B, 0.0)
+        blur = cv2.GaussianBlur(bgr, (0, 0), self._config.contrast_sigma)
+        highpass = cv2.addWeighted(
+            bgr,
+            self._config.contrast_highpass_source_weight,
+            blur,
+            self._config.contrast_highpass_blur_weight,
+            0.0,
+        )
         gray = cv2.cvtColor(highpass, cv2.COLOR_BGR2GRAY)
         gray_f = cv2.bilateralFilter(
             gray,
-            d=DEFAULT_CONTRAST_BILATERAL_D,
-            sigmaColor=DEFAULT_CONTRAST_BILATERAL_SIGMA_COLOR,
-            sigmaSpace=DEFAULT_CONTRAST_BILATERAL_SIGMA_SPACE,
+            d=self._config.bilateral_diameter,
+            sigmaColor=self._config.bilateral_sigma_color,
+            sigmaSpace=self._config.bilateral_sigma_space,
         )
         gray_f = cv2.morphologyEx(
             gray_f, cv2.MORPH_CLOSE, np.ones((3, 3), dtype=np.uint8), iterations=1
         )
-        edge = cv2.Canny(gray_f, DEFAULT_CONTRAST_CANNY_LOW, DEFAULT_CONTRAST_CANNY_HIGH)
+        edge = cv2.Canny(
+            gray_f,
+            self._config.canny_low_threshold,
+            self._config.canny_high_threshold,
+        )
         return highpass, gray_f, edge
 
     def compute_mask_pipeline(
@@ -159,7 +156,7 @@ class OpeningDetectionPipeline:
             mask[idx] = local_roi[v, u] > 0
         if np.count_nonzero(mask) > 30:
             inten = np.max((rgb[mask] * 255.0).astype(np.float32), axis=1)
-            thr = float(np.clip(np.percentile(cast(Any, inten), 78), 70, 185))
+            thr = float(np.clip(np.percentile(inten, 78), 70, 185))
             sel = np.where(mask)[0]
             keep = inten <= thr
             mask2 = np.zeros_like(mask)
@@ -225,7 +222,9 @@ class OpeningDetectionPipeline:
             return near_plane_mask, top_plane_mask
         near_guard = cv2.dilate(near, np.ones((3, 3), dtype=np.uint8), iterations=1)
         top = cv2.bitwise_and(top, cv2.bitwise_not(near_guard))
-        top = cv2.morphologyEx(top, cv2.MORPH_OPEN, np.ones((3, 3), dtype=np.uint8), iterations=1)
+        top = cv2.morphologyEx(
+            top, cv2.MORPH_OPEN, np.ones((3, 3), dtype=np.uint8), iterations=1
+        )
         if np.count_nonzero(top) < 20:
             top = np.zeros_like(top)
         return near, top
@@ -254,18 +253,25 @@ class OpeningDetectionPipeline:
         hp = hp_gray[y1:y2, x1:x2]
         roi_edge = hp_edge[y1:y2, x1:x2] if hp_edge is not None else None
         thresholds = sorted(
-            set(int(np.clip(t, 20, 180)) for t in np.percentile(cast(Any, hp), [4, 6, 8, 12, 16, 20, 25, 30]))
+            set(
+                int(np.clip(t, 20, 180))
+                for t in np.percentile(hp, [4, 6, 8, 12, 16, 20, 25, 30])
+            )
         )
         candidates: list[tuple[float, np.ndarray]] = []
         for thr in thresholds:
             mask = np.zeros_like(hp, dtype=np.uint8)
             mask[(hp <= thr) & (roi_tray > 0)] = 255
-            close_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (max(9, hp.shape[1] // 12), 3))
+            close_kernel = cv2.getStructuringElement(
+                cv2.MORPH_RECT, (max(9, hp.shape[1] // 12), 3)
+            )
             mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, close_kernel)
             mask = cv2.morphologyEx(
                 mask, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
             )
-            contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            contours, _ = cv2.findContours(
+                mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+            )
             for cnt in contours:
                 area = float(cv2.contourArea(cnt))
                 if area < 40.0:
@@ -293,11 +299,17 @@ class OpeningDetectionPipeline:
                 patch_hp = hp[in_roi]
                 dark_ratio_hp = float(np.mean(patch_hp <= thr))
                 ring = self._patch_ring(
-                    hp, int(cx - rw / 2), int(cy - rh / 2), int(max(1, rw)), int(max(1, rh))
+                    hp,
+                    int(cx - rw / 2),
+                    int(cy - rh / 2),
+                    int(max(1, rw)),
+                    int(max(1, rh)),
                 )
                 slot_mean = float(np.mean(patch_hp))
                 ring_mean = float(np.mean(ring)) if ring.size > 0 else slot_mean
-                contrast_score = float(np.clip((ring_mean - slot_mean) / 45.0, 0.0, 1.5))
+                contrast_score = float(
+                    np.clip((ring_mean - slot_mean) / 45.0, 0.0, 1.5)
+                )
                 edge_score = 0.0
                 if roi_edge is not None:
                     # opening contour ideally与 `bilateral + canny` 的强边缘对齐；这里统计候选边框附近的命中率。
@@ -359,13 +371,15 @@ class OpeningDetectionPipeline:
             allowed_mask=work,
             edge_block=edge_block,
             seeds=seeds,
-            local_diff=self._near_grow_local_diff,
-            global_diff=self._near_grow_global_diff,
-            max_pixels=self._near_grow_max_pixels,
+            local_diff=self._config.near_grow_local_diff,
+            global_diff=self._config.near_grow_global_diff,
+            max_pixels=self._config.near_grow_max_pixels,
         )
         if np.count_nonzero(grow) < 40:
             return None
-        grow = cv2.morphologyEx(grow, cv2.MORPH_OPEN, np.ones((3, 3), dtype=np.uint8), iterations=1)
+        grow = cv2.morphologyEx(
+            grow, cv2.MORPH_OPEN, np.ones((3, 3), dtype=np.uint8), iterations=1
+        )
         grow = cv2.morphologyEx(
             grow, cv2.MORPH_CLOSE, np.ones((5, 5), dtype=np.uint8), iterations=2
         )
@@ -393,7 +407,9 @@ class OpeningDetectionPipeline:
             return None
         target = np.mean(roi_poly, axis=0)
         if near_plane_mask is not None and np.count_nonzero(near_plane_mask) > 0:
-            near_ring = cv2.dilate(near_plane_mask, np.ones((5, 5), dtype=np.uint8), iterations=1)
+            near_ring = cv2.dilate(
+                near_plane_mask, np.ones((5, 5), dtype=np.uint8), iterations=1
+            )
             near_ring = cv2.bitwise_and(near_ring, cv2.bitwise_not(near_plane_mask))
             seed_band = cv2.bitwise_and(near_ring, base_mask)
             ys, xs = np.where(seed_band > 0)
@@ -404,21 +420,26 @@ class OpeningDetectionPipeline:
                     sx = int(xs[i])
                     sy = int(ys[i])
                     seeds.append((sx, sy, int(hp_gray[sy, sx])))
-                edge_block = cv2.dilate(hp_edge, np.ones((3, 3), dtype=np.uint8), iterations=1)
+                edge_block = cv2.dilate(
+                    hp_edge, np.ones((3, 3), dtype=np.uint8), iterations=1
+                )
                 grown = self._region_grow_from_seeds(
                     gray=hp_gray,
                     allowed_mask=base_mask,
                     edge_block=edge_block,
                     seeds=seeds,
-                    local_diff=max(10, self._near_grow_local_diff - 2),
-                    global_diff=max(18, self._near_grow_global_diff - 6),
-                    max_pixels=max(12000, self._near_grow_max_pixels),
+                    local_diff=max(10, self._config.near_grow_local_diff - 2),
+                    global_diff=max(18, self._config.near_grow_global_diff - 6),
+                    max_pixels=max(12000, self._config.near_grow_max_pixels),
                 )
                 grown = cv2.morphologyEx(
                     grown, cv2.MORPH_OPEN, np.ones((3, 3), dtype=np.uint8), iterations=1
                 )
                 grown = cv2.morphologyEx(
-                    grown, cv2.MORPH_CLOSE, np.ones((9, 9), dtype=np.uint8), iterations=2
+                    grown,
+                    cv2.MORPH_CLOSE,
+                    np.ones((9, 9), dtype=np.uint8),
+                    iterations=2,
                 )
                 grown = self._select_component_near_target(grown, target)
                 if np.count_nonzero(grown) >= 180:
@@ -426,7 +447,12 @@ class OpeningDetectionPipeline:
         edge_soft = cv2.GaussianBlur(hp_edge.astype(np.float32), (5, 5), 0)
         low_edge = np.zeros_like(base_mask)
         thr = (
-            float(np.percentile(cast(Any, np.asarray(edge_soft[base_mask > 0], dtype=np.float64)), 55))
+            float(
+                np.percentile(
+                    np.asarray(edge_soft[base_mask > 0], dtype=np.float64),
+                    55,
+                )
+            )
             if np.count_nonzero(base_mask) > 0
             else 0.0
         )
@@ -455,7 +481,9 @@ class OpeningDetectionPipeline:
         return x1, y1, x2 - x1 + 1, y2 - y1 + 1
 
     @staticmethod
-    def _select_component_near_target(mask: np.ndarray, target_xy: np.ndarray) -> np.ndarray:
+    def _select_component_near_target(
+        mask: np.ndarray, target_xy: np.ndarray
+    ) -> np.ndarray:
         num, cc, stats, cent = cv2.connectedComponentsWithStats(mask, connectivity=8)
         if num <= 1:
             return mask
@@ -493,7 +521,9 @@ class OpeningDetectionPipeline:
             if overlap <= 0.0:
                 continue
             out[comp] = 255
-        out = cv2.morphologyEx(out, cv2.MORPH_CLOSE, np.ones((5, 5), dtype=np.uint8), iterations=1)
+        out = cv2.morphologyEx(
+            out, cv2.MORPH_CLOSE, np.ones((5, 5), dtype=np.uint8), iterations=1
+        )
         return out
 
     @staticmethod
@@ -507,7 +537,9 @@ class OpeningDetectionPipeline:
         long_len, short_len = OpeningDetectionPipeline._opening_long_short_lengths(quad)
         rect_w = max(16.0, long_len * 2.35)
         rect_h = max(12.0, short_len * 3.10)
-        poly = OpeningDetectionPipeline._rot_rect_to_poly(c, v_long, v_short, rect_w, rect_h)
+        poly = OpeningDetectionPipeline._rot_rect_to_poly(
+            c, v_long, v_short, rect_w, rect_h
+        )
         poly[:, 0] = np.clip(poly[:, 0], 0, w - 1)
         poly[:, 1] = np.clip(poly[:, 1], 0, h - 1)
         mask = np.zeros((h, w), dtype=np.uint8)
@@ -617,7 +649,11 @@ class OpeningDetectionPipeline:
         long_len, short_len = OpeningDetectionPipeline._opening_long_short_lengths(quad)
         rect_c = c + v_short * (2.05 * short_len)
         poly = OpeningDetectionPipeline._rot_rect_to_poly(
-            rect_c, v_long, v_short, max(18.0, long_len * 1.45), max(14.0, short_len * 2.90)
+            rect_c,
+            v_long,
+            v_short,
+            max(18.0, long_len * 1.45),
+            max(14.0, short_len * 2.90),
         )
         poly[:, 0] = np.clip(poly[:, 0], 0, w - 1)
         poly[:, 1] = np.clip(poly[:, 1], 0, h - 1)
@@ -633,7 +669,9 @@ class OpeningDetectionPipeline:
             if ll > best_len:
                 best_len = ll
                 best_i = i
-        v_long = OpeningDetectionPipeline._normalize(quad[(best_i + 1) % 4] - quad[best_i])
+        v_long = OpeningDetectionPipeline._normalize(
+            quad[(best_i + 1) % 4] - quad[best_i]
+        )
         v_short = OpeningDetectionPipeline._normalize(
             np.array([-v_long[1], v_long[0]], dtype=np.float64)
         )

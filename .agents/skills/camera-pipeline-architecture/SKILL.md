@@ -42,6 +42,30 @@ description: Dingtai 项目 `camera_pipeline` 构造原则。用于远端 Linux 
 4. 若模块需要 debug，必须允许通过入参关闭 debug 计算。
 5. 关闭 debug 时，不应计算或分配不必要的 debug 图像、掩码或大对象。
 
+## Python 类型与数据结构
+
+1. 统一使用 Python 3.10+ 现代类型语法：
+   - 可空类型使用 `X | None`，禁止 `typing.Optional[X]`。
+   - 字典使用 `dict[K, V]`，禁止 `typing.Dict[K, V]`。
+   - 元组使用 `tuple[...]`，禁止 `typing.Tuple[...]`。
+   - 序列、迭代器等抽象容器从 `collections.abc` 导入，不从 `typing` 导入。
+2. 算法和业务模块不得从具体数据生产模块导入帧实现类；跨模块帧输入必须依赖 `camera_pipeline.protocol` 中的 `Protocol`。
+3. 具体 packet dataclass 只用于运行时存储和传输边界，不作为算法入参类型。
+4. 每个 dataclass 必须具备准确的类级说明；字段语义不直观时必须补充字段说明、单位和坐标系。
+5. dataclass 默认评估 `slots=True`：
+   - 固定字段的配置、协议、结果和内部状态对象应使用 slots。
+   - 只有调用点确实依赖 `__dict__`、动态增加属性、弱引用或不兼容继承时才不使用，并在类说明中写明原因。
+6. 已固化的算法参数应进入明确的 frozen config dataclass，禁止继续保留开发期 `DEFAULT_*` 全局参数区。
+7. 禁止使用 `Any`、`dict[str, Any]` 或 `object` 作为类型兜底：
+   - 协议字段必须使用明确的标量、坐标元组、NumPy 数组、枚举或 dataclass。
+   - 外部库返回值若类型信息缺失，应在最靠近边界的位置校验并收窄类型，不得把宽泛类型继续向下游传播。
+   - 只有第三方接口确实无法描述且已经写明原因时才允许局部使用 `Any`，不得出现在公共协议中。
+8. `X | None` 只能表达真实存在的“尚未初始化/尚未取得资源”状态：
+   - socket、线程、惰性加载模型、首帧缓存等延迟初始化资源可以使用可空类型。
+   - 逻辑上必定存在的字段、成功响应字段和已经构造完成的结果不得标成可空。
+   - “未检测到”“未启用 debug”“结果为空”优先使用明确状态、空元组或独立结果类型表达，不得用 `None` 作为无约束占位。
+   - 函数内部算法失败应使用明确失败结果或抛出异常，不得为了方便让正常返回类型到处可空。
+
 ## README 要求
 
 1. `camera_pipeline` 下每个新增或明显改动的子模块都应补充 README。
@@ -63,6 +87,12 @@ description: Dingtai 项目 `camera_pipeline` 构造原则。用于远端 Linux 
 4. 入参和出参是否都走协议。
 5. debug 是否可关闭，关闭后是否还残留 debug 计算。
 6. 是否存在 README，且 README 是否与真实逻辑一致。
+7. 是否残留 `Optional/Dict/Tuple` 等旧 typing 泛型。
+8. 跨模块是否依赖协议而不是具体 frame packet。
+9. dataclass 是否有说明并经过 slots 适用性检查。
+10. 模型缓存路径、离线模式和首次下载方式是否在 README 中说明。
+11. 是否存在 `Any`、`object` 或无结构元数据字典绕过协议设计。
+12. 每个 `| None` 是否确实对应延迟初始化状态，而不是未设计清楚的结果语义。
 
 ## 工作方式
 

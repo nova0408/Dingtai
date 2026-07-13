@@ -1,8 +1,13 @@
 from __future__ import annotations
 
-from typing import Optional
+from .engine import (
+    OpeningDetectionPipelineExecutor,
+    OpeningDetectionPipelineExecutorConfig,
+)
+import numpy as np
 
-from .engine import OpeningDetectionPipelineExecutor, OpeningDetectionPipelineExecutorConfig
+from ..protocol import RgbdFrameProtocol
+from .protocol import DebugArtifacts, TrayPoseInfo
 
 
 class OpeningDetectionPipelineService:
@@ -25,17 +30,19 @@ class OpeningDetectionPipelineService:
     - 不继承业务基类。
     """
 
-    def __init__(self, executor_config: Optional[OpeningDetectionPipelineExecutorConfig] = None) -> None:
+    def __init__(
+        self, executor_config: OpeningDetectionPipelineExecutorConfig | None = None
+    ) -> None:
         self._executor = OpeningDetectionPipelineExecutor(config=executor_config)
 
     def compute(
         self,
-        frame,
-        tray_mask,
+        frame: RgbdFrameProtocol,
+        tray_mask: np.ndarray,
         request_id: int,
         target_tray_index: int,
         enable_debug: bool = True,
-    ) -> tuple[object, object | None]:
+    ) -> tuple[TrayPoseInfo, tuple[DebugArtifacts, ...]]:
         """基于输入帧和托盘掩码计算开口与位姿结果。"""
 
         return self._executor.compute(

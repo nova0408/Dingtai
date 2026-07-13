@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+# pyright: reportMissingImports=false
+
 import argparse
 import csv
 import sys
@@ -18,7 +20,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from camera_pipeline.camera_stream import CameraColorFramePacket
+from camera_pipeline.protocol import CameraColorFramePacket
 from camera_pipeline.client import CameraPipelineClient
 from sdk.xcoresdk import xCoreSDK_python
 from src.calibration import CHARUCO_200_12_9, CharucoPoseEstimator
@@ -204,7 +206,9 @@ def _run_calibration_session(
             compute_ms = (time.perf_counter() - started) * 1000.0
             board_pose_camera_board = None
             if charuco_result.transform_se3 is not None:
-                board_pose_camera_board = np.asarray(charuco_result.transform_se3, dtype=np.float64).reshape(4, 4)
+                board_pose_camera_board = np.asarray(
+                    charuco_result.transform_se3, dtype=np.float64
+                ).reshape(4, 4)
             preview_bgr = _draw_preview(
                 frame_bgr=frame_bgr,
                 frame_packet=frame_packet,
@@ -233,8 +237,12 @@ def _run_calibration_session(
                     next_sample_index=len(samples) + 1,
                 )
                 samples.append(sample_record)
-                _write_samples_csv(session_dir / "samples.csv", samples, calibration_result=last_result)
-                _write_sample_guidance_file(session_dir / "sampling_guidance.txt", samples)
+                _write_samples_csv(
+                    session_dir / "samples.csv", samples, calibration_result=last_result
+                )
+                _write_sample_guidance_file(
+                    session_dir / "sampling_guidance.txt", samples
+                )
                 last_result = _maybe_update_hand_eye_result(
                     output_path=extrinsic_result_path,
                     samples=samples,
@@ -244,14 +252,18 @@ def _run_calibration_session(
                     sample_record.sample_index,
                     sample_record.board_visible,
                     sample_record.charuco_count,
-                    _format_optional_float(sample_record.reprojection_error_px, digits=4),
+                    _format_optional_float(
+                        sample_record.reprojection_error_px, digits=4
+                    ),
                 )
             if cv2.getWindowProperty(DEFAULT_WINDOW_NAME, cv2.WND_PROP_VISIBLE) < 1:
                 break
     finally:
         client.close()
         cv2.destroyAllWindows()
-        _write_samples_csv(session_dir / "samples.csv", samples, calibration_result=last_result)
+        _write_samples_csv(
+            session_dir / "samples.csv", samples, calibration_result=last_result
+        )
         _write_sample_guidance_file(session_dir / "sampling_guidance.txt", samples)
         _maybe_update_hand_eye_result(
             output_path=extrinsic_result_path,
@@ -267,7 +279,9 @@ def _run_replay(run_dir: Path) -> None:
     csv_path = run_dir / "samples.csv"
     output_dir = run_dir / "handeyeCali_replay"
     logger.info("使用 handeyeCali 同款链路离线复算：{}", csv_path)
-    base_tool_list, cam_board_list, used_indices, robot_source = _load_replay_samples(csv_path)
+    base_tool_list, cam_board_list, used_indices, robot_source = _load_replay_samples(
+        csv_path
+    )
     result = _solve_park_hand_eye(
         base_tool_list=base_tool_list,
         cam_board_list=cam_board_list,
@@ -305,7 +319,9 @@ def _load_replay_samples(
         )
     )
     if not has_end_columns:
-        raise ValueError("samples.csv 缺少 robot_end_*，当前已验证链路只接受 xCoreSDK_python.endInRef")
+        raise ValueError(
+            "samples.csv 缺少 robot_end_*，当前已验证链路只接受 xCoreSDK_python.endInRef"
+        )
     robot_prefix = "robot_end"
 
     base_tool_list: list[np.ndarray] = []
@@ -334,7 +350,9 @@ def _require_csv_value(row: dict[str, str | None], key: str) -> str:
     return value
 
 
-def _read_robot_transform_from_csv_row(row: dict[str, str | None], robot_prefix: str) -> np.ndarray:
+def _read_robot_transform_from_csv_row(
+    row: dict[str, str | None], robot_prefix: str
+) -> np.ndarray:
     translation = (
         np.array(
             [
@@ -365,7 +383,12 @@ def _read_camera_board_transform_from_csv_row(row: dict[str, str | None]) -> np.
     return _transform_from_csv_quaternion_fields(
         row=row,
         xyz_columns=("camera_board_x_mm", "camera_board_y_mm", "camera_board_z_mm"),
-        quat_columns=("camera_board_qw", "camera_board_qx", "camera_board_qy", "camera_board_qz"),
+        quat_columns=(
+            "camera_board_qw",
+            "camera_board_qx",
+            "camera_board_qy",
+            "camera_board_qz",
+        ),
     )
 
 
@@ -374,7 +397,13 @@ def _transform_from_csv_quaternion_fields(
     xyz_columns: tuple[str, str, str],
     quat_columns: tuple[str, str, str, str],
 ) -> np.ndarray:
-    translation = np.array([float(_require_csv_value(row, column)) for column in xyz_columns], dtype=np.float64) * 0.001
+    translation = (
+        np.array(
+            [float(_require_csv_value(row, column)) for column in xyz_columns],
+            dtype=np.float64,
+        )
+        * 0.001
+    )
     qw, qx, qy, qz = (float(_require_csv_value(row, column)) for column in quat_columns)
     rotation = Rotation3D.from_quat([qx, qy, qz, qw]).as_matrix()
     transform = np.eye(4, dtype=np.float64)
@@ -391,9 +420,13 @@ def _solve_park_hand_eye(
     toolset_source: str,
 ) -> HandEyeCalibrationResult:
     rotations_gripper_to_base = [transform[:3, :3] for transform in base_tool_list]
-    translations_gripper_to_base = [transform[:3, 3].reshape(3, 1) for transform in base_tool_list]
+    translations_gripper_to_base = [
+        transform[:3, 3].reshape(3, 1) for transform in base_tool_list
+    ]
     rotations_target_to_cam = [transform[:3, :3] for transform in cam_board_list]
-    translations_target_to_cam = [transform[:3, 3].reshape(3, 1) for transform in cam_board_list]
+    translations_target_to_cam = [
+        transform[:3, 3].reshape(3, 1) for transform in cam_board_list
+    ]
     rotation_cam_to_gripper, translation_cam_to_gripper = cv2.calibrateHandEye(
         R_gripper2base=rotations_gripper_to_base,
         t_gripper2base=translations_gripper_to_base,
@@ -402,10 +435,15 @@ def _solve_park_hand_eye(
         method=cv2.CALIB_HAND_EYE_PARK,
     )
     tool_cam = np.eye(4, dtype=np.float64)
-    tool_cam[:3, :3] = np.asarray(rotation_cam_to_gripper, dtype=np.float64).reshape(3, 3)
-    tool_cam[:3, 3] = np.asarray(translation_cam_to_gripper, dtype=np.float64).reshape(3)
+    tool_cam[:3, :3] = np.asarray(rotation_cam_to_gripper, dtype=np.float64).reshape(
+        3, 3
+    )
+    tool_cam[:3, 3] = np.asarray(translation_cam_to_gripper, dtype=np.float64).reshape(
+        3
+    )
     base_board_list = tuple(
-        base_tool @ tool_cam @ cam_board for base_tool, cam_board in zip(base_tool_list, cam_board_list, strict=True)
+        base_tool @ tool_cam @ cam_board
+        for base_tool, cam_board in zip(base_tool_list, cam_board_list, strict=True)
     )
     return HandEyeCalibrationResult(
         method_name="PARK",
@@ -420,7 +458,9 @@ def _solve_park_hand_eye(
 
 
 def _compute_board_in_base_stats(base_board_list: list[np.ndarray]) -> BoardInBaseStats:
-    translations = np.asarray([transform[:3, 3] for transform in base_board_list], dtype=np.float64)
+    translations = np.asarray(
+        [transform[:3, 3] for transform in base_board_list], dtype=np.float64
+    )
     mean_translation = np.mean(translations, axis=0)
     translation_errors = np.linalg.norm(translations - mean_translation, axis=1)
     reference_rotation = base_board_list[0][:3, :3]
@@ -428,7 +468,11 @@ def _compute_board_in_base_stats(base_board_list: list[np.ndarray]) -> BoardInBa
     for transform in base_board_list:
         rotation_delta = reference_rotation.T @ transform[:3, :3]
         rotation_errors_deg.append(
-            float(np.linalg.norm(Rotation3D.from_matrix(rotation_delta).as_rotvec()) * 180.0 / np.pi)
+            float(
+                np.linalg.norm(Rotation3D.from_matrix(rotation_delta).as_rotvec())
+                * 180.0
+                / np.pi
+            )
         )
     rotation_errors = np.asarray(rotation_errors_deg, dtype=np.float64)
     return BoardInBaseStats(
@@ -450,9 +494,13 @@ def _save_hand_eye_outputs(
     output_dir.mkdir(parents=True, exist_ok=True)
     tool_cam = np.asarray(result.tool_cam, dtype=np.float64).reshape(4, 4)
     records: list[dict[str, float | int]] = []
-    for sample_index, base_board in zip(result.used_indices, result.base_board_list, strict=True):
+    for sample_index, base_board in zip(
+        result.used_indices, result.base_board_list, strict=True
+    ):
         quat_xyzw = Rotation3D.from_matrix(base_board[:3, :3]).as_quat()
-        rpy_xyz_deg = Rotation3D.from_matrix(base_board[:3, :3]).as_euler("XYZ", degrees=True)
+        rpy_xyz_deg = Rotation3D.from_matrix(base_board[:3, :3]).as_euler(
+            "XYZ", degrees=True
+        )
         records.append(
             {
                 "sample_index": sample_index,
@@ -471,13 +519,17 @@ def _save_hand_eye_outputs(
                 "base_board_yaw_deg": float(rpy_xyz_deg[2]),
             }
         )
-    with (output_dir / "board_in_base.csv").open("w", encoding="utf-8-sig", newline="") as file:
+    with (output_dir / "board_in_base.csv").open(
+        "w", encoding="utf-8-sig", newline=""
+    ) as file:
         writer = csv.DictWriter(file, fieldnames=list(records[0].keys()))
         writer.writeheader()
         writer.writerows(records)
     mean_translation = result.stats.mean_translation_m
     std_translation = result.stats.std_translation_m
-    tool_cam_rpy_deg = Rotation3D.from_matrix(tool_cam[:3, :3]).as_euler("XYZ", degrees=True)
+    tool_cam_rpy_deg = Rotation3D.from_matrix(tool_cam[:3, :3]).as_euler(
+        "XYZ", degrees=True
+    )
     summary_lines = [
         "Board pose in robot base frame",
         "Formula:",
@@ -519,7 +571,9 @@ def _save_hand_eye_outputs(
         "Used samples:",
         ", ".join(str(sample_index) for sample_index in result.used_indices),
     ]
-    (output_dir / "board_in_base_mean.txt").write_text("\n".join(summary_lines) + "\n", encoding="utf-8")
+    (output_dir / "board_in_base_mean.txt").write_text(
+        "\n".join(summary_lines) + "\n", encoding="utf-8"
+    )
 
 
 # endregion
@@ -535,10 +589,13 @@ def _connect_left_arm(robot_ip: str) -> ConnectedLeftArm:
         raise RuntimeError(f"读取左臂机器人信息失败：ip={robot_ip}")
     if str(robot_info.type) != EXPECTED_LEFT_ARM_TYPE:
         raise RuntimeError(
-            "连接到的机器人不是左臂控制器：" f"expected={EXPECTED_LEFT_ARM_TYPE}, actual={robot_info.type}"
+            "连接到的机器人不是左臂控制器："
+            f"expected={EXPECTED_LEFT_ARM_TYPE}, actual={robot_info.type}"
         )
     _apply_fixed_toolset(robot, ec)
-    logger.success(f"左臂已连接：ip={robot_ip}, type={robot_info.type}, uid={robot_info.id}")
+    logger.success(
+        f"左臂已连接：ip={robot_ip}, type={robot_info.type}, uid={robot_info.id}"
+    )
     return ConnectedLeftArm(
         robot_ip=robot_ip,
         robot=robot,
@@ -619,7 +676,9 @@ def _read_left_arm_snapshot(left_arm: ConnectedLeftArm) -> RobotSnapshot:
         end_rpy_degrees=end_rpy_degrees,
         sdk_pose_has_elbow=bool(end_pose_in_ref.hasElbow),
         sdk_pose_elbow_deg=float(np.degrees(float(end_pose_in_ref.elbow))),
-        sdk_pose_conf_data=tuple(int(value) for value in list(end_pose_in_ref.confData)),
+        sdk_pose_conf_data=tuple(
+            int(value) for value in list(end_pose_in_ref.confData)
+        ),
     )
 
 
@@ -632,7 +691,10 @@ def _apply_fixed_toolset(
     toolset = robot.setToolset(DEFAULT_TOOL_NAME, DEFAULT_WOBJ_NAME, ec)
     _print_sdk_result(f"setToolset({DEFAULT_TOOL_NAME}, {DEFAULT_WOBJ_NAME})", ec)
     if ec.get("ec", 0) != 0:
-        raise RuntimeError("设置固定 toolset 失败：" f"tool={DEFAULT_TOOL_NAME}, wobj={DEFAULT_WOBJ_NAME}")
+        raise RuntimeError(
+            "设置固定 toolset 失败："
+            f"tool={DEFAULT_TOOL_NAME}, wobj={DEFAULT_WOBJ_NAME}"
+        )
     return toolset
 
 
@@ -741,7 +803,9 @@ def _capture_sample(
         marker_count=int(charuco_result.marker_count),
         charuco_count=int(charuco_result.charuco_count),
         reprojection_error_px=(
-            None if charuco_result.reprojection_error_px is None else float(charuco_result.reprojection_error_px)
+            None
+            if charuco_result.reprojection_error_px is None
+            else float(charuco_result.reprojection_error_px)
         ),
         robot_snapshot=robot_snapshot,
         board_pose_camera_board=board_pose_camera_board,
@@ -820,15 +884,25 @@ def _write_samples_csv(
             ]
         )
         for sample in samples:
-            end_transform = _cartesian_pose_to_matrix_m(sample.robot_snapshot.end_pose_in_ref)
+            end_transform = _cartesian_pose_to_matrix_m(
+                sample.robot_snapshot.end_pose_in_ref
+            )
             end_quat_wxyz = _rotation_matrix_to_quaternion_wxyz(end_transform[:3, :3])
-            toolset_end_fields = _frame_csv_fields(sample.robot_snapshot.toolset_end_frame)
-            toolset_ref_fields = _frame_csv_fields(sample.robot_snapshot.toolset_ref_frame)
+            toolset_end_fields = _frame_csv_fields(
+                sample.robot_snapshot.toolset_end_frame
+            )
+            toolset_ref_fields = _frame_csv_fields(
+                sample.robot_snapshot.toolset_ref_frame
+            )
             camera_board_fields = _transform_csv_fields(sample.board_pose_camera_board)
             base_board_fields = _transform_csv_fields(
                 _compute_base_pose_board(
                     robot_transform=end_transform,
-                    tool_cam=None if calibration_result is None else calibration_result.tool_cam,
+                    tool_cam=(
+                        None
+                        if calibration_result is None
+                        else calibration_result.tool_cam
+                    ),
                     cam_board=sample.board_pose_camera_board,
                 ),
                 translation_scale=1000.0,
@@ -875,8 +949,12 @@ def _write_samples_csv(
             )
 
 
-def _write_hand_eye_result_file(output_path: Path, result: HandEyeCalibrationResult) -> None:
-    tool_cam_rpy_deg = Rotation3D.from_matrix(result.tool_cam[:3, :3]).as_euler("XYZ", degrees=True)
+def _write_hand_eye_result_file(
+    output_path: Path, result: HandEyeCalibrationResult
+) -> None:
+    tool_cam_rpy_deg = Rotation3D.from_matrix(result.tool_cam[:3, :3]).as_euler(
+        "XYZ", degrees=True
+    )
     mean_translation = result.stats.mean_translation_m
     std_translation = result.stats.std_translation_m
     toolset_lines = _build_toolset_result_lines(result.toolset_source)
@@ -891,7 +969,8 @@ def _write_hand_eye_result_file(output_path: Path, result: HandEyeCalibrationRes
         f"toolset_source = {result.toolset_source}",
         f"method = {result.method_name}",
         f"valid_sample_count = {len(result.used_indices)}",
-        "valid_sample_indices = " + ", ".join(str(index) for index in result.used_indices),
+        "valid_sample_indices = "
+        + ", ".join(str(index) for index in result.used_indices),
         "",
         *toolset_lines,
         "",
@@ -925,7 +1004,9 @@ def _write_hand_eye_result_file(output_path: Path, result: HandEyeCalibrationRes
         "",
         "[per_sample_base_board]",
     ]
-    for sample_index, base_board in zip(result.used_indices, result.base_board_list, strict=True):
+    for sample_index, base_board in zip(
+        result.used_indices, result.base_board_list, strict=True
+    ):
         lines.append(f"sample_{sample_index:03d} " + _format_pose_text(base_board))
     output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -972,7 +1053,9 @@ def _maybe_update_hand_eye_result(
     output_path: Path,
     samples: list[SampleRecord],
 ) -> HandEyeCalibrationResult | None:
-    valid_samples = [sample for sample in samples if sample.board_pose_camera_board is not None]
+    valid_samples = [
+        sample for sample in samples if sample.board_pose_camera_board is not None
+    ]
     if len(valid_samples) < 6:
         return None
     base_tool_list: list[np.ndarray] = []
@@ -1016,7 +1099,9 @@ def _maybe_update_hand_eye_result(
     return result
 
 
-def _transform_csv_fields(transform: np.ndarray | None, translation_scale: float = 1.0) -> list[str]:
+def _transform_csv_fields(
+    transform: np.ndarray | None, translation_scale: float = 1.0
+) -> list[str]:
     if transform is None:
         return [""] * 7
     matrix = np.asarray(transform, dtype=np.float64).reshape(4, 4)
@@ -1066,12 +1151,25 @@ def _draw_preview(
     recorded_samples: list[SampleRecord],
 ) -> np.ndarray:
     canvas = frame_bgr.copy()
-    _draw_marker_corners(canvas, charuco_result.marker_corners_px, charuco_result.marker_ids)
+    _draw_marker_corners(
+        canvas, charuco_result.marker_corners_px, charuco_result.marker_ids
+    )
     if charuco_result.charuco_corners_px is not None:
-        points = np.round(charuco_result.charuco_corners_px).astype(np.int32).reshape(-1, 1, 2)
+        points = (
+            np.round(charuco_result.charuco_corners_px)
+            .astype(np.int32)
+            .reshape(-1, 1, 2)
+        )
         cv2.polylines(canvas, [points], True, (0, 255, 0), 2, cv2.LINE_AA)
         for point in charuco_result.charuco_corners_px:
-            cv2.circle(canvas, (int(round(point[0])), int(round(point[1]))), 4, (0, 0, 255), -1, cv2.LINE_AA)
+            cv2.circle(
+                canvas,
+                (int(round(point[0])), int(round(point[1]))),
+                4,
+                (0, 0, 255),
+                -1,
+                cv2.LINE_AA,
+            )
     if charuco_result.rvec is not None and charuco_result.tvec is not None:
         cv2.drawFrameAxes(
             canvas,
@@ -1093,8 +1191,12 @@ def _draw_preview(
         compute_ms=compute_ms,
     )
     guidance_lines = _build_sampling_guidance_lines(recorded_samples)
-    canvas = _draw_text_block(canvas, overlay_lines, (18, 28), color=(255, 255, 255), line_gap=22)
-    canvas = _draw_text_block(canvas, guidance_lines, (18, 412), color=(80, 255, 255), line_gap=22)
+    canvas = _draw_text_block(
+        canvas, overlay_lines, (18, 28), color=(255, 255, 255), line_gap=22
+    )
+    canvas = _draw_text_block(
+        canvas, guidance_lines, (18, 412), color=(80, 255, 255), line_gap=22
+    )
     return canvas
 
 
@@ -1107,11 +1209,16 @@ def _build_overlay_lines(
     sample_count: int,
     compute_ms: float,
 ) -> list[str]:
-    joint_text = ", ".join(f"J{index + 1}={value:.1f}" for index, value in enumerate(robot_snapshot.joint_degrees))
+    joint_text = ", ".join(
+        f"J{index + 1}={value:.1f}"
+        for index, value in enumerate(robot_snapshot.joint_degrees)
+    )
     end_matrix = _robot_end_transform_m_from_snapshot(robot_snapshot)
     board_pose_camera_board = None
     if charuco_result.transform_se3 is not None:
-        board_pose_camera_board = np.asarray(charuco_result.transform_se3, dtype=np.float64).reshape(4, 4)
+        board_pose_camera_board = np.asarray(
+            charuco_result.transform_se3, dtype=np.float64
+        ).reshape(4, 4)
     lines = [
         f"camera_frame={int(frame_packet.frame_id)} camera_ts_ms={float(frame_packet.timestamp_ms):.1f} compute_ms={compute_ms:.2f}",
         "drag=ON arm=left calc=endInRef + T_cam_board + PARK",
@@ -1127,7 +1234,9 @@ def _build_overlay_lines(
     ]
     try:
         cam_board_text = _format_pose_text(
-            None if board_pose_camera_board is None else _camera_board_matrix_m(board_pose_camera_board)
+            None
+            if board_pose_camera_board is None
+            else _camera_board_matrix_m(board_pose_camera_board)
         )
     except ValueError as exc:
         cam_board_text = f"invalid({exc})"
@@ -1139,8 +1248,12 @@ def _build_overlay_lines(
             f"roll:{coverage.span_roll_deg:.1f} pitch:{coverage.span_pitch_deg:.1f} yaw:{coverage.span_yaw_deg:.1f}"
         )
     if calibration_result is not None:
-        tool_cam = np.asarray(calibration_result.tool_cam, dtype=np.float64).reshape(4, 4)
-        tool_cam_rpy = Rotation3D.from_matrix(tool_cam[:3, :3]).as_euler("XYZ", degrees=True)
+        tool_cam = np.asarray(calibration_result.tool_cam, dtype=np.float64).reshape(
+            4, 4
+        )
+        tool_cam_rpy = Rotation3D.from_matrix(tool_cam[:3, :3]).as_euler(
+            "XYZ", degrees=True
+        )
         lines.append(
             f"T_tool_cam_mm=({tool_cam[0, 3] * 1000.0:.1f}, {tool_cam[1, 3] * 1000.0:.1f}, {tool_cam[2, 3] * 1000.0:.1f}) "
             f"rpy=({tool_cam_rpy[0]:.1f}, {tool_cam_rpy[1]:.1f}, {tool_cam_rpy[2]:.1f})"
@@ -1182,9 +1295,16 @@ def _draw_marker_corners(
         cv2.polylines(canvas, [points_i32], True, (255, 255, 0), 2, cv2.LINE_AA)
         center = np.mean(points, axis=0)
         marker_label = (
-            "" if marker_ids is None or marker_index >= len(marker_ids) else str(int(marker_ids[marker_index]))
+            ""
+            if marker_ids is None or marker_index >= len(marker_ids)
+            else str(int(marker_ids[marker_index]))
         )
-        _draw_single_text(canvas, f"M{marker_label}", (int(round(center[0])), int(round(center[1]))), (0, 255, 255))
+        _draw_single_text(
+            canvas,
+            f"M{marker_label}",
+            (int(round(center[0])), int(round(center[1]))),
+            (0, 255, 255),
+        )
 
 
 def _draw_text_block(
@@ -1264,8 +1384,12 @@ def _draw_stroked_text(
 
 
 # region 采样建议
-def _summarize_sampling_coverage(samples: list[SampleRecord]) -> SamplingCoverageSummary | None:
-    valid_samples = [sample for sample in samples if sample.board_pose_camera_board is not None]
+def _summarize_sampling_coverage(
+    samples: list[SampleRecord],
+) -> SamplingCoverageSummary | None:
+    valid_samples = [
+        sample for sample in samples if sample.board_pose_camera_board is not None
+    ]
     if not valid_samples:
         return None
     translations = np.asarray(
@@ -1361,16 +1485,36 @@ def _format_optional_float(value: float | None, digits: int) -> str:
 
 
 def _parse_cli() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="左臂拖动示教 + Orin 左手相机流手眼标定实采页")
-    parser.add_argument(
-        "--replay-run-dir", type=str, default="", help="离线复算模式：指定 runs 目录，按 handeyeCali.py 同款链路重算"
+    parser = argparse.ArgumentParser(
+        description="左臂拖动示教 + Orin 左手相机流手眼标定实采页"
     )
     parser.add_argument(
-        "--service-addr", type=str, default=DEFAULT_ORIN_SERVICE_ADDR, help="Orin camera_pipeline_service 地址"
+        "--replay-run-dir",
+        type=str,
+        default="",
+        help="离线复算模式：指定 runs 目录，按 handeyeCali.py 同款链路重算",
     )
-    parser.add_argument("--camera-name", type=str, default=DEFAULT_CAMERA_NAME, help="逻辑相机名，默认使用左手相机")
-    parser.add_argument("--left-arm-ip", type=str, default=DEFAULT_LEFT_ARM_IP, help="左臂控制器 IP")
-    parser.add_argument("--output-root", type=str, default=str(DEFAULT_OUTPUT_ROOT), help="运行输出根目录")
+    parser.add_argument(
+        "--service-addr",
+        type=str,
+        default=DEFAULT_ORIN_SERVICE_ADDR,
+        help="Orin camera_pipeline_service 地址",
+    )
+    parser.add_argument(
+        "--camera-name",
+        type=str,
+        default=DEFAULT_CAMERA_NAME,
+        help="逻辑相机名，默认使用左手相机",
+    )
+    parser.add_argument(
+        "--left-arm-ip", type=str, default=DEFAULT_LEFT_ARM_IP, help="左臂控制器 IP"
+    )
+    parser.add_argument(
+        "--output-root",
+        type=str,
+        default=str(DEFAULT_OUTPUT_ROOT),
+        help="运行输出根目录",
+    )
     parser.add_argument(
         "--min-charuco-corners",
         type=int,
@@ -1385,7 +1529,9 @@ def _validate_runtime_requirements() -> None:
     _ = cv2.aruco.CharucoBoard
 
 
-def _cartesian_pose_to_matrix_m(cartesian_pose: xCoreSDK_python.CartesianPosition) -> np.ndarray:
+def _cartesian_pose_to_matrix_m(
+    cartesian_pose: xCoreSDK_python.CartesianPosition,
+) -> np.ndarray:
     rotation = Rotation3D.from_euler(
         "XYZ",
         np.asarray(cartesian_pose.rpy, dtype=np.float64).reshape(3),
@@ -1410,7 +1556,10 @@ def _robot_end_transform_m_from_snapshot(robot_snapshot: RobotSnapshot) -> np.nd
     _validate_right_handed_rotation("robot_end", rotation)
     matrix = np.eye(4, dtype=np.float64)
     matrix[:3, :3] = rotation
-    matrix[:3, 3] = np.asarray(robot_snapshot.end_translation_mm, dtype=np.float64).reshape(3) * 0.001
+    matrix[:3, 3] = (
+        np.asarray(robot_snapshot.end_translation_mm, dtype=np.float64).reshape(3)
+        * 0.001
+    )
     return matrix
 
 
@@ -1431,13 +1580,19 @@ def _validate_right_handed_rotation(name: str, rotation: np.ndarray) -> None:
     determinant = float(np.linalg.det(matrix))
     if determinant <= 0.0:
         raise ValueError(f"{name} 旋转矩阵不是右手系：det={determinant:.9f}")
-    orthogonality_error = float(np.linalg.norm(matrix.T @ matrix - np.eye(3, dtype=np.float64)))
+    orthogonality_error = float(
+        np.linalg.norm(matrix.T @ matrix - np.eye(3, dtype=np.float64))
+    )
     if orthogonality_error > 1e-3:
         raise ValueError(f"{name} 旋转矩阵不正交：error={orthogonality_error:.9f}")
 
 
-def _rotation_matrix_to_quaternion_wxyz(rotation: np.ndarray) -> tuple[float, float, float, float]:
-    quat_xyzw = Rotation3D.from_matrix(np.asarray(rotation, dtype=np.float64).reshape(3, 3)).as_quat()
+def _rotation_matrix_to_quaternion_wxyz(
+    rotation: np.ndarray,
+) -> tuple[float, float, float, float]:
+    quat_xyzw = Rotation3D.from_matrix(
+        np.asarray(rotation, dtype=np.float64).reshape(3, 3)
+    ).as_quat()
     return (
         float(quat_xyzw[3]),
         float(quat_xyzw[0]),

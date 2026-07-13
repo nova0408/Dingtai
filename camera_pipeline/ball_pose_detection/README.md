@@ -1,79 +1,75 @@
 # Ball Pose Detection
 
-`camera_pipeline.ball_pose_detection` 只负责 RGBD 小球检测，不负责坐标系生成、位姿求解或结果回传拼装。
+## 单一职责
 
-## 算法逻辑
+`ball_pose_detection` 根据一帧 RGBD 和球颜色/尺寸先验，输出各球的二维圆、相机坐标系三维圆心和估计半径。它不构造多球坐标系、不访问相机、不等待稳定帧，也不创建 RPC。
 
-输入是一帧 RGBD 图像和一组球先验。
+## 模块结构
 
-服务端只做下面这些事情：
+| 文件 | 职责 |
+| --- | --- |
+| `types.py` | 帧协议、配置和内部观测结果 |
+| `priors.py` | 球颜色、半径和模型位置先验 |
+| `detector.py` | 颜色分割、轮廓几何筛选和深度反投影 |
+| `service.py` | 将先验和检测结果组装为响应/debug |
+| `protocol.py` | 请求、响应和 debug 协议 |
 
-1. 根据球颜色在 RGB 图中分割候选区域。
-2. 对每个候选区域提取轮廓，计算圆心像素位置和像素半径。
-3. 结合深度图把圆心反投影到相机坐标系，得到球圆心三维坐标。
-4. 根据相机内参与深度估计一个物理半径，作为检测半径输出。
-5. 按先验颜色顺序返回三个球的检测结果。
+## 算法理论
 
-服务端不构建黄球原点坐标系，不构建红球 x 轴，不判断紫球是否落在 xoy 平面，也不输出任何刚体变换矩阵。
+### 颜色分割
 
-## 输入数据
+输入 BGR 转换到 HSV，根据每种 HEX 颜色映射的 HSV 区间生成 mask。红色跨越 HSV 首尾，因此使用两个区间合并。连通域按面积筛选后提取轮廓。
 
-### `BallPoseDetectionRequest`
+### 圆形几何筛选
 
-- `request_id`: 请求编号
-- `camera_name`: 相机名称
-- `frame_id`: 要处理的 frame 编号
-- `enable_debug`: 是否返回 debug 数据
-- `priors`: 球先验列表，主要提供颜色和半径先验
+候选轮廓计算最小外接圆、面积、周长和填充率。圆形度定义为：
 
-### `BallPosePriorInfo`
+```text
+circularity = 4πA / P²
+```
 
-- `color_hex`: 球颜色，使用 HEX 码表示
-- `radius_mm`: 球半径，单位 mm
-- `model_center_mm`: 预留字段，检测端不参与坐标系构建
+圆形度、填充率、图像边界余量和候选间距离共同用于排除噪声及重复球。
 
-## 输出数据
+### 三维圆心
 
-### `BallPoseDetectionResponse`
+圆心附近有效深度先排序并按 `depth_trim_ratio` 去除两端异常值，再取稳健深度。针孔反投影为：
 
-- `matched_count`: 成功检测到并估计出圆心的球数量
-- `detections`: 每个球的检测结果摘要，包含：
-  - `color_hex`
-  - `detected`
-  - `center_px`
-  - `center_mm`
-  - `radius_mm`
-  - `radius_px`
-  - `center_norm`
-  - `radius_norm`
-  - `point_count`
-  - `status`
-- `debug`: 调试数据
-- `error`: 错误信息
+```text
+X = (u - cx) * Z / fx
+Y = (v - cy) * Z / fy
+Z = depth_mm
+```
 
-## Debug 数据
+物理半径近似为：
 
-`BallPoseDetectionDebugArtifacts` 中包含：
+```text
+radius_mm = radius_px * Z / ((fx + fy) / 2)
+```
 
-- `color_bgr`: 原始彩色图
-- `depth_mm`: 原始深度图
-- `camera_intrinsics`: 相机内参 `(fx, fy, cx, cy)`
-- `overlay_bgr`: 仅叠加检测结果的图
-- `detection_overlay_bgr`: 仅叠加检测结果的图
-- `detections`: 每个球的 debug 字典
+## 输入输出
 
-当 `enable_debug=False` 时，不再生成这些大对象。
+`BallPoseDetectionRequest` 包含请求号、相机名、帧号、debug 开关和球先验。响应包含 `matched_count`、明确类型的 `BallDetectionInfo` 序列、实际帧号和 `debug_artifacts`。未检测到的坐标使用空元组表达，关闭 debug 时 `debug_artifacts` 为空元组。
 
-## 坐标系说明
+`model_center_mm` 仅随先验传递，当前检测算法不使用它构建位姿。多球坐标系由上层业务根据球心结果建立。
 
-坐标系构建由 `test/wuji/ball_pose_detection.py` 在本地完成：
+关闭 debug 时不复制 RGBD 图、不绘制轮廓叠加图，也不构造 debug 检测列表。
 
-- 黄球圆心作为原点
-- 红球圆心定义 `x` 轴
-- 紫球圆心约束在 `xoy` 平面
+## 调参建议
 
-服务端只返回三个球的圆心坐标，后续位姿、相对变换、对比和可视化都由本地脚本处理。
+1. 先在现场照明下采集 HSV 分布，再调整 `color_ranges`。
+2. `min_component_area_px` 随分辨率和拍摄距离变化，应以最远有效球为下限标定。
+3. `min_circularity` 越高越排斥遮挡和透视变形，过高会漏检。
+4. `min_fill_ratio` 用于排除细环和破碎区域，应结合反光导致的孔洞调整。
+5. `depth_trim_ratio` 用于抑制边缘混合深度；过大可能丢失小球有效点。
+6. `min_depth_points` 必须与球像素尺寸和深度空洞率共同标定。
+7. `min_center_distance_ratio` 控制相邻同色候选去重。
+8. 调参时同时检查二维圆、有效深度点数、三维半径和球间几何关系。
 
-## 备注
+## 局限性
 
-该模块不负责相机采集、不负责 RPC 端点配置，也不负责先验采集脚本。
+- HSV 阈值对光照、曝光、白平衡和高光敏感。
+- 圆模型不适合严重遮挡、强透视或非球形目标。
+- 单点邻域深度容易受到透明、反光和边缘混合影响。
+- 半径公式是针孔小角度近似，不是完整球面拟合。
+- 当前不执行跨帧跟踪，也不利用模型球间距离联合优化。
+- 输出位于相机坐标系，外参误差不属于本模块处理范围。

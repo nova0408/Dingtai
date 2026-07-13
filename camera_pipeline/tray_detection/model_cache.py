@@ -23,8 +23,12 @@ def prepare_hf_cache_dir(cache_dir: str) -> str:
     return cache_str
 
 
-def load_pretrained_with_project_cache(loader, model_id: str, cache_dir: str, local_files_only: bool, role: str):
-    store_dir = _project_model_store_dir(cache_dir=cache_dir, role=role, model_id=model_id)
+def load_pretrained_with_project_cache(
+    loader, model_id: str, cache_dir: str, local_files_only: bool, role: str
+):
+    store_dir = _project_model_store_dir(
+        cache_dir=cache_dir, role=role, model_id=model_id
+    )
     if store_dir.exists():
         return loader(str(store_dir), local_files_only=True)
     obj = loader(model_id, cache_dir=cache_dir, local_files_only=local_files_only)
@@ -42,4 +46,6 @@ def _safe_model_id(model_id: str) -> str:
 
 
 def _project_model_store_dir(cache_dir: str, role: str, model_id: str) -> Path:
-    return Path(cache_dir) / "project_store" / str(role).strip() / _safe_model_id(model_id)
+    return (
+        Path(cache_dir) / "project_store" / str(role).strip() / _safe_model_id(model_id)
+    )

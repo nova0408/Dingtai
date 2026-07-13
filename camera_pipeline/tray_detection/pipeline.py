@@ -1,25 +1,35 @@
 from __future__ import annotations
 
+# pyright: reportMissingImports=false
+
 import threading
-from typing import Any, cast
 
 import cv2
 import numpy as np
 
 from .detector import TrayPointExcluder
 from .motion_shift import estimate_phase_shift, prepare_tracking_gray, warp_mask
-from .types import TrayDetection, TrayDetectionConfig, TrayPipelineConfig, TrayRuntimeState
+from .types import (
+    TrayDetection,
+    TrayDetectionConfig,
+    TrayPipelineConfig,
+    TrayRuntimeState,
+)
 
 
 class TrayDetectionPipeline:
     def __init__(
-        self, tray_detector: TrayPointExcluder | None, config: TrayPipelineConfig | None = None
+        self,
+        tray_detector: TrayPointExcluder | None,
+        config: TrayPipelineConfig | None = None,
     ) -> None:
         self._tray_detector = tray_detector
         self._config = config if config is not None else TrayPipelineConfig()
 
     @staticmethod
-    def build_detector(config: TrayDetectionConfig | None = None) -> TrayPointExcluder | None:
+    def build_detector(
+        config: TrayDetectionConfig | None = None,
+    ) -> TrayPointExcluder | None:
         try:
             cfg = TrayDetectionConfig() if config is None else config
             return TrayPointExcluder(cfg)
@@ -71,7 +81,10 @@ class TrayDetectionPipeline:
             cached_ok = bool(state.cached_ok)
         if len(cached_detections) == 0:
             return fast_detections, False
-        return self._warp_tray_detections(cached_detections, motion_dx, motion_dy), cached_ok
+        return (
+            self._warp_tray_detections(cached_detections, motion_dx, motion_dy),
+            cached_ok,
+        )
 
     def _start_async_refine(self, rgb_bgr: np.ndarray, state: TrayRuntimeState) -> None:
         if self._tray_detector is None:
@@ -120,9 +133,9 @@ class TrayDetectionPipeline:
         h, w = rgb_bgr.shape[:2]
         gray = cv2.cvtColor(rgb_bgr, cv2.COLOR_BGR2GRAY)
         gray_f = np.asarray(gray, dtype=np.float64)
-        base = (gray_f <= np.percentile(cast(Any, gray_f), float(self._config.fast_gray_percentile))).astype(
-            np.uint8
-        ) * 255
+        base = (
+            gray_f <= np.percentile(gray_f, float(self._config.fast_gray_percentile))
+        ).astype(np.uint8) * 255
         base = cv2.morphologyEx(
             base, cv2.MORPH_CLOSE, np.ones((7, 7), dtype=np.uint8), iterations=1
         )
@@ -136,8 +149,12 @@ class TrayDetectionPipeline:
             area = float(stats[idx, cv2.CC_STAT_AREA])
             if area < 400.0:
                 continue
-            cx = float(stats[idx, cv2.CC_STAT_LEFT] + 0.5 * stats[idx, cv2.CC_STAT_WIDTH])
-            cy = float(stats[idx, cv2.CC_STAT_TOP] + 0.5 * stats[idx, cv2.CC_STAT_HEIGHT])
+            cx = float(
+                stats[idx, cv2.CC_STAT_LEFT] + 0.5 * stats[idx, cv2.CC_STAT_WIDTH]
+            )
+            cy = float(
+                stats[idx, cv2.CC_STAT_TOP] + 0.5 * stats[idx, cv2.CC_STAT_HEIGHT]
+            )
             dist = float(np.linalg.norm(np.array([cx, cy], dtype=np.float64) - tgt))
             score = area - 1.2 * dist
             mask = np.zeros((h, w), dtype=np.uint8)
@@ -150,7 +167,9 @@ class TrayDetectionPipeline:
                     score,
                     TrayDetection(
                         label_text=f"fast_tray_{idx}",
-                        confidence_2d=float(np.clip(area / max(1.0, 0.25 * h * w), 0.0, 1.0)),
+                        confidence_2d=float(
+                            np.clip(area / max(1.0, 0.25 * h * w), 0.0, 1.0)
+                        ),
                         contour=contour,
                         mask=mask,
                         excluded_points=0,
@@ -162,9 +181,11 @@ class TrayDetectionPipeline:
             1,
             int(
                 getattr(
-                    self._tray_detector.config
-                    if self._tray_detector is not None
-                    else TrayDetectionConfig(),
+                    (
+                        self._tray_detector.config
+                        if self._tray_detector is not None
+                        else TrayDetectionConfig()
+                    ),
                     "max_targets",
                     1,
                 )
@@ -172,9 +193,14 @@ class TrayDetectionPipeline:
         )
         return [item[1] for item in candidates[:max_targets]]
 
-    def _estimate_motion(self, rgb_bgr: np.ndarray, state: TrayRuntimeState) -> tuple[float, float]:
+    def _estimate_motion(
+        self, rgb_bgr: np.ndarray, state: TrayRuntimeState
+    ) -> tuple[float, float]:
         max_side = int(
-            round(max(rgb_bgr.shape[0], rgb_bgr.shape[1]) * float(self._config.motion_downsample))
+            round(
+                max(rgb_bgr.shape[0], rgb_bgr.shape[1])
+                * float(self._config.motion_downsample)
+            )
         )
         small, scale = prepare_tracking_gray(rgb_bgr, max(32, max_side))
         small_u8 = np.asarray(np.clip(small, 0.0, 255.0), dtype=np.uint8)
@@ -210,7 +236,9 @@ class TrayDetectionPipeline:
 
     @staticmethod
     def _warp_mask(mask: np.ndarray, dx: float, dy: float) -> np.ndarray:
-        return warp_mask(np.asarray(mask, dtype=np.uint8), dx_px=float(dx), dy_px=float(dy))
+        return warp_mask(
+            np.asarray(mask, dtype=np.uint8), dx_px=float(dx), dy_px=float(dy)
+        )
 
     def _warp_tray_detections(
         self, detections: list[TrayDetection], dx: float, dy: float

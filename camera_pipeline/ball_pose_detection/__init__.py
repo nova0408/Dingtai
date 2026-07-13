@@ -2,20 +2,18 @@
 
 from .detector import BallPoseDetector
 from .protocol import (
+    BallDetectionInfo,
     BallPoseDetectionDebugArtifacts,
     BallPoseDetectionRequest,
     BallPoseDetectionResponse,
     BallPosePriorInfo,
 )
-from .transport import BallPoseDetectionRpcClient, BallPoseDetectionRpcServer, ZmqSocketOptions
 
 __all__ = [
+    "BallDetectionInfo",
     "BallPoseDetectionDebugArtifacts",
     "BallPoseDetectionRequest",
     "BallPoseDetectionResponse",
-    "BallPoseDetectionRpcClient",
-    "BallPoseDetectionRpcServer",
     "BallPoseDetector",
     "BallPosePriorInfo",
-    "ZmqSocketOptions",
 ]

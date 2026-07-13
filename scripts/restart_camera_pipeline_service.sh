@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SERVICE_PATTERN="python -m camera_pipeline.service camera_pipeline_service --bind-addr tcp://0.0.0.0:6200 --control-port 5570 --stream-port 5562 --camera-id LEFT --camera-name left_hand_camera"
-SERVICE_CMD="/home/wuji-brain/miniconda3/envs/py38_tourch/bin/python -m camera_pipeline.service camera_pipeline_service --bind-addr tcp://0.0.0.0:6200 --control-port 5570 --stream-port 5562 --camera-id LEFT --camera-name left_hand_camera"
+SERVICE_PATTERN="python -m camera_pipeline.service --bind-addr tcp://0.0.0.0:6200 --control-port 5570 --stream-port 5562 --camera-id LEFT --camera-name left_hand_camera"
+SERVICE_CMD="/home/wuji-brain/miniconda3/envs/py38_tourch/bin/python -m camera_pipeline.service --bind-addr tcp://0.0.0.0:6200 --control-port 5570 --stream-port 5562 --camera-id LEFT --camera-name left_hand_camera"
 LOG_PATH="/tmp/camera_pipeline_service.log"
 WORKSPACE_DIR="/home/wuji-brain/workspace"
 

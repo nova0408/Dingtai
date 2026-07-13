@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+# pyright: reportMissingImports=false
+
 from dataclasses import dataclass, field
 import concurrent.futures
 from typing import Protocol
@@ -8,9 +10,13 @@ import cv2
 import numpy as np
 
 from .opening_pipeline import OpeningDetectionPipeline
-from .pose_pipeline import GraspPoseEstimator, GraspPoseEstimatorConfig, TemporalFilterState
+from .pose_pipeline import (
+    GraspPoseEstimator,
+    GraspPoseEstimatorConfig,
+    TemporalFilterState,
+)
 from .protocol import DebugArtifacts, GraspPoseInfo, TrayPoseInfo
-from .types import GraspResult, OpeningDetection
+from .types import GraspResult, OpeningDetection, OpeningDetectionConfig
 
 
 class CameraIntrinsicsProtocol(Protocol):
@@ -35,11 +41,18 @@ class CameraIntrinsicsProtocol(Protocol):
     def height(self) -> int: ...
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class OpeningDetectionPipelineExecutorConfig:
     """开口检测与位姿计算执行器配置。"""
 
-    pose_config: GraspPoseEstimatorConfig = field(default_factory=GraspPoseEstimatorConfig)
+    opening_config: OpeningDetectionConfig = field(
+        default_factory=OpeningDetectionConfig
+    )
+    "开口图像预处理和区域生长参数。"
+    pose_config: GraspPoseEstimatorConfig = field(
+        default_factory=GraspPoseEstimatorConfig
+    )
+    "抓取几何和时序平滑参数。"
 
 
 class OpeningDetectionPipelineExecutor:
@@ -51,9 +64,13 @@ class OpeningDetectionPipelineExecutor:
     - 只输出开口检测、局部平面和抓取位姿结果。
     """
 
-    def __init__(self, config: OpeningDetectionPipelineExecutorConfig | None = None) -> None:
-        self._config = OpeningDetectionPipelineExecutorConfig() if config is None else config
-        self._opening_pipeline = OpeningDetectionPipeline()
+    def __init__(
+        self, config: OpeningDetectionPipelineExecutorConfig | None = None
+    ) -> None:
+        self._config = (
+            OpeningDetectionPipelineExecutorConfig() if config is None else config
+        )
+        self._opening_pipeline = OpeningDetectionPipeline(self._config.opening_config)
         self._pose_estimator = GraspPoseEstimator(self._config.pose_config)
         self._temporal_state = TemporalFilterState()
 
@@ -64,14 +81,18 @@ class OpeningDetectionPipelineExecutor:
         request_id: int,
         target_tray_index: int,
         enable_debug: bool = True,
-    ) -> tuple[TrayPoseInfo, DebugArtifacts | None]:
+    ) -> tuple[TrayPoseInfo, tuple[DebugArtifacts, ...]]:
         """基于单帧图像和单个托盘掩码计算开口与抓取位姿。"""
 
         color_bgr = np.asarray(frame.color_bgr, dtype=np.uint8)
         depth_mm = np.asarray(frame.depth_mm, dtype=np.float64)
         tray_mask_u8 = np.asarray(tray_mask, dtype=np.uint8)
-        _, hp_gray, hp_edge = self._opening_pipeline.build_high_contrast_domain(color_bgr)
-        opening = self._opening_pipeline.detect_opening(color_bgr, tray_mask_u8, hp_gray, hp_edge)
+        _, hp_gray, hp_edge = self._opening_pipeline.build_high_contrast_domain(
+            color_bgr
+        )
+        opening = self._opening_pipeline.detect_opening(
+            color_bgr, tray_mask_u8, hp_gray, hp_edge
+        )
         xyz, rgb = self._rgbd_to_points(
             depth_mm,
             color_bgr,
@@ -117,9 +138,10 @@ class OpeningDetectionPipelineExecutor:
         )
         near_plane_mask: np.ndarray | None = None
         no_hole_mask: np.ndarray | None = None
-        top_quad: np.ndarray | None = None
         try:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="opening_mask") as executor:
+            with concurrent.futures.ThreadPoolExecutor(
+                max_workers=1, thread_name_prefix="opening_mask"
+            ) as executor:
                 mask_future = executor.submit(
                     self._opening_pipeline.compute_mask_pipeline,
                     tray_mask_u8,
@@ -129,9 +151,12 @@ class OpeningDetectionPipelineExecutor:
                     hp_edge,
                 )
                 near_plane_mask, no_hole_mask = mask_future.result(timeout=0.06)
-                top_quad = self._opening_pipeline.fit_rotated_quad(no_hole_mask)
-                top_normal = self._opening_pipeline.estimate_top_plane_normal(xyz, no_hole_mask, uv, valid)
-                top_normal = self._pose_estimator.stabilize_top_normal(top_normal, self._temporal_state)
+                top_normal = self._opening_pipeline.estimate_top_plane_normal(
+                    xyz, no_hole_mask, uv, valid
+                )
+                top_normal = self._pose_estimator.stabilize_top_normal(
+                    top_normal, self._temporal_state
+                )
                 grasp = self._pose_estimator.compute_grasp(
                     opening=opening,
                     plane=plane,
@@ -143,23 +168,36 @@ class OpeningDetectionPipelineExecutor:
         except Exception:
             pass
         grasp = self._pose_estimator.stabilize_grasp_result(grasp, self._temporal_state)
+        if grasp is None:
+            raise RuntimeError("无法从开口平面计算有效抓取位姿")
         tray_pose = self._build_tray_pose_info(
             target_tray_index=int(target_tray_index),
             opening=opening,
             grasp=grasp,
         )
-        debug = self._build_debug_artifacts(
-            color_bgr=color_bgr,
-            depth_mm=depth_mm,
-            tray_mask=tray_mask_u8,
-            hp_gray=hp_gray,
-            near_plane_mask=near_plane_mask,
-            no_hole_mask=no_hole_mask,
-            opening=opening,
-            grasp=grasp,
-            frame_intrinsics=(float(frame.fx), float(frame.fy), float(frame.cx), float(frame.cy)),
-        ) if bool(enable_debug) else None
-        return tray_pose, debug
+        debug_artifacts = (
+            (
+                self._build_debug_artifacts(
+                    color_bgr=color_bgr,
+                    depth_mm=depth_mm,
+                    tray_mask=tray_mask_u8,
+                    hp_gray=hp_gray,
+                    near_plane_mask=near_plane_mask,
+                    no_hole_mask=no_hole_mask,
+                    opening=opening,
+                    grasp=grasp,
+                    frame_intrinsics=(
+                        float(frame.fx),
+                        float(frame.fy),
+                        float(frame.cx),
+                        float(frame.cy),
+                    ),
+                ),
+            )
+            if bool(enable_debug)
+            else ()
+        )
+        return tray_pose, debug_artifacts
 
     @staticmethod
     def _rgbd_to_points(
@@ -171,7 +209,9 @@ class OpeningDetectionPipelineExecutor:
         cy: float,
     ) -> tuple[np.ndarray, np.ndarray]:
         height, width = depth_mm.shape[:2]
-        uu, vv = np.meshgrid(np.arange(width, dtype=np.float64), np.arange(height, dtype=np.float64))
+        uu, vv = np.meshgrid(
+            np.arange(width, dtype=np.float64), np.arange(height, dtype=np.float64)
+        )
         z = np.asarray(depth_mm, dtype=np.float64)
         valid = np.isfinite(z) & (z > 0.0)
         x = (uu - float(cx)) * z / max(1e-9, float(fx))
@@ -196,30 +236,31 @@ class OpeningDetectionPipelineExecutor:
         u = (xyz[:, 0] * float(fx)) / np.maximum(1e-9, z) + float(cx)
         v = (xyz[:, 1] * float(fy)) / np.maximum(1e-9, z) + float(cy)
         uv = np.column_stack([u, v]).astype(np.int32)
-        valid &= (uv[:, 0] >= 0) & (uv[:, 0] < int(width)) & (uv[:, 1] >= 0) & (uv[:, 1] < int(height))
+        valid &= (
+            (uv[:, 0] >= 0)
+            & (uv[:, 0] < int(width))
+            & (uv[:, 1] >= 0)
+            & (uv[:, 1] < int(height))
+        )
         return uv, valid
 
     @staticmethod
     def _build_tray_pose_info(
         target_tray_index: int,
         opening: OpeningDetection,
-        grasp: GraspResult | None,
+        grasp: GraspResult,
     ) -> TrayPoseInfo:
-        pose = None
-        if grasp is not None:
-            pose = GraspPoseInfo(
-                grasp_point_mm=tuple(float(v) for v in np.asarray(grasp.grasp_point, dtype=np.float64)),
-                pre_grasp_point_mm=tuple(float(v) for v in np.asarray(grasp.pre_grasp_point, dtype=np.float64)),
-                rotation=tuple(tuple(float(v) for v in row) for row in np.asarray(grasp.rotation, dtype=np.float64)),
-                rpy_deg=None,
-            )
+        pose = GraspPoseInfo(
+            grasp_point_mm=_point3(grasp.grasp_point),
+            pre_grasp_point_mm=_point3(grasp.pre_grasp_point),
+            rotation=_matrix3(grasp.rotation),
+        )
         return TrayPoseInfo(
             tray_index=int(target_tray_index),
-            tray_bbox_xywh=tuple(int(v) for v in opening.bbox_xywh),
-            tray_center_uv=tuple(float(v) for v in np.asarray(opening.center_uv, dtype=np.float64)),
-            opening_center_uv=tuple(float(v) for v in np.asarray(opening.center_uv, dtype=np.float64)),
-            opening_quad_uv=tuple(tuple(float(v) for v in row) for row in np.asarray(opening.quad_uv, dtype=np.float64)),
-            top_quad_uv=None,
+            tray_bbox_xywh=_bbox4(opening.bbox_xywh),
+            tray_center_uv=_point2(opening.center_uv),
+            opening_center_uv=_point2(opening.center_uv),
+            opening_quad_uv=_quad2(opening.quad_uv),
             pose=pose,
         )
 
@@ -232,12 +273,28 @@ class OpeningDetectionPipelineExecutor:
         near_plane_mask: np.ndarray | None,
         no_hole_mask: np.ndarray | None,
         opening: OpeningDetection,
-        grasp: GraspResult | None,
+        grasp: GraspResult,
         frame_intrinsics: tuple[float, float, float, float],
     ) -> DebugArtifacts:
         overlay = np.asarray(color_bgr, dtype=np.uint8).copy()
-        cv2.polylines(overlay, [np.round(opening.quad_uv).astype(np.int32)], True, (0, 220, 255), 2, cv2.LINE_AA)
-        cv2.putText(overlay, "opening", tuple(np.round(opening.center_uv).astype(np.int32)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 220, 255), 1, cv2.LINE_AA)
+        cv2.polylines(
+            overlay,
+            [np.round(opening.quad_uv).astype(np.int32)],
+            True,
+            (0, 220, 255),
+            2,
+            cv2.LINE_AA,
+        )
+        cv2.putText(
+            overlay,
+            "opening",
+            tuple(np.round(opening.center_uv).astype(np.int32)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            (0, 220, 255),
+            1,
+            cv2.LINE_AA,
+        )
         contrast = cv2.cvtColor(np.asarray(hp_gray, dtype=np.uint8), cv2.COLOR_GRAY2BGR)
         return DebugArtifacts(
             color_bgr=color_bgr,
@@ -247,20 +304,60 @@ class OpeningDetectionPipelineExecutor:
             contrast_bgr=contrast,
             tray_instance_masks=(tray_mask,),
             selected_tray_mask=tray_mask,
-            near_plane_mask=near_plane_mask,
-            no_hole_mask=no_hole_mask,
-            opening_center_uv=tuple(float(v) for v in np.asarray(opening.center_uv, dtype=np.float64)),
-            opening_quad_uv=tuple(tuple(float(v) for v in row) for row in np.asarray(opening.quad_uv, dtype=np.float64)),
-            opening_bbox_xywh=tuple(int(v) for v in opening.bbox_xywh),
+            near_plane_masks=() if near_plane_mask is None else (near_plane_mask,),
+            no_hole_masks=() if no_hole_mask is None else (no_hole_mask,),
+            opening_center_uv=_point2(opening.center_uv),
+            opening_quad_uv=_quad2(opening.quad_uv),
+            opening_bbox_xywh=_bbox4(opening.bbox_xywh),
             opening_score=float(opening.score),
-            grasp_point_mm=None if grasp is None else tuple(float(v) for v in np.asarray(grasp.grasp_point, dtype=np.float64)),
-            pre_grasp_point_mm=None if grasp is None else tuple(float(v) for v in np.asarray(grasp.pre_grasp_point, dtype=np.float64)),
-            rotation=None if grasp is None else tuple(tuple(float(v) for v in row) for row in np.asarray(grasp.rotation, dtype=np.float64)),
+            grasp_point_mm=_point3(grasp.grasp_point),
+            pre_grasp_point_mm=_point3(grasp.pre_grasp_point),
+            rotation=_matrix3(grasp.rotation),
         )
 
 
-@dataclass(frozen=True)
+def _point2(values: np.ndarray) -> tuple[float, float]:
+    return float(values[0]), float(values[1])
+
+
+def _point3(values: np.ndarray) -> tuple[float, float, float]:
+    return float(values[0]), float(values[1]), float(values[2])
+
+
+def _quad2(
+    values: np.ndarray,
+) -> tuple[
+    tuple[float, float],
+    tuple[float, float],
+    tuple[float, float],
+    tuple[float, float],
+]:
+    return (
+        _point2(values[0]),
+        _point2(values[1]),
+        _point2(values[2]),
+        _point2(values[3]),
+    )
+
+
+def _matrix3(
+    values: np.ndarray,
+) -> tuple[
+    tuple[float, float, float],
+    tuple[float, float, float],
+    tuple[float, float, float],
+]:
+    return _point3(values[0]), _point3(values[1]), _point3(values[2])
+
+
+def _bbox4(values: tuple[int, int, int, int]) -> tuple[int, int, int, int]:
+    return values[0], values[1], values[2], values[3]
+
+
+@dataclass(frozen=True, slots=True)
 class _FrameIntrinsics:
+    """由当前 RGBD 帧提取的针孔相机内参。"""
+
     width: int
     height: int
     fx: float

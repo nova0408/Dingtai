@@ -91,6 +91,15 @@ DEFAULT_REPLAY_JOINT_SPEED = 600.0
 DEFAULT_REPLAY_CARTESIAN_SPEED = 30.0
 "回放笛卡尔空间速度，单位 mm/s。"
 
+DEFAULT_REPLAY_JOINT_CONTINUOUS_ZONE = DEFAULT_JOINT_ZONE
+"连续关节回放中间点转弯区，沿用 xCoreSDK 关节 zone 单位。"
+
+CSV_KEEP_END_CONTINUOUS_ZONE_SEQUENCES: set[int] = set()
+"这些 CSV 序号的最后一个 arm 点不强制 zone=0，而是继续使用连续转弯区。"
+
+CSV_KEEP_END_CONTINUOUS_ZONE_NAMES: set[str] = set()
+"这些 CSV 文件名的最后一个 arm 点不强制 zone=0，而是继续使用连续转弯区。"
+
 DEFAULT_REPLAY_LIFT_SETTLE_DELAY_S = 1.0
 "回放 lift 单次等待时间，单位 s。"
 
@@ -175,6 +184,16 @@ class ParsedArmPose:
     has_elbow: bool | None
     elbow_deg: float | None
     conf_data: tuple[int, ...] | None
+
+
+@dataclass(frozen=True, slots=True)
+class ArmMoveAbsJTarget:
+    """单条 arm 记录最终用于 MoveAbsJ 的关节目标。"""
+
+    row: ReplayRow
+    target_joint: xCoreSDK_python.JointPosition
+    joint_deg: list[float]
+    source: str
 
 
 @dataclass(slots=True)
@@ -302,6 +321,13 @@ def _should_apply_global_cartesian_offset(csv_name: str) -> bool:
 
 def _should_trigger_offset_calculation(runtime: ReplayRuntime, csv_name: str) -> bool:
     return runtime.connected_arm.arm_side == "left" and _extract_csv_sequence(csv_name) == CSV_CARTESIAN_OFFSET_CALCULATE_AT
+
+
+def _should_keep_csv_end_continuous_zone(csv_name: str) -> bool:
+    return (
+        csv_name in CSV_KEEP_END_CONTINUOUS_ZONE_NAMES
+        or _extract_csv_sequence(csv_name) in CSV_KEEP_END_CONTINUOUS_ZONE_SEQUENCES
+    )
 
 
 def _format_optional_csv_sequence(sequence: int | None) -> str:
@@ -608,6 +634,81 @@ def _build_cartesian_target(runtime: ReplayRuntime, row: ReplayRow) -> xCoreSDK_
     return target_pose
 
 
+def _build_move_abs_j_target(runtime: ReplayRuntime, row: ReplayRow) -> ArmMoveAbsJTarget:
+    if row.pose_text.strip().lower() == "nan":
+        target_joint_deg = _parse_joint_values(row.joints_text)
+        return ArmMoveAbsJTarget(
+            row=row,
+            target_joint=xCoreSDK_python.JointPosition(_deg_to_rad(target_joint_deg)),
+            joint_deg=target_joint_deg,
+            source="csv-joints",
+        )
+
+    target_pose = _build_cartesian_target(runtime, row)
+    robot = runtime.connected_arm.robot
+    ec = runtime.connected_arm.ec
+    applies_offset = _should_apply_global_cartesian_offset(row.csv_name)
+    robot_model = robot.model()
+    toolset = _retry_non_motion_call(
+        f"toolset(replay-arm-ik:{row.csv_name}:{row.row_index})",
+        lambda: robot.toolset(ec),
+    )
+    _print_sdk_result("toolset(replay-arm-ik)", ec)
+    if ec.get("ec", 0) != 0:
+        raise RuntimeError("回放 arm 读取 toolset 失败")
+    target_joint = robot_model.calcIk(target_pose, toolset, ec)
+    _print_sdk_result("calcIk(replay-arm-moveabsj)", ec)
+    if ec.get("ec", 0) == 0:
+        return ArmMoveAbsJTarget(
+            row=row,
+            target_joint=target_joint,
+            joint_deg=_rad_to_deg(list(target_joint.joints)),
+            source="tcp-ik-offset" if applies_offset else "tcp-ik",
+        )
+
+    failed_ec = ec.get("ec", 0)
+    failed_message = ec.get("message", "")
+    if applies_offset:
+        logger.warning(
+            "offset 后 T_new_tcp 逆解失败，无法生成 MoveAbsJ 目标 file={} row={} ec={} message={}",
+            row.csv_name,
+            row.row_index,
+            failed_ec,
+            failed_message,
+        )
+        raise RuntimeError("offset 后 T_new_tcp 逆解失败，无法生成 MoveAbsJ 目标")
+
+    try:
+        fallback_joint_deg = _parse_joint_values(row.joints_text)
+    except ValueError as exc:
+        logger.warning(
+            "原始 TCP 逆解失败，且 CSV 记录关节值不可用 file={} row={} ec={} message={} parse_error={}",
+            row.csv_name,
+            row.row_index,
+            failed_ec,
+            failed_message,
+            exc,
+        )
+        raise RuntimeError("原始 TCP 逆解失败，且 CSV joints 兜底不可用") from exc
+    ec["ec"] = 0
+    ec["message"] = "原始 TCP 逆解失败，已改用 CSV 记录关节值"
+    logger.warning(
+        "原始 TCP 逆解失败，最终兜底为 CSV joints MoveAbsJ file={} row={} "
+        "ik_ec={} ik_message={} joints(deg)=[{}]",
+        row.csv_name,
+        row.row_index,
+        failed_ec,
+        failed_message,
+        _format_sequence(fallback_joint_deg),
+    )
+    return ArmMoveAbsJTarget(
+        row=row,
+        target_joint=xCoreSDK_python.JointPosition(_deg_to_rad(fallback_joint_deg)),
+        joint_deg=fallback_joint_deg,
+        source="csv-joints-fallback",
+    )
+
+
 def _frame_to_homogeneous_matrix(frame: xCoreSDK_python.CartesianPosition) -> list[list[float]]:
     """把 SDK 返回的 `CartesianPosition` 转为内部计算矩阵。
 
@@ -800,7 +901,7 @@ def _detect_current_three_ball_basis_transform(
                     request_id=sample_index + 1,
                     camera_name=str(camera_name),
                     frame_id=-1,
-                    enable_debug=True,
+                    enable_debug=False,
                     priors=tuple(priors),
                 )
             )
@@ -1174,16 +1275,17 @@ def _execute_cartesian_row(
 def _execute_gripper_row(runtime: ReplayRuntime, row: ReplayRow) -> None:
     if runtime.gripper is None:
         raise RuntimeError("当前 runtime 未配置左手夹爪客户端")
+    gripper = runtime.gripper
     target_value = int(round(float(row.pose_text)))
     if not _retry_non_motion_call(
         f"gripper.set_pos({row.csv_name}:{row.row_index})",
-        lambda: runtime.gripper.set_pos(target_value),
+        lambda: gripper.set_pos(target_value),
     ):
         raise RuntimeError("夹爪 set_pos 下发失败")
     logger.info("已下发夹爪目标 file={} row={} pos={}，当前策略不等待到位", row.csv_name, row.row_index, target_value)
     deadline_hint = _retry_non_motion_call(
         f"gripper.get_status({row.csv_name}:{row.row_index})",
-        lambda: runtime.gripper.get_status(),
+        lambda: gripper.get_status(),
     )
     logger.info("夹爪当前状态 pos={} calibrated={}", deadline_hint.position, bool(deadline_hint.calibrated))
 
@@ -1191,9 +1293,10 @@ def _execute_gripper_row(runtime: ReplayRuntime, row: ReplayRow) -> None:
 def _get_right_hand_positions(runtime: ReplayRuntime) -> list[float]:
     if runtime.right_hand is None:
         raise RuntimeError("当前 runtime 未配置右手 m11 客户端")
+    right_hand = runtime.right_hand
     state = _retry_non_motion_call(
         f"right_hand.get_hand_state({runtime.connected_arm.arm_side})",
-        lambda: runtime.right_hand.get_hand_state(include_tactile=False),
+        lambda: right_hand.get_hand_state(include_tactile=False),
     )
     if state is None:
         raise RuntimeError("右手状态不可用")
@@ -1214,6 +1317,7 @@ def _get_right_hand_positions(runtime: ReplayRuntime) -> list[float]:
 def _execute_m11_row(runtime: ReplayRuntime, row: ReplayRow) -> None:
     if runtime.right_hand is None:
         raise RuntimeError("当前 runtime 未配置右手 m11 客户端")
+    right_hand = runtime.right_hand
     target_positions = _parse_joint_values(row.joints_text, expected_len=11)
     current_positions = _get_right_hand_positions(runtime)
     required_max_id = max(*M11_ROOT_ACTUATOR_IDS, *M11_TIP_ACTUATOR_IDS)
@@ -1225,7 +1329,7 @@ def _execute_m11_row(runtime: ReplayRuntime, row: ReplayRow) -> None:
         current_positions[actuator_id] = float(target_value)
     if not _retry_non_motion_call(
         f"right_hand.set_hand_state({row.csv_name}:{row.row_index})",
-        lambda: runtime.right_hand.set_hand_state(current_positions),
+        lambda: right_hand.set_hand_state(current_positions),
     ):
         raise RuntimeError("右手 m11 下发失败")
     logger.info(
@@ -1305,6 +1409,92 @@ def _execute_lift_row(runtime: ReplayRuntime, row: ReplayRow) -> None:
     )
 
 
+def _find_final_arm_row_index(rows: list[ReplayRow]) -> int | None:
+    final_row_index = None
+    for row in rows:
+        if row.action_type == "arm":
+            final_row_index = row.row_index
+    return final_row_index
+
+
+def _get_arm_row_zone(row: ReplayRow, final_arm_row_index: int | None) -> float:
+    if (
+        final_arm_row_index is not None
+        and row.row_index == final_arm_row_index
+        and not _should_keep_csv_end_continuous_zone(row.csv_name)
+    ):
+        return 0.0
+    return float(DEFAULT_REPLAY_JOINT_CONTINUOUS_ZONE)
+
+
+def _execute_arm_move_abs_j_segment(
+    runtime: ReplayRuntime,
+    rows: list[ReplayRow],
+    final_arm_row_index: int | None,
+) -> None:
+    if not rows:
+        return
+    robot = runtime.connected_arm.robot
+    ec = runtime.connected_arm.ec
+    targets = [_build_move_abs_j_target(runtime, row) for row in rows]
+    commands: list[xCoreSDK_python.MoveAbsJCommand] = []
+    for target in targets:
+        zone = _get_arm_row_zone(target.row, final_arm_row_index)
+        commands.append(xCoreSDK_python.MoveAbsJCommand(target.target_joint, runtime.joint_speed_deg_s, zone))
+        logger.info(
+            "已生成连续 MoveAbsJ 目标 file={} row={} source={} zone={:.3f} joints(deg)=[{}]",
+            target.row.csv_name,
+            target.row.row_index,
+            target.source,
+            zone,
+            _format_sequence(target.joint_deg),
+        )
+
+    first_row = rows[0]
+    last_row = rows[-1]
+    cmd_id = xCoreSDK_python.PyString()
+    _wait_until_reset_ready(
+        robot,
+        ec,
+        f"moveReset(replay-arm-segment:{runtime.connected_arm.arm_side}:{first_row.csv_name}:{first_row.row_index}-{last_row.row_index})",
+    )
+    _retry_non_motion_call(
+        f"moveReset(replay-arm-segment:{first_row.csv_name}:{first_row.row_index}-{last_row.row_index})",
+        lambda: robot.moveReset(ec),
+    )
+    _print_sdk_result("moveReset(replay-arm-segment)", ec)
+    if ec.get("ec", 0) != 0:
+        raise RuntimeError(
+            "回放 arm 连续段 moveReset 失败 "
+            f"arm_side={runtime.connected_arm.arm_side} file={first_row.csv_name} "
+            f"rows={first_row.row_index}-{last_row.row_index} {_format_robot_runtime_state(robot, ec)}"
+        )
+    robot.moveAppend(commands, cmd_id, ec)
+    _print_sdk_result("moveAppend(MoveAbsJ-segment)", ec)
+    if ec.get("ec", 0) != 0:
+        raise RuntimeError("回放 arm 连续段 moveAppend 失败")
+    robot.moveStart(ec)
+    _print_sdk_result("moveStart(replay-arm-segment)", ec)
+    if ec.get("ec", 0) != 0:
+        raise RuntimeError("回放 arm 连续段 moveStart 失败")
+    logger.info(
+        "已下发 arm 连续 MoveAbsJ 段 file={} rows={}-{} count={} cmd_id={}",
+        first_row.csv_name,
+        first_row.row_index,
+        last_row.row_index,
+        len(commands),
+        cmd_id.content(),
+    )
+    if not _wait_until_idle(robot, ec, "等待回放 arm 连续 MoveAbsJ 段"):
+        logger.warning(
+            "回放 arm 连续 MoveAbsJ 段等待超时，继续后续流程 file={} rows={}-{} cmd_id={}",
+            first_row.csv_name,
+            first_row.row_index,
+            last_row.row_index,
+            cmd_id.content(),
+        )
+
+
 def _execute_row(
     runtime: ReplayRuntime,
     row: ReplayRow,
@@ -1318,10 +1508,7 @@ def _execute_row(
         row.pose_text,
     )
     if row.action_type == "arm":
-        if row.pose_text.strip().lower() == "nan":
-            _execute_joint_row(runtime, row)
-            return
-        _execute_cartesian_row(runtime, row)
+        _execute_arm_move_abs_j_segment(runtime, [row], row.row_index)
         return
     if row.action_type == "gripper":
         _execute_gripper_row(runtime, row)
@@ -1357,10 +1544,21 @@ def _run_rows_with_optional_prompt(
     selected_auto_start: bool,
     shared_runtimes: list[ReplayRuntime],
 ) -> None:
+    arm_segment: list[ReplayRow] = []
+    final_arm_row_index = _find_final_arm_row_index(rows)
+
+    def flush_arm_segment() -> None:
+        nonlocal arm_segment
+        if not arm_segment:
+            return
+        _execute_arm_move_abs_j_segment(runtime, arm_segment, final_arm_row_index)
+        arm_segment = []
+
     for row in rows:
         if runtime.stop_event is not None and runtime.stop_event.is_set():
             raise RuntimeError("检测到并行执行已请求停止，终止当前 CSV 后续动作")
         if not selected_auto_start and not runtime.auto_execute_remaining:
+            flush_arm_segment()
             while True:
                 action_choice = _confirm_each_action(runtime, row)
                 if action_choice == "q":
@@ -1383,7 +1581,12 @@ def _run_rows_with_optional_prompt(
                 break
             if action_choice == "j":
                 continue
+        if row.action_type == "arm" and (selected_auto_start or runtime.auto_execute_remaining):
+            arm_segment.append(row)
+            continue
+        flush_arm_segment()
         _execute_row(runtime, row)
+    flush_arm_segment()
 
 
 def _execute_single_csv(
