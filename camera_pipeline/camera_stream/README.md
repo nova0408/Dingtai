@@ -39,6 +39,13 @@ construct -> start -> background capture -> stop
 
 连续收流超时达到配置次数后，运行时重建流 socket。控制命令和收流超时分别配置，不应由算法请求修改。
 
+## 成功与失败语义
+
+- 成功启动：后台接收并缓存 `CameraFramePacket`。
+- 首帧未到达：`wait_until_ready()` 返回 `False`。
+- 帧号不存在：`get_frame_by_id()` 返回 `None`，表示缓存淘汰或尚未接收。
+- 控制超时、协议头错误或图像解码失败：运行时记录错误并尝试自愈；上层就绪检查失败时报告服务错误。
+
 ## 局限性
 
 - 当前解码格式与上游 wuyou 二进制协议耦合。

@@ -184,7 +184,9 @@ class CameraPipelineServiceRequest:
     """统一 CameraPipeline 服务请求信封。"""
 
     operation: CameraPipelineOperation
+    "当前请求操作名；只有对应 operation 的 payload 应该被设置。"
     protocol_version: int = PROTOCOL_VERSION
+    "统一协议版本号。"
     camera_summary: CameraSummaryRequest | None = None
     camera_intrinsics: CameraIntrinsicsRequest | None = None
     camera_status: CameraStatusRequest | None = None
@@ -195,6 +197,7 @@ class CameraPipelineServiceRequest:
     tray_detection: OrinTrayDetectionRequest | None = None
     opening_detection: OpeningDetectionPipelineRequest | None = None
     ball_pose_detection: BallPoseDetectionRequest | None = None
+    "球位姿请求 payload；operation 不是 `ball_pose_detection` 时必须为空。"
 
 
 @dataclass(frozen=True, slots=True)
@@ -202,7 +205,9 @@ class CameraPipelineServiceResponse:
     """统一 CameraPipeline 服务响应信封。"""
 
     operation: CameraPipelineOperation
+    "与请求一致的操作名。"
     protocol_version: int = PROTOCOL_VERSION
+    "统一协议版本号。"
     camera_summary: CameraSummaryResponse | None = None
     camera_intrinsics: CameraIntrinsicsResponse | None = None
     camera_status: CameraStatusResponse | None = None
@@ -213,7 +218,9 @@ class CameraPipelineServiceResponse:
     tray_detection: OrinTrayDetectionResponse | None = None
     opening_detection: OpeningDetectionPipelineResponse | None = None
     ball_pose_detection: BallPoseDetectionResponse | None = None
+    "球位姿成功响应 payload；失败时为空并由 error 表达失败。"
     error: str | None = None
+    "服务级错误文本；成功响应为空，客户端会将非空错误转换为 RuntimeError。"
 
 
 # endregion

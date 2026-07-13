@@ -26,6 +26,8 @@ from camera_pipeline.client import CameraPipelineClient
 5. debug 数据通过请求显式控制；关闭后算法不构造大体积调试图像。
 6. 文本和协议必须明确单位、坐标系和错误语义。
 
+面向用户的请求、成功响应、合法空结果和服务错误统一见 [service/README.md](service/README.md) 的“用户请求与可能响应”章节；算法 README 只描述算法内部数据契约和计算失败原因。
+
 ## 模块结构
 
 | 模块 | 单一职责 | 文档 |

@@ -118,17 +118,17 @@ class PipelineContext:
 
         return str(self._config.camera_name)
 
-    def get_latest_frame(self):
-        """返回最新缓存帧。"""
+    def get_latest_frame(self) -> RgbdFrameProtocol | None:
+        """返回最新缓存帧；尚未收到首帧时返回 `None`。"""
 
         return self._frame_runtime.get_latest_frame()
 
-    def get_frame_by_id(self, frame_id: int):
-        """按帧号查询缓存帧。"""
+    def get_frame_by_id(self, frame_id: int) -> RgbdFrameProtocol | None:
+        """按帧号查询缓存帧；帧不存在或已淘汰时返回 `None`。"""
 
         return self._frame_runtime.get_frame_by_id(frame_id)
 
-    def resolve_frame(self, frame_id: int):
+    def resolve_frame(self, frame_id: int) -> RgbdFrameProtocol:
         """按请求帧号选择相机帧，未指定帧号时默认等待稳定帧。"""
 
         if frame_id > 0:

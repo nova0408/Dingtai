@@ -54,6 +54,14 @@ radius_mm = radius_px * Z / ((fx + fy) / 2)
 
 关闭 debug 时不复制 RGBD 图、不绘制轮廓叠加图，也不构造 debug 检测列表。
 
+## 成功与失败语义
+
+- 成功：返回 `BallPoseDetectionResponse`，`detections` 与输入先验顺序一致。
+- 单个球未检测到：仍是成功响应；该项 `detected=False`，坐标字段为空元组，`status` 说明原因。
+- 没有先验：`detections=()`，算法不会自行猜测目标颜色。
+- 输入帧、深度或内参不符合协议：算法抛出异常，由服务层转换为统一错误。
+- RPC 超时、模型/服务不可用：由 `CameraPipelineServiceResponse.error` 承载，算法响应不重复定义 `error`。
+
 ## 调参建议
 
 1. 先在现场照明下采集 HSV 分布，再调整 `color_ranges`。

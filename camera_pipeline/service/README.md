@@ -95,6 +95,31 @@ systemd 模板位于 `camera-pipeline.service`。Orin 本地其他业务服务�
 
 业务异常由 `CameraPipelineServer` 捕获，写入统一响应的 `error` 字段。客户端发现顶层错误或目标 payload 缺失时抛出 `RuntimeError`。算法模块不负责网络错误转换。
 
+## 用户请求与可能响应
+
+用户只需要调用 `camera_pipeline.client.CameraPipelineClient`；下面的表描述每个公开请求的成功结果、业务空结果和失败行为。所有请求都可能额外出现网络超时、服务未启动或协议版本不匹配，此时客户端抛出 `RuntimeError`。
+
+| 客户端方法 | 成功响应 | 合法的业务空结果 | 服务错误条件 |
+| --- | --- | --- | --- |
+| `get_camera_summary()` | `CameraSummaryResponse`，包含首帧形状、内参和帧号 | 无；没有首帧视为服务错误 | 相机未启动、首帧超时、帧字段非法 |
+| `get_camera_intrinsics()` | `CameraIntrinsicsResponse` | 无；内参不可用视为服务错误 | 相机未就绪、控制查询失败 |
+| `get_camera_status()` | `CameraStatusResponse`，`online=True` 表示服务已取得有效帧 | 不在线状态不会作为成功响应返回 | 首帧不可用、相机流异常 |
+| `get_stable_frame()` | `StableFrameResponse`，包含稳定窗口中点附近的正数 `frame_id` | 稳定窗口未形成不会返回响应，直到超时后报错 | 稳定等待超时、目标帧已被缓存淘汰 |
+| `subscribe_frames()` | `CameraFrameSubscribeResponse`，包含可连接 PUB 地址 | 无 | 发布器启动或端口绑定失败 |
+| `subscribe_color_frames()` | `CameraColorFrameSubscribeResponse` | 无 | 发布器启动或端口绑定失败 |
+| `subscribe_depth_frames()` | `CameraDepthFrameSubscribeResponse` | 无 | 发布器启动或端口绑定失败 |
+| `request_tray_detection()` | `OrinTrayDetectionResponse` | 未检测到托盘时成功返回 `tray_count=0`、`tray_results=()`；关闭 debug 时 `debug_artifacts=()` | 帧不可回取、模型加载/推理失败、输入协议非法 |
+| `request_opening_detection()` | `OpeningDetectionPipelineResponse`，包含完整 `TrayPoseInfo` | 无；目标托盘不存在、mask 无效或抓取位姿无法计算均为错误 | tray 依赖失败、深度点不足、平面/位姿计算失败 |
+| `request_ball_pose_detection()` | `BallPoseDetectionResponse`，包含明确类型的 `detections` | 没有球先验时 `detections=()`；单个球漏检时对应 `detected=False`，坐标为空元组 | 帧非法、图像/深度计算异常、服务端业务异常 |
+
+### 响应边界
+
+- 算法成功响应只描述算法结果，不重复定义 `error` 字段。
+- RPC 失败统一写入 `CameraPipelineServiceResponse.error`，客户端将其转换为 `RuntimeError`。
+- “没有检测到目标”只有在对应算法明确允许时才是成功空结果；opening 和稳定帧不允许用空结果掩盖业务失败。
+- `debug_artifacts` 为空元组表示调用方关闭了 debug 或该请求没有生成调试载荷，不表示算法失败。
+- `frame_id` 是实际计算帧号；如果请求使用稳定帧，响应中的帧号应被视为最终证据帧，而不是请求时的最新帧。
+
 ## 测试边界
 
 无真实设备时可以验证协议、loopback RPC、请求路由、稳定帧和资源释放。真实相机连通性、模型性能、发布帧率和现场稳定阈值必须在 Orin 上另行验证。
