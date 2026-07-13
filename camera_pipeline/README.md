@@ -138,7 +138,10 @@ After=camera-pipeline.service
 
 ## 协议与安全
 
-统一请求包含 `protocol_version`。当前网络数据使用 Python pickle，只适用于受信任的 Orin 和开发内网，不能直接暴露到不可信网络，也不提供跨语言兼容性。
+统一请求包含 `protocol_version`。网络数据采用白名单协议 dataclass 的 JSON 元数据
+与 NumPy 原始字节块，不使用 Python pickle，不依赖 Python 3.8/3.10+ 的 dataclass
+内部布局。解码器拒绝未知类型、非法数组范围和字段不匹配；端口仍只应开放在受控
+开发网络中。
 
 ## 测试
 

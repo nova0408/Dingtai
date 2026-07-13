@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-import pickle
 import threading
 
 import zmq
 
 from ..pipeline_context import PipelineContext
 from ..protocol import CameraColorFramePacket, CameraDepthFramePacket, RgbdFrameProtocol
+from .wire_codec import encode_wire
 
 
 class CameraFramePublisher:
@@ -106,10 +106,7 @@ class CameraFramePublisher:
         )
         for socket, packet in packets:
             try:
-                socket.send(
-                    pickle.dumps(packet, protocol=pickle.HIGHEST_PROTOCOL),
-                    flags=zmq.NOBLOCK,
-                )
+                socket.send(encode_wire(packet), flags=zmq.NOBLOCK)
             except zmq.error.Again:
                 continue
 

@@ -31,6 +31,15 @@ class CameraPipelineServer:
                 request = self._transport.receive()
             except zmq.error.Again:
                 continue
+            except Exception as exc:  # noqa: BLE001
+                LOGGER.exception("camera pipeline request decode failed: %s", exc)
+                self._transport.send(
+                    CameraPipelineServiceResponse(
+                        operation="camera_status",
+                        error=f"invalid request: {type(exc).__name__}: {exc}",
+                    )
+                )
+                continue
             try:
                 response = self._application.handle(request)
             except Exception as exc:  # noqa: BLE001

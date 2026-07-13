@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import pickle
 from collections.abc import Iterator
 from typing import TypeVar, cast
 
@@ -34,8 +33,10 @@ from .protocol import (
     StableFrameResponse,
 )
 from .transport import CameraPipelineRpcClient, ZmqSocketOptions
+from .wire_codec import decode_wire
 
 PacketT = TypeVar("PacketT")
+_TCP_PREFIX = "tcp://"
 
 
 class CameraPipelineClient:
@@ -181,17 +182,16 @@ class CameraPipelineClient:
         socket.connect(connect_addr)
         try:
             while True:
-                packet = pickle.loads(socket.recv())
-                if not isinstance(packet, packet_type):
-                    raise RuntimeError(
-                        f"unexpected camera stream packet: {type(packet).__name__}"
-                    )
+                packet = decode_wire(socket.recv(), packet_type)
                 yield cast(PacketT, packet)
         finally:
             socket.close(linger=0)
 
     def _resolve_stream_connect_addr(self, stream_addr: str) -> str:
-        service_host = self._service_addr.removeprefix("tcp://").split(":")[0]
+        service_addr = self._service_addr
+        if service_addr.startswith(_TCP_PREFIX):
+            service_addr = service_addr[len(_TCP_PREFIX) :]
+        service_host = service_addr.split(":")[0]
         if stream_addr.startswith("tcp://0.0.0.0:") or stream_addr.startswith(
             "tcp://127.0.0.1:"
         ):

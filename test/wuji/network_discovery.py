@@ -23,7 +23,7 @@ DEFAULT_WUYOU_SSH_ALIAS = "wuyou"
 "wuyou 的本机 SSH Host 别名。"
 
 DEFAULT_ORIN_FALLBACKS = (
-    "192.168.1.118",
+    "192.168.1.109",
     "wujibrain-desktop.local",
     "192.168.100.60",
 )

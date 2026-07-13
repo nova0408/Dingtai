@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-import pickle
 from dataclasses import dataclass
 
 import zmq
 
 from .protocol import CameraPipelineServiceRequest, CameraPipelineServiceResponse
+from .wire_codec import decode_wire, encode_wire
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,15 +42,12 @@ class CameraPipelineRpcServer:
     def receive(self) -> CameraPipelineServiceRequest:
         """接收并校验一个统一服务请求。"""
 
-        request = pickle.loads(self._socket.recv())
-        if not isinstance(request, CameraPipelineServiceRequest):
-            raise RuntimeError("invalid camera pipeline service request")
-        return request
+        return decode_wire(self._socket.recv(), CameraPipelineServiceRequest)
 
     def send(self, response: CameraPipelineServiceResponse) -> None:
         """发送一个统一服务响应。"""
 
-        self._socket.send(pickle.dumps(response, protocol=pickle.HIGHEST_PROTOCOL))
+        self._socket.send(encode_wire(response))
 
 
 class CameraPipelineRpcClient:
@@ -79,11 +76,8 @@ class CameraPipelineRpcClient:
     ) -> CameraPipelineServiceResponse:
         """同步发送请求并接收经过类型校验的响应。"""
 
-        self._socket.send(pickle.dumps(request, protocol=pickle.HIGHEST_PROTOCOL))
-        response = pickle.loads(self._socket.recv())
-        if not isinstance(response, CameraPipelineServiceResponse):
-            raise RuntimeError("invalid camera pipeline service response")
-        return response
+        self._socket.send(encode_wire(request))
+        return decode_wire(self._socket.recv(), CameraPipelineServiceResponse)
 
 
 def _configure_socket(socket: zmq.Socket, options: ZmqSocketOptions) -> None:

@@ -15,7 +15,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 DEFAULT_CAMERA_NAME = "left_hand_camera"
-DEFAULT_SERVICE_ADDR = "tcp://192.168.1.118:6200"
+DEFAULT_SERVICE_ADDR = "tcp://192.168.1.109:6200"
 DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "test" / "wuji" / ".archive" / "tray_detection_capture"
 
 from camera_pipeline.client import CameraPipelineClient

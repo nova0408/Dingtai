@@ -90,7 +90,7 @@ MOVE_ABS_J_MIN_END_LINEAR_SPEED_MM_S = 5.0
 MOVE_ABS_J_MAX_END_LINEAR_SPEED_MM_S = 4000.0
 "协作机器人 MoveAbsJ 末端线速度的最大有效值，单位 mm/s。"
 
-DEFAULT_REPLAY_MOVE_ABS_J_END_LINEAR_SPEED_MM_S = 1000.0
+DEFAULT_REPLAY_MOVE_ABS_J_END_LINEAR_SPEED_MM_S = 2000.0
 "MoveAbsJ 回放使用的末端线速度，单位 mm/s。"
 
 DEFAULT_REPLAY_MOVE_ABS_J_ZONE_MM = DEFAULT_JOINT_ZONE
@@ -300,6 +300,59 @@ def _parse_joint_values(joints_text: str, expected_len: int = 7) -> list[float]:
     if not isinstance(parsed, list) or len(parsed) != expected_len:
         raise ValueError(f"关节列长度无效：{joints_text}")
     return [float(value) for value in parsed]
+
+
+def _normalize_calc_ik_candidates_rad(raw_result: object) -> list[list[float]]:
+    """把 SDK `calcIk()` 返回值统一整理成关节候选列表。"""
+
+    if isinstance(raw_result, xCoreSDK_python.JointPosition):
+        return [[float(value) for value in raw_result.joints]]
+    if isinstance(raw_result, np.ndarray):
+        raw_result = raw_result.tolist()
+    if isinstance(raw_result, (list, tuple)):
+        if raw_result and isinstance(raw_result[0], np.ndarray):
+            return [[float(value) for value in candidate.tolist()] for candidate in raw_result]
+        if raw_result and isinstance(raw_result[0], (list, tuple)):
+            return [[float(value) for value in candidate] for candidate in raw_result]
+        return [[float(value) for value in raw_result]]
+    return []
+
+
+def _select_calc_ik_target(
+    raw_result: object,
+    row: ReplayRow,
+) -> tuple[xCoreSDK_python.JointPosition, list[float]]:
+    """从 SDK IK 返回值中选出本次 MoveAbsJ 使用的关节目标。"""
+
+    candidates_rad = _normalize_calc_ik_candidates_rad(raw_result)
+    if not candidates_rad:
+        raise RuntimeError("calcIk 成功，但返回值不是有效关节解")
+
+    selected_candidate_rad = candidates_rad[0]
+    try:
+        reference_joint_deg = _parse_joint_values(row.joints_text)
+    except ValueError:
+        reference_joint_deg = []
+    else:
+        if len(candidates_rad) > 1:
+            selected_candidate_rad = min(
+                candidates_rad,
+                key=lambda candidate_rad: sum(
+                    abs(candidate_deg - reference_deg)
+                    for candidate_deg, reference_deg in zip(
+                        _rad_to_deg(candidate_rad), reference_joint_deg
+                    )
+                ),
+            )
+            logger.info(
+                "calcIk 返回多组候选解，已按 CSV joints 选取最近解 file={} row={} candidate_count={}",
+                row.csv_name,
+                row.row_index,
+                len(candidates_rad),
+            )
+
+    selected_joint_deg = _rad_to_deg(selected_candidate_rad)
+    return xCoreSDK_python.JointPosition(selected_candidate_rad), selected_joint_deg
 
 
 def _parse_pose_values(pose_text: str) -> ParsedArmPose:
@@ -655,20 +708,7 @@ def _build_move_abs_j_target(runtime: ReplayRuntime, row: ReplayRow) -> ArmMoveA
     raw_target_joint = robot_model.calcIk(target_pose, toolset, ec)
     _print_sdk_result("calcIk(replay-arm-moveabsj)", ec)
     if ec.get("ec", 0) == 0:
-        if isinstance(raw_target_joint, xCoreSDK_python.JointPosition):
-            target_joint_rad = [float(value) for value in raw_target_joint.joints]
-        elif isinstance(raw_target_joint, np.ndarray):
-            target_joint_rad = [float(value) for value in raw_target_joint.reshape(-1).tolist()]
-        elif isinstance(raw_target_joint, (list, tuple)):
-            target_joint_rad = [float(value) for value in raw_target_joint]
-        else:
-            raise RuntimeError(
-                f"calcIk 成功，但返回值类型不支持：{type(raw_target_joint).__name__}"
-            )
-        if len(target_joint_rad) != 7:
-            raise RuntimeError(f"calcIk 成功，但返回关节数异常：len={len(target_joint_rad)}")
-        target_joint = xCoreSDK_python.JointPosition(target_joint_rad)
-        target_joint_deg = _rad_to_deg(target_joint_rad)
+        target_joint, target_joint_deg = _select_calc_ik_target(raw_target_joint, row)
         return ArmMoveAbsJTarget(
             row=row,
             target_joint=target_joint,
@@ -679,19 +719,12 @@ def _build_move_abs_j_target(runtime: ReplayRuntime, row: ReplayRow) -> ArmMoveA
     failed_ec = ec.get("ec", 0)
     failed_message = ec.get("message", "")
     if applies_offset:
-        original_tcp_matrix_m = _frame_to_homogeneous_matrix_m(target_pose)
-        offset_matrix_m = np.asarray(runtime.global_cartesian_offset, dtype=np.float64)
-        corrected_tcp_matrix_m = offset_matrix_m @ original_tcp_matrix_m
         logger.warning(
-            "offset 后 T_new_tcp 逆解失败，无法生成 MoveAbsJ 目标 file={} row={} ec={} message={} "
-            "{} {} {}",
+            "offset 后 T_new_tcp 逆解失败，无法生成 MoveAbsJ 目标 file={} row={} ec={} message={}",
             row.csv_name,
             row.row_index,
             failed_ec,
             failed_message,
-            _format_matrix_xyzrpy_mm_deg("T_tcp", original_tcp_matrix_m),
-            _format_matrix_xyzrpy_mm_deg("T_off", offset_matrix_m),
-            _format_matrix_xyzrpy_mm_deg("T_new_tcp", corrected_tcp_matrix_m),
         )
         raise RuntimeError("offset 后 T_new_tcp 逆解失败，无法生成 MoveAbsJ 目标")
 

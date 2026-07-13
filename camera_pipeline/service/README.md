@@ -10,6 +10,7 @@
 | --- | --- |
 | `config.py` | 服务监听、帧发布地址和请求循环超时配置 |
 | `protocol.py` | 统一请求、响应、operation 和协议版本 |
+| `wire_codec.py` | 白名单协议对象、JSON 元数据和 NumPy 原始字节块编解码 |
 | `transport.py` | ZMQ REQ/REP 收发与消息类型校验 |
 | `client.py` | 外接开发机和 Orin 本地业务服务共用的客户端实现 |
 | `frame_publisher.py` | 单线程发布 RGBD、彩色、深度最新帧 |
@@ -89,11 +90,18 @@ systemd 模板位于 `camera-pipeline.service`。Orin 本地其他业务服务�
 
 请求包含 `protocol_version`，当前版本为 `1`。客户端与服务端版本不一致时服务端明确拒绝。
 
-当前 REQ/REP 和帧流使用 Python pickle，仅允许在受信任的 Orin/开发内网使用。不得把端口直接暴露到不可信网络；pickle 也不适合作为跨语言公共协议。
+REQ/REP 和三路帧流使用同一显式二进制协议：固定头部携带 JSON 元数据长度，
+元数据只允许白名单中的协议 dataclass、基础类型和元组，NumPy 图像与 mask 以
+连续原始字节块附加，并在元数据中记录 `dtype`、`shape`、偏移和长度。协议不使用
+Python pickle，不依赖 dataclass 的 Python 版本内存布局，可在 Windows Python
+3.10+ 客户端与 Orin Python 3.8 服务之间互通。未知类型、未知协议标识、越界数组
+和字段不匹配均会明确拒绝。
 
 ## 错误约定
 
-业务异常由 `CameraPipelineServer` 捕获，写入统一响应的 `error` 字段。客户端发现顶层错误或目标 payload 缺失时抛出 `RuntimeError`。算法模块不负责网络错误转换。
+请求解码失败和业务异常均由 `CameraPipelineServer` 捕获，写入统一响应的 `error`
+字段；单个非法请求不会终止服务循环。客户端发现顶层错误或目标 payload 缺失时
+抛出 `RuntimeError`。算法模块不负责网络错误转换。
 
 ## 用户请求与可能响应
 

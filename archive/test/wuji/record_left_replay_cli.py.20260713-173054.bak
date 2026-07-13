@@ -655,20 +655,10 @@ def _build_move_abs_j_target(runtime: ReplayRuntime, row: ReplayRow) -> ArmMoveA
     raw_target_joint = robot_model.calcIk(target_pose, toolset, ec)
     _print_sdk_result("calcIk(replay-arm-moveabsj)", ec)
     if ec.get("ec", 0) == 0:
-        if isinstance(raw_target_joint, xCoreSDK_python.JointPosition):
-            target_joint_rad = [float(value) for value in raw_target_joint.joints]
-        elif isinstance(raw_target_joint, np.ndarray):
-            target_joint_rad = [float(value) for value in raw_target_joint.reshape(-1).tolist()]
-        elif isinstance(raw_target_joint, (list, tuple)):
-            target_joint_rad = [float(value) for value in raw_target_joint]
-        else:
-            raise RuntimeError(
-                f"calcIk 成功，但返回值类型不支持：{type(raw_target_joint).__name__}"
-            )
-        if len(target_joint_rad) != 7:
-            raise RuntimeError(f"calcIk 成功，但返回关节数异常：len={len(target_joint_rad)}")
-        target_joint = xCoreSDK_python.JointPosition(target_joint_rad)
-        target_joint_deg = _rad_to_deg(target_joint_rad)
+        if not isinstance(raw_target_joint, xCoreSDK_python.JointPosition):
+            raise RuntimeError("calcIk 成功，但返回值不是有效关节解")
+        target_joint = raw_target_joint
+        target_joint_deg = _rad_to_deg(list(raw_target_joint.joints))
         return ArmMoveAbsJTarget(
             row=row,
             target_joint=target_joint,

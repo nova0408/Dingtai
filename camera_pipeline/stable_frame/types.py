@@ -32,11 +32,11 @@ class StableFrameConfig:
     min_valid_depth_ratio: float = 0.20
     "两帧共同有效深度像素的最小比例。"
 
-    depth_median_delta_threshold_mm: float = 2.0
+    depth_median_delta_threshold_mm: float = 4.0
     "共同有效深度的绝对差中位数阈值，单位 mm。"
 
-    depth_percentile: float = 90.0
+    depth_percentile: float = 75.0
     "深度高分位差使用的百分位数。"
 
-    depth_percentile_delta_threshold_mm: float = 8.0
+    depth_percentile_delta_threshold_mm: float = 25.0
     "共同有效深度的高分位绝对差阈值，单位 mm。"

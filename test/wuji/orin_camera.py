@@ -11,7 +11,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 from camera_pipeline.client import CameraPipelineClient  
 DEFAULT_READY_TIMEOUT_S = 10.0
-DEFAULT_ORIN_SERVICE_ADDR = "tcp://192.168.1.118:6200"
+DEFAULT_ORIN_SERVICE_ADDR = "tcp://192.168.1.109:6200"
 
 
 def main() -> int:

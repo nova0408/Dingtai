@@ -1,15 +1,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Tuple
 
 import numpy as np
 
 from ..tray_detection.protocol import OrinTrayDetectionInfo
 
-Point2 = tuple[float, float]
-Point3 = tuple[float, float, float]
-Quad2 = tuple[Point2, Point2, Point2, Point2]
-Matrix3 = tuple[Point3, Point3, Point3]
+Point2 = Tuple[float, float]
+Point3 = Tuple[float, float, float]
+Quad2 = Tuple[Point2, Point2, Point2, Point2]
+Matrix3 = Tuple[Point3, Point3, Point3]
 
 
 @dataclass(frozen=True, slots=True)

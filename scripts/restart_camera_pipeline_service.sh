@@ -35,11 +35,7 @@ if [[ -n "${all_pids}" ]]; then
   echo "[restart] stopping pid list:"
   echo "${all_pids}"
   echo "[restart] sending SIGTERM"
-  if command -v sudo >/dev/null 2>&1; then
-    sudo kill ${all_pids} || true
-  else
-    kill ${all_pids} || true
-  fi
+  kill ${all_pids} || true
   sleep 3
 fi
 
@@ -51,11 +47,7 @@ still_pids="$(collect_pids "${port_usage_after_term}")"
 if [[ -n "${still_pids}" ]]; then
   echo "[restart] still busy after SIGTERM, sending SIGKILL"
   echo "${still_pids}"
-  if command -v sudo >/dev/null 2>&1; then
-    sudo kill -9 ${still_pids} || true
-  else
-    kill -9 ${still_pids} || true
-  fi
+  kill -9 ${still_pids} || true
   sleep 3
 fi
 
