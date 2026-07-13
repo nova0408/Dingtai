@@ -7,7 +7,7 @@ import re
 import sys
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
@@ -38,7 +38,6 @@ from test.wuji.common import (
     stop_ssh_process,
 )
 from test.wuji.xcoresdk_arm_cli_test import (
-    DEFAULT_CARTESIAN_ZONE,
     DEFAULT_JOINT_ZONE,
     DEFAULT_TOOL_NAME,
     DEFAULT_WOBJ_NAME,
@@ -56,14 +55,11 @@ from test.wuji.xcoresdk_arm_cli_test import (
     _detect_arm_side,
     _ensure_nrt_motion_ready,
     _format_sequence,
-    _m_to_mm,
     _mm_to_m,
     _parse_cartesian_pose_input,
     _print_sdk_result,
     _rad_to_deg,
     _shutdown_robot,
-    _validate_cartesian_target,
-    _wait_until_idle,
 )
 
 from camera_pipeline.ball_pose_detection.protocol import BallPoseDetectionRequest
@@ -85,20 +81,14 @@ DEFAULT_ARM_SIDE = "left"
 DEFAULT_MAX_FILES: int | None = None
 "默认加载的 CSV 文件数量；`None` 表示全部。"
 
-DEFAULT_REPLAY_JOINT_SPEED = 600.0
-"回放关节空间速度，单位 deg/s。"
-
-DEFAULT_REPLAY_CARTESIAN_SPEED = 30.0
-"回放笛卡尔空间速度，单位 mm/s。"
+DEFAULT_REPLAY_MOVE_ABS_J_SPEED_MM_S = 600.0
+"MoveAbsJ 回放路径速度，单位 mm/s。"
 
 DEFAULT_REPLAY_JOINT_CONTINUOUS_ZONE = DEFAULT_JOINT_ZONE
 "连续关节回放中间点转弯区，沿用 xCoreSDK 关节 zone 单位。"
 
-CSV_KEEP_END_CONTINUOUS_ZONE_SEQUENCES: set[int] = set()
-"这些 CSV 序号的最后一个 arm 点不强制 zone=0，而是继续使用连续转弯区。"
-
-CSV_KEEP_END_CONTINUOUS_ZONE_NAMES: set[str] = set()
-"这些 CSV 文件名的最后一个 arm 点不强制 zone=0，而是继续使用连续转弯区。"
+LEFT_CSV_ZERO_ZONE_SEQUENCES: list[int] = []
+"左臂在这些 CSV 序号末尾强制 zone=0；右臂不读取该配置。"
 
 DEFAULT_REPLAY_LIFT_SETTLE_DELAY_S = 1.0
 "回放 lift 单次等待时间，单位 s。"
@@ -214,9 +204,9 @@ class ReplayRuntime:
     offset_prior_capture_path: Path = DEFAULT_OFFSET_PRIOR_CAPTURE_PATH
     hand_eye_result_path: Path = DEFAULT_HAND_EYE_RESULT_PATH
     stop_event: threading.Event | None = None
-    joint_speed_deg_s: float = DEFAULT_REPLAY_JOINT_SPEED
-    cartesian_speed_mm_s: float = DEFAULT_REPLAY_CARTESIAN_SPEED
+    move_abs_j_speed_mm_s: float = DEFAULT_REPLAY_MOVE_ABS_J_SPEED_MM_S
     auto_execute_remaining: bool = False
+    pending_arm_rows: list[ReplayRow] = field(default_factory=list)
 
 
 @dataclass(frozen=True, slots=True)
@@ -320,14 +310,16 @@ def _should_apply_global_cartesian_offset(csv_name: str) -> bool:
 
 
 def _should_trigger_offset_calculation(runtime: ReplayRuntime, csv_name: str) -> bool:
-    return runtime.connected_arm.arm_side == "left" and _extract_csv_sequence(csv_name) == CSV_CARTESIAN_OFFSET_CALCULATE_AT
-
-
-def _should_keep_csv_end_continuous_zone(csv_name: str) -> bool:
     return (
-        csv_name in CSV_KEEP_END_CONTINUOUS_ZONE_NAMES
-        or _extract_csv_sequence(csv_name) in CSV_KEEP_END_CONTINUOUS_ZONE_SEQUENCES
+        runtime.connected_arm.arm_side == "left"
+        and _extract_csv_sequence(csv_name) == CSV_CARTESIAN_OFFSET_CALCULATE_AT
     )
+
+
+def _should_stop_at_left_csv_end(runtime: ReplayRuntime, csv_name: str) -> bool:
+    if runtime.connected_arm.arm_side != "left":
+        return False
+    return _extract_csv_sequence(csv_name) in LEFT_CSV_ZERO_ZONE_SEQUENCES
 
 
 def _format_optional_csv_sequence(sequence: int | None) -> str:
@@ -380,9 +372,7 @@ def _wait_until_reset_ready(
         operation_state = robot.operationState(ec)
         operate_mode = robot.operateMode(ec)
         power_state = robot.powerState(ec)
-        last_state_text = (
-            f"operate_mode={operate_mode} operation_state={operation_state} power_state={power_state}"
-        )
+        last_state_text = f"operate_mode={operate_mode} operation_state={operation_state} power_state={power_state}"
         if operation_state == xCoreSDK_python.OperationState.idle:
             idle_count += 1
             if idle_count >= stable_idle_checks:
@@ -391,6 +381,27 @@ def _wait_until_reset_ready(
             idle_count = 0
         time.sleep(0.2)
     logger.warning("{} 等待 reset 就绪超时，继续尝试 moveReset {}", label, last_state_text)
+
+
+def _wait_until_motion_finished(
+    robot: xCoreSDK_python.xMateErProRobot,
+    ec: dict[str, object],
+    label: str,
+) -> None:
+    """按 SDK 示例持续等待运动进入 idle 或 unknown。"""
+
+    while True:
+        time.sleep(0.1)
+        operation_state = robot.operationState(ec)
+        if ec.get("ec", 0) != 0:
+            raise RuntimeError(f"{label} 查询运动状态失败 ec={ec.get('ec', 0)} message={ec.get('message', '')}")
+        if operation_state in (
+            xCoreSDK_python.OperationState.idle,
+            xCoreSDK_python.OperationState.unknown,
+        ):
+            logger.info("{} 已结束 state={}", label, operation_state)
+            return
+        logger.debug("{} state={}", label, operation_state)
 
 
 def _build_csv_execution_plans(
@@ -500,10 +511,13 @@ def _connect_arm(arm_side: str) -> ConnectedArm:
     _print_sdk_result(f"robotInfo({robot_ip})", ec)
     if ec.get("ec", 0) != 0:
         raise RuntimeError(f"读取机械臂机器人信息失败：arm_side={arm_side}, ip={robot_ip}")
-    if _retry_non_motion_call(
-        f"apply_named_toolset({robot_ip})",
-        lambda: _apply_named_toolset(robot, ec),
-    ) is None:
+    if (
+        _retry_non_motion_call(
+            f"apply_named_toolset({robot_ip})",
+            lambda: _apply_named_toolset(robot, ec),
+        )
+        is None
+    ):
         raise RuntimeError(f"设置默认工具/工件失败：ip={robot_ip}, tool={DEFAULT_TOOL_NAME}, wobj={DEFAULT_WOBJ_NAME}")
     detected_arm_side = _detect_arm_side(robot_info.type)
     if detected_arm_side != arm_side:
@@ -563,49 +577,6 @@ def _prepare_runtime(runtime: ReplayRuntime) -> None:
         DEFAULT_TOOL_NAME,
         DEFAULT_WOBJ_NAME,
     )
-
-
-def _execute_joint_row(runtime: ReplayRuntime, row: ReplayRow) -> None:
-    target_joint_deg = _parse_joint_values(row.joints_text)
-    robot = runtime.connected_arm.robot
-    ec = runtime.connected_arm.ec
-    cmd_id = xCoreSDK_python.PyString()
-    target_joint = xCoreSDK_python.JointPosition(_deg_to_rad(target_joint_deg))
-    _wait_until_reset_ready(
-        robot,
-        ec,
-        f"moveReset(replay-joint:{runtime.connected_arm.arm_side}:{row.csv_name}:{row.row_index})",
-    )
-    _retry_non_motion_call(f"moveReset(replay-joint:{row.csv_name}:{row.row_index})", lambda: robot.moveReset(ec))
-    _print_sdk_result("moveReset(replay-joint)", ec)
-    if ec.get("ec", 0) != 0:
-        raise RuntimeError("回放关节 moveReset 失败")
-    robot.moveAppend(
-        [xCoreSDK_python.MoveAbsJCommand(target_joint, runtime.joint_speed_deg_s, DEFAULT_JOINT_ZONE)],
-        cmd_id,
-        ec,
-    )
-    _print_sdk_result("moveAppend(MoveAbsJCommand)", ec)
-    if ec.get("ec", 0) != 0:
-        raise RuntimeError("回放关节 moveAppend 失败")
-    robot.moveStart(ec)
-    _print_sdk_result("moveStart(replay-joint)", ec)
-    if ec.get("ec", 0) != 0:
-        raise RuntimeError("回放关节 moveStart 失败")
-    logger.info(
-        "已下发关节运动 file={} row={} joints(deg)=[{}] cmd_id={}",
-        row.csv_name,
-        row.row_index,
-        _format_sequence(target_joint_deg),
-        cmd_id.content(),
-    )
-    if not _wait_until_idle(robot, ec, "等待回放关节运动"):
-        logger.warning(
-            "回放关节运动等待超时，继续后续流程 file={} row={} cmd_id={}",
-            row.csv_name,
-            row.row_index,
-            cmd_id.content(),
-        )
 
 
 def _build_cartesian_target(runtime: ReplayRuntime, row: ReplayRow) -> xCoreSDK_python.CartesianPosition:
@@ -693,8 +664,7 @@ def _build_move_abs_j_target(runtime: ReplayRuntime, row: ReplayRow) -> ArmMoveA
     ec["ec"] = 0
     ec["message"] = "原始 TCP 逆解失败，已改用 CSV 记录关节值"
     logger.warning(
-        "原始 TCP 逆解失败，最终兜底为 CSV joints MoveAbsJ file={} row={} "
-        "ik_ec={} ik_message={} joints(deg)=[{}]",
+        "原始 TCP 逆解失败，最终兜底为 CSV joints MoveAbsJ file={} row={} " "ik_ec={} ik_message={} joints(deg)=[{}]",
         row.csv_name,
         row.row_index,
         failed_ec,
@@ -896,27 +866,31 @@ def _detect_current_three_ball_basis_transform(
     client = CameraPipelineClient(service_addr=str(service_addr), timeout_ms=30_000)
     try:
         for sample_index in range(OFFSET_BALL_CAPTURE_SAMPLE_COUNT):
-            response = client.request_ball_pose_detection(
-                BallPoseDetectionRequest(
-                    request_id=sample_index + 1,
-                    camera_name=str(camera_name),
-                    frame_id=-1,
-                    enable_debug=False,
-                    priors=tuple(priors),
+            try:
+                response = client.request_ball_pose_detection(
+                    BallPoseDetectionRequest(
+                        request_id=sample_index + 1,
+                        camera_name=str(camera_name),
+                        frame_id=-1,
+                        enable_debug=False,
+                        priors=tuple(priors),
+                    )
                 )
-            )
+            except RuntimeError as exc:
+                logger.warning(
+                    "ball pose detection sample request failed index={} exc={}",
+                    sample_index + 1,
+                    exc,
+                )
+                continue
             logger.info(
-                "ball pose detection sample response {}/{} frame_id={} matched_count={} valid_so_far={} error={}",
+                "ball pose detection sample response {}/{} frame_id={} matched_count={} valid_so_far={}",
                 sample_index + 1,
                 OFFSET_BALL_CAPTURE_SAMPLE_COUNT,
                 response.frame_id,
                 response.matched_count,
                 len(samples_mm),
-                response.error,
             )
-            if response.error is not None:
-                logger.warning("ball pose detection sample failed index={} error={}", sample_index + 1, response.error)
-                continue
             if response.matched_count < 3:
                 logger.warning(
                     "ball pose detection sample insufficient index={} matched_count={}",
@@ -1043,10 +1017,13 @@ def _calculate_global_cartesian_offset(
         camera_name=runtime.offset_camera_name,
         prior_capture_path=runtime.offset_prior_capture_path,
     )
-    if _retry_non_motion_call(
-        f"apply_named_toolset(offset:{runtime.connected_arm.arm_side})",
-        lambda: _apply_named_toolset(runtime.connected_arm.robot, runtime.connected_arm.ec),
-    ) is None:
+    if (
+        _retry_non_motion_call(
+            f"apply_named_toolset(offset:{runtime.connected_arm.arm_side})",
+            lambda: _apply_named_toolset(runtime.connected_arm.robot, runtime.connected_arm.ec),
+        )
+        is None
+    ):
         raise RuntimeError(f"设置固定 toolset 失败：tool={DEFAULT_TOOL_NAME}, wobj={DEFAULT_WOBJ_NAME}")
     tcp_pose = _retry_non_motion_call(
         f"cartPosture(endInRef, offset-calc:{runtime.connected_arm.arm_side})",
@@ -1136,140 +1113,6 @@ def _format_matrix_xyzrpy_mm_deg(name: str, matrix: np.ndarray) -> str:
     ]
     rpy_deg = _rad_to_deg(list(_homogeneous_matrix_to_rpy(matrix_np)))
     return f"{name} xyzrpy(mm,deg)=[{_format_sequence(xyz_mm + rpy_deg)}]"
-
-
-def _execute_cartesian_row(
-    runtime: ReplayRuntime,
-    row: ReplayRow,
-) -> None:
-    robot = runtime.connected_arm.robot
-    ec = runtime.connected_arm.ec
-    applies_offset = _should_apply_global_cartesian_offset(row.csv_name)
-    # 只有 CSV_CARTESIAN_OFFSET_TARGETS 指定的 CSV 才执行：
-    # T_new_tcp = T_off @ T_tcp，其余 CSV 保持原始 TCP。
-    target_pose = _build_cartesian_target(runtime, row)
-    cmd_id = xCoreSDK_python.PyString()
-    target_joint: xCoreSDK_python.JointPosition | None = None
-    should_fallback_to_move_abs_j = not _validate_cartesian_target(robot, ec, target_pose)
-    if should_fallback_to_move_abs_j:
-        logger.warning(
-            "回放 MoveL 路径检查失败，将对 {} 计算逆解并回退 MoveAbsJ " "file={} row={} xyz(mm)=[{}] rpy(deg)=[{}]",
-            "offset 后 T_new_tcp" if applies_offset else "原始 T_tcp",
-            row.csv_name,
-            row.row_index,
-            _format_sequence(_m_to_mm(target_pose.trans)),
-            _format_sequence(_rad_to_deg(target_pose.rpy)),
-        )
-        robot_model = robot.model()
-        toolset = _retry_non_motion_call(
-            f"toolset(replay-cartesian-fallback:{row.csv_name}:{row.row_index})",
-            lambda: robot.toolset(ec),
-        )
-        _print_sdk_result("toolset(replay-cartesian-fallback)", ec)
-        if ec.get("ec", 0) != 0:
-            raise RuntimeError("回放笛卡尔读取 toolset 失败")
-        target_joint = robot_model.calcIk(target_pose, toolset, ec)
-        _print_sdk_result("calcIk(replay-cartesian-fallback-new-tcp)", ec)
-        if ec.get("ec", 0) != 0:
-            failed_ec = ec.get("ec", 0)
-            failed_message = ec.get("message", "")
-            if not applies_offset:
-                try:
-                    fallback_joint_deg = _parse_joint_values(row.joints_text)
-                except ValueError as exc:
-                    logger.warning(
-                        "原始笛卡尔目标逆解失败，且 CSV 记录关节值不可用 file={} row={} ec={} message={} parse_error={}",
-                        row.csv_name,
-                        row.row_index,
-                        failed_ec,
-                        failed_message,
-                        exc,
-                    )
-                    raise RuntimeError("原始笛卡尔目标 MoveL/IK 均失败，且 CSV joints 兜底不可用") from exc
-                target_joint = xCoreSDK_python.JointPosition(_deg_to_rad(fallback_joint_deg))
-                ec["ec"] = 0
-                ec["message"] = "原始笛卡尔目标逆解失败，已改用 CSV 记录关节值"
-                logger.warning(
-                    "原始笛卡尔目标逆解失败，最终兜底为 CSV joints MoveAbsJ file={} row={} "
-                    "ik_ec={} ik_message={} joints(deg)=[{}]",
-                    row.csv_name,
-                    row.row_index,
-                    failed_ec,
-                    failed_message,
-                    _format_sequence(fallback_joint_deg),
-                )
-            else:
-                logger.warning(
-                    "offset 后 T_new_tcp 逆解失败，无法回退 MoveAbsJ file={} row={} ec={} message={}",
-                    row.csv_name,
-                    row.row_index,
-                    ec.get("ec", 0),
-                    ec.get("message", ""),
-                )
-                raise RuntimeError("offset 后 T_new_tcp 逆解失败，无法回退 MoveAbsJ")
-    _wait_until_reset_ready(
-        robot,
-        ec,
-        f"moveReset(replay-cartesian:{runtime.connected_arm.arm_side}:{row.csv_name}:{row.row_index})",
-    )
-    _retry_non_motion_call(f"moveReset(replay-cartesian:{row.csv_name}:{row.row_index})", lambda: robot.moveReset(ec))
-    _print_sdk_result("moveReset(replay-cartesian)", ec)
-    if ec.get("ec", 0) != 0:
-        raise RuntimeError(
-            "回放笛卡尔 moveReset 失败 "
-            f"arm_side={runtime.connected_arm.arm_side} file={row.csv_name} row={row.row_index} "
-            f"motion={'MoveAbsJ' if should_fallback_to_move_abs_j else 'MoveL'} "
-            f"{_format_robot_runtime_state(robot, ec)}"
-        )
-    if should_fallback_to_move_abs_j:
-        if target_joint is None:
-            if applies_offset:
-                raise RuntimeError("MoveAbsJ 回退缺少 offset 后 T_new_tcp 的逆解结果")
-            raise RuntimeError("MoveAbsJ 回退缺少原始 T_tcp 的逆解或 CSV joints 兜底结果")
-        robot.moveAppend(
-            [xCoreSDK_python.MoveAbsJCommand(target_joint, runtime.joint_speed_deg_s, DEFAULT_JOINT_ZONE)],
-            cmd_id,
-            ec,
-        )
-        _print_sdk_result("moveAppend(MoveAbsJ)", ec)
-    else:
-        robot.moveAppend(
-            [xCoreSDK_python.MoveLCommand(target_pose, runtime.cartesian_speed_mm_s, DEFAULT_CARTESIAN_ZONE)],
-            cmd_id,
-            ec,
-        )
-        _print_sdk_result("moveAppend(MoveL)", ec)
-    if ec.get("ec", 0) != 0:
-        raise RuntimeError("回放笛卡尔 moveAppend 失败")
-    robot.moveStart(ec)
-    _print_sdk_result("moveStart(replay-cartesian)", ec)
-    if ec.get("ec", 0) != 0:
-        logger.warning(
-            "回放运动启动失败 file={} row={} motion={} ec={} message={}",
-            row.csv_name,
-            row.row_index,
-            "MoveAbsJ" if should_fallback_to_move_abs_j else "MoveL",
-            ec.get("ec", 0),
-            ec.get("message", ""),
-        )
-        raise RuntimeError("回放笛卡尔 moveStart 失败")
-    logger.info(
-        "已下发笛卡尔运动 file={} row={} motion={} xyz(mm)=[{}] rpy(deg)=[{}] cmd_id={}",
-        row.csv_name,
-        row.row_index,
-        "moveabsj" if should_fallback_to_move_abs_j else "movel",
-        _format_sequence(_m_to_mm(target_pose.trans)),
-        _format_sequence(_rad_to_deg(target_pose.rpy)),
-        cmd_id.content(),
-    )
-    if not _wait_until_idle(robot, ec, "等待回放笛卡尔运动"):
-        logger.warning(
-            "回放笛卡尔运动等待超时，继续后续流程 file={} row={} motion={} cmd_id={}",
-            row.csv_name,
-            row.row_index,
-            "moveabsj" if should_fallback_to_move_abs_j else "movel",
-            cmd_id.content(),
-        )
 
 
 def _execute_gripper_row(runtime: ReplayRuntime, row: ReplayRow) -> None:
@@ -1363,7 +1206,9 @@ def _wait_replay_lift_until_near_target(body: WujiBodyClient, target_height_mm: 
         if current_height_mm == -1.0:
             logger.warning("lift 返回值 -1，视为无效读数，立即重试且不计次数")
             current_height_mm = _read_lift_height_mm(
-                _retry_non_motion_call("lift.get_lift_physical_height(invalid)", lambda: lift.get_lift_physical_height())
+                _retry_non_motion_call(
+                    "lift.get_lift_physical_height(invalid)", lambda: lift.get_lift_physical_height()
+                )
             )
             continue
         current_error_mm = abs(current_height_mm - float(target_height_mm))
@@ -1409,28 +1254,9 @@ def _execute_lift_row(runtime: ReplayRuntime, row: ReplayRow) -> None:
     )
 
 
-def _find_final_arm_row_index(rows: list[ReplayRow]) -> int | None:
-    final_row_index = None
-    for row in rows:
-        if row.action_type == "arm":
-            final_row_index = row.row_index
-    return final_row_index
-
-
-def _get_arm_row_zone(row: ReplayRow, final_arm_row_index: int | None) -> float:
-    if (
-        final_arm_row_index is not None
-        and row.row_index == final_arm_row_index
-        and not _should_keep_csv_end_continuous_zone(row.csv_name)
-    ):
-        return 0.0
-    return float(DEFAULT_REPLAY_JOINT_CONTINUOUS_ZONE)
-
-
 def _execute_arm_move_abs_j_segment(
     runtime: ReplayRuntime,
     rows: list[ReplayRow],
-    final_arm_row_index: int | None,
 ) -> None:
     if not rows:
         return
@@ -1438,9 +1264,21 @@ def _execute_arm_move_abs_j_segment(
     ec = runtime.connected_arm.ec
     targets = [_build_move_abs_j_target(runtime, row) for row in rows]
     commands: list[xCoreSDK_python.MoveAbsJCommand] = []
-    for target in targets:
-        zone = _get_arm_row_zone(target.row, final_arm_row_index)
-        commands.append(xCoreSDK_python.MoveAbsJCommand(target.target_joint, runtime.joint_speed_deg_s, zone))
+    for target_index, target in enumerate(targets):
+        is_segment_end = target_index == len(targets) - 1
+        is_csv_end = is_segment_end or targets[target_index + 1].row.csv_name != target.row.csv_name
+        is_configured_left_stop = is_csv_end and _should_stop_at_left_csv_end(
+            runtime,
+            target.row.csv_name,
+        )
+        zone = 0.0 if is_segment_end or is_configured_left_stop else float(DEFAULT_REPLAY_JOINT_CONTINUOUS_ZONE)
+        commands.append(
+            xCoreSDK_python.MoveAbsJCommand(
+                target.target_joint,
+                runtime.move_abs_j_speed_mm_s,
+                zone,
+            )
+        )
         logger.info(
             "已生成连续 MoveAbsJ 目标 file={} row={} source={} zone={:.3f} joints(deg)=[{}]",
             target.row.csv_name,
@@ -1485,14 +1323,15 @@ def _execute_arm_move_abs_j_segment(
         len(commands),
         cmd_id.content(),
     )
-    if not _wait_until_idle(robot, ec, "等待回放 arm 连续 MoveAbsJ 段"):
-        logger.warning(
-            "回放 arm 连续 MoveAbsJ 段等待超时，继续后续流程 file={} rows={}-{} cmd_id={}",
-            first_row.csv_name,
-            first_row.row_index,
-            last_row.row_index,
-            cmd_id.content(),
-        )
+    _wait_until_motion_finished(robot, ec, "等待回放 arm 连续 MoveAbsJ 段")
+
+
+def _flush_pending_arm_segment(runtime: ReplayRuntime) -> None:
+    if not runtime.pending_arm_rows:
+        return
+    rows = runtime.pending_arm_rows
+    runtime.pending_arm_rows = []
+    _execute_arm_move_abs_j_segment(runtime, rows)
 
 
 def _execute_row(
@@ -1508,7 +1347,8 @@ def _execute_row(
         row.pose_text,
     )
     if row.action_type == "arm":
-        _execute_arm_move_abs_j_segment(runtime, [row], row.row_index)
+        runtime.pending_arm_rows.append(row)
+        _flush_pending_arm_segment(runtime)
         return
     if row.action_type == "gripper":
         _execute_gripper_row(runtime, row)
@@ -1544,21 +1384,11 @@ def _run_rows_with_optional_prompt(
     selected_auto_start: bool,
     shared_runtimes: list[ReplayRuntime],
 ) -> None:
-    arm_segment: list[ReplayRow] = []
-    final_arm_row_index = _find_final_arm_row_index(rows)
-
-    def flush_arm_segment() -> None:
-        nonlocal arm_segment
-        if not arm_segment:
-            return
-        _execute_arm_move_abs_j_segment(runtime, arm_segment, final_arm_row_index)
-        arm_segment = []
-
     for row in rows:
         if runtime.stop_event is not None and runtime.stop_event.is_set():
             raise RuntimeError("检测到并行执行已请求停止，终止当前 CSV 后续动作")
         if not selected_auto_start and not runtime.auto_execute_remaining:
-            flush_arm_segment()
+            _flush_pending_arm_segment(runtime)
             while True:
                 action_choice = _confirm_each_action(runtime, row)
                 if action_choice == "q":
@@ -1582,11 +1412,10 @@ def _run_rows_with_optional_prompt(
             if action_choice == "j":
                 continue
         if row.action_type == "arm" and (selected_auto_start or runtime.auto_execute_remaining):
-            arm_segment.append(row)
+            runtime.pending_arm_rows.append(row)
             continue
-        flush_arm_segment()
+        _flush_pending_arm_segment(runtime)
         _execute_row(runtime, row)
-    flush_arm_segment()
 
 
 def _execute_single_csv(
@@ -1594,6 +1423,7 @@ def _execute_single_csv(
     csv_path: Path,
     selected_auto_start: bool,
     shared_runtimes: list[ReplayRuntime],
+    flush_at_end: bool = False,
 ) -> None:
     is_offset_trigger_csv = _should_trigger_offset_calculation(runtime, csv_path.name)
     rows = _load_replay_rows(csv_path)
@@ -1603,20 +1433,19 @@ def _execute_single_csv(
         runtime.connected_arm.arm_side,
         len(rows),
     )
-    original_joint_speed_deg_s = runtime.joint_speed_deg_s
-    original_cartesian_speed_mm_s = runtime.cartesian_speed_mm_s
+    original_move_abs_j_speed_mm_s = runtime.move_abs_j_speed_mm_s
     if is_offset_trigger_csv:
-        runtime.joint_speed_deg_s = 100.0
-        runtime.cartesian_speed_mm_s = 100.0
+        _flush_pending_arm_segment(runtime)
+        runtime.move_abs_j_speed_mm_s = 100.0
         logger.info(
-            "offset 触发 CSV 临时速度调整 file={} joint_speed {:.2f}->100.00 deg/s "
-            "cartesian_speed {:.2f}->100.00 mm/s",
+            "offset 触发 CSV 临时调整 MoveAbsJ 路径速度 file={} speed {:.2f}->100.00 mm/s",
             csv_path.name,
-            original_joint_speed_deg_s,
-            original_cartesian_speed_mm_s,
+            original_move_abs_j_speed_mm_s,
         )
     try:
         _run_rows_with_optional_prompt(runtime, rows, selected_auto_start, shared_runtimes)
+        if is_offset_trigger_csv or flush_at_end or not runtime.auto_execute_remaining:
+            _flush_pending_arm_segment(runtime)
         if is_offset_trigger_csv:
             logger.info(
                 "已到达 offset 触发 CSV，等待 {:.1f}s 后开始连续采集三球坐标 file={}",
@@ -1628,15 +1457,18 @@ def _execute_single_csv(
             logger.success("已更新全局笛卡尔纠偏矩阵，后续目标 CSV 将按 T_off@T_tcp 左乘方式应用")
     finally:
         if is_offset_trigger_csv:
-            runtime.joint_speed_deg_s = original_joint_speed_deg_s
-            runtime.cartesian_speed_mm_s = original_cartesian_speed_mm_s
+            runtime.move_abs_j_speed_mm_s = original_move_abs_j_speed_mm_s
             logger.info(
-                "offset 触发 CSV 结束，恢复回放速度 file={} joint_speed={:.2f} deg/s " "cartesian_speed={:.2f} mm/s",
+                "offset 触发 CSV 结束，恢复 MoveAbsJ 路径速度 file={} speed={:.2f} mm/s",
                 csv_path.name,
-                runtime.joint_speed_deg_s,
-                runtime.cartesian_speed_mm_s,
+                runtime.move_abs_j_speed_mm_s,
             )
-    logger.success("文件执行完成 {} arm_side={}", csv_path.name, runtime.connected_arm.arm_side)
+    logger.success(
+        "文件已加入执行流 {} arm_side={} pending_arm_rows={}",
+        csv_path.name,
+        runtime.connected_arm.arm_side,
+        len(runtime.pending_arm_rows),
+    )
 
 
 def _execute_parallel_csv_pair(
@@ -1648,11 +1480,19 @@ def _execute_parallel_csv_pair(
     stop_event: threading.Event,
 ) -> None:
     logger.info("开始并行执行 phase={} left={} right={}", phase_label, left_csv_path.name, right_csv_path.name)
+    _flush_pending_arm_segment(left_runtime)
+    _flush_pending_arm_segment(right_runtime)
     errors: list[BaseException] = []
 
     def _worker(runtime: ReplayRuntime, csv_path: Path) -> None:
         try:
-            _execute_single_csv(runtime, csv_path, selected_auto_start=True, shared_runtimes=[runtime])
+            _execute_single_csv(
+                runtime,
+                csv_path,
+                selected_auto_start=True,
+                shared_runtimes=[runtime],
+                flush_at_end=True,
+            )
         except BaseException as exc:  # noqa: BLE001
             stop_event.set()
             logger.exception(
@@ -1710,6 +1550,8 @@ def _execute_csv_execution_plan(
             stop_event=stop_event,
         )
         left_executed = True
+    if plan.right_pre_stage_csv_paths:
+        _flush_pending_arm_segment(left_runtime)
     for right_csv_path in plan.right_pre_stage_csv_paths:
         if right_runtime is None:
             raise RuntimeError(f"右臂阶段执行缺少 runtime：{right_csv_path.name}")
@@ -1731,9 +1573,13 @@ def _execute_csv_execution_plan(
     if not left_executed:
         if stop_event.is_set():
             raise RuntimeError("检测到并行执行已请求停止，终止左臂后续阶段")
+        if right_runtime is not None:
+            _flush_pending_arm_segment(right_runtime)
         _execute_single_csv(left_runtime, plan.left_csv_path, selected_auto_start, shared_runtimes=shared_runtimes)
     if right_runtime is None:
         return
+    if plan.right_post_stage_csv_paths:
+        _flush_pending_arm_segment(left_runtime)
     for right_csv_path in plan.right_post_stage_csv_paths:
         if stop_event.is_set():
             raise RuntimeError("检测到并行执行已请求停止，终止右臂后续阶段")
@@ -1761,8 +1607,7 @@ def _confirm_runtime_config(
     offset_camera_name: str,
     offset_prior_capture_path: Path,
     hand_eye_result_path: Path,
-    joint_speed_deg_s: float,
-    cartesian_speed_mm_s: float,
+    move_abs_j_speed_mm_s: float,
 ) -> str:
     while True:
         print("")
@@ -1771,8 +1616,7 @@ def _confirm_runtime_config(
         print(f"当前机械臂侧别：{arm_side}")
         print(f"当前 CSV 目录：{record_dir}")
         print(f"当前最大文件数：{'全部' if max_files is None else max_files}")
-        print(f"当前关节回放速度：{joint_speed_deg_s:.2f} deg/s")
-        print(f"当前笛卡尔回放速度：{cartesian_speed_mm_s:.2f} mm/s")
+        print(f"当前 MoveAbsJ 路径速度：{move_abs_j_speed_mm_s:.2f} mm/s")
         print(f"当前 offset 服务：{offset_service_addr}")
         print(f"当前 offset 相机：{offset_camera_name}")
         print(f"当前 offset 先验：{offset_prior_capture_path}")
@@ -1799,12 +1643,12 @@ def _confirm_runtime_config(
         print(f"未知输入：{choice}")
 
 
-def _print_csv_summary(csv_paths: list[Path], joint_speed_deg_s: float, cartesian_speed_mm_s: float) -> None:
+def _print_csv_summary(csv_paths: list[Path], move_abs_j_speed_mm_s: float) -> None:
     print("本次将按以下顺序执行 CSV：")
     for index, csv_path in enumerate(csv_paths, start=1):
         print(f"  {index:02d}. {csv_path.name}")
-    print(f"关节回放速度：{joint_speed_deg_s:.1f} deg/s")
-    print(f"笛卡尔回放速度：{cartesian_speed_mm_s:.1f} mm/s")
+    print(f"MoveAbsJ 路径速度：{move_abs_j_speed_mm_s:.1f} mm/s")
+    print("左臂 CSV 末端 zone=0 配置：" f"sequences={LEFT_CSV_ZERO_ZONE_SEQUENCES}")
     print(
         "全局笛卡尔纠偏配置："
         f"calculate_at={_format_optional_csv_sequence(CSV_CARTESIAN_OFFSET_CALCULATE_AT)}, "
@@ -1850,57 +1694,36 @@ def _prompt_positive_speed(current_value: float, label: str, unit_text: str) -> 
 
 def _apply_replay_speed_values(
     runtimes: list[ReplayRuntime],
-    joint_speed_deg_s: float,
-    cartesian_speed_mm_s: float,
+    move_abs_j_speed_mm_s: float,
 ) -> None:
     for runtime in runtimes:
-        runtime.joint_speed_deg_s = joint_speed_deg_s
-        runtime.cartesian_speed_mm_s = cartesian_speed_mm_s
+        runtime.move_abs_j_speed_mm_s = move_abs_j_speed_mm_s
 
 
 def _configure_replay_speeds(runtimes: list[ReplayRuntime]) -> None:
     if not runtimes:
         return
-    current_joint_speed_deg_s = runtimes[0].joint_speed_deg_s
-    current_cartesian_speed_mm_s = runtimes[0].cartesian_speed_mm_s
-    print(f"当前关节回放速度：{current_joint_speed_deg_s:.2f} deg/s")
-    print(f"当前笛卡尔回放速度：{current_cartesian_speed_mm_s:.2f} mm/s")
-    new_joint_speed_deg_s = _prompt_positive_speed(current_joint_speed_deg_s, "关节回放", "deg/s")
-    new_cartesian_speed_mm_s = _prompt_positive_speed(current_cartesian_speed_mm_s, "笛卡尔回放", "mm/s")
-    _apply_replay_speed_values(runtimes, new_joint_speed_deg_s, new_cartesian_speed_mm_s)
-    logger.info(
-        "回放速度已更新 joint={:.2f} deg/s cartesian={:.2f} mm/s",
-        new_joint_speed_deg_s,
-        new_cartesian_speed_mm_s,
-    )
+    current_speed_mm_s = runtimes[0].move_abs_j_speed_mm_s
+    print(f"当前 MoveAbsJ 路径速度：{current_speed_mm_s:.2f} mm/s")
+    new_speed_mm_s = _prompt_positive_speed(current_speed_mm_s, "MoveAbsJ 路径", "mm/s")
+    _apply_replay_speed_values(runtimes, new_speed_mm_s)
+    logger.info("回放 MoveAbsJ 路径速度已更新 speed={:.2f} mm/s", new_speed_mm_s)
 
 
-def _configure_speed_values(current_joint_speed_deg_s: float, current_cartesian_speed_mm_s: float) -> tuple[float, float]:
-    print(f"当前关节回放速度：{current_joint_speed_deg_s:.2f} deg/s")
-    print(f"当前笛卡尔回放速度：{current_cartesian_speed_mm_s:.2f} mm/s")
-    new_joint_speed_deg_s = _prompt_positive_speed(current_joint_speed_deg_s, "关节回放", "deg/s")
-    new_cartesian_speed_mm_s = _prompt_positive_speed(current_cartesian_speed_mm_s, "笛卡尔回放", "mm/s")
-    logger.info(
-        "初始回放速度已更新 joint={:.2f} deg/s cartesian={:.2f} mm/s",
-        new_joint_speed_deg_s,
-        new_cartesian_speed_mm_s,
-    )
-    return new_joint_speed_deg_s, new_cartesian_speed_mm_s
+def _configure_speed_value(current_speed_mm_s: float) -> float:
+    print(f"当前 MoveAbsJ 路径速度：{current_speed_mm_s:.2f} mm/s")
+    new_speed_mm_s = _prompt_positive_speed(current_speed_mm_s, "MoveAbsJ 路径", "mm/s")
+    logger.info("初始 MoveAbsJ 路径速度已更新 speed={:.2f} mm/s", new_speed_mm_s)
+    return new_speed_mm_s
 
 
 def _configure_initial_replay_speeds(runtimes: list[ReplayRuntime], auto_start: bool) -> None:
     if not runtimes:
         return
-    current_joint_speed_deg_s = runtimes[0].joint_speed_deg_s
-    current_cartesian_speed_mm_s = runtimes[0].cartesian_speed_mm_s
-    print(f"初始关节回放速度：{current_joint_speed_deg_s:.2f} deg/s")
-    print(f"初始笛卡尔回放速度：{current_cartesian_speed_mm_s:.2f} mm/s")
+    current_speed_mm_s = runtimes[0].move_abs_j_speed_mm_s
+    print(f"初始 MoveAbsJ 路径速度：{current_speed_mm_s:.2f} mm/s")
     if auto_start:
-        logger.info(
-            "自动启动模式保留默认速度 joint={:.2f} deg/s cartesian={:.2f} mm/s",
-            current_joint_speed_deg_s,
-            current_cartesian_speed_mm_s,
-        )
+        logger.info("自动启动模式保留 MoveAbsJ 路径速度 speed={:.2f} mm/s", current_speed_mm_s)
         return
     raw_text = input("输入回车保留默认速度，输入 s 立即调整速度，输入 q 退出：").strip().lower()
     if raw_text == "q":
@@ -1909,13 +1732,11 @@ def _configure_initial_replay_speeds(runtimes: list[ReplayRuntime], auto_start: 
         _configure_replay_speeds(runtimes)
 
 
-def _confirm_start(
-    csv_paths: list[Path], auto_start: bool, joint_speed_deg_s: float, cartesian_speed_mm_s: float
-) -> str:
-    _print_csv_summary(csv_paths, joint_speed_deg_s, cartesian_speed_mm_s)
+def _confirm_start(csv_paths: list[Path], auto_start: bool, move_abs_j_speed_mm_s: float) -> str:
+    _print_csv_summary(csv_paths, move_abs_j_speed_mm_s)
     arm_side = "right" if "record_right" in str(csv_paths[0].parent) else "left"
     print(f"{arm_side} 臂基坐标固定为 tool={DEFAULT_TOOL_NAME}, wobj={DEFAULT_WOBJ_NAME}")
-    print("arm 动作策略：pose=NaN -> MoveAbsJ；否则 MoveL，失败自动回退 MoveAbsJ")
+    print("arm 动作策略：pose=NaN 直接使用 joints；否则优先 pose IK，失败后以 joints 最终兜底；统一 MoveAbsJ")
     if arm_side == "left":
         print("gripper 动作策略：仅下发，不等待到位")
     else:
@@ -1945,9 +1766,7 @@ def _confirm_each_file(csv_path: Path) -> str:
 def _confirm_each_action(runtime: ReplayRuntime, row: ReplayRow) -> str:
     print("")
     print(f"下一动作：file={row.csv_name} row={row.row_index} type={row.action_type}")
-    print(
-        f"当前速度：joint={runtime.joint_speed_deg_s:.2f} deg/s, " f"cartesian={runtime.cartesian_speed_mm_s:.2f} mm/s"
-    )
+    print(f"当前 MoveAbsJ 路径速度：{runtime.move_abs_j_speed_mm_s:.2f} mm/s")
     if row.action_type == "arm":
         if row.pose_text.strip().lower() == "nan":
             print(f"目标 joints(deg): {row.joints_text}")
@@ -1981,8 +1800,7 @@ def main(
     selected_execution_mode = "parallel"
     selected_arm_side = str(arm_side)
     selected_record_dir = Path(record_dir)
-    selected_joint_speed_deg_s = DEFAULT_REPLAY_JOINT_SPEED
-    selected_cartesian_speed_mm_s = DEFAULT_REPLAY_CARTESIAN_SPEED
+    selected_move_abs_j_speed_mm_s = DEFAULT_REPLAY_MOVE_ABS_J_SPEED_MM_S
     selected_auto_start = bool(auto_start)
     while True:
         resolved_record_dir = _resolve_record_dir(selected_arm_side, selected_record_dir)
@@ -1995,8 +1813,7 @@ def main(
             offset_camera_name=offset_camera_name,
             offset_prior_capture_path=offset_prior_capture_path,
             hand_eye_result_path=hand_eye_result_path,
-            joint_speed_deg_s=selected_joint_speed_deg_s,
-            cartesian_speed_mm_s=selected_cartesian_speed_mm_s,
+            move_abs_j_speed_mm_s=selected_move_abs_j_speed_mm_s,
         )
         if config_choice == "quit":
             logger.info("用户在配置阶段取消执行")
@@ -2015,10 +1832,7 @@ def main(
             selected_record_dir = DEFAULT_RECORD_DIR
             continue
         if config_choice == "speed":
-            selected_joint_speed_deg_s, selected_cartesian_speed_mm_s = _configure_speed_values(
-                selected_joint_speed_deg_s,
-                selected_cartesian_speed_mm_s,
-            )
+            selected_move_abs_j_speed_mm_s = _configure_speed_value(selected_move_abs_j_speed_mm_s)
             continue
         break
     logger.info("拖动示教自动回放 CLI 启动 arm_side={} record_dir={}", selected_arm_side, resolved_record_dir)
@@ -2036,8 +1850,7 @@ def main(
     start_mode = _confirm_start(
         csv_paths,
         selected_auto_start,
-        joint_speed_deg_s=selected_joint_speed_deg_s,
-        cartesian_speed_mm_s=selected_cartesian_speed_mm_s,
+        move_abs_j_speed_mm_s=selected_move_abs_j_speed_mm_s,
     )
     if start_mode == "quit":
         logger.info("用户取消执行")
@@ -2068,9 +1881,8 @@ def main(
             right_runtime.auto_execute_remaining = True
             _prepare_runtime(right_runtime)
         shared_runtimes = [runtime] if right_runtime is None else [runtime, right_runtime]
-        _apply_replay_speed_values(shared_runtimes, DEFAULT_REPLAY_JOINT_SPEED, DEFAULT_REPLAY_CARTESIAN_SPEED)
-        _configure_initial_replay_speeds(shared_runtimes, selected_auto_start)
-        _apply_replay_speed_values(shared_runtimes, selected_joint_speed_deg_s, selected_cartesian_speed_mm_s)
+        _apply_replay_speed_values(shared_runtimes, selected_move_abs_j_speed_mm_s)
+        _configure_initial_replay_speeds(shared_runtimes, start_mode == "auto")
         for plan in execution_plans:
             csv_path = plan.left_csv_path
             if not selected_auto_start and not runtime.auto_execute_remaining:
@@ -2082,6 +1894,9 @@ def main(
                     logger.warning("跳过文件 {}", csv_path.name)
                     continue
             _execute_csv_execution_plan(runtime, plan, right_runtime, selected_auto_start, stop_event)
+        _flush_pending_arm_segment(runtime)
+        if right_runtime is not None:
+            _flush_pending_arm_segment(right_runtime)
         logger.success("全部 CSV 执行完成")
         return 0
     finally:
