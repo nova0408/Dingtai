@@ -29,7 +29,7 @@ from src.calibration import CHARUCO_200_12_9, CharucoPoseEstimator
 DEFAULT_WINDOW_NAME = "Left Arm Hand-Eye Calibration"
 DEFAULT_WINDOW_WIDTH = 1680
 DEFAULT_WINDOW_HEIGHT = 960
-DEFAULT_ORIN_SERVICE_ADDR = "tcp://192.168.1.109:6200"
+DEFAULT_ORIN_SERVICE_ADDR = "tcp://192.168.1.121:6200"
 DEFAULT_CAMERA_NAME = "left_hand_camera"
 DEFAULT_LEFT_ARM_IP = "192.168.1.161"
 DEFAULT_OUTPUT_ROOT = Path("experiments/hand_eye/runs")

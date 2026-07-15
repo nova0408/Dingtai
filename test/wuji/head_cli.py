@@ -10,7 +10,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from common import create_wuyou_channel, stop_ssh_process
+from common import DEFAULT_PORT, create_wuyou_channel, stop_ssh_process
 from src.wuji.head_client import WujiHeadClient
 
 DEFAULT_STEP_DEG = 5.0
@@ -76,7 +76,7 @@ def main() -> None:
     """头部交互式 CLI。"""
 
     logger.info("头部控制脚本启动，请先确认 wuyou qmlinker 连接正常。")
-    ssh_process, qmlinker_channel = create_wuyou_channel()
+    ssh_process, qmlinker_channel = create_wuyou_channel(DEFAULT_PORT)
     head_client = WujiHeadClient(qmlinker_channel)
     try:
         _print_state(head_client)

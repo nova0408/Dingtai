@@ -16,6 +16,7 @@ Logs/*
 *.jpg
 *.bmp
 *.txt
+*.bak
 opening_detection_pipeline_package/
 
 # Byte-compiled / optimized / DLL files

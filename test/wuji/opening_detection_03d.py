@@ -20,7 +20,7 @@ from camera_pipeline.opening_detection.protocol import OpeningDetectionPipelineR
 from camera_pipeline.tray_detection.protocol import OrinTrayDetectionRequest
 
 # region 默认参数
-DEFAULT_SERVICE_ADDR = "tcp://192.168.1.109:6200"
+DEFAULT_SERVICE_ADDR = "tcp://192.168.1.121:6200"
 DEFAULT_CAMERA_NAME = "left_hand_camera"
 DEFAULT_TIMEOUT_S = 30.0
 DEFAULT_WAIT_AFTER_DETECTED_S = 20.0

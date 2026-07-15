@@ -23,9 +23,10 @@ from src.wuji import (
 
 # region 默认参数
 
-DEFAULT_CAMERA_NAME: WujiCameraName = "left_hand_camera"
+DEFAULT_CAMERA_NAME: WujiCameraName = "chest_camera"
 DEFAULT_CONTROL_PORT = 5570  # ZMQ 控制口端口，单位 端口号
-DEFAULT_LEFT_HAND_STREAM_PORT = 5562  # 左手相机数据口端口，单位 端口号
+DEFAULT_LEFT_HAND_STREAM_PORT = 5561  # 胸部相机数据口端口，单位 端口号
+# DEFAULT_LEFT_HAND_STREAM_PORT = 5562  # 左手相机数据口端口，单位 端口号
 DEFAULT_REQUEST_TIMEOUT_MS = 3000  # 控制命令超时，单位 ms
 DEFAULT_STREAM_TIMEOUT_MS = 5000  # 首帧等待超时，单位 ms
 DEFAULT_FORWARD_WAIT_S = 1.0  # SSH 转发建立等待时间，单位 s
