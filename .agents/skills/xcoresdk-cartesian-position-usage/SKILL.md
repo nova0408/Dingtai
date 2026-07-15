@@ -1,6 +1,6 @@
 ---
 name: xcoresdk-cartesian-position-usage
-description: 规范 Dingtai 项目中 xCoreSDK `CartesianPosition` 的读取、构造、长度单位与欧拉角顺序。用于机械臂实验、手眼标定、调试页或运动脚本中处理 `robot.cartPosture(...)` 返回值或主动构造 `CartesianPosition` 时，强制使用 `trans(m)`、`rpy(rad)`，并统一按 SciPy 小写外禀 `xyz` 重建和输出姿态；禁止使用实测可能为空的 `pos`，禁止把 mm/deg 数据回灌到内部计算矩阵。
+description: 规范 Dingtai 项目中 xCoreSDK `CartesianPosition` 的读取、构造、长度单位、elbow 臂角与欧拉角顺序。用于机械臂实验、手眼标定、调试页或运动脚本中处理 `robot.cartPosture(...)` 返回值或主动构造 `CartesianPosition` 时，强制使用 `trans(m)`、`rpy(rad)`，并统一按 SciPy 小写外禀 `xyz` 重建和输出姿态；禁止使用实测可能为空的 `pos`，禁止把 mm/deg 数据回灌到内部计算矩阵。
 ---
 
 # xCoreSDK CartesianPosition Usage
@@ -21,6 +21,10 @@ description: 规范 Dingtai 项目中 xCoreSDK `CartesianPosition` 的读取、�
    - `frame6`: 长度 6，顺序 `[X, Y, Z, Rx, Ry, Rz]`
 3. `CartesianPosition(matrix16)`
    - `matrix16`: 长度 16，行优先 4x4 齐次变换矩阵
+
+对于 v0.7.1 AR7（7 轴）模型，`CartesianPosition` 还提供 `elbow`（弧度）和
+`hasElbow`（是否启用臂角约束）字段。设置臂角后仍调用同一个
+`model.calcIk(posture, toolset, ec)`，elbow 不是 `calcIk` 的额外位置参数。
 
 ## 欧拉角约定与数据语义必须严格分离
 
@@ -54,6 +58,10 @@ description: 规范 Dingtai 项目中 xCoreSDK `CartesianPosition` 的读取、�
    - 不得把 `translation_mm` 写入计算矩阵。
    - 不得在没有确认数据来源与单位时，把 `pose_rpy_deg` 直接当作 SDK 原始 RPY。
    - 手眼标定必须用至少一组历史数据或合成数据验证单位换算和旋转顺序；仅通过 ruff/pyright 不算完成。
+10. 对支持 elbow 的 7 轴模型，计算指定臂角的逆解必须遵循固定顺序：
+    - 用 SDK 原始单位构造 `CartesianPosition([x_m, y_m, z_m, rx_rad, ry_rad, rz_rad])`。
+    - 将界面/CSV 的 `elbow_deg` 显式转换为 `elbow_rad` 后写入 `posture.elbow`。
+    - 再调用 `model.calcIk(posture, toolset, ec)`；禁止把 mm/deg 或额外 elbow 参数直接传入 `calcIk`。
 
 ## 构造约定
 
@@ -63,6 +71,9 @@ description: 规范 Dingtai 项目中 xCoreSDK `CartesianPosition` 的读取、�
 4. 若输入是项目展示用 `pose_rpy_deg`，必须先确认它确实来自同一小写外禀 xyz 约定，再显式转换为 rad；若数据来源或约定不明确，应先用 `Rotation.from_euler("xyz", pose_rpy_deg, degrees=True)` 恢复旋转矩阵并验证，再生成 SDK RPY。
 5. 当下游接口天然以齐次变换矩阵工作，优先使用 `CartesianPosition(matrix16)`，其中 `matrix16` 必须是行优先 4x4 齐次变换矩阵展开后的 16 个值。
 6. 若代码中已有 `np.ndarray shape=(4, 4)` 变换矩阵，推荐先显式转成行优先 16 值列表，再传给 `CartesianPosition(matrix16)`。
+7. 主动指定 elbow 时，`elbow` 必须保持 SDK 原始单位弧度；如果数据来自 GUI/CSV，必须使用
+   `posture.elbow = np.deg2rad(elbow_deg)`。是否设置 `hasElbow=True` 以当前 SDK 示例和控制器上下文为准，
+   但不得把 `elbow_deg` 原值直接写入 SDK 对象。
 
 ## 常见单位坑
 
@@ -82,6 +93,9 @@ description: 规范 Dingtai 项目中 xCoreSDK `CartesianPosition` 的读取、�
 8. 若代码里存在 `PoseSnapshot.pose_matrix`、`base_flange_pose`、`end_pose_matrix` 这类内部矩阵字段，必须在字段定义或构造函数旁明确写出单位约定，避免后续维护者把 GUI 的 `mm` 误当成内部矩阵单位。
 9. 这条规则必须从源头执行：读取 `cartPosture(...)` 后，先基于原始 `trans(m) + rpy(rad)` 生成内部矩阵；只有在最终显示、日志或 CSV 落盘时，才把平移转成 `mm`、角度转成 `deg`。
 
+10. `elbow` 的单位边界与 TCP 姿态相同：SDK 对象使用 `elbow_rad`，界面和 CSV 展示使用
+    `elbow_deg`。修改 elbow 后重新计算 IK 时，应保留 TCP 的 m/rad 语义，不得先把 TCP 转成显示单位再回灌。
+
 ```python
 x_m = x_mm / 1000.0
 y_m = y_mm / 1000.0
@@ -94,6 +108,18 @@ target_pose = xCoreSDK_python.CartesianPosition(
     [x_m, y_m, z_m, rx_rad, ry_rad, rz_rad]
 )
 ```
+
+指定 elbow 的 v0.7.1 AR7 逆解示例：
+
+```python
+target_pose = xCoreSDK_python.CartesianPosition(
+    [x_m, y_m, z_m, rx_rad, ry_rad, rz_rad]
+)
+target_pose.elbow = float(np.deg2rad(elbow_deg))
+target_joints_rad = robot.model().calcIk(target_pose, toolset, ec)
+```
+
+上例中的 `elbow_deg` 只用于界面/CSV 输入；SDK 调用链中始终使用 `elbow_rad`。
 
 ## 推荐实现片段
 
