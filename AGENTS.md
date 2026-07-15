@@ -95,4 +95,4 @@ powershell -ExecutionPolicy Bypass -File .\.agents\skills\windows-powershell-utf
 - 不要盲目增加不必要的复杂性；如果现有接口只需修补一个方法，就不要顺手引入缓存层、额外包装层或新的兼容分支。
 
 ## 旋转约定
-项目中使用的欧拉旋转均使用scipy.spatial.transform.Rotation.as_euler("XYZ", degrees=True)表示。
+项目中使用的欧拉旋转均使用 `scipy.spatial.transform.Rotation.as_euler("xyz", degrees=True)` 表示，即 SciPy 小写外禀 xyz 约定。

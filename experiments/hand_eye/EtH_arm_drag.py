@@ -67,7 +67,7 @@ EXPECTED_ARM_TYPES = {
     "right": "AR5-5_0.8R-W4C1C9-ZY2",
 }
 ARM_LABELS = {"left": "左臂", "right": "右臂"}
-RESULT_PREFIXES = {"left": "L_EtH_", "right": "R_Et_H_"}
+RESULT_PREFIXES = {"left": "L_EtH_", "right": "R_EtH_"}
 # endregion
 
 
@@ -780,11 +780,11 @@ def _save_calibration_result(
     np.save(park_matrix_path, result.park_base_camera_pose_m)
     _write_base_camera_samples_csv(base_camera_samples_path, result)
     rpy_deg = Rotation3D.from_matrix(result.base_camera_pose_m[:3, :3]).as_euler(
-        "XYZ", degrees=True
+        "xyz", degrees=True
     )
     park_rpy_deg = Rotation3D.from_matrix(
         result.park_base_camera_pose_m[:3, :3]
-    ).as_euler("XYZ", degrees=True)
+    ).as_euler("xyz", degrees=True)
     translation_mean_m = result.stats.translation_mean_m
     translation_std_m = result.stats.translation_std_m
     rotation_vector_std_deg = result.stats.rotation_vector_std_deg
@@ -837,7 +837,7 @@ def _save_calibration_result(
         "",
         "T_base_camera_mean translation_mm:",
         np.array2string(result.base_camera_pose_m[:3, 3] * 1000.0, precision=6),
-        "T_base_camera_mean rpy_XYZ_deg:",
+        "T_base_camera_mean rpy_deg:",
         np.array2string(rpy_deg, precision=6),
         "",
         "T_base_camera_PARK_raw:",
@@ -848,7 +848,7 @@ def _save_calibration_result(
         np.array2string(
             result.park_base_camera_pose_m[:3, 3] * 1000.0, precision=6
         ),
-        "T_base_camera_PARK_raw rpy_XYZ_deg:",
+        "T_base_camera_PARK_raw rpy_deg:",
         np.array2string(park_rpy_deg, precision=6),
         "",
         f"per_sample_records={base_camera_samples_path.name}",
@@ -873,7 +873,7 @@ def _save_calibration_result(
             result.used_sample_indices, result.gripper_board_poses_m, strict=True
         ):
             pose_rpy_deg = Rotation3D.from_matrix(pose[:3, :3]).as_euler(
-                "XYZ", degrees=True
+                "xyz", degrees=True
             )
             writer.writerow(
                 [
@@ -895,7 +895,7 @@ def _build_camera_board_result_lines(result: CalibrationResult) -> list[str]:
         "[per_sample_T_camera_board]",
         "matrix_translation_unit=m",
         "display_translation_unit=mm",
-        "rotation_display_convention=as_euler(\"XYZ\", degrees=True)",
+        "rotation_display_convention=as_euler(\"xyz\", degrees=True)",
     ]
     for sample_index, camera_board_pose_m in zip(
         result.used_sample_indices, result.camera_board_poses_m, strict=True
@@ -903,8 +903,8 @@ def _build_camera_board_result_lines(result: CalibrationResult) -> list[str]:
         matrix = _validate_transform_m(
             f"sample_{sample_index}.T_camera_board", camera_board_pose_m
         )
-        rpy_xyz_deg = Rotation3D.from_matrix(matrix[:3, :3]).as_euler(
-            "XYZ", degrees=True
+        rpy_deg = Rotation3D.from_matrix(matrix[:3, :3]).as_euler(
+            "xyz", degrees=True
         )
         lines.extend(
             [
@@ -913,8 +913,8 @@ def _build_camera_board_result_lines(result: CalibrationResult) -> list[str]:
                 np.array2string(matrix, precision=10, suppress_small=False),
                 f"sample_{sample_index:03d}.translation_mm:",
                 np.array2string(matrix[:3, 3] * 1000.0, precision=6),
-                f"sample_{sample_index:03d}.rpy_XYZ_deg:",
-                np.array2string(rpy_xyz_deg, precision=6),
+                f"sample_{sample_index:03d}.rpy_deg:",
+                np.array2string(rpy_deg, precision=6),
             ]
         )
     return lines
@@ -954,9 +954,9 @@ def _write_base_camera_samples_csv(
         "qx",
         "qy",
         "qz",
-        "roll_XYZ_deg",
-        "pitch_XYZ_deg",
-        "yaw_XYZ_deg",
+        "roll_deg",
+        "pitch_deg",
+        "yaw_deg",
         "translation_error_mm",
         "rotation_error_deg",
     ]
@@ -974,8 +974,8 @@ def _write_base_camera_samples_csv(
                 f"sample_{sample_index}.T_base_camera", pose_m
             )
             quat_xyzw = Rotation3D.from_matrix(matrix[:3, :3]).as_quat()
-            rpy_xyz_deg = Rotation3D.from_matrix(matrix[:3, :3]).as_euler(
-                "XYZ", degrees=True
+            rpy_deg = Rotation3D.from_matrix(matrix[:3, :3]).as_euler(
+                "xyz", degrees=True
             )
             row: dict[str, float | int | str] = {
                 "sample_index": sample_index,
@@ -986,9 +986,9 @@ def _write_base_camera_samples_csv(
                 "qx": f"{quat_xyzw[0]:.9f}",
                 "qy": f"{quat_xyzw[1]:.9f}",
                 "qz": f"{quat_xyzw[2]:.9f}",
-                "roll_XYZ_deg": f"{rpy_xyz_deg[0]:.6f}",
-                "pitch_XYZ_deg": f"{rpy_xyz_deg[1]:.6f}",
-                "yaw_XYZ_deg": f"{rpy_xyz_deg[2]:.6f}",
+                "roll_deg": f"{rpy_deg[0]:.6f}",
+                "pitch_deg": f"{rpy_deg[1]:.6f}",
+                "yaw_deg": f"{rpy_deg[2]:.6f}",
                 "translation_error_mm": f"{translation_error_m * 1000.0:.6f}",
                 "rotation_error_deg": f"{rotation_error_deg:.6f}",
             }

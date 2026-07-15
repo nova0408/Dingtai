@@ -498,8 +498,8 @@ def _save_hand_eye_outputs(
         result.used_indices, result.base_board_list, strict=True
     ):
         quat_xyzw = Rotation3D.from_matrix(base_board[:3, :3]).as_quat()
-        rpy_xyz_deg = Rotation3D.from_matrix(base_board[:3, :3]).as_euler(
-            "XYZ", degrees=True
+        rpy_deg = Rotation3D.from_matrix(base_board[:3, :3]).as_euler(
+            "xyz", degrees=True
         )
         records.append(
             {
@@ -514,9 +514,9 @@ def _save_hand_eye_outputs(
                 "base_board_qx": float(quat_xyzw[0]),
                 "base_board_qy": float(quat_xyzw[1]),
                 "base_board_qz": float(quat_xyzw[2]),
-                "base_board_roll_deg": float(rpy_xyz_deg[0]),
-                "base_board_pitch_deg": float(rpy_xyz_deg[1]),
-                "base_board_yaw_deg": float(rpy_xyz_deg[2]),
+                "base_board_roll_deg": float(rpy_deg[0]),
+                "base_board_pitch_deg": float(rpy_deg[1]),
+                "base_board_yaw_deg": float(rpy_deg[2]),
             }
         )
     with (output_dir / "board_in_base.csv").open(
@@ -528,7 +528,7 @@ def _save_hand_eye_outputs(
     mean_translation = result.stats.mean_translation_m
     std_translation = result.stats.std_translation_m
     tool_cam_rpy_deg = Rotation3D.from_matrix(tool_cam[:3, :3]).as_euler(
-        "XYZ", degrees=True
+        "xyz", degrees=True
     )
     summary_lines = [
         "Board pose in robot base frame",
@@ -563,7 +563,7 @@ def _save_hand_eye_outputs(
         "T_tool_cam:",
         np.array2string(tool_cam, precision=10, suppress_small=False),
         "",
-        "T_tool_cam_rpy_XYZ_deg:",
+        "T_tool_cam_rpy_deg:",
         f"roll = {tool_cam_rpy_deg[0]:.6f}",
         f"pitch = {tool_cam_rpy_deg[1]:.6f}",
         f"yaw = {tool_cam_rpy_deg[2]:.6f}",
@@ -953,7 +953,7 @@ def _write_hand_eye_result_file(
     output_path: Path, result: HandEyeCalibrationResult
 ) -> None:
     tool_cam_rpy_deg = Rotation3D.from_matrix(result.tool_cam[:3, :3]).as_euler(
-        "XYZ", degrees=True
+        "xyz", degrees=True
     )
     mean_translation = result.stats.mean_translation_m
     std_translation = result.stats.std_translation_m
@@ -977,7 +977,7 @@ def _write_hand_eye_result_file(
         "T_tool_cam:",
         np.array2string(result.tool_cam, precision=10, suppress_small=False),
         "",
-        "T_tool_cam_rpy_XYZ_deg:",
+        "T_tool_cam_rpy_deg:",
         f"roll = {tool_cam_rpy_deg[0]:.6f}",
         f"pitch = {tool_cam_rpy_deg[1]:.6f}",
         f"yaw = {tool_cam_rpy_deg[2]:.6f}",
@@ -1252,7 +1252,7 @@ def _build_overlay_lines(
             4, 4
         )
         tool_cam_rpy = Rotation3D.from_matrix(tool_cam[:3, :3]).as_euler(
-            "XYZ", degrees=True
+            "xyz", degrees=True
         )
         lines.append(
             f"T_tool_cam_mm=({tool_cam[0, 3] * 1000.0:.1f}, {tool_cam[1, 3] * 1000.0:.1f}, {tool_cam[2, 3] * 1000.0:.1f}) "
@@ -1533,7 +1533,7 @@ def _cartesian_pose_to_matrix_m(
     cartesian_pose: xCoreSDK_python.CartesianPosition,
 ) -> np.ndarray:
     rotation = Rotation3D.from_euler(
-        "XYZ",
+        "xyz",
         np.asarray(cartesian_pose.rpy, dtype=np.float64).reshape(3),
         degrees=False,
     ).as_matrix()
@@ -1605,7 +1605,7 @@ def _format_pose_text(transform: np.ndarray | None) -> str:
     if transform is None:
         return "NA"
     matrix = np.asarray(transform, dtype=np.float64).reshape(4, 4)
-    rpy_deg = Rotation3D.from_matrix(matrix[:3, :3]).as_euler("XYZ", degrees=True)
+    rpy_deg = Rotation3D.from_matrix(matrix[:3, :3]).as_euler("xyz", degrees=True)
     return (
         f"t_mm=({float(matrix[0, 3] * 1000.0):.1f}, {float(matrix[1, 3] * 1000.0):.1f}, {float(matrix[2, 3] * 1000.0):.1f}) "
         f"rpy_deg=({float(rpy_deg[0]):.1f}, {float(rpy_deg[1]):.1f}, {float(rpy_deg[2]):.1f})"

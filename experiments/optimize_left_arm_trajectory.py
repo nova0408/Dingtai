@@ -43,7 +43,7 @@ from PySide6.QtWidgets import (
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SDK_ROOT = PROJECT_ROOT / "sdk"
-DEFAULT_RECORD_DIR = PROJECT_ROOT / "left_record"  # 左臂轨迹 CSV 所在目录。
+DEFAULT_RECORD_DIR = PROJECT_ROOT / "record_left"  # 左臂轨迹 CSV 所在目录。
 DEFAULT_LEFT_ARM_IP = "192.168.1.161"
 DEFAULT_LOCAL_IP = "192.168.1.116"
 DEFAULT_TOOL_NAME = "g_tool_0"  # 与手眼标定脚本一致的全局工具名称。

@@ -113,7 +113,8 @@ from src.utils.datas.kinematics.transform_protocol import (
 
 - `Transform` 通过 `@` 进行复合：`Transform @ (Transform|Translation|Quaternion)`。
 - 四元数内部顺序固定为 `[w, x, y, z]`（`q1,q2,q3,q4`）。
-- 欧拉角构造默认遵循 ZYX（与项目现有 `from_zyx` 保持一致）。
+- 项目欧拉角统一使用 SciPy 小写外禀 xyz：矩阵输出使用 `Rotation.from_matrix(...).as_euler("xyz", degrees=True)`，欧拉角构造使用 `Rotation.from_euler("xyz", ..., degrees=...)`。
+- `Quaternion.from_zyx(...)` 仅是该类型现有的专用构造接口，不能据此把项目的 SciPy 欧拉角约定解释成 ZYX。
 - `Transform.to_list()`：
   - `zyx=False` 返回 `[x, y, z, q1, q2, q3, q4]`
   - `zyx=True` 返回 `[x, y, z, rz, ry, rx]`
