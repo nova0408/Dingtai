@@ -22,17 +22,27 @@ class _TestPipelineContext(PipelineContext):
 
     def __init__(self, frames: tuple[CameraFramePacket, ...]) -> None:
         self._config = PipelineContextConfig()
+        self._camera_endpoints = self._resolve_camera_endpoints(self._config)
         self._test_frames = frames
         self._test_frame_index = 0
         self._test_frame_by_id = {frame.frame_id: frame for frame in frames}
 
-    def get_latest_frame(self) -> CameraFramePacket:
+    def get_latest_frame(
+        self,
+        camera_name: str | None = None,
+    ) -> CameraFramePacket:
+        del camera_name
         frame = self._test_frames[self._test_frame_index]
         if self._test_frame_index < len(self._test_frames) - 1:
             self._test_frame_index += 1
         return frame
 
-    def get_frame_by_id(self, frame_id: int) -> CameraFramePacket | None:
+    def get_frame_by_id(
+        self,
+        frame_id: int,
+        camera_name: str | None = None,
+    ) -> CameraFramePacket | None:
+        del camera_name
         return self._test_frame_by_id.get(frame_id)
 
 

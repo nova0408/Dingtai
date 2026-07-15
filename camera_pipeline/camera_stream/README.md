@@ -33,7 +33,10 @@
 construct -> start -> background capture -> stop
 ```
 
-`start()` 打开深度、读取内参并启动收流线程；`stop()` 停止线程、关闭 socket 并终止私有 ZMQ context。调用方必须显式关闭。
+`start()` 打开深度、按该运行时的 `camera_id` 读取内参并启动收流线程；
+`stop()` 停止线程、关闭 socket 并终止私有 ZMQ context。每个已连接安装位由
+`PipelineContext` 持有一个独立运行时，因此头部、胸腔和左臂的内参缓存不会混用。
+调用方必须显式关闭上下文，由上下文依次释放各路运行时。
 
 ## 自愈与超时
 

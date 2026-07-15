@@ -1,16 +1,15 @@
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from ..ball_pose_detection.protocol import BallPoseDetectionResponse
-from ..ball_pose_detection.service import BallPoseDetectionService
 from ..protocol import RgbdFrameProtocol
 from ..opening_detection.protocol import (
     OpeningDetectionPipelineResponse,
 )
-from ..opening_detection.service import OpeningDetectionPipelineService
 from ..pipeline_context import PipelineContext
 from ..tray_detection.protocol import OrinTrayDetectionRequest
 from ..tray_detection.protocol import OrinTrayDetectionResponse
-from ..tray_detection.service import OrinTrayDetectionService
 from .frame_publisher import CameraFramePublisher
 from .protocol import (
     PROTOCOL_VERSION,
@@ -24,6 +23,11 @@ from .protocol import (
     CameraSummaryResponse,
     StableFrameResponse,
 )
+
+if TYPE_CHECKING:
+    from ..ball_pose_detection.service import BallPoseDetectionService
+    from ..opening_detection.service import OpeningDetectionPipelineService
+    from ..tray_detection.service import OrinTrayDetectionService
 
 
 class CameraPipelineApplication:
@@ -145,7 +149,11 @@ class CameraPipelineApplication:
         payload = request.camera_intrinsics
         if payload is None:
             raise RuntimeError("camera_intrinsics payload missing")
-        frame = self._wait_for_latest_frame(payload.timeout_s, "camera intrinsics")
+        frame = self._wait_for_latest_frame(
+            payload.timeout_s,
+            "camera intrinsics",
+            camera_name=payload.camera_name,
+        )
         return CameraIntrinsicsResponse(
             camera_name=frame.camera_name,
             fx=frame.fx,
@@ -166,7 +174,7 @@ class CameraPipelineApplication:
         frame = self._wait_for_latest_frame(payload.timeout_s, "camera status")
         return CameraStatusResponse(
             camera_name=frame.camera_name,
-            camera_id=self._pipeline_context.get_camera_id(),
+            camera_id=self._pipeline_context.get_camera_id(frame.camera_name),
             camera_model="unknown",
             width=frame.color_bgr.shape[1],
             height=frame.color_bgr.shape[0],
@@ -182,7 +190,8 @@ class CameraPipelineApplication:
         if payload is None:
             raise RuntimeError("stable_frame payload missing")
         frame = self._pipeline_context.wait_for_stable_frame(
-            timeout_s=payload.timeout_s
+            timeout_s=payload.timeout_s,
+            camera_name=payload.camera_name,
         )
         return StableFrameResponse(
             frame_id=frame.frame_id,
@@ -191,11 +200,17 @@ class CameraPipelineApplication:
         )
 
     def _wait_for_latest_frame(
-        self, timeout_s: float, description: str
+        self,
+        timeout_s: float,
+        description: str,
+        camera_name: str | None = None,
     ) -> RgbdFrameProtocol:
-        if not self._pipeline_context.wait_until_ready(timeout_s=timeout_s):
+        if not self._pipeline_context.wait_until_ready(
+            timeout_s=timeout_s,
+            camera_name=camera_name,
+        ):
             raise RuntimeError(f"{description} not ready within {timeout_s:.1f}s")
-        frame = self._pipeline_context.get_latest_frame()
+        frame = self._pipeline_context.get_latest_frame(camera_name)
         if frame is None:
             raise RuntimeError(f"{description} unavailable")
         return frame
@@ -210,6 +225,7 @@ class CameraPipelineApplication:
         payload = request.camera_frame_subscribe
         if payload is None:
             raise RuntimeError("camera_frame_subscribe payload missing")
+        self._pipeline_context.get_camera_runtime(payload.camera_name)
         self._frame_publisher.start()
         return CameraFrameSubscribeResponse(
             stream_addr=self._frame_publisher.frame_bind_addr,
@@ -223,6 +239,7 @@ class CameraPipelineApplication:
         payload = request.camera_color_frame_subscribe
         if payload is None:
             raise RuntimeError("camera_color_frame_subscribe payload missing")
+        self._pipeline_context.get_camera_runtime(payload.camera_name)
         self._frame_publisher.start()
         return CameraColorFrameSubscribeResponse(
             stream_addr=self._frame_publisher.color_bind_addr,
@@ -236,6 +253,7 @@ class CameraPipelineApplication:
         payload = request.camera_depth_frame_subscribe
         if payload is None:
             raise RuntimeError("camera_depth_frame_subscribe payload missing")
+        self._pipeline_context.get_camera_runtime(payload.camera_name)
         self._frame_publisher.start()
         return CameraDepthFrameSubscribeResponse(
             stream_addr=self._frame_publisher.depth_bind_addr,
@@ -313,16 +331,22 @@ class CameraPipelineApplication:
 
     def _get_tray_service(self) -> OrinTrayDetectionService:
         if self._tray_service is None:
+            from ..tray_detection.service import OrinTrayDetectionService
+
             self._tray_service = OrinTrayDetectionService()
         return self._tray_service
 
     def _get_opening_service(self) -> OpeningDetectionPipelineService:
         if self._opening_service is None:
+            from ..opening_detection.service import OpeningDetectionPipelineService
+
             self._opening_service = OpeningDetectionPipelineService()
         return self._opening_service
 
     def _get_ball_service(self) -> BallPoseDetectionService:
         if self._ball_service is None:
+            from ..ball_pose_detection.service import BallPoseDetectionService
+
             self._ball_service = BallPoseDetectionService()
         return self._ball_service
 

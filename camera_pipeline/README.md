@@ -26,7 +26,8 @@ from camera_pipeline.client import CameraPipelineClient
 5. debug 数据通过请求显式控制；关闭后算法不构造大体积调试图像。
 6. 文本和协议必须明确单位、坐标系和错误语义。
 
-面向用户的请求、成功响应、合法空结果和服务错误统一见 [service/README.md](service/README.md) 的“用户请求与可能响应”章节；算法 README 只描述算法内部数据契约和计算失败原因。
+面向用户的全部 client API、请求/响应字段、合法空结果和服务错误统一见
+[API Reference](API%20Reference.md)；算法 README 只描述算法内部数据契约和计算失败原因。
 
 ## 模块结构
 
@@ -97,6 +98,21 @@ client = CameraPipelineClient(
 
 外接地址必须由调用方显式提供，不写入正式业务逻辑。
 
+### 多相机订阅与内参
+
+主要调用入口使用明确安装位的方法名：
+
+```python
+head_intrinsics = client.get_head_camera_intrinsics()
+chest_frames = client.subscribe_chest_camera_frames()
+left_color_frames = client.subscribe_left_arm_camera_color_frames()
+```
+
+完整帧、彩色帧和深度帧均提供 `head/chest/left_arm/right_arm` 命名 API。
+右臂 API 已保留，但当前相机未连接，调用时会得到明确的 `RuntimeError`。
+`subscribe_camera_frames(camera_name)`、`subscribe_camera_color_frames(camera_name)`、
+`subscribe_camera_depth_frames(camera_name)` 等参数化 API 继续保留，用于通用工具与测试。
+
 ## 部署
 
 ```bash
@@ -132,7 +148,10 @@ After=camera-pipeline.service
 | `6202` | 彩色帧 PUB |
 | `6203` | 深度帧 PUB |
 | `5570` | 上游相机控制口 |
-| `5562` | 上游相机数据流 |
+| `5560` | 上游头部相机数据流 |
+| `5561` | 上游胸腔相机数据流 |
+| `5562` | 上游左臂相机数据流 |
+| `5563` | 上游右臂相机数据流（当前未连接） |
 
 服务端 bind 和客户端 connect 地址分离。`0.0.0.0` 只用于 bind，Orin 本地调用使用 `127.0.0.1`。
 

@@ -16,7 +16,10 @@ from ..tray_detection.protocol import (
     OrinTrayDetectionResponse,
 )
 
-PROTOCOL_VERSION = 1
+PROTOCOL_VERSION = 3
+
+CAMERA_STREAM_TOPIC_SEPARATOR = b"\x00"
+"相机名与帧协议载荷之间的 topic 分隔字节。"
 
 CameraPipelineOperation = Literal[
     "camera_summary",
@@ -60,8 +63,9 @@ class CameraSummaryResponse:
 
 @dataclass(frozen=True, slots=True)
 class CameraIntrinsicsRequest:
-    """相机内参请求。"""
+    """指定安装位的相机内参请求。"""
 
+    camera_name: str = "left_hand_camera"
     timeout_s: float = 10.0
 
 
@@ -104,8 +108,9 @@ class CameraStatusResponse:
 
 @dataclass(frozen=True, slots=True)
 class StableFrameRequest:
-    """显式等待稳定帧请求。"""
+    """指定安装位的稳定帧等待请求。"""
 
+    camera_name: str = "left_hand_camera"
     timeout_s: float = 10.0
 
 
@@ -171,6 +176,20 @@ class CameraDepthFrameSubscribeResponse:
     stream_addr: str
     camera_name: str
     error: str | None = None
+
+
+# endregion
+
+
+# region 帧 topic
+
+
+def build_camera_stream_topic(camera_name: str) -> bytes:
+    """构造帧发布与订阅共用的相机 topic 前缀。"""
+
+    if not camera_name:
+        raise ValueError("camera_name must not be empty")
+    return camera_name.encode("utf-8") + CAMERA_STREAM_TOPIC_SEPARATOR
 
 
 # endregion

@@ -263,6 +263,8 @@ class CameraStreamRuntime:
         )
         if color_bgr is None:
             raise RuntimeError("camera jpeg decode failed")
+        # OpenCV 类型声明只保证 MatLike，在解码边界收窄为协议要求的 uint8 图像。
+        color_bgr = np.asarray(color_bgr, dtype=np.uint8)
         depth_start = color_end
         depth_end = depth_start + depth_data_size
         depth_bytes = raw_message[depth_start:depth_end]

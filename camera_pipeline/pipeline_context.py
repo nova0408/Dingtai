@@ -1,13 +1,71 @@
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from .camera_stream import CameraStreamRuntime, CameraStreamRuntimeConfig
 from .protocol import RgbdFrameProtocol
 from .stable_frame import StableFrameConfig, StableFrameDetector
 
 # region 数据结构
+
+
+@dataclass(frozen=True, slots=True)
+class CameraEndpointConfig:
+    """单路远端相机端点配置。
+
+    该对象只描述安装位、控制标识、数据端口与现场连接状态。
+    它不建立 socket，不持有帧缓存，可作为不可变配置跨线程只读复用。
+    类不继承业务基类，由 `PipelineContext` 将已连接端点组装为运行时。
+    """
+
+    camera_name: str
+    "项目内逻辑相机名，例如 `head_camera`。"
+
+    camera_id: str
+    "上游控制口相机标识，例如 `HEAD`。"
+
+    stream_port: int
+    "上游 ZMQ 数据流端口，单位 TCP 端口号。"
+
+    stable_frame_config: StableFrameConfig = StableFrameConfig()
+    "按安装位实测标定的稳定帧判定配置。"
+
+    connected: bool = True
+    "现场是否已连接该相机；为 `False` 时保留 API 但不启动运行时。"
+
+
+DEFAULT_CAMERA_ENDPOINTS: tuple[CameraEndpointConfig, ...] = (
+    CameraEndpointConfig(
+        "head_camera",
+        "HEAD",
+        5560,
+        stable_frame_config=StableFrameConfig(
+            depth_median_delta_threshold_mm=8.0,
+            depth_percentile_delta_threshold_mm=25.0,
+        ),
+    ),
+    CameraEndpointConfig(
+        "chest_camera",
+        "CHEST",
+        5561,
+        stable_frame_config=StableFrameConfig(
+            depth_median_delta_threshold_mm=6.0,
+            depth_percentile_delta_threshold_mm=35.0,
+        ),
+    ),
+    CameraEndpointConfig(
+        "left_hand_camera",
+        "LEFT",
+        5562,
+        stable_frame_config=StableFrameConfig(
+            depth_median_delta_threshold_mm=40.0,
+            depth_percentile_delta_threshold_mm=160.0,
+        ),
+    ),
+    CameraEndpointConfig("right_hand_camera", "RIGHT", 5563, connected=False),
+)
+"现场四个相机安装位与上游数据端口映射，右臂安装位当前未连接。"
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,9 +109,8 @@ class PipelineContextConfig:
     camera_frame_cache_size: int = 64
     "最近相机帧缓存数量，需要覆盖稳定时间窗中点帧的回取。"
 
-    stable_frame_config: StableFrameConfig = field(default_factory=StableFrameConfig)
-    "稳定帧算法配置。"
-
+    camera_endpoints: tuple[CameraEndpointConfig, ...] = DEFAULT_CAMERA_ENDPOINTS
+    "所有相机安装位配置；主相机对应项由上方单路参数覆盖。"
 
 class PipelineContext:
     """统一管理相机流和帧数据输入输出的上下文。
@@ -76,57 +133,91 @@ class PipelineContext:
 
     def __init__(self, config: PipelineContextConfig) -> None:
         self._config = config
-        self._frame_runtime = CameraStreamRuntime(
-            CameraStreamRuntimeConfig(
-                control_port=int(config.camera_control_port),
-                stream_port=int(config.camera_stream_port),
-                camera_id=str(config.camera_id),
-                camera_name=str(config.camera_name),
-                request_timeout_ms=int(config.camera_request_timeout_ms),
-                stream_timeout_ms=int(config.camera_stream_timeout_ms),
-                cache_size=int(config.camera_frame_cache_size),
+        self._camera_endpoints = self._resolve_camera_endpoints(config)
+        self._frame_runtimes = {
+            endpoint.camera_name: CameraStreamRuntime(
+                CameraStreamRuntimeConfig(
+                    control_port=config.camera_control_port,
+                    stream_port=endpoint.stream_port,
+                    camera_id=endpoint.camera_id,
+                    camera_name=endpoint.camera_name,
+                    request_timeout_ms=config.camera_request_timeout_ms,
+                    stream_timeout_ms=config.camera_stream_timeout_ms,
+                    cache_size=config.camera_frame_cache_size,
+                )
             )
-        )
+            for endpoint in self._camera_endpoints
+            if endpoint.connected
+        }
 
     def start(self) -> None:
-        """启动相机流运行时。"""
+        """启动已连接相机的流运行时。"""
 
-        self._frame_runtime.start()
+        for runtime in self._frame_runtimes.values():
+            runtime.start()
 
     def close(self) -> None:
-        """关闭相机流运行时。"""
+        """关闭所有已启动的相机流运行时。"""
 
-        self._frame_runtime.stop()
+        for runtime in self._frame_runtimes.values():
+            runtime.stop()
 
-    def wait_until_ready(self, timeout_s: float = 8.0) -> bool:
-        """等待相机首帧就绪。"""
+    def wait_until_ready(
+        self,
+        timeout_s: float = 8.0,
+        camera_name: str | None = None,
+    ) -> bool:
+        """等待指定相机首帧就绪。"""
 
-        return self._frame_runtime.wait_until_ready(timeout_s=timeout_s)
+        return self.get_camera_runtime(camera_name).wait_until_ready(timeout_s=timeout_s)
 
-    def get_camera_runtime(self) -> CameraStreamRuntime:
-        """返回当前相机运行时。"""
+    def get_camera_runtime(
+        self,
+        camera_name: str | None = None,
+    ) -> CameraStreamRuntime:
+        """返回指定相机运行时，未指定时返回主相机运行时。"""
 
-        return self._frame_runtime
+        resolved_name = self._config.camera_name if camera_name is None else camera_name
+        runtime = self._frame_runtimes.get(resolved_name)
+        if runtime is not None:
+            return runtime
+        endpoint = self._find_camera_endpoint(resolved_name)
+        if not endpoint.connected:
+            raise RuntimeError(f"camera {resolved_name} is configured but not connected")
+        raise RuntimeError(f"camera runtime {resolved_name} is unavailable")
 
-    def get_camera_id(self) -> str:
-        """返回当前相机控制标识。"""
+    def get_camera_id(self, camera_name: str | None = None) -> str:
+        """返回指定相机控制标识。"""
 
-        return str(self._config.camera_id)
+        resolved_name = self._config.camera_name if camera_name is None else camera_name
+        return self._find_camera_endpoint(resolved_name).camera_id
 
     def get_camera_name(self) -> str:
-        """返回当前相机逻辑名称。"""
+        """返回默认算法相机逻辑名称。"""
 
-        return str(self._config.camera_name)
+        return self._config.camera_name
 
-    def get_latest_frame(self) -> RgbdFrameProtocol | None:
-        """返回最新缓存帧；尚未收到首帧时返回 `None`。"""
+    def get_connected_camera_names(self) -> tuple[str, ...]:
+        """返回当前已组装运行时的相机名。"""
 
-        return self._frame_runtime.get_latest_frame()
+        return tuple(self._frame_runtimes)
 
-    def get_frame_by_id(self, frame_id: int) -> RgbdFrameProtocol | None:
-        """按帧号查询缓存帧；帧不存在或已淘汰时返回 `None`。"""
+    def get_latest_frame(
+        self,
+        camera_name: str | None = None,
+    ) -> RgbdFrameProtocol | None:
+        """返回指定相机最新缓存帧；尚未收到首帧时返回 `None`。"""
 
-        return self._frame_runtime.get_frame_by_id(frame_id)
+        return self.get_camera_runtime(camera_name).get_latest_frame()
+
+    def get_frame_by_id(
+        self,
+        frame_id: int,
+        camera_name: str | None = None,
+    ) -> RgbdFrameProtocol | None:
+        """按相机和帧号查询缓存帧；帧不存在或已淘汰时返回 `None`。"""
+
+        return self.get_camera_runtime(camera_name).get_frame_by_id(frame_id)
 
     def resolve_frame(self, frame_id: int) -> RgbdFrameProtocol:
         """按请求帧号选择相机帧，未指定帧号时默认等待稳定帧。"""
@@ -138,13 +229,19 @@ class PipelineContext:
             raise RuntimeError(f"camera frame {frame_id} is not available")
         return self.wait_for_stable_frame()
 
-    def wait_for_stable_frame(self, timeout_s: float = 10.0) -> RgbdFrameProtocol:
-        """等待画面连续稳定，并返回稳定时间窗中点的相机帧。
+    def wait_for_stable_frame(
+        self,
+        timeout_s: float = 10.0,
+        camera_name: str | None = None,
+    ) -> RgbdFrameProtocol:
+        """等待指定相机画面连续稳定，并返回稳定时间窗中点帧。
 
         Parameters
         ----------
         timeout_s:
             等待稳定帧的最长时间，单位 s。
+        camera_name:
+            逻辑相机名；未指定时使用默认左臂相机。
 
         Returns
         -------
@@ -162,12 +259,14 @@ class PipelineContext:
         if timeout_s <= 0.0:
             raise ValueError("timeout_s must be greater than zero")
 
-        detector = StableFrameDetector(config=self._config.stable_frame_config)
+        resolved_name = self._config.camera_name if camera_name is None else camera_name
+        endpoint = self._find_camera_endpoint(resolved_name)
+        detector = StableFrameDetector(config=endpoint.stable_frame_config)
         deadline = time.monotonic() + timeout_s
         last_frame_id = -1
         missing_stable_frame_id: int | None = None
         while time.monotonic() < deadline:
-            frame = self.get_latest_frame()
+            frame = self.get_latest_frame(resolved_name)
             if frame is None or frame.frame_id == last_frame_id:
                 time.sleep(0.01)
                 continue
@@ -176,7 +275,7 @@ class PipelineContext:
             stable_frame_id = detector.update(frame)
             if stable_frame_id is None:
                 continue
-            stable_frame = self.get_frame_by_id(stable_frame_id)
+            stable_frame = self.get_frame_by_id(stable_frame_id, resolved_name)
             if stable_frame is not None:
                 return stable_frame
             missing_stable_frame_id = stable_frame_id
@@ -186,6 +285,46 @@ class PipelineContext:
                 f"stable frame {missing_stable_frame_id} is no longer available in camera frame cache"
             )
         raise RuntimeError(f"camera did not become stable within {timeout_s:.1f}s")
+
+    # region 相机配置
+
+    @staticmethod
+    def _resolve_camera_endpoints(
+        config: PipelineContextConfig,
+    ) -> tuple[CameraEndpointConfig, ...]:
+        """合并多相机端点表与默认算法相机覆盖参数。"""
+
+        resolved: list[CameraEndpointConfig] = []
+        primary_found = False
+        for endpoint in config.camera_endpoints:
+            if endpoint.camera_name != config.camera_name:
+                resolved.append(endpoint)
+                continue
+            primary_found = True
+            resolved.append(
+                CameraEndpointConfig(
+                    camera_name=config.camera_name,
+                    camera_id=config.camera_id,
+                    stream_port=config.camera_stream_port,
+                    stable_frame_config=endpoint.stable_frame_config,
+                    connected=True,
+                )
+            )
+        if not primary_found:
+            raise ValueError(
+                f"primary camera {config.camera_name} is missing from camera endpoints"
+            )
+        return tuple(resolved)
+
+    def _find_camera_endpoint(self, camera_name: str) -> CameraEndpointConfig:
+        """查找指定逻辑相机的端点配置。"""
+
+        for endpoint in self._camera_endpoints:
+            if endpoint.camera_name == camera_name:
+                return endpoint
+        raise ValueError(f"unsupported camera: {camera_name}")
+
+    # endregion
 
 
 # endregion
