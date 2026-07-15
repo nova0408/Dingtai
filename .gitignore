@@ -17,6 +17,7 @@ Logs/*
 *.bmp
 *.txt
 *.bak
+*.npy
 opening_detection_pipeline_package/
 
 # Byte-compiled / optimized / DLL files
