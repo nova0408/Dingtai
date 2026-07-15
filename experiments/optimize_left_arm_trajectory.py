@@ -1,18 +1,18 @@
 from __future__ import annotations
 
-# pyright: reportMissingImports=false
-
 import ast
 import csv
-import os
 import re
+import shutil
 import sys
 from dataclasses import dataclass, replace
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 from loguru import logger
+from matplotlib import colormaps
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.figure import Figure
 from PySide6.QtCore import QSignalBlocker, Qt, Slot
@@ -31,25 +31,34 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QSlider,
     QSplitter,
-    QTabWidget,
     QTableWidget,
     QTableWidgetItem,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
 
+# pyright: reportMissingImports=false
+
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SDK_ROOT = PROJECT_ROOT / "sdk"
 DEFAULT_RECORD_DIR = PROJECT_ROOT / "left_record"  # 左臂轨迹 CSV 所在目录。
-DEFAULT_LEFT_ARM_IP = os.environ.get(
-    "DINGTAI_XCORESDK_LEFT_IP", "192.168.1.161"
-).strip()
-DEFAULT_LOCAL_IP = os.environ.get("DINGTAI_XCORESDK_LOCAL_IP", "192.168.1.116").strip()
+DEFAULT_LEFT_ARM_IP = "192.168.1.161"
+DEFAULT_LOCAL_IP = "192.168.1.116"
 DEFAULT_TOOL_NAME = "g_tool_0"  # 与手眼标定脚本一致的全局工具名称。
 DEFAULT_WOBJ_NAME = "g_wobj_0"  # 与手眼标定脚本一致的全局工件名称。
 JOINT_COUNT = 7
-SLIDER_SCALE = 100  # 关节滑条精度，100 表示 0.01 deg。
-SLIDER_MARGIN_DEG = 30.0  # 数据范围两侧附加的调整余量，单位 deg。
+SLIDER_SCALE = 10  # 关节滑条精度，10 表示 0.1 deg。
+JOINT_LIMITS_DEG: tuple[tuple[float, float], ...] = (
+    (-178.0, 178.0),
+    (-120.0, 120.0),
+    (-178.0, 178.0),
+    (-60.0, 145.0),
+    (-178.0, 178.0),
+    (-60.0, 60.0),
+    (-60.0, 60.0),
+)
 
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -70,6 +79,7 @@ class TrajectoryPoint:
     source_row_index: int
     timestamp: str
     joints_deg: tuple[float, ...]
+    # GUI / CSV 统一展示为 xyz(mm) + rpy XYZ(deg)；不要混入 SDK 的 m/rad 计算单位。
     tcp_values: tuple[Any, ...]
     raw_row: dict[str, str]
 
@@ -109,7 +119,7 @@ class ContinuityMetric:
 def _parse_list(raw_text: str) -> tuple[Any, ...]:
     parsed = ast.literal_eval(raw_text)
     if not isinstance(parsed, list):
-        raise ValueError(f"字段不是列表: {raw_text!r}")
+        raise ValueError(f"字段不是列表：{raw_text!r}")
     return tuple(parsed)
 
 
@@ -124,7 +134,7 @@ def _file_sort_key(path: Path) -> tuple[int, int, str]:
 
 def _load_trajectory_groups(record_dir: Path) -> list[TrajectoryGroup]:
     if not record_dir.exists():
-        raise FileNotFoundError(f"轨迹目录不存在: {record_dir}")
+        raise FileNotFoundError(f"轨迹目录不存在：{record_dir}")
     csv_paths = sorted(record_dir.glob("*.csv"), key=_file_sort_key)
     if not csv_paths:
         raise FileNotFoundError(f"轨迹目录中没有 CSV: {record_dir}")
@@ -134,7 +144,7 @@ def _load_trajectory_groups(record_dir: Path) -> list[TrajectoryGroup]:
         with csv_path.open("r", encoding="utf-8-sig", newline="") as file:
             reader = csv.DictReader(file)
             if reader.fieldnames is None:
-                raise ValueError(f"CSV 缺少表头: {csv_path}")
+                raise ValueError(f"CSV 缺少表头：{csv_path}")
             fieldnames = list(reader.fieldnames)
             raw_rows = [dict(row) for row in reader if row]
 
@@ -223,6 +233,7 @@ def _format_continuity(metric: ContinuityMetric) -> str:
 
 
 def _fk_pose_to_tcp(fk_pose: Any, original_tcp: tuple[Any, ...]) -> tuple[Any, ...]:
+    # SDK FK 返回 trans(m) + rpy(rad)，这里只在显示/落盘边界转换成 mm/deg。
     prefix = (
         float(fk_pose.trans[0]) * 1000.0,
         float(fk_pose.trans[1]) * 1000.0,
@@ -254,6 +265,21 @@ def _serialize_list(values: tuple[Any, ...]) -> str:
     return "[" + ", ".join(parts) + "]"
 
 
+def _snapshot_csv(csv_path: Path) -> Path:
+    """保存 CSV 前在项目 `.archive` 中创建保留相对结构的快照。"""
+
+    try:
+        relative_path = csv_path.resolve().relative_to(PROJECT_ROOT.resolve())
+    except ValueError as exc:
+        raise ValueError(f"只允许保存项目目录内的 CSV: {csv_path}") from exc
+    archive_path = PROJECT_ROOT / ".archive" / relative_path
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+    snapshot_path = archive_path.with_name(f"{archive_path.name}.{timestamp}.bak")
+    snapshot_path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(csv_path, snapshot_path)
+    return snapshot_path
+
+
 # endregion
 
 
@@ -276,17 +302,21 @@ class TrajectoryOptimizerWindow(QMainWindow):
 
         self._figure = Figure(figsize=(8.0, 7.0))
         self._canvas = FigureCanvasQTAgg(self._figure)
-        self._axes = self._figure.add_subplot(111, projection="3d")
+        # Matplotlib 当前类型声明不会把 projection="3d" 收窄为 Axes3D。
+        self._axes: Any = self._figure.add_subplot(111, projection="3d")
         self._visibility_layout = QHBoxLayout()
         self._visibility_checks: list[QCheckBox] = []
         self._tabs = QTabWidget(self)
+        self._joint_figure = Figure(figsize=(7.0, 5.0))
+        self._joint_canvas = FigureCanvasQTAgg(self._joint_figure)
+        self._joint_axes = self._joint_figure.add_subplot(111)
         self._table = QTableWidget(self)
         self._detail_label = QLabel("请选择轨迹点", self)
         self._point_combo = QComboBox(self)
         self._previous_button = QPushButton("向前", self)
         self._next_button = QPushButton("向后", self)
         self._tcp_label = QLabel("TCP: -", self)
-        self._continuity_label = QLabel("连续性: -", self)
+        self._continuity_label = QLabel("连续性：-", self)
         self._joint_sliders: list[QSlider] = []
         self._joint_spins: list[QDoubleSpinBox] = []
         self._save_button = QPushButton("保存全部改动", self)
@@ -305,7 +335,7 @@ class TrajectoryOptimizerWindow(QMainWindow):
         root_layout = QVBoxLayout(central)
 
         toolbar = QHBoxLayout()
-        toolbar.addWidget(QLabel(f"轨迹目录: {self._record_dir}", self), 1)
+        toolbar.addWidget(QLabel(f"轨迹目录：{self._record_dir}", self), 1)
         toolbar.addWidget(self._reload_button)
         toolbar.addWidget(self._save_button)
         root_layout.addLayout(toolbar)
@@ -326,6 +356,7 @@ class TrajectoryOptimizerWindow(QMainWindow):
 
         self._setup_list_tab()
         self._setup_adjust_tab()
+        self._setup_joint_curve_tab()
         splitter.addWidget(self._tabs)
         splitter.setStretchFactor(0, 3)
         splitter.setStretchFactor(1, 2)
@@ -377,7 +408,7 @@ class TrajectoryOptimizerWindow(QMainWindow):
             slider = QSlider(Qt.Orientation.Vertical, self)
             slider.setMinimumHeight(520)
             spin = QDoubleSpinBox(self)
-            spin.setDecimals(2)
+            spin.setDecimals(1)
             spin.setSingleStep(0.1)
             spin.setSuffix("°")
             sliders_layout.addWidget(
@@ -391,6 +422,12 @@ class TrajectoryOptimizerWindow(QMainWindow):
             self._joint_spins.append(spin)
         layout.addWidget(sliders_widget, 1)
         self._tabs.addTab(page, "关节微调")
+
+    def _setup_joint_curve_tab(self) -> None:
+        page = QWidget(self)
+        layout = QVBoxLayout(page)
+        layout.addWidget(self._joint_canvas, 1)
+        self._tabs.addTab(page, "关节曲线")
 
     def _connect_signals(self) -> None:
         self._table.itemSelectionChanged.connect(self._on_table_selection_changed)
@@ -426,6 +463,7 @@ class TrajectoryOptimizerWindow(QMainWindow):
         self._refresh_table()
         self._sync_selection_to_ui()
         self._refresh_plot()
+        self._refresh_joint_curves()
         self._status_label.setText(
             f"已按编号顺序加载 {len(groups)} 组、{len(self._points)} 个轨迹点"
         )
@@ -433,6 +471,8 @@ class TrajectoryOptimizerWindow(QMainWindow):
     def _rebuild_visibility_checks(self) -> None:
         while self._visibility_layout.count():
             item = self._visibility_layout.takeAt(0)
+            if item is None:
+                continue
             widget = item.widget()
             if widget is not None:
                 widget.deleteLater()
@@ -452,14 +492,12 @@ class TrajectoryOptimizerWindow(QMainWindow):
     def _configure_joint_ranges(self) -> None:
         if not self._points:
             return
-        joints = np.asarray(
-            [point.joints_deg for point in self._points], dtype=np.float64
-        )
-        for index, (slider, spin) in enumerate(
-            zip(self._joint_sliders, self._joint_spins, strict=True)
+        for (minimum, maximum), slider, spin in zip(
+            JOINT_LIMITS_DEG,
+            self._joint_sliders,
+            self._joint_spins,
+            strict=True,
         ):
-            minimum = float(np.floor(joints[:, index].min() - SLIDER_MARGIN_DEG))
-            maximum = float(np.ceil(joints[:, index].max() + SLIDER_MARGIN_DEG))
             slider.setRange(
                 round(minimum * SLIDER_SCALE), round(maximum * SLIDER_SCALE)
             )
@@ -504,13 +542,13 @@ class TrajectoryOptimizerWindow(QMainWindow):
                 self._joint_spins[joint_index].setValue(value)
         group = self._groups[point.file_index]
         detail_lines = [
-            f"文件: {group.path}",
-            f"文件内点序号: {point.point_index + 1}",
-            f"CSV 原始行号: {point.source_row_index + 2}",
-            f"时间戳: {point.timestamp}",
-            f"关节角(deg): {_format_values(point.joints_deg, 6)}",
+            f"文件：{group.path}",
+            f"文件内点序号：{point.point_index + 1}",
+            f"CSV 原始行号：{point.source_row_index + 2}",
+            f"时间戳：{point.timestamp}",
+            f"关节角 (deg): {_format_values(point.joints_deg, 6)}",
             f"TCP xyz(mm) + rpy XYZ(deg): {_format_values(point.tcp_values[:6], 6)}",
-            f"连续性: {_format_continuity(metric)}",
+            f"连续性：{_format_continuity(metric)}",
         ]
         self._detail_label.setText("\n".join(detail_lines))
         self._tcp_label.setText(
@@ -536,6 +574,7 @@ class TrajectoryOptimizerWindow(QMainWindow):
         self._selected_index = index
         self._sync_selection_to_ui()
         self._refresh_plot()
+        self._refresh_joint_curves()
 
     @Slot()
     def _select_previous_point(self) -> None:
@@ -551,6 +590,7 @@ class TrajectoryOptimizerWindow(QMainWindow):
     def _on_group_visibility_changed(self, group_index: int, checked: bool) -> None:
         self._groups[group_index].visible = checked
         self._refresh_plot()
+        self._refresh_joint_curves()
 
     @Slot(int, int)
     def _on_slider_changed(self, joint_index: int, slider_value: int) -> None:
@@ -575,7 +615,8 @@ class TrajectoryOptimizerWindow(QMainWindow):
         try:
             tcp_values = self._calculate_fk(new_joints, point.tcp_values)
         except Exception as exc:
-            self._status_label.setText(f"FK 失败，J{joint_index + 1} 改动未应用: {exc}")
+            self._sync_selection_to_ui()
+            self._status_label.setText(f"FK 失败，J{joint_index + 1} 改动未应用：{exc}")
             return
         updated_point = replace(point, joints_deg=new_joints, tcp_values=tcp_values)
         self._points[self._selected_index] = updated_point
@@ -585,6 +626,7 @@ class TrajectoryOptimizerWindow(QMainWindow):
         self._refresh_table()
         self._sync_selection_to_ui()
         self._refresh_plot()
+        self._refresh_joint_curves()
         self._status_label.setText(
             f"已调整 {group.path.name} 点 {point.point_index + 1} 的 J{joint_index + 1}"
         )
@@ -602,7 +644,7 @@ class TrajectoryOptimizerWindow(QMainWindow):
         toolset = robot.setToolset(DEFAULT_TOOL_NAME, DEFAULT_WOBJ_NAME, ec)
         if ec.get("ec", 0) != 0:
             raise RuntimeError(
-                f"setToolset 失败: ec={ec.get('ec', 0)}, message={ec.get('message', '')}"
+                f"setToolset 失败：ec={ec.get('ec', 0)}, message={ec.get('message', '')}"
             )
         self._robot = robot
         self._robot_model = robot.model()
@@ -620,11 +662,12 @@ class TrajectoryOptimizerWindow(QMainWindow):
         if self._robot_model is None or self._toolset is None:
             raise RuntimeError("FK 上下文未初始化")
         ec: dict[str, object] = {}
+        # calcFk 输入必须保持 SDK 原始角度单位 rad，不使用界面展示的 deg。
         joints_rad = [float(np.radians(value)) for value in joints_deg]
         fk_pose = self._robot_model.calcFk(joints_rad, self._toolset, ec)
         if ec.get("ec", 0) != 0:
             raise RuntimeError(
-                f"calcFk 失败: ec={ec.get('ec', 0)}, message={ec.get('message', '')}"
+                f"calcFk 失败：ec={ec.get('ec', 0)}, message={ec.get('message', '')}"
             )
         return _fk_pose_to_tcp(fk_pose, original_tcp)
 
@@ -636,6 +679,8 @@ class TrajectoryOptimizerWindow(QMainWindow):
             return
         try:
             for group in dirty_groups:
+                snapshot_path = _snapshot_csv(group.path)
+                logger.info("保存前快照：{}", snapshot_path)
                 for point in group.points:
                     row = dict(group.raw_rows[point.source_row_index])
                     row["joints"] = _serialize_list(point.joints_deg)
@@ -658,7 +703,7 @@ class TrajectoryOptimizerWindow(QMainWindow):
         self._axes.set_xlabel("X (mm)")
         self._axes.set_ylabel("Y (mm)")
         self._axes.set_zlabel("Z (mm)")
-        color_map = self._figure.get_cmap("tab20")
+        color_map = colormaps["tab20"]
         for group_index, group in enumerate(self._groups):
             if not group.visible or not group.points:
                 continue
@@ -687,7 +732,9 @@ class TrajectoryOptimizerWindow(QMainWindow):
             if self._groups[point.file_index].visible:
                 xyz = [float(value) for value in point.tcp_values[:3]]
                 self._axes.scatter(
-                    *xyz,
+                    xs=[xyz[0]],
+                    ys=[xyz[1]],
+                    zs=[xyz[2]],
                     c="#ff006e",
                     s=90,
                     marker="*",
@@ -697,6 +744,50 @@ class TrajectoryOptimizerWindow(QMainWindow):
         if any(group.visible and group.points for group in self._groups):
             self._axes.legend(loc="best", fontsize=8)
         self._canvas.draw_idle()
+
+    def _refresh_joint_curves(self) -> None:
+        self._joint_axes.clear()
+        self._joint_axes.set_title("关节角曲线")
+        self._joint_axes.set_xlabel("轨迹点编号")
+        self._joint_axes.set_ylabel("关节角 (deg)")
+        self._joint_axes.grid(True, alpha=0.25)
+        joint_colors = colormaps["tab10"]
+        point_offset = 0
+        has_visible_points = False
+        for group in self._groups:
+            group_size = len(group.points)
+            if not group.visible or not group.points:
+                point_offset += group_size
+                continue
+            show_labels = not has_visible_points
+            has_visible_points = True
+            joints = np.asarray(
+                [point.joints_deg for point in group.points], dtype=np.float64
+            )
+            point_numbers = np.arange(
+                point_offset + 1, point_offset + group_size + 1, dtype=np.int64
+            )
+            for joint_index in range(JOINT_COUNT):
+                self._joint_axes.plot(
+                    point_numbers,
+                    joints[:, joint_index],
+                    color=joint_colors(joint_index),
+                    linewidth=1.5,
+                    label=f"J{joint_index + 1}" if show_labels else "_nolegend_",
+                )
+            point_offset += group_size
+        if has_visible_points:
+            self._joint_axes.legend(loc="best", ncols=2)
+        if self._selected_index is not None:
+            self._joint_axes.axvline(
+                self._selected_index + 1,
+                color="#ff006e",
+                linestyle="--",
+                linewidth=1.2,
+                label="当前点",
+            )
+        self._joint_figure.tight_layout()
+        self._joint_canvas.draw_idle()
 
 
 # endregion
