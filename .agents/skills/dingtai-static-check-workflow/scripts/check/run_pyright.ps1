@@ -73,11 +73,16 @@ function Get-DingTaiEnvRoot {
 
 $EnvRoot = Get-DingTaiEnvRoot
 $PyrightPath = Join-Path $EnvRoot "Scripts\pyright.exe"
+$PythonPath = Join-Path $EnvRoot "python.exe"
 if (-not (Test-Path -LiteralPath $PyrightPath)) {
     throw "pyright not found: $PyrightPath"
 }
+if (-not (Test-Path -LiteralPath $PythonPath)) {
+    throw "python not found: $PythonPath"
+}
 
 Write-Host "[pyright] executable: $PyrightPath"
+Write-Host "[pyright] python: $PythonPath"
 Write-Host "[pyright] target: $Target"
 
 $ResolvedTargets = Resolve-PyrightTargets -InputTarget $Target
@@ -88,8 +93,8 @@ if ($ResolvedTargets.Count -eq 0) {
 }
 
 if ($ResolvedTargets.Count -eq 1) {
-    & $PyrightPath $ResolvedTargets[0]
+    & $PyrightPath --pythonpath $PythonPath $ResolvedTargets[0]
 } else {
-    & $PyrightPath $ResolvedTargets
+    & $PyrightPath --pythonpath $PythonPath $ResolvedTargets
 }
 exit $LASTEXITCODE

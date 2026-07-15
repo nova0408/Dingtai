@@ -23,6 +23,7 @@ description: 统一 Dingtai 仓库静态检查流程。用于在固定 DingTai c
 2. 必须固定使用 DingTai 环境中的可执行文件：
    - 按 Conda 环境名 `DingTai` 解析 `ruff.exe`
    - 按 Conda 环境名 `DingTai` 解析 `pyright.exe`
+   - 调用 Pyright 时必须通过 `--pythonpath` 显式指定 `DingTai/python.exe`；仅使用环境内的 `pyright.exe` 不代表 Pyright 会自动选择同环境解释器
 3. 由本 skill 触发的测试、验证和静态检查，必须共享同一个 `DingTai` 环境，不得混用 `base`、系统 Python 或其他 Conda 环境。
 4. 检查流程顺序固定为：先 `ruff`，后 `pyright`。
 5. `ruff` 配置已全局忽略 `E402`，不要再花时间修复或重排导入顺序来追这个规则。
@@ -64,12 +65,13 @@ powershell -ExecutionPolicy Bypass -File .\.agents\skills\dingtai-static-check-w
 
 1. `python.defaultInterpreterPath` 必须指向：
    - 当前机器上名为 `DingTai` 的 Conda 环境解释器
-2. 使用仓库根目录 `pyrightconfig.json` 与 `ruff.toml` 作为统一配置。
+2. 使用仓库现有静态检查配置；不得假定根目录存在 `pyrightconfig.json`。若以后新增该文件，其解释器设置必须与 `run_pyright.ps1` 一致。
 3. VSCode 任务入口应调用 `.agents/skills/dingtai-static-check-workflow/scripts/check` 下脚本，不得回退到旧路径。
 
 ## 失败处理
 
 1. 若脚本路径失效，先修复 `.vscode/tasks.json`、`.codex/hooks.json` 与本 skill `scripts/check` 路径一致性。
 2. 若环境缺少工具，先在 DingTai 环境安装后再执行检查，不允许切到其他环境“临时通过”。
-3. 若 pyright 报第三方库缺失类型，先确认解释器与包安装状态，再决定是否做最小范围类型忽略配置。
-4. 若测试或验证需要运行额外脚本，也必须先确认其解释器指向 `DingTai` 环境，再继续执行。
+3. 若 Pyright 报 `reportMissingImports`，先运行 `pyright --verbose` 并检查 `Python version` 与 `Search paths` 是否指向 DingTai；不得仅凭该错误断言依赖未安装。
+4. 若运行时可导入依赖但 Pyright 无法解析，优先检查 `--pythonpath` 是否指向 `DingTai/python.exe`，再检查包与类型声明；禁止先安装重复依赖或添加忽略规则。
+5. 若测试或验证需要运行额外脚本，也必须先确认其解释器指向 `DingTai` 环境，再继续执行。

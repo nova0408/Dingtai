@@ -31,6 +31,33 @@ DEFAULT_WUJI_TUNNEL_WAIT_S = 1.0
 # endregion
 
 
+# region 通道工厂
+
+
+def create_qmlinker_channel(target: str) -> Any:
+    """创建 qmlinker channel，供项目业务层使用。
+
+    Parameters
+    ----------
+    target:
+        目标地址，格式为 ``host:port``。
+
+    Returns
+    -------
+    Any
+        qmlinker 返回的基础 channel 或 channel 字典。
+
+    Notes
+    -----
+    业务模块应调用本函数，不直接导入无类型桩的第三方 ``qmlinker`` 包。
+    """
+
+    return create_channel(target)
+
+
+# endregion
+
+
 # region 数据结构
 
 

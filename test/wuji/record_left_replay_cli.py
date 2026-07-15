@@ -24,11 +24,6 @@ from test.wuji.ball_pose_detection import (
 from test.wuji.ball_pose_detection import (
     DEFAULT_SERVICE_ADDR as DEFAULT_BALL_POSE_SERVICE_ADDR,
 )
-from test.wuji.prior_ball_pose_detection import (
-    _build_priors_from_capture,
-    _build_three_ball_basis_transform,
-    _load_prior_capture,
-)
 from test.wuji.common import (
     DEFAULT_PORT,
     GRIPPER_PORT,
@@ -36,6 +31,11 @@ from test.wuji.common import (
     close_wuyou_channel,
     create_wuyou_channel,
     stop_ssh_process,
+)
+from test.wuji.prior_ball_pose_detection import (
+    _build_priors_from_capture,
+    _build_three_ball_basis_transform,
+    _load_prior_capture,
 )
 from test.wuji.xcoresdk_arm_cli_test import (
     DEFAULT_JOINT_ZONE,
@@ -189,6 +189,9 @@ class ReplayRow:
     joints_text: str
     pose_text: str
 
+    def __str__(self) -> str:
+        return f"{self.csv_name} {self.row_index} {self.action_type} {self.joints_text} {self.pose_text}"
+
 
 @dataclass(frozen=True, slots=True)
 class ParsedArmPose:
@@ -206,8 +209,7 @@ class ArmMoveAbsJTarget:
     """单条 arm 记录最终用于 MoveAbsJ 的关节目标。"""
 
     row: ReplayRow
-    target_joint: xCoreSDK_python.JointPosition
-    joint_deg: list[float]
+    joint: xCoreSDK_python.JointPosition
     source: str
 
 
@@ -635,8 +637,7 @@ def _build_move_abs_j_target(runtime: ReplayRuntime, row: ReplayRow) -> ArmMoveA
         target_joint_deg = _parse_joint_values(row.joints_text)
         return ArmMoveAbsJTarget(
             row=row,
-            target_joint=xCoreSDK_python.JointPosition(_deg_to_rad(target_joint_deg)),
-            joint_deg=target_joint_deg,
+            joint=xCoreSDK_python.JointPosition(_deg_to_rad(target_joint_deg)),
             source="csv-joints",
         )
 
@@ -662,17 +663,14 @@ def _build_move_abs_j_target(runtime: ReplayRuntime, row: ReplayRow) -> ArmMoveA
         elif isinstance(raw_target_joint, (list, tuple)):
             target_joint_rad = [float(value) for value in raw_target_joint]
         else:
-            raise RuntimeError(
-                f"calcIk 成功，但返回值类型不支持：{type(raw_target_joint).__name__}"
-            )
+            raise RuntimeError(f"calcIk 成功，但返回值类型不支持：{type(raw_target_joint).__name__}")
         if len(target_joint_rad) != 7:
             raise RuntimeError(f"calcIk 成功，但返回关节数异常：len={len(target_joint_rad)}")
         target_joint = xCoreSDK_python.JointPosition(target_joint_rad)
         target_joint_deg = _rad_to_deg(target_joint_rad)
         return ArmMoveAbsJTarget(
             row=row,
-            target_joint=target_joint,
-            joint_deg=target_joint_deg,
+            joint=target_joint,
             source="tcp-ik-offset" if applies_offset else "tcp-ik",
         )
 
@@ -683,8 +681,7 @@ def _build_move_abs_j_target(runtime: ReplayRuntime, row: ReplayRow) -> ArmMoveA
         offset_matrix_m = np.asarray(runtime.global_cartesian_offset, dtype=np.float64)
         corrected_tcp_matrix_m = offset_matrix_m @ original_tcp_matrix_m
         logger.warning(
-            "offset 后 T_new_tcp 逆解失败，无法生成 MoveAbsJ 目标 file={} row={} ec={} message={} "
-            "{} {} {}",
+            "offset 后 T_new_tcp 逆解失败，无法生成 MoveAbsJ 目标 file={} row={} ec={} message={} " "{} {} {}",
             row.csv_name,
             row.row_index,
             failed_ec,
@@ -719,8 +716,7 @@ def _build_move_abs_j_target(runtime: ReplayRuntime, row: ReplayRow) -> ArmMoveA
     )
     return ArmMoveAbsJTarget(
         row=row,
-        target_joint=xCoreSDK_python.JointPosition(_deg_to_rad(fallback_joint_deg)),
-        joint_deg=fallback_joint_deg,
+        joint=xCoreSDK_python.JointPosition(_deg_to_rad(fallback_joint_deg)),
         source="csv-joints-fallback",
     )
 
@@ -1123,9 +1119,7 @@ def _calculate_global_cartesian_offset(
     )
     offset_distance_m = float(np.linalg.norm(offset_matrix_m[:3, 3]))
     offset_distance_mm = offset_distance_m * 1000.0
-    logger.info(
-        "offset_norm_mm={:.3f} {}", offset_distance_mm, _format_matrix_xyzrpy_mm_deg("T_off", offset_matrix_m)
-    )
+    logger.info("offset_norm_mm={:.3f} {}", offset_distance_mm, _format_matrix_xyzrpy_mm_deg("T_off", offset_matrix_m))
     if offset_distance_mm > OFFSET_TRANSLATION_WARNING_THRESHOLD_MM:
         logger.warning(
             "offset 平移明显偏大，请检查拍摄时机/三球识别/先验是否一致 distance_mm={:.3f} {}",
@@ -1336,7 +1330,7 @@ def _execute_arm_move_abs_j_segment(
         zone = 0.0 if is_segment_end or is_configured_left_stop else float(DEFAULT_REPLAY_MOVE_ABS_J_ZONE_MM)
         commands.append(
             xCoreSDK_python.MoveAbsJCommand(
-                target.target_joint,
+                target.joint,
                 runtime.move_abs_j_end_linear_speed_mm_s,
                 zone,
             )
@@ -1349,7 +1343,7 @@ def _execute_arm_move_abs_j_segment(
             target.source,
             runtime.move_abs_j_end_linear_speed_mm_s,
             zone,
-            _format_sequence(target.joint_deg),
+            _format_sequence(target.joint.joints),
         )
 
     first_row = rows[0]
@@ -1743,11 +1737,15 @@ def _print_execution_plan_summary(plans: list[CsvExecutionPlan]) -> None:
 
 def _prompt_end_linear_speed_mm_s(current_value: float) -> float:
     while True:
-        raw_text = input(
-            f"请输入新的 MoveAbsJ 末端线速度，范围 "
-            f"[{MOVE_ABS_J_MIN_END_LINEAR_SPEED_MM_S:.0f}, {MOVE_ABS_J_MAX_END_LINEAR_SPEED_MM_S:.0f}] mm/s，"
-            f"当前 {current_value:.2f} mm/s，输入 q 返回："
-        ).strip().lower()
+        raw_text = (
+            input(
+                f"请输入新的 MoveAbsJ 末端线速度，范围 "
+                f"[{MOVE_ABS_J_MIN_END_LINEAR_SPEED_MM_S:.0f}, {MOVE_ABS_J_MAX_END_LINEAR_SPEED_MM_S:.0f}] mm/s,"
+                f"当前 {current_value:.2f} mm/s，输入 q 返回："
+            )
+            .strip()
+            .lower()
+        )
         if raw_text == "q":
             return current_value
         try:

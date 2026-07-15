@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import sys
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 
 import cv2
@@ -11,6 +10,7 @@ import numpy as np
 from PIL import Image
 from PySide6.QtCore import QPoint, Qt, Slot
 from PySide6.QtGui import (
+    QDoubleValidator,
     QImage,
     QIntValidator,
     QMouseEvent,
@@ -33,16 +33,16 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-DEFAULT_OUTPUT_ROOT = Path.home() / "Downloads"
+DEFAULT_OUTPUT_ROOT = Path.home() / "Downloads" / "ChArUCo"
 DEFAULT_DICTIONARY_NAME = "DICT_APRILTAG_16H5"
 DEFAULT_SQUARES_X = 5
 DEFAULT_SQUARES_Y = 7
-DEFAULT_SQUARE_LENGTH = 240.0
+DEFAULT_TOTAL_WIDTH = 100.0
 DEFAULT_MARKER_LENGTH_RATIO = 0.7
-DEFAULT_PREVIEW_LONG_SIDE_PX = 600
-DEFAULT_MARGIN_SIZE = 240.0
+DEFAULT_MARGIN_SIZE = 30.0
 PREVIEW_BACKGROUND_COLOR = (195, 220, 255)
 EXPORT_DPI = 600
+MM_PER_INCH = 25.4
 MIN_CHARUCO_SQUARES_X = 3
 MIN_CHARUCO_SQUARES_Y = 3
 
@@ -59,7 +59,7 @@ class CharucoBoardConfig:
     dictionary_name: str
     squares_x: int
     squares_y: int
-    square_length: float
+    total_width: float
     margin_size: float
     output_root: Path
 
@@ -172,7 +172,7 @@ class CharucoBoardBuilderWindow(QMainWindow):
         self._dictionary_input: QLineEdit
         self._squares_x_input: QLineEdit
         self._squares_y_input: QLineEdit
-        self._square_length_input: QLineEdit
+        self._total_width_input: QLineEdit
         self._margin_size_input: QLineEdit
         self._output_root_label: QLabel
         self._browse_output_button: QPushButton
@@ -208,10 +208,10 @@ class CharucoBoardBuilderWindow(QMainWindow):
         self._squares_y_input = QLineEdit(str(DEFAULT_SQUARES_Y), group)
         self._squares_y_input.setValidator(QIntValidator(2, 200, self._squares_y_input))
 
-        self._square_length_input = QLineEdit(str(DEFAULT_SQUARE_LENGTH), group)
-        self._square_length_input.setValidator(QIntValidator(10, 10000, self._square_length_input))
+        self._total_width_input = QLineEdit(str(DEFAULT_TOTAL_WIDTH), group)
+        self._total_width_input.setValidator(QDoubleValidator(0.01, 10000.0, 3, self._total_width_input))
         self._margin_size_input = QLineEdit(str(DEFAULT_MARGIN_SIZE), group)
-        self._margin_size_input.setValidator(QIntValidator(0, 10000, self._margin_size_input))
+        self._margin_size_input.setValidator(QDoubleValidator(0.0, 10000.0, 3, self._margin_size_input))
 
         self._output_root_label = QLabel(str(self._output_root), group)
         self._output_root_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
@@ -221,8 +221,8 @@ class CharucoBoardBuilderWindow(QMainWindow):
         layout.addRow("字典", self._dictionary_input)
         layout.addRow("棋盘横向方块数", self._squares_x_input)
         layout.addRow("棋盘纵向方块数", self._squares_y_input)
-        layout.addRow("单方块边长", self._square_length_input)
-        layout.addRow("marginSize", self._margin_size_input)
+        layout.addRow("x 方向总宽度 (mm)", self._total_width_input)
+        layout.addRow("四周 marginSize (mm)", self._margin_size_input)
         layout.addRow("输出目录", self._build_output_selector_row(group))
         layout.addRow("", self._save_button)
         return group
@@ -268,7 +268,7 @@ class CharucoBoardBuilderWindow(QMainWindow):
         self._dictionary_input.textChanged.connect(self._on_inputs_changed)
         self._squares_x_input.textChanged.connect(self._on_inputs_changed)
         self._squares_y_input.textChanged.connect(self._on_inputs_changed)
-        self._square_length_input.textChanged.connect(self._on_inputs_changed)
+        self._total_width_input.textChanged.connect(self._on_inputs_changed)
         self._margin_size_input.textChanged.connect(self._on_inputs_changed)
         self._browse_output_button.clicked.connect(self._on_browse_output_clicked)
         self._save_button.clicked.connect(self._on_save_clicked)
@@ -300,13 +300,10 @@ class CharucoBoardBuilderWindow(QMainWindow):
         try:
             config = self._read_config()
             self._validate_board_compatibility(config)
-            payload = self._build_board_payload(config)
-            output_dir = self._create_output_dir(config.output_root)
-            image_path = output_dir / "charuco_board.png"
-            json_path = output_dir / "charuco_board.json"
+            output_dir = config.output_root
+            image_path = output_dir / f"{config.squares_x}×{config.squares_y}.png"
             export_image = self._render_export_board(config)
             self._save_png_with_dpi(image_path, export_image)
-            json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         except ValueError as exc:
             self._status_label.setText(f'<span style="color:#d00000;">保存失败：{exc}</span>')
             return
@@ -324,7 +321,16 @@ class CharucoBoardBuilderWindow(QMainWindow):
         try:
             config = self._read_config()
             self._validate_board_compatibility(config)
-            payload = self._build_board_payload(config)
+            square_length = self._square_length(config)
+            payload = {
+                "dictionary_name": config.dictionary_name,
+                "squares_x": config.squares_x,
+                "squares_y": config.squares_y,
+                "square_length": square_length,
+                "margin_size": config.margin_size,
+                "marker_length": square_length * DEFAULT_MARKER_LENGTH_RATIO,
+                "total_width": config.total_width,
+            }
             preview_image = self._render_preview_board(config)
         except Exception as exc:  # noqa: BLE001
             self._preview_image = None
@@ -351,9 +357,9 @@ class CharucoBoardBuilderWindow(QMainWindow):
         if squares_x < 2 or squares_y < 2:
             raise ValueError("棋盘方块数必须都大于等于 2。")
 
-        square_length = float(self._square_length_input.text().strip() or "0")
-        if square_length <= 0:
-            raise ValueError("单方块边长必须大于 0。")
+        total_width = float(self._total_width_input.text().strip() or "0")
+        if total_width <= 0:
+            raise ValueError("x 方向总宽度必须大于 0。")
 
         margin_size = float(self._margin_size_input.text().strip() or "0")
         if margin_size < 0:
@@ -363,7 +369,7 @@ class CharucoBoardBuilderWindow(QMainWindow):
             dictionary_name=dictionary_name,
             squares_x=squares_x,
             squares_y=squares_y,
-            square_length=square_length,
+            total_width=total_width,
             margin_size=margin_size,
             output_root=self._output_root,
         )
@@ -374,16 +380,8 @@ class CharucoBoardBuilderWindow(QMainWindow):
             raise ValueError("ChArUco 板至少需要 3x3 方块；2x2 这类板型不支持创建或预览。")
         if config.dictionary_name not in DICTIONARY_NAME_TO_ID:
             raise ValueError(f"不支持的字典名：{config.dictionary_name}")
-
-    def _build_board_payload(self, config: CharucoBoardConfig) -> dict[str, object]:
-        return {
-            "dictionary_name": config.dictionary_name,
-            "squares_x": config.squares_x,
-            "squares_y": config.squares_y,
-            "square_length": config.square_length,
-            "margin_size": config.margin_size,
-            "marker_length": config.square_length * DEFAULT_MARKER_LENGTH_RATIO,
-        }
+        if config.total_width <= 2 * config.margin_size:
+            raise ValueError("x 方向总宽度必须大于两侧 marginSize 之和。")
 
     def _render_preview_board(self, config: CharucoBoardConfig) -> np.ndarray:
         board_gray = self._render_export_board(config)
@@ -395,38 +393,38 @@ class CharucoBoardBuilderWindow(QMainWindow):
 
     def _render_export_board(self, config: CharucoBoardConfig) -> np.ndarray:
         board = self._build_board(config)
-        square_px = self._preview_square_pixels(config)
-        margin_px = max(0, int(round(config.margin_size)))
-        image_width = (config.squares_x + 2) * square_px
-        image_height = (config.squares_y + 2) * square_px
-        board_image = board.generateImage((image_width, image_height), marginSize=margin_px, borderBits=1)
+        square_length = self._square_length(config)
+        image_height = config.squares_y * square_length + 2 * config.margin_size
+        image_width_px = self._millimeters_to_pixels(config.total_width)
+        image_height_px = self._millimeters_to_pixels(image_height)
+        margin_px = self._millimeters_to_pixels(config.margin_size) if config.margin_size > 0 else 0
+        board_image = board.generateImage((image_width_px, image_height_px), marginSize=margin_px, borderBits=1)
         if board_image.ndim == 3:
             board_image = cv2.cvtColor(board_image, cv2.COLOR_BGR2GRAY)
         return np.where(board_image < 128, 0, 255).astype(np.uint8)
 
-    def _preview_square_pixels(self, config: CharucoBoardConfig) -> int:
-        board_long_side = max(config.squares_x, config.squares_y)
-        return max(1, int(round(DEFAULT_PREVIEW_LONG_SIDE_PX / board_long_side)))
+    @staticmethod
+    def _millimeters_to_pixels(length_mm: float) -> int:
+        return max(1, int(round(length_mm * EXPORT_DPI / MM_PER_INCH)))
+
+    @staticmethod
+    def _square_length(config: CharucoBoardConfig) -> float:
+        return (config.total_width - 2 * config.margin_size) / config.squares_x
 
     @staticmethod
     def _build_board(config: CharucoBoardConfig) -> cv2.aruco.CharucoBoard:
         dictionary = cv2.aruco.getPredefinedDictionary(DICTIONARY_NAME_TO_ID[config.dictionary_name])
+        square_length = (config.total_width - 2 * config.margin_size) / config.squares_x
         return cv2.aruco.CharucoBoard(
             (config.squares_x, config.squares_y),
-            float(config.square_length),
-            float(config.square_length * DEFAULT_MARKER_LENGTH_RATIO),
+            float(square_length),
+            float(square_length * DEFAULT_MARKER_LENGTH_RATIO),
             dictionary,
         )
 
     # endregion
 
     # region 工具
-
-    @staticmethod
-    def _create_output_dir(output_root: Path) -> Path:
-        output_dir = output_root / datetime.now().strftime("%m%d-%H%M%S")
-        output_dir.mkdir(parents=True, exist_ok=False)
-        return output_dir
 
     @staticmethod
     def _to_pixmap(image: np.ndarray) -> QPixmap:
