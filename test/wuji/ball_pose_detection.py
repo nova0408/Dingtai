@@ -58,12 +58,12 @@ def main(
     """执行一次当前 ball_pose_detection 服务冒烟测试。"""
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    logger.info("ball_pose_detection 冒烟开始: service_addr={} camera_name={}", service_addr, camera_name)
+    logger.info("ball_pose_detection 冒烟开始：service_addr={} camera_name={}", service_addr, camera_name)
     client = CameraPipelineClient(service_addr=str(service_addr), timeout_ms=int(timeout_ms))
     try:
         status = client.get_camera_status(timeout_s=float(stable_timeout_s))
         logger.info(
-            "相机状态: camera_name={} online={} width={} px height={} px",
+            "相机状态：camera_name={} online={} width={} px height={} px",
             status.camera_name,
             status.online,
             status.width,
@@ -89,7 +89,7 @@ def main(
     _save_capture(output_dir=output_dir, response=response)
     _print_summary(response=response, service_addr=service_addr)
     logger.success(
-        "ball_pose_detection 冒烟通过: matched_count={} frame_id={}",
+        "ball_pose_detection 冒烟通过：matched_count={} frame_id={}",
         response.matched_count,
         response.frame_id,
     )
@@ -105,7 +105,7 @@ def main(
 def _resolve_target_frame_id(client: CameraPipelineClient, stable_timeout_s: float) -> int:
     stable_frame = client.get_stable_frame(timeout_s=float(stable_timeout_s))
     logger.info(
-        "稳定帧获取成功: frame_id={} timestamp_ms={} ms",
+        "稳定帧获取成功：frame_id={} timestamp_ms={} ms",
         stable_frame.frame_id,
         stable_frame.timestamp_ms,
     )
@@ -115,15 +115,14 @@ def _resolve_target_frame_id(client: CameraPipelineClient, stable_timeout_s: flo
 def _validate_response(response: BallPoseDetectionResponse) -> None:
     if len(response.detections) != len(DEFAULT_PRIORS):
         raise RuntimeError(
-            "ball pose detection 返回数量异常: "
-            f"expected={len(DEFAULT_PRIORS)} actual={len(response.detections)}"
+            "ball pose detection 返回数量异常：" f"expected={len(DEFAULT_PRIORS)} actual={len(response.detections)}"
         )
     if response.matched_count <= 0:
         raise RuntimeError("ball pose detection 未返回任何有效三维球心")
     detected_count = sum(1 for item in response.detections if item.detected)
     if detected_count != response.matched_count:
         raise RuntimeError(
-            "matched_count 与 detected 数量不一致: "
+            "matched_count 与 detected 数量不一致："
             f"matched_count={response.matched_count} detected_count={detected_count}"
         )
 

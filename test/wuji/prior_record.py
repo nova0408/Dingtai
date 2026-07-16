@@ -3,7 +3,9 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -18,14 +20,39 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-DEFAULT_CAMERA_NAME = "left_hand_camera"
+DEFAULT_BALL_CAMERA_NAME = "left_hand_camera"
+DEFAULT_HEAD_CAMERA_NAME = "head_camera"
 DEFAULT_SERVICE_ADDR = "tcp://192.168.1.121:6200"
 DEFAULT_TIMEOUT_MS = 60_000
-DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "test" / "wuji" / ".archive" / "ball_pose_detection_capture"
+DEFAULT_CAMERA_TIMEOUT_S = 10.0
+DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "test" / "wuji" / ".archive" / "prior_record"
 DEFAULT_PRIOR_CAPTURE_PATH = (
     PROJECT_ROOT / "test" / "wuji" / ".archive" / "collect_ball_opening_relative_pose" / "summary.json"
 )
 DEFAULT_PRIOR_COMPARE_DIR = PROJECT_ROOT / "test" / "wuji" / ".archive" / "ball_pose_detection_priori"
+DEFAULT_HEAD_YAW_DEG = 60.0  # 头部固定 yaw 角度，单位 deg
+DEFAULT_HEAD_PITCH_DEG = 45.0  # 头部固定 pitch 角度，单位 deg
+DEFAULT_HEAD_SETTLE_S = 1.0  # 头部运动后的稳定等待时间，单位 s
+DEFAULT_DICTIONARY_NAME = "DICT_APRILTAG_16H5"
+DEFAULT_SQUARES_X = 4
+DEFAULT_SQUARES_Y = 4
+DEFAULT_SQUARE_LENGTH_MM = 20
+DEFAULT_MARKER_LENGTH_MM = 14
+DEFAULT_MIN_CHARUCO_CORNERS = 6
+DEFAULT_WINDOW_WIDTH = 1440
+DEFAULT_WINDOW_HEIGHT = 900
+BALL_ORDERED_COLORS = ("#ffff00", "#ff0000", "#ff00ff")
+BALL_COLOR_LABELS = ("yellow", "red", "purple")
+BALL_DEFAULT_RADIUS_MM = 20.0
+BALL_DEFAULT_MODEL_CENTERS_MM = (
+    (0.0, 0.0, 0.0),
+    (1.0, 0.0, 0.0),
+    (0.0, 1.0, 0.0),
+)
+BALL_POSE_AXIS_LENGTH_MM = 45.0
+GEOMETRY_EPSILON = 1e-6
+DEPTH_VALID_MIN_MM = 1.0
+DEPTH_PERCENTILE_RANGE = (2.0, 98.0)
 
 from test.wuji.xcoresdk_arm_cli_test import (
     LEFT_ARM_IP,
@@ -41,7 +68,17 @@ from camera_pipeline.ball_pose_detection.protocol import (
     BallPosePriorInfo,
 )
 from camera_pipeline.client import CameraPipelineClient
+from camera_pipeline.protocol import CameraColorFramePacket
+from common import (
+    DEFAULT_PORT,
+    SshTunnelGroup,
+    close_wuyou_channel,
+    create_wuyou_channel,
+    stop_ssh_process,
+)
 from sdk.xcoresdk import xCoreSDK_python
+from src.calibration import CharucoPoseEstimator, CharucoPoseResult
+from src.wuji.head_client import WujiHeadClient
 
 DEFAULT_ARM_IP = LEFT_ARM_IP
 
@@ -51,6 +88,16 @@ class PoseSnapshot:
     pose_matrix: np.ndarray
     translation_mm: tuple[float, float, float]
     rpy_deg: tuple[float, float, float]
+
+
+@dataclass(frozen=True, slots=True)
+class CameraCalibration:
+    """头部相机内参与畸变参数。"""
+
+    width: int
+    height: int
+    camera_matrix: np.ndarray
+    dist_coeffs: np.ndarray
 
 
 def _ensure_fixed_toolset(
@@ -87,14 +134,44 @@ def _matrix_to_pose_snapshot(pose_matrix: np.ndarray) -> PoseSnapshot:
 
 def main(
     service_addr: str = DEFAULT_SERVICE_ADDR,
-    camera_name: str = DEFAULT_CAMERA_NAME,
+    ball_camera_name: str = DEFAULT_BALL_CAMERA_NAME,
     output_dir: Path = DEFAULT_OUTPUT_DIR,
     prior_capture_path: Path = DEFAULT_PRIOR_CAPTURE_PATH,
     prior_compare_dir: Path = DEFAULT_PRIOR_COMPARE_DIR,
     arm_ip: str = DEFAULT_ARM_IP,
+    min_charuco_corners: int = DEFAULT_MIN_CHARUCO_CORNERS,
 ) -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
-    logger.info("ball_pose_detection 先验采集与对比开始")
+    logger.info("开始记录三球先验与头部 ChArUco 板先验，输出目录：{}", output_dir)
+    _record_ball_prior(
+        service_addr=service_addr,
+        camera_name=ball_camera_name,
+        output_dir=output_dir,
+        prior_capture_path=prior_capture_path,
+        prior_compare_dir=prior_compare_dir,
+        arm_ip=arm_ip,
+    )
+    _record_charuco_board_prior(
+        service_addr=service_addr,
+        output_dir=output_dir,
+        min_charuco_corners=min_charuco_corners,
+    )
+    logger.success("先验记录完成：{}", output_dir)
+    return 0
+
+
+def _record_ball_prior(
+    *,
+    service_addr: str,
+    camera_name: str,
+    output_dir: Path,
+    prior_capture_path: Path,
+    prior_compare_dir: Path,
+    arm_ip: str,
+) -> None:
+    """记录左臂三球坐标系先验。"""
+
+    logger.info("开始记录左臂三球先验")
     prior_capture = _load_prior_capture(prior_capture_path)
     priors = _build_priors_from_capture(prior_capture)
     ec: dict[str, object] = {}
@@ -124,31 +201,21 @@ def main(
     local_pose_transform = _build_three_ball_basis_transform(response.detections)
     if local_pose_transform is None:
         raise RuntimeError("failed to build local three-ball coordinate frame")
-    _save_capture(output_dir, response, local_pose_transform, tcp_snapshot)
+    _save_ball_capture(output_dir, response, local_pose_transform, tcp_snapshot)
     _print_prior_comparison(
         prior_compare_dir=prior_compare_dir,
         output_dir=output_dir,
         response=response,
         local_pose_transform=local_pose_transform,
     )
-    print(
-        json.dumps(
-            {
-                "frame_id": response.frame_id,
-                "camera_name": response.camera_name,
-                "matched_count": response.matched_count,
-                "elapsed_ms": response.elapsed_ms,
-                "tcp_translation_mm": list(tcp_snapshot.translation_mm),
-                "tcp_rpy_degrees": list(tcp_snapshot.rpy_deg),
-            },
-            ensure_ascii=False,
-            indent=2,
-        )
+    logger.success(
+        "三球先验已保存：frame_id={}，matched_count={}",
+        response.frame_id,
+        response.matched_count,
     )
-    return 0
 
 
-def _save_capture(
+def _save_ball_capture(
     output_dir: Path,
     response: BallPoseDetectionResponse,
     local_pose_transform: np.ndarray,
@@ -177,23 +244,26 @@ def _save_capture(
         "tcp_translation_mm": list(tcp_snapshot.translation_mm),
         "tcp_rpy_degrees": list(tcp_snapshot.rpy_deg),
         "local_coordinate_frame": {
-            "origin_ball": "yellow",
-            "x_axis_ball": "red",
-            "xoy_plane_ball": "purple",
+            "origin_ball": BALL_COLOR_LABELS[0],
+            "x_axis_ball": BALL_COLOR_LABELS[1],
+            "xoy_plane_ball": BALL_COLOR_LABELS[2],
         },
         "debug": _serialize_debug(response.debug_artifacts),
     }
-    (output_dir / "summary.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    (output_dir / "ball_pose_prior.json").write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
     debug = _get_debug_artifact(response)
     if debug is not None:
-        cv2.imwrite(str(output_dir / "color_bgr.jpg"), np.asarray(debug.color_bgr, dtype=np.uint8))
-        cv2.imwrite(str(output_dir / "depth.jpg"), _build_depth_view(np.asarray(debug.depth_mm)))
+        cv2.imwrite(str(output_dir / "ball_color_bgr.jpg"), np.asarray(debug.color_bgr, dtype=np.uint8))
+        cv2.imwrite(str(output_dir / "ball_depth.jpg"), _build_depth_view(np.asarray(debug.depth_mm)))
     if local_overlay_bgr is not None:
-        cv2.imwrite(str(output_dir / "overlay.jpg"), local_overlay_bgr)
-        cv2.imwrite(str(output_dir / "local_pose_overlay.jpg"), local_overlay_bgr)
+        cv2.imwrite(str(output_dir / "ball_pose_overlay.jpg"), local_overlay_bgr)
     if debug is not None:
         cv2.imwrite(
-            str(output_dir / "detection_overlay.jpg"), np.asarray(debug.detection_overlay_bgr, dtype=np.uint8)
+            str(output_dir / "ball_detection_overlay.jpg"),
+            np.asarray(debug.detection_overlay_bgr, dtype=np.uint8),
         )
 
 
@@ -237,10 +307,9 @@ def _build_priors_from_capture(captured: dict[str, Any]) -> list[BallPosePriorIn
     if not isinstance(recorded_balls, list) or len(recorded_balls) < 3:
         return _default_priors()
     lookup = {str(item.get("color_hex")): item for item in recorded_balls if isinstance(item, dict)}
-    ordered_colors = ("#ffff00", "#ff0000", "#ff00ff")
-    yellow_item = lookup.get(ordered_colors[0])
-    red_item = lookup.get(ordered_colors[1])
-    purple_item = lookup.get(ordered_colors[2])
+    yellow_item = lookup.get(BALL_ORDERED_COLORS[0])
+    red_item = lookup.get(BALL_ORDERED_COLORS[1])
+    purple_item = lookup.get(BALL_ORDERED_COLORS[2])
     if yellow_item is None or red_item is None or purple_item is None:
         return _default_priors()
     ordered = (yellow_item, red_item, purple_item)
@@ -253,23 +322,23 @@ def _build_priors_from_capture(captured: dict[str, Any]) -> list[BallPosePriorIn
         return _default_priors()
     x_axis = second - origin
     x_norm = float(np.linalg.norm(x_axis))
-    if x_norm <= 1e-6:
+    if x_norm <= GEOMETRY_EPSILON:
         return _default_priors()
     x_axis = x_axis / x_norm
     plane_hint = third - origin
     z_axis = np.cross(x_axis, plane_hint)
     z_norm = float(np.linalg.norm(z_axis))
-    if z_norm <= 1e-6:
+    if z_norm <= GEOMETRY_EPSILON:
         return _default_priors()
     z_axis = z_axis / z_norm
     y_axis = np.cross(z_axis, x_axis)
     y_norm = float(np.linalg.norm(y_axis))
-    if y_norm <= 1e-6:
+    if y_norm <= GEOMETRY_EPSILON:
         return _default_priors()
     y_axis = y_axis / y_norm
     basis = np.stack([x_axis, y_axis, z_axis], axis=1)
     priors: list[BallPosePriorInfo] = []
-    for item, color_hex in zip(ordered, ordered_colors):
+    for item, color_hex in zip(ordered, BALL_ORDERED_COLORS, strict=True):
         position = np.asarray(item.get("position_camera_mm"), dtype=np.float64)
         if position.shape != (3,) or not np.all(np.isfinite(position)):
             return _default_priors()
@@ -277,7 +346,7 @@ def _build_priors_from_capture(captured: dict[str, Any]) -> list[BallPosePriorIn
         priors.append(
             BallPosePriorInfo(
                 color_hex=color_hex,
-                radius_mm=float(item.get("radius_mm", 20.0)),
+                radius_mm=float(item.get("radius_mm", BALL_DEFAULT_RADIUS_MM)),
                 model_center_mm=tuple(model_center.tolist()),
             )
         )
@@ -356,20 +425,20 @@ def _draw_prior_comparison_overlay(
     prior_pose_transform: np.ndarray,
     camera_intrinsics: tuple[float, float, float, float],
 ) -> None:
-    current_overlay_path = output_dir / "overlay.jpg"
+    current_overlay_path = output_dir / "ball_pose_overlay.jpg"
     if not current_overlay_path.is_file():
-        logger.info("当前输出目录缺少 overlay.jpg，跳过图像对比绘制: {}", current_overlay_path)
+        logger.info("当前输出目录缺少三球位姿图，跳过图像对比绘制: {}", current_overlay_path)
         return
     overlay_bgr = cv2.imread(str(current_overlay_path), cv2.IMREAD_COLOR)
     if overlay_bgr is None:
-        logger.warning("当前 overlay.jpg 读取失败，跳过图像对比绘制: {}", current_overlay_path)
+        logger.warning("当前三球位姿图读取失败，跳过图像对比绘制: {}", current_overlay_path)
         return
     annotated = overlay_bgr.copy()
     _draw_pose_axes(
         image_bgr=annotated,
         pose_transform=prior_pose_transform,
         camera_intrinsics=camera_intrinsics,
-        axis_length_mm=45.0,
+        axis_length_mm=BALL_POSE_AXIS_LENGTH_MM,
         axis_colors=((0, 0, 180), (0, 180, 0), (180, 0, 0)),
         thickness=2,
     )
@@ -377,42 +446,41 @@ def _draw_prior_comparison_overlay(
         image_bgr=annotated,
         pose_transform=current_pose_transform,
         camera_intrinsics=camera_intrinsics,
-        axis_length_mm=45.0,
+        axis_length_mm=BALL_POSE_AXIS_LENGTH_MM,
         axis_colors=((0, 0, 255), (0, 255, 0), (255, 0, 0)),
         thickness=3,
     )
-    compare_overlay_path = output_dir / "prior_compare_overlay.jpg"
+    compare_overlay_path = output_dir / "ball_prior_compare_overlay.jpg"
     cv2.imwrite(str(compare_overlay_path), annotated)
 
 
 def _default_priors() -> list[BallPosePriorInfo]:
     return [
         BallPosePriorInfo(
-            color_hex="#ffff00",
-            radius_mm=20.0,
-            model_center_mm=(0.0, 0.0, 0.0),
-        ),
-        BallPosePriorInfo(
-            color_hex="#ff0000",
-            radius_mm=20.0,
-            model_center_mm=(1.0, 0.0, 0.0),
-        ),
-        BallPosePriorInfo(
-            color_hex="#ff00ff",
-            radius_mm=20.0,
-            model_center_mm=(0.0, 1.0, 0.0),
-        ),
+            color_hex=color_hex,
+            radius_mm=BALL_DEFAULT_RADIUS_MM,
+            model_center_mm=model_center_mm,
+        )
+        for color_hex, model_center_mm in zip(
+            BALL_ORDERED_COLORS,
+            BALL_DEFAULT_MODEL_CENTERS_MM,
+            strict=True,
+        )
     ]
 
 
 def _build_depth_view(depth_mm: np.ndarray) -> np.ndarray:
     depth = np.asarray(depth_mm, dtype=np.float32)
-    valid = np.isfinite(depth) & (depth > 1.0)
+    valid = np.isfinite(depth) & (depth > DEPTH_VALID_MIN_MM)
     hsv = np.zeros((depth.shape[0], depth.shape[1], 3), dtype=np.uint8)
     if np.any(valid):
-        z_min = float(np.percentile(depth[valid], 2))
-        z_max = float(np.percentile(depth[valid], 98))
-        norm = np.clip((depth - z_min) / max(1e-6, z_max - z_min), 0.0, 1.0)
+        z_min = float(np.percentile(depth[valid], DEPTH_PERCENTILE_RANGE[0]))
+        z_max = float(np.percentile(depth[valid], DEPTH_PERCENTILE_RANGE[1]))
+        norm = np.clip(
+            (depth - z_min) / max(GEOMETRY_EPSILON, z_max - z_min),
+            0.0,
+            1.0,
+        )
         hsv[..., 0] = np.where(valid, np.rint((1.0 - norm) * 120.0), 0).astype(np.uint8)
         hsv[..., 1] = np.where(valid, 255, 0).astype(np.uint8)
         hsv[..., 2] = np.where(valid, 255, 0).astype(np.uint8)
@@ -447,7 +515,7 @@ def _build_local_pose_overlay(
         image_bgr=overlay,
         pose_transform=local_pose_transform,
         camera_intrinsics=camera_intrinsics,
-        axis_length_mm=45.0,
+        axis_length_mm=BALL_POSE_AXIS_LENGTH_MM,
         axis_colors=((0, 0, 255), (0, 255, 0), (255, 0, 0)),
         thickness=3,
     )
@@ -507,25 +575,25 @@ def _build_three_ball_basis_transform(detections: Any) -> np.ndarray | None:
         if center.shape != (3,) or not np.all(np.isfinite(center)):
             continue
         by_color[color_hex] = center
-    origin = by_color.get("#ffff00")
-    red = by_color.get("#ff0000")
-    purple = by_color.get("#ff00ff")
+    origin = by_color.get(BALL_ORDERED_COLORS[0])
+    red = by_color.get(BALL_ORDERED_COLORS[1])
+    purple = by_color.get(BALL_ORDERED_COLORS[2])
     if origin is None or red is None or purple is None:
         return None
     x_axis = red - origin
     x_norm = float(np.linalg.norm(x_axis))
-    if x_norm <= 1e-6:
+    if x_norm <= GEOMETRY_EPSILON:
         return None
     x_axis = x_axis / x_norm
     plane_hint = purple - origin
     z_axis = np.cross(x_axis, plane_hint)
     z_norm = float(np.linalg.norm(z_axis))
-    if z_norm <= 1e-6:
+    if z_norm <= GEOMETRY_EPSILON:
         return None
     z_axis = z_axis / z_norm
     y_axis = np.cross(z_axis, x_axis)
     y_norm = float(np.linalg.norm(y_axis))
-    if y_norm <= 1e-6:
+    if y_norm <= GEOMETRY_EPSILON:
         return None
     y_axis = y_axis / y_norm
     transform = np.eye(4, dtype=np.float64)
@@ -607,7 +675,7 @@ def _project_point_to_pixel(
     if point_mm.shape != (3,) or not np.all(np.isfinite(point_mm)):
         return None
     z_mm = float(point_mm[2])
-    if z_mm <= 1e-6:
+    if z_mm <= GEOMETRY_EPSILON:
         return None
     fx, fy, cx, cy = camera_intrinsics
     x_px = fx * float(point_mm[0]) / z_mm + cx
@@ -617,24 +685,251 @@ def _project_point_to_pixel(
     return (int(round(x_px)), int(round(y_px)))
 
 
+def _record_charuco_board_prior(
+    *,
+    service_addr: str,
+    output_dir: Path,
+    min_charuco_corners: int,
+) -> None:
+    """固定头部姿态，并交互记录一帧有效的 T_camera_board。"""
+
+    head_tunnel: SshTunnelGroup | None = None
+    head_channel: object | None = None
+    try:
+        head_tunnel, head_channel = create_wuyou_channel(DEFAULT_PORT)
+        _set_head_fixed_pose(WujiHeadClient(head_channel))
+        _capture_charuco_board_pose(
+            service_addr=service_addr,
+            output_dir=output_dir,
+            min_charuco_corners=min_charuco_corners,
+        )
+    finally:
+        if head_channel is not None:
+            close_wuyou_channel(head_channel)
+        if head_tunnel is not None:
+            stop_ssh_process(head_tunnel)
+
+
+def _set_head_fixed_pose(head: WujiHeadClient) -> None:
+    logger.info(
+        "固定头部姿态：yaw={:.1f} deg，pitch={:.1f} deg",
+        DEFAULT_HEAD_YAW_DEG,
+        DEFAULT_HEAD_PITCH_DEG,
+    )
+    head.set_head_yaw(DEFAULT_HEAD_YAW_DEG)
+    head.set_head_pitch(DEFAULT_HEAD_PITCH_DEG)
+    time.sleep(DEFAULT_HEAD_SETTLE_S)
+    yaw_deg = float(head.get_head_yaw() or 0.0)
+    pitch_deg = float(head.get_head_pitch() or 0.0)
+    logger.success("头部已固定：yaw={:.1f} deg，pitch={:.1f} deg", yaw_deg, pitch_deg)
+
+
+def _capture_charuco_board_pose(
+    *,
+    service_addr: str,
+    output_dir: Path,
+    min_charuco_corners: int,
+) -> None:
+    client = CameraPipelineClient(
+        service_addr=service_addr,
+        timeout_ms=int(DEFAULT_CAMERA_TIMEOUT_S * 1000.0),
+    )
+    estimator = CharucoPoseEstimator(_build_charuco_board())
+    calibration = _read_head_camera_calibration(client)
+    window_name = "Head Camera ChArUco Prior Record"
+    cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+    cv2.resizeWindow(window_name, DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT)
+    logger.info("请保持标定板位姿不变；检测有效后按 Space/Enter/P 保存，按 Q/Esc 取消。")
+    try:
+        for frame_packet in client.subscribe_head_camera_color_frames():
+            frame_bgr = np.asarray(frame_packet.color_bgr, dtype=np.uint8).copy()
+            pose_result = estimator.estimate_pose(
+                image_bgr=frame_bgr,
+                camera_matrix=calibration.camera_matrix,
+                dist_coeffs=calibration.dist_coeffs,
+                min_charuco_corners=min_charuco_corners,
+            )
+            preview_bgr = _draw_charuco_preview(
+                frame_bgr=frame_bgr,
+                pose_result=pose_result,
+                calibration=calibration,
+            )
+            cv2.imshow(window_name, preview_bgr)
+            key = cv2.waitKey(1) & 0xFF
+            if key in (27, ord("q"), ord("Q")):
+                raise RuntimeError("用户取消记录 ChArUco 板先验")
+            if key in (13, 32, ord("p"), ord("P")):
+                if pose_result.transform_se3 is None or pose_result.reprojection_error_px is None:
+                    logger.warning("当前帧未获得有效 ChArUco 位姿，未保存。")
+                    continue
+                _save_charuco_board_prior(
+                    output_dir=output_dir,
+                    frame_packet=frame_packet,
+                    frame_bgr=frame_bgr,
+                    preview_bgr=preview_bgr,
+                    pose_result=pose_result,
+                )
+                return
+            if cv2.getWindowProperty(window_name, cv2.WND_PROP_VISIBLE) < 1:
+                raise RuntimeError("ChArUco 先验记录窗口已关闭，未保存结果")
+    finally:
+        client.close()
+        cv2.destroyAllWindows()
+
+
+def _build_charuco_board() -> cv2.aruco.CharucoBoard:
+    if DEFAULT_DICTIONARY_NAME != "DICT_APRILTAG_16H5":
+        raise ValueError(f"不支持的字典配置：{DEFAULT_DICTIONARY_NAME}")
+    dictionary = cv2.aruco.getPredefinedDictionary(int(cv2.aruco.DICT_APRILTAG_16h5))
+    return cv2.aruco.CharucoBoard(
+        (DEFAULT_SQUARES_X, DEFAULT_SQUARES_Y),
+        float(DEFAULT_SQUARE_LENGTH_MM),
+        float(DEFAULT_MARKER_LENGTH_MM),
+        dictionary,
+    )
+
+
+def _read_head_camera_calibration(client: CameraPipelineClient) -> CameraCalibration:
+    response = client.get_head_camera_intrinsics(timeout_s=DEFAULT_CAMERA_TIMEOUT_S)
+    distortion = np.asarray(response.distortion, dtype=np.float64).reshape(-1, 1)
+    if distortion.size == 0:
+        distortion = np.zeros((5, 1), dtype=np.float64)
+    logger.info(
+        "头部相机内参：camera={}，size={}x{}，fx={:.3f}，fy={:.3f}",
+        response.camera_name,
+        response.width,
+        response.height,
+        response.fx,
+        response.fy,
+    )
+    return CameraCalibration(
+        width=int(response.width),
+        height=int(response.height),
+        camera_matrix=np.asarray(
+            [
+                [float(response.fx), 0.0, float(response.cx)],
+                [0.0, float(response.fy), float(response.cy)],
+                [0.0, 0.0, 1.0],
+            ],
+            dtype=np.float64,
+        ),
+        dist_coeffs=distortion,
+    )
+
+
+def _draw_charuco_preview(
+    *,
+    frame_bgr: np.ndarray,
+    pose_result: CharucoPoseResult,
+    calibration: CameraCalibration,
+) -> np.ndarray:
+    canvas = frame_bgr.copy()
+    if pose_result.marker_ids is not None:
+        cv2.aruco.drawDetectedMarkers(canvas, pose_result.marker_corners_px, pose_result.marker_ids)
+    if pose_result.charuco_corners_px is not None and pose_result.charuco_ids is not None:
+        cv2.aruco.drawDetectedCornersCharuco(
+            canvas,
+            pose_result.charuco_corners_px.reshape(-1, 1, 2).astype(np.float32),
+            pose_result.charuco_ids,
+        )
+    if pose_result.rvec is not None and pose_result.tvec is not None:
+        cv2.drawFrameAxes(
+            canvas,
+            calibration.camera_matrix,
+            calibration.dist_coeffs,
+            pose_result.rvec,
+            pose_result.tvec,
+            float(DEFAULT_SQUARE_LENGTH_MM * 1.5),
+            3,
+        )
+    status = "VALID" if pose_result.transform_se3 is not None else "INVALID"
+    reprojection = (
+        "NA"
+        if pose_result.reprojection_error_px is None
+        else f"{pose_result.reprojection_error_px:.3f}px"
+    )
+    lines = (
+        f"ChArUco prior | {status}",
+        f"head yaw={DEFAULT_HEAD_YAW_DEG:.1f}deg pitch={DEFAULT_HEAD_PITCH_DEG:.1f}deg",
+        f"markers={pose_result.marker_count} charuco={pose_result.charuco_count} reproj={reprojection}",
+        "Space/Enter/P save | Q/Esc cancel",
+    )
+    _draw_text_block(canvas, lines)
+    return canvas
+
+
+def _save_charuco_board_prior(
+    *,
+    output_dir: Path,
+    frame_packet: CameraColorFramePacket,
+    frame_bgr: np.ndarray,
+    preview_bgr: np.ndarray,
+    pose_result: CharucoPoseResult,
+) -> None:
+    if pose_result.transform_se3 is None or pose_result.reprojection_error_px is None:
+        raise ValueError("ChArUco 位姿结果无效，不能保存先验")
+    transform_mm = np.asarray(pose_result.transform_se3, dtype=np.float64).reshape(4, 4)
+    translation_mm = transform_mm[:3, 3]
+    rpy_deg = Rotation.from_matrix(transform_mm[:3, :3]).as_euler("xyz", degrees=True)
+    payload = {
+        "timestamp_iso": datetime.now().isoformat(timespec="milliseconds"),
+        "frame_id": int(frame_packet.frame_id),
+        "camera_name": DEFAULT_HEAD_CAMERA_NAME,
+        "camera_timestamp_ms": float(frame_packet.timestamp_ms),
+        "pose_semantics": "T_camera_board",
+        "translation_unit": "mm",
+        "rotation_convention": 'scipy Rotation.as_euler("xyz", degrees=True)',
+        "head_yaw_deg": DEFAULT_HEAD_YAW_DEG,
+        "head_pitch_deg": DEFAULT_HEAD_PITCH_DEG,
+        "dictionary": DEFAULT_DICTIONARY_NAME,
+        "squares_x": DEFAULT_SQUARES_X,
+        "squares_y": DEFAULT_SQUARES_Y,
+        "square_length_mm": DEFAULT_SQUARE_LENGTH_MM,
+        "marker_length_mm": DEFAULT_MARKER_LENGTH_MM,
+        "marker_count": int(pose_result.marker_count),
+        "charuco_count": int(pose_result.charuco_count),
+        "reprojection_error_px": float(pose_result.reprojection_error_px),
+        "camera_board_transform": transform_mm.tolist(),
+        "translation_mm": translation_mm.tolist(),
+        "rpy_deg": rpy_deg.tolist(),
+    }
+    result_path = output_dir / "charuco_board_prior.json"
+    result_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    if not cv2.imwrite(str(output_dir / "charuco_board_raw.png"), frame_bgr):
+        raise RuntimeError("保存 ChArUco 原始图像失败")
+    if not cv2.imwrite(str(output_dir / "charuco_board_preview.png"), preview_bgr):
+        raise RuntimeError("保存 ChArUco 预览图像失败")
+    logger.success(
+        "ChArUco 板先验已保存：{}，translation=({:.3f}, {:.3f}, {:.3f}) mm",
+        result_path,
+        translation_mm[0],
+        translation_mm[1],
+        translation_mm[2],
+    )
+
+
 def _parse_cli(argv: list[str]) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="ball pose detection smoke test")
+    parser = argparse.ArgumentParser(description="记录左臂三球与头部 ChArUco 板先验")
     parser.add_argument("--service-addr", type=str, default=DEFAULT_SERVICE_ADDR)
-    parser.add_argument("--camera-name", type=str, default=DEFAULT_CAMERA_NAME)
+    parser.add_argument("--ball-camera-name", type=str, default=DEFAULT_BALL_CAMERA_NAME)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--prior-capture-path", type=Path, default=DEFAULT_PRIOR_CAPTURE_PATH)
     parser.add_argument("--prior-compare-dir", type=Path, default=DEFAULT_PRIOR_COMPARE_DIR)
+    parser.add_argument("--min-charuco-corners", type=int, default=DEFAULT_MIN_CHARUCO_CORNERS)
     return parser.parse_args(argv)
 
 
 if __name__ == "__main__":
-    args = _parse_cli(sys.argv[1:])
-    raise SystemExit(
-        main(
-            service_addr=str(args.service_addr),
-            camera_name=str(args.camera_name),
-            output_dir=Path(args.output_dir),
-            prior_capture_path=Path(args.prior_capture_path),
-            prior_compare_dir=Path(args.prior_compare_dir),
+    if len(sys.argv) > 1:
+        args = _parse_cli(sys.argv[1:])
+        raise SystemExit(
+            main(
+                service_addr=str(args.service_addr),
+                ball_camera_name=str(args.ball_camera_name),
+                output_dir=Path(args.output_dir),
+                prior_capture_path=Path(args.prior_capture_path),
+                prior_compare_dir=Path(args.prior_compare_dir),
+                min_charuco_corners=int(args.min_charuco_corners),
+            )
         )
-    )
+    raise SystemExit(main())

@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import csv
 import gc
+import json
 import re
 import sys
 import threading
@@ -10,6 +11,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import cv2
 import numpy as np
 from loguru import logger
 from scipy.spatial.transform import Rotation
@@ -32,7 +34,18 @@ from test.wuji.common import (
     create_wuyou_channel,
     stop_ssh_process,
 )
-from test.wuji.prior_ball_pose_detection import (
+from test.wuji.prior_record import (
+    BALL_COLOR_LABELS,
+    BALL_ORDERED_COLORS,
+    DEFAULT_DICTIONARY_NAME,
+    DEFAULT_HEAD_PITCH_DEG,
+    DEFAULT_HEAD_SETTLE_S,
+    DEFAULT_HEAD_YAW_DEG,
+    DEFAULT_MARKER_LENGTH_MM,
+    DEFAULT_MIN_CHARUCO_CORNERS,
+    DEFAULT_SQUARE_LENGTH_MM,
+    DEFAULT_SQUARES_X,
+    DEFAULT_SQUARES_Y,
     _build_priors_from_capture,
     _build_three_ball_basis_transform,
     _load_prior_capture,
@@ -68,6 +81,8 @@ from camera_pipeline.ball_pose_detection.protocol import (
 )
 from camera_pipeline.client import CameraPipelineClient
 from sdk.xcoresdk import xCoreSDK_python
+from src.calibration import CharucoPoseEstimator
+from src.wuji.head_client import WujiHeadClient
 
 DEFAULT_LEFT_RECORD_DIR = PROJECT_ROOT / "record_left"
 "默认左臂拖动示教 CSV 目录。"
@@ -126,16 +141,32 @@ CSV_CARTESIAN_OFFSET_TARGETS: list[int] = [4, 6]
 CSV_CARTESIAN_OFFSET_CALCULATE_AT: int = 3
 "在该 CSV 的最后一个 arm pose 处计算一次全局笛卡尔纠偏。"
 
+CHARUCO_OFFSET_LEFT_CSV_SEQUENCE: int | None = None
+"需要应用头部 ChArUco offset 的左臂 CSV 序号；None 表示不启用。"
+
+CHARUCO_OFFSET_RIGHT_CSV_SEQUENCE: int | None = None
+"需要应用头部 ChArUco offset 的右臂 CSV 序号；None 表示不启用。"
+
+LEFT_HEAD_BASE_CAMERA_PATH: Path | None = None
+"左臂基坐标系下的 T_base_camera.npy；启用左臂 ChArUco offset 时必须配置 Path。"
+
+RIGHT_HEAD_BASE_CAMERA_PATH: Path | None = None
+"右臂基坐标系下的 T_base_camera.npy；启用右臂 ChArUco offset 时必须配置 Path。"
+
 DEFAULT_OFFSET_SERVICE_ADDR = DEFAULT_BALL_POSE_SERVICE_ADDR
 "计算全局 offset 时使用的球位姿检测服务地址。"
 
 DEFAULT_OFFSET_CAMERA_NAME = DEFAULT_BALL_POSE_CAMERA_NAME
 "计算全局 offset 时使用的相机名称。"
 
-DEFAULT_OFFSET_PRIOR_CAPTURE_PATH = (
-    PROJECT_ROOT / "test" / "wuji" / ".archive" / "ball_pose_detection_capture" / "summary.json"
-)
+DEFAULT_PRIOR_RECORD_DIR = PROJECT_ROOT / "test" / "wuji" / ".archive" / "prior_record"
+"三球与 ChArUco 先验记录所在目录。"
+
+DEFAULT_OFFSET_PRIOR_CAPTURE_PATH = DEFAULT_PRIOR_RECORD_DIR / "ball_pose_prior.json"
 "计算全局 offset 时使用的先验采集结果路径。"
+
+DEFAULT_CHARUCO_PRIOR_PATH = DEFAULT_PRIOR_RECORD_DIR / "charuco_board_prior.json"
+"头部 ChArUco 的 T_camera_board 先验文件。"
 
 DEFAULT_HAND_EYE_RESULT_PATH = (
     PROJECT_ROOT / "experiments" / "hand_eye" / "runs" / "20260708_152829" / "hand_eye_result.txt"
@@ -153,6 +184,34 @@ OFFSET_TRIGGER_TEMP_MOVE_ABS_J_END_LINEAR_SPEED_MM_S = 700.0
 
 OFFSET_BALL_DETECTION_TIMEOUT_MS = 30_000
 "计算 offset 时单次球位姿检测 RPC 的超时时间，单位 ms。"
+
+BALL_DETECTION_FRAME_ID = -1
+"三球检测请求使用的帧编号；-1 表示服务端最新帧。"
+
+BALL_DETECTION_ENABLE_DEBUG = False
+"三球检测请求是否返回调试数据。"
+
+BALL_DETECTION_MIN_MATCHED_COUNT = 3
+"三球检测结果允许进入坐标系构造的最小匹配数量。"
+
+CHARUCO_DETECTION_SERVICE_ADDR = DEFAULT_BALL_POSE_SERVICE_ADDR
+"头部 ChArUco 检测使用的 camera_pipeline 服务地址。"
+
+CHARUCO_DETECTION_CAMERA_TIMEOUT_S = 10.0
+"头部相机内参与彩色流请求超时时间，单位 s。"
+
+CHARUCO_DETECTION_MAX_FRAME_COUNT = 300
+"单次 ChArUco offset 计算最多检查的头部相机帧数。"
+
+CHARUCO_DETECTION_MIN_CORNERS = DEFAULT_MIN_CHARUCO_CORNERS
+"目标板位姿检测要求的最少 ChArUco 角点数量。"
+
+ENABLE_CARTESIAN_OFFSET_APPLICATION = False
+"""是否把三球或 ChArUco offset 左乘到 CSV TCP。
+
+TODO: 当前为设备安全诊断阶段，必须保持 False，仅计算并对比两种 offset。
+确认两种 offset 及 delta 稳定且方向正确后，再恢复为 True。
+"""
 
 OFFSET_BALL_OUTLIER_MAD_SCALE = 3.5
 "三球 9 维坐标鲁棒剔除的 MAD 倍数阈值。"
@@ -226,6 +285,7 @@ class ReplayRuntime:
     gripper: DahuanGripperClient | None = None
     right_hand: WujiRightHandClient | None = None
     global_cartesian_offset: tuple[tuple[float, float, float, float], ...] | None = None
+    charuco_cartesian_offset: tuple[tuple[float, float, float, float], ...] | None = None
     offset_service_addr: str = DEFAULT_OFFSET_SERVICE_ADDR
     offset_camera_name: str = DEFAULT_OFFSET_CAMERA_NAME
     offset_prior_capture_path: Path = DEFAULT_OFFSET_PRIOR_CAPTURE_PATH
@@ -334,6 +394,38 @@ def _extract_sync_csv_sequence(csv_name: str) -> int | None:
 
 def _should_apply_global_cartesian_offset(csv_name: str) -> bool:
     return _extract_csv_sequence(csv_name) in CSV_CARTESIAN_OFFSET_TARGETS
+
+
+def _charuco_offset_csv_sequence(arm_side: str) -> int | None:
+    if arm_side == "left":
+        return CHARUCO_OFFSET_LEFT_CSV_SEQUENCE
+    return CHARUCO_OFFSET_RIGHT_CSV_SEQUENCE
+
+
+def _should_apply_charuco_cartesian_offset(runtime: ReplayRuntime, csv_name: str) -> bool:
+    configured_sequence = _charuco_offset_csv_sequence(runtime.connected_arm.arm_side)
+    return configured_sequence is not None and _extract_csv_sequence(csv_name) == configured_sequence
+
+
+def _resolve_cartesian_offset(
+    runtime: ReplayRuntime,
+    csv_name: str,
+) -> tuple[np.ndarray | None, str]:
+    # TODO: 设备安全诊断阶段禁止应用任何 offset；确认检测结果后删除该临时保护分支。
+    if not ENABLE_CARTESIAN_OFFSET_APPLICATION:
+        return None, "diagnostic-disabled"
+    if _should_apply_charuco_cartesian_offset(runtime, csv_name):
+        if runtime.charuco_cartesian_offset is None:
+            raise RuntimeError(f"CSV {csv_name} 需要 ChArUco offset，但当前尚未完成目标板检测")
+        return np.asarray(runtime.charuco_cartesian_offset, dtype=np.float64), "charuco"
+    if _should_apply_global_cartesian_offset(csv_name):
+        if runtime.global_cartesian_offset is None:
+            raise RuntimeError(
+                f"CSV {csv_name} 需要使用三球纠偏，但当前尚未在 "
+                f"{_format_optional_csv_sequence(CSV_CARTESIAN_OFFSET_CALCULATE_AT)}_*.csv 末尾计算 offset"
+            )
+        return np.asarray(runtime.global_cartesian_offset, dtype=np.float64), "three-ball"
+    return None, "none"
 
 
 def _should_trigger_offset_calculation(runtime: ReplayRuntime, csv_name: str) -> bool:
@@ -627,8 +719,9 @@ def _build_cartesian_target(runtime: ReplayRuntime, row: ReplayRow) -> xCoreSDK_
         target_pose.elbow = _deg_to_rad([parsed_pose.elbow_deg])[0]
     if parsed_pose.conf_data is not None:
         target_pose.confData = list(parsed_pose.conf_data)
-    if _should_apply_global_cartesian_offset(row.csv_name):
-        target_pose = _apply_global_cartesian_offset(runtime, row, target_pose)
+    offset_matrix_m, offset_source = _resolve_cartesian_offset(runtime, row.csv_name)
+    if offset_matrix_m is not None:
+        target_pose = _apply_cartesian_offset(row, target_pose, offset_matrix_m, offset_source)
     return target_pose
 
 
@@ -644,7 +737,8 @@ def _build_move_abs_j_target(runtime: ReplayRuntime, row: ReplayRow) -> ArmMoveA
     target_pose = _build_cartesian_target(runtime, row)
     robot = runtime.connected_arm.robot
     ec = runtime.connected_arm.ec
-    applies_offset = _should_apply_global_cartesian_offset(row.csv_name)
+    offset_matrix_m, offset_source = _resolve_cartesian_offset(runtime, row.csv_name)
+    applies_offset = offset_matrix_m is not None
     robot_model = robot.model()
     toolset = _retry_non_motion_call(
         f"toolset(replay-arm-ik:{row.csv_name}:{row.row_index})",
@@ -671,14 +765,15 @@ def _build_move_abs_j_target(runtime: ReplayRuntime, row: ReplayRow) -> ArmMoveA
         return ArmMoveAbsJTarget(
             row=row,
             joint=target_joint,
-            source="tcp-ik-offset" if applies_offset else "tcp-ik",
+            source=f"tcp-ik-offset-{offset_source}" if applies_offset else "tcp-ik",
         )
 
     failed_ec = ec.get("ec", 0)
     failed_message = ec.get("message", "")
     if applies_offset:
         original_tcp_matrix_m = _frame_to_homogeneous_matrix_m(target_pose)
-        offset_matrix_m = np.asarray(runtime.global_cartesian_offset, dtype=np.float64)
+        if offset_matrix_m is None:
+            raise RuntimeError("offset 应用状态异常")
         corrected_tcp_matrix_m = offset_matrix_m @ original_tcp_matrix_m
         logger.warning(
             "offset 后 T_new_tcp 逆解失败，无法生成 MoveAbsJ 目标 file={} row={} ec={} message={} " "{} {} {}",
@@ -794,31 +889,27 @@ def _homogeneous_matrix_to_cartesian_position(
     return target_pose
 
 
-def _apply_global_cartesian_offset(
-    runtime: ReplayRuntime,
+def _apply_cartesian_offset(
     row: ReplayRow,
     target_pose: xCoreSDK_python.CartesianPosition,
+    offset_matrix_m: np.ndarray,
+    offset_source: str,
 ) -> xCoreSDK_python.CartesianPosition:
-    """将全局 offset 左乘到目标 TCP 上。
+    """将运行时 offset 左乘到目标 TCP 上。
 
     链路：
     - 目标 TCP 由 CSV 目标构造，内部以 `m/rad` 进入 `CartesianPosition`
-    - `runtime.global_cartesian_offset` 以 `m` 保存
+    - `offset_matrix_m` 以 `m` 保存
     - 应用公式固定为 `T_new_tcp = T_off @ T_tcp`
     - 最终返回给 SDK 的 `CartesianPosition` 仍保持 `m/rad`
     """
 
-    if runtime.global_cartesian_offset is None:
-        raise RuntimeError(
-            f"CSV {row.csv_name} 需要使用全局笛卡尔纠偏，但当前尚未在 "
-            f"{_format_optional_csv_sequence(CSV_CARTESIAN_OFFSET_CALCULATE_AT)}_*.csv 末尾计算 offset"
-        )
     original_matrix = _frame_to_homogeneous_matrix(target_pose)
-    offset_matrix_m = np.asarray(runtime.global_cartesian_offset, dtype=np.float64)
     corrected_matrix = offset_matrix_m @ np.asarray(original_matrix, dtype=np.float64)
     corrected_pose = _homogeneous_matrix_to_cartesian_position(target_pose, corrected_matrix)
     logger.info(
-        "已对笛卡尔目标应用全局左乘纠偏矩阵 T_new_tcp=T_off@T_tcp file={} row={} base=tool:{} wobj:{}",
+        "已应用左乘纠偏 T_new_tcp=T_off@T_tcp source={} file={} row={} base=tool:{} wobj:{}",
+        offset_source,
         row.csv_name,
         row.row_index,
         DEFAULT_TOOL_NAME,
@@ -927,8 +1018,8 @@ def _detect_current_three_ball_basis_transform(
                     BallPoseDetectionRequest(
                         request_id=sample_index + 1,
                         camera_name=str(camera_name),
-                        frame_id=-1,
-                        enable_debug=False,
+                        frame_id=BALL_DETECTION_FRAME_ID,
+                        enable_debug=BALL_DETECTION_ENABLE_DEBUG,
                         priors=tuple(priors),
                     )
                 )
@@ -947,7 +1038,7 @@ def _detect_current_three_ball_basis_transform(
                 response.matched_count,
                 len(samples_mm),
             )
-            if response.matched_count < 3:
+            if response.matched_count < BALL_DETECTION_MIN_MATCHED_COUNT:
                 logger.warning(
                     "ball pose detection sample insufficient index={} matched_count={}",
                     sample_index + 1,
@@ -1008,7 +1099,7 @@ def _extract_ordered_three_ball_centers_mm(
         center = np.asarray(item.center_mm, dtype=np.float64)
         if center.shape == (3,) and np.all(np.isfinite(center)):
             by_color[item.color_hex] = center
-    ordered_centers = [by_color.get(color_hex) for color_hex in ("#ffff00", "#ff0000", "#ff00ff")]
+    ordered_centers = [by_color.get(color_hex) for color_hex in BALL_ORDERED_COLORS]
     if any(center is None for center in ordered_centers):
         return None
     return np.stack([np.asarray(center, dtype=np.float64) for center in ordered_centers], axis=0)
@@ -1016,9 +1107,8 @@ def _extract_ordered_three_ball_centers_mm(
 
 def _format_three_ball_centers_mm(centers_mm: np.ndarray) -> str:
     centers = np.asarray(centers_mm, dtype=np.float64).reshape(3, 3)
-    labels = ("yellow", "red", "purple")
     values = []
-    for label, center in zip(labels, centers):
+    for label, center in zip(BALL_COLOR_LABELS, centers, strict=True):
         values.append(f"{label}_xyz_mm=[{_format_sequence(center.tolist())}]")
     return " ".join(values)
 
@@ -1040,9 +1130,8 @@ def _build_mean_three_ball_detections(
     mean_centers = np.mean(kept_samples, axis=0)
     kept_distances = distances[keep_mask]
     detections = [
-        {"color_hex": "#ffff00", "center_mm": mean_centers[0].tolist()},
-        {"color_hex": "#ff0000", "center_mm": mean_centers[1].tolist()},
-        {"color_hex": "#ff00ff", "center_mm": mean_centers[2].tolist()},
+        {"color_hex": color_hex, "center_mm": center.tolist()}
+        for color_hex, center in zip(BALL_ORDERED_COLORS, mean_centers, strict=True)
     ]
     kept_count = int(np.count_nonzero(keep_mask))
     return (
@@ -1151,6 +1240,181 @@ def _calculate_global_cartesian_offset(
             float(offset_matrix_m[3, 2]),
             float(offset_matrix_m[3, 3]),
         ),
+    )
+
+
+def _matrix_to_runtime_tuple(matrix: np.ndarray) -> tuple[tuple[float, float, float, float], ...]:
+    validated = np.asarray(matrix, dtype=np.float64).reshape(4, 4)
+    if not np.all(np.isfinite(validated)):
+        raise ValueError("offset 矩阵包含非有限数值")
+    return (
+        (float(validated[0, 0]), float(validated[0, 1]), float(validated[0, 2]), float(validated[0, 3])),
+        (float(validated[1, 0]), float(validated[1, 1]), float(validated[1, 2]), float(validated[1, 3])),
+        (float(validated[2, 0]), float(validated[2, 1]), float(validated[2, 2]), float(validated[2, 3])),
+        (float(validated[3, 0]), float(validated[3, 1]), float(validated[3, 2]), float(validated[3, 3])),
+    )
+
+
+def _head_base_camera_path(arm_side: str) -> Path:
+    configured_path = LEFT_HEAD_BASE_CAMERA_PATH if arm_side == "left" else RIGHT_HEAD_BASE_CAMERA_PATH
+    if configured_path is None:
+        raise RuntimeError(
+            f"{arm_side} 臂已配置 ChArUco offset CSV，但对应 T_base_camera 路径仍为 None；"
+            "请在文件顶部填写 Path"
+        )
+    return configured_path
+
+
+def _load_head_base_camera_transform_m(arm_side: str) -> np.ndarray:
+    path = _head_base_camera_path(arm_side)
+    if not path.is_file():
+        raise FileNotFoundError(f"{arm_side} 臂 T_base_camera.npy 不存在：{path}")
+    matrix = np.asarray(np.load(path, allow_pickle=False), dtype=np.float64)
+    if matrix.shape != (4, 4) or not np.all(np.isfinite(matrix)):
+        raise ValueError(f"{arm_side} 臂 T_base_camera.npy 格式无效：shape={matrix.shape}, path={path}")
+    return matrix
+
+
+def _load_prior_camera_board_transform_m() -> np.ndarray:
+    if not DEFAULT_CHARUCO_PRIOR_PATH.is_file():
+        raise FileNotFoundError(f"ChArUco 先验文件不存在：{DEFAULT_CHARUCO_PRIOR_PATH}")
+    payload = json.loads(DEFAULT_CHARUCO_PRIOR_PATH.read_text(encoding="utf-8"))
+    matrix = np.asarray(payload.get("camera_board_transform"), dtype=np.float64)
+    if matrix.shape != (4, 4) or not np.all(np.isfinite(matrix)):
+        raise ValueError(f"ChArUco 先验缺少有效 camera_board_transform：{DEFAULT_CHARUCO_PRIOR_PATH}")
+    translation_unit = payload.get("translation_unit")
+    if translation_unit != "mm":
+        raise ValueError(f"ChArUco 先验平移单位不是 mm：{translation_unit!r}")
+    matrix_m = matrix.copy()
+    matrix_m[:3, 3] *= 0.001
+    return matrix_m
+
+
+def _build_charuco_board() -> cv2.aruco.CharucoBoard:
+    if DEFAULT_DICTIONARY_NAME != "DICT_APRILTAG_16H5":
+        raise ValueError(f"不支持的 ChArUco 字典：{DEFAULT_DICTIONARY_NAME}")
+    dictionary = cv2.aruco.getPredefinedDictionary(int(cv2.aruco.DICT_APRILTAG_16h5))
+    return cv2.aruco.CharucoBoard(
+        (DEFAULT_SQUARES_X, DEFAULT_SQUARES_Y),
+        float(DEFAULT_SQUARE_LENGTH_MM),
+        float(DEFAULT_MARKER_LENGTH_MM),
+        dictionary,
+    )
+
+
+def _set_head_charuco_detection_pose(head: WujiHeadClient) -> None:
+    head.set_head_yaw(DEFAULT_HEAD_YAW_DEG)
+    head.set_head_pitch(DEFAULT_HEAD_PITCH_DEG)
+    time.sleep(DEFAULT_HEAD_SETTLE_S)
+    logger.info(
+        "头部 ChArUco 检测姿态已设置 yaw={:.1f} deg pitch={:.1f} deg",
+        float(head.get_head_yaw() or 0.0),
+        float(head.get_head_pitch() or 0.0),
+    )
+
+
+def _detect_current_camera_board_transform_m() -> np.ndarray:
+    head_process: SshTunnelGroup | None = None
+    head_channel: object | None = None
+    client = CameraPipelineClient(
+        service_addr=CHARUCO_DETECTION_SERVICE_ADDR,
+        timeout_ms=int(CHARUCO_DETECTION_CAMERA_TIMEOUT_S * 1000.0),
+    )
+    try:
+        head_process, head_channel = create_wuyou_channel(DEFAULT_PORT)
+        _set_head_charuco_detection_pose(WujiHeadClient(head_channel))
+        intrinsics = client.get_head_camera_intrinsics(timeout_s=CHARUCO_DETECTION_CAMERA_TIMEOUT_S)
+        camera_matrix = np.asarray(
+            [
+                [float(intrinsics.fx), 0.0, float(intrinsics.cx)],
+                [0.0, float(intrinsics.fy), float(intrinsics.cy)],
+                [0.0, 0.0, 1.0],
+            ],
+            dtype=np.float64,
+        )
+        dist_coeffs = np.asarray(intrinsics.distortion, dtype=np.float64).reshape(-1, 1)
+        if dist_coeffs.size == 0:
+            dist_coeffs = np.zeros((5, 1), dtype=np.float64)
+        estimator = CharucoPoseEstimator(_build_charuco_board())
+        for frame_index, frame_packet in enumerate(client.subscribe_head_camera_color_frames(), start=1):
+            result = estimator.estimate_pose(
+                image_bgr=np.asarray(frame_packet.color_bgr, dtype=np.uint8),
+                camera_matrix=camera_matrix,
+                dist_coeffs=dist_coeffs,
+                min_charuco_corners=CHARUCO_DETECTION_MIN_CORNERS,
+            )
+            if result.transform_se3 is not None:
+                matrix_m = np.asarray(result.transform_se3, dtype=np.float64).reshape(4, 4)
+                matrix_m = matrix_m.copy()
+                matrix_m[:3, 3] *= 0.001
+                logger.success(
+                    "头部 ChArUco 检测成功 frame_id={} frame_index={} corners={} reprojection_error_px={}",
+                    frame_packet.frame_id,
+                    frame_index,
+                    result.charuco_count,
+                    result.reprojection_error_px,
+                )
+                return matrix_m
+            if frame_index >= CHARUCO_DETECTION_MAX_FRAME_COUNT:
+                break
+    finally:
+        client.close()
+        if head_channel is not None:
+            close_wuyou_channel(head_channel)
+        if head_process is not None:
+            stop_ssh_process(head_process)
+    raise RuntimeError(
+        f"连续 {CHARUCO_DETECTION_MAX_FRAME_COUNT} 帧未检测到有效 ChArUco 目标板位姿"
+    )
+
+
+def _calculate_charuco_cartesian_offset(
+    runtime: ReplayRuntime,
+    context_label: str,
+) -> tuple[tuple[float, float, float, float], ...]:
+    arm_side = runtime.connected_arm.arm_side
+    base_camera_m = _load_head_base_camera_transform_m(arm_side)
+    prior_camera_board_m = _load_prior_camera_board_transform_m()
+    current_camera_board_m = _detect_current_camera_board_transform_m()
+    prior_base_board_m = base_camera_m @ prior_camera_board_m
+    current_base_board_m = base_camera_m @ current_camera_board_m
+    offset_matrix_m = current_base_board_m @ np.linalg.inv(prior_base_board_m)
+    runtime_offset = _matrix_to_runtime_tuple(offset_matrix_m)
+    runtime.charuco_cartesian_offset = runtime_offset
+    logger.success(
+        "ChArUco offset 已在内存中更新 arm_side={} context={} {}",
+        arm_side,
+        context_label,
+        _format_matrix_xyzrpy_mm_deg("T_off", offset_matrix_m),
+    )
+    logger.info(
+        "CHARUCO_OFFSET_READY\n{}",
+        np.array2string(offset_matrix_m, precision=10, suppress_small=False),
+    )
+    logger.info("{}", _format_matrix_xyzrpy_mm_deg("T_prior_base_board", prior_base_board_m))
+    logger.info("{}", _format_matrix_xyzrpy_mm_deg("T_current_base_board", current_base_board_m))
+    return runtime_offset
+
+
+def _print_three_ball_offset_and_delta(
+    three_ball_offset: tuple[tuple[float, float, float, float], ...],
+    charuco_offset: tuple[tuple[float, float, float, float], ...],
+) -> None:
+    three_ball_matrix_m = np.asarray(three_ball_offset, dtype=np.float64)
+    charuco_matrix_m = np.asarray(charuco_offset, dtype=np.float64)
+    delta_matrix_m = charuco_matrix_m @ np.linalg.inv(three_ball_matrix_m)
+    logger.warning(
+        "TODO offset 诊断模式：当前只打印结果，不会把任何 offset 应用于 TCP。"
+    )
+    logger.info(
+        "THREE_BALL_OFFSET_READY {}\n{}",
+        _format_matrix_xyzrpy_mm_deg("T_three_ball_off", three_ball_matrix_m),
+        np.array2string(three_ball_matrix_m, precision=10, suppress_small=False),
+    )
+    logger.info(
+        "OFFSET_COMPARE T_delta=T_charuco_off@inv(T_three_ball_off) {}\n{}",
+        _format_matrix_xyzrpy_mm_deg("T_delta", delta_matrix_m),
+        np.array2string(delta_matrix_m, precision=10, suppress_small=False),
     )
 
 
@@ -1484,6 +1748,10 @@ def _execute_single_csv(
     flush_at_end: bool = False,
 ) -> None:
     is_offset_trigger_csv = _should_trigger_offset_calculation(runtime, csv_path.name)
+    is_charuco_offset_csv = _should_apply_charuco_cartesian_offset(runtime, csv_path.name)
+    if ENABLE_CARTESIAN_OFFSET_APPLICATION and is_charuco_offset_csv:
+        _flush_pending_arm_segment(runtime)
+        _calculate_charuco_cartesian_offset(runtime, f"csv:{csv_path.name}")
     rows = _load_replay_rows(csv_path)
     logger.info(
         "开始执行文件 {} arm_side={} 共 {} 行",
@@ -1512,8 +1780,17 @@ def _execute_single_csv(
                 csv_path.name,
             )
             time.sleep(OFFSET_CAPTURE_SETTLE_DELAY_S)
-            runtime.global_cartesian_offset = _calculate_global_cartesian_offset(runtime, csv_path)
-            logger.success("已更新全局笛卡尔纠偏矩阵，后续目标 CSV 将按 T_off@T_tcp 左乘方式应用")
+            three_ball_offset = _calculate_global_cartesian_offset(runtime, csv_path)
+            runtime.global_cartesian_offset = three_ball_offset
+            # TODO: 临时诊断逻辑。ChArUco offset 已在 CSV 执行前计算；
+            # 此处只在三球检测完成后打印三球 offset 与两者 delta。
+            if runtime.charuco_cartesian_offset is None:
+                raise RuntimeError("三球 offset 已计算，但启动阶段缺少 ChArUco offset，无法打印 delta")
+            _print_three_ball_offset_and_delta(
+                three_ball_offset,
+                runtime.charuco_cartesian_offset,
+            )
+            logger.warning("offset 仅完成运行时计算与对比，当前不会应用到任何 CSV TCP")
     finally:
         if is_offset_trigger_csv:
             runtime.move_abs_j_end_linear_speed_mm_s = original_move_abs_j_end_linear_speed_mm_s
@@ -1945,6 +2222,9 @@ def main(
         runtime.hand_eye_result_path = Path(hand_eye_result_path)
         runtime.auto_execute_remaining = start_mode == "auto"
         _prepare_runtime(runtime)
+        # TODO: 临时 offset 诊断时序。头部到固定关节角后立即检测并打印 ChArUco offset；
+        # 等现场确认后，再恢复为按 CHARUCO_OFFSET_*_CSV_SEQUENCE 延迟计算。
+        _calculate_charuco_cartesian_offset(runtime, "startup-after-head-position")
         if selected_execution_mode == "parallel" and any(
             plan.right_start_csv_path is not None
             or plan.right_pre_stage_csv_paths
