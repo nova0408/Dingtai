@@ -58,7 +58,7 @@ client = CameraPipelineClient(service_addr="tcp://<orin-ip>:6200")
 启动命令：
 
 ```bash
-python3.12 -m camera_pipeline.service \
+/home/wuji-brain/miniconda3/envs/wuji/bin/python -m camera_pipeline.service \
   --bind-addr tcp://0.0.0.0:6200 \
   --control-port 5570 \
   --stream-port 5562 \
@@ -69,7 +69,7 @@ python3.12 -m camera_pipeline.service \
 可按部署环境覆盖日志参数：
 
 ```bash
-python3.12 -m camera_pipeline.service \
+/home/wuji-brain/miniconda3/envs/wuji/bin/python -m camera_pipeline.service \
   --log-path logs/camera_pipeline_service.log \
   --log-rotation "20 MB" \
   --log-retention "14 days"
@@ -126,8 +126,9 @@ systemd 模板位于 `camera-pipeline.service`。Orin 本地其他业务服务�
 REQ/REP 和三路帧流使用同一显式二进制协议：固定头部携带 JSON 元数据长度，
 元数据只允许白名单中的协议 dataclass、基础类型和元组，NumPy 图像与 mask 以
 连续原始字节块附加，并在元数据中记录 `dtype`、`shape`、偏移和长度。协议不使用
-Python pickle，不依赖 dataclass 的 Python 版本内存布局。Orin 服务使用 Python 3.12，
-不再使用 `pytorch_38`/`py38_tourch` 环境。未知类型、未知协议标识、越界数组
+Python pickle，不依赖 dataclass 的 Python 版本内存布局。Orin 服务固定使用
+`/home/wuji-brain/miniconda3/envs/wuji/bin/python`（Python 3.10+），不再使用
+`pytorch_38`/`py38_tourch` 环境。未知类型、未知协议标识、越界数组
 和字段不匹配均会明确拒绝。
 
 ## 错误约定

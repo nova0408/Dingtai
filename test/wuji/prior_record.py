@@ -22,7 +22,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 DEFAULT_BALL_CAMERA_NAME = "left_hand_camera"
 DEFAULT_HEAD_CAMERA_NAME = "head_camera"
-DEFAULT_SERVICE_ADDR = "tcp://192.168.1.121:6200"
+DEFAULT_SERVICE_ADDR = "tcp://192.168.1.128:6200"
 DEFAULT_TIMEOUT_MS = 60_000
 DEFAULT_CAMERA_TIMEOUT_S = 10.0
 DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "test" / "wuji" / ".archive" / "prior_record"

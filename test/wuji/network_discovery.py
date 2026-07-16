@@ -23,14 +23,14 @@ DEFAULT_WUYOU_SSH_ALIAS = "wuyou"
 "wuyou 的本机 SSH Host 别名。"
 
 DEFAULT_ORIN_FALLBACKS = (
-    "192.168.1.121",
+    "192.168.1.128",
     "wujibrain-desktop.local",
     "192.168.100.60",
 )
 "Orin 的候选主机列表。"
 
 DEFAULT_WUYOU_FALLBACKS = (
-    "192.168.1.119",
+    "192.168.1.128 ",
     "wuyou-X1-SBC.local",
     "192.168.1.113",
     "192.168.100.60",

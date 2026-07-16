@@ -22,6 +22,13 @@
 - `color_bgr`：`uint8 (H, W, 3)`。
 - `depth_mm`：`uint16 (H, W)`，单位 mm，`0` 为无效深度。
 - `fx/fy/cx/cy`：针孔相机内参，单位 pixel。
+- `distortion`：彩色相机畸变参数，按 OpenCV 8 参数顺序
+  `(k1, k2, p1, p2, k3, k4, k5, k6)` 排列。
+
+上游 wuyou ZMQ 控制响应使用 `data["dist"]`，并按 Orbbec SDK 字段顺序
+`(k1, k2, k3, k4, k5, k6, p1, p2)` 传输。`CameraStreamRuntime` 在控制协议
+边界严格校验八个数值并转换为上述 OpenCV 顺序；算法模块不接触上游字段名或
+SDK 顺序。当前暂不消费上游未传输的畸变模型字段。
 
 ## 缓存语义
 
@@ -48,6 +55,8 @@ construct -> start -> background capture -> stop
 - 首帧未到达：`wait_until_ready()` 返回 `False`。
 - 帧号不存在：`get_frame_by_id()` 返回 `None`，表示缓存淘汰或尚未接收。
 - 控制超时、协议头错误或图像解码失败：运行时记录错误并尝试自愈；上层就绪检查失败时报告服务错误。
+- `get_intrinsics` 缺少 `dist`、系数不是八个或包含非数值：判定上游协议错误，
+  不构造带有错误畸变顺序的帧。
 
 ## 局限性
 

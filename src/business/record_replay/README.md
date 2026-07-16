@@ -7,7 +7,7 @@
 
 ```text
 waiting
-  -> navigating_to_start (AGV navigate_to("3") + get_runtime_info 到位确认)
+  -> navigating_to_start (AGV navigate_to("3") + raw_status 从 busy 变为 idel)
   -> replaying          (按左/右 CSV 执行计划回放)
   -> navigating_to_finish (AGV navigate_to("1") + get_runtime_info 到位确认)
   -> waiting
@@ -39,22 +39,15 @@ waiting
 - `plan_index`：当前左臂计划下标；
 - `error_text`：失败原因。
 
-## Linux 常态化启动
+## 本机交互启动
 
-本机/部署入口是 `test/wuji/record__replay_local_test.py`。IP、CSV 目录、
-三球服务与手眼结果路径均集中在该入口顶部的常量中。创建触发文件后服务执行一轮：
+本机入口是 `test/wuji/record_replay_local_test.py`。IP、CSV 目录、AGV 目标点、
+三球服务与手眼结果路径均集中在该入口顶部的常量中。启动后按 `a` 执行一轮：先导航到
+`DEFAULT_AGV_POINT`（默认站点 `"3"`），确认状态依次出现 `busy`、`idel` 后直接开始双臂动作。
+一轮完成后可再次按 `a`，按 `q` 退出。
 
-```bash
-touch /path/to/Dingtai/record__replay_next_cycle.trigger
-```
-
-可由 systemd 以项目 Python 环境启动：
-
-```ini
-[Service]
-WorkingDirectory=/path/to/Dingtai
-ExecStart=/path/to/python test/wuji/record__replay_local_test.py
-Restart=on-failure
+```powershell
+python test/wuji/record_replay_local_test.py
 ```
 
 入口将 `SIGINT` 与 `SIGTERM` 转为 `KeyboardInterrupt`，确保 AGV session 和已创建的

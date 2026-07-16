@@ -105,7 +105,7 @@ left_color_frames = client.subscribe_left_arm_camera_color_frames()
 ## 部署
 
 ```bash
-python3.12 -m camera_pipeline.service \
+/home/wuji-brain/miniconda3/envs/wuji/bin/python -m camera_pipeline.service \
   --bind-addr tcp://0.0.0.0:6200 \
   --control-port 5570 \
   --stream-port 5562 \

@@ -141,16 +141,20 @@ CSV_CARTESIAN_OFFSET_TARGETS: list[int] = [4, 6]
 CSV_CARTESIAN_OFFSET_CALCULATE_AT: int = 3
 "在该 CSV 的最后一个 arm pose 处计算一次全局笛卡尔纠偏。"
 
-CHARUCO_OFFSET_LEFT_CSV_SEQUENCE: int | None = None
-"需要应用头部 ChArUco offset 的左臂 CSV 序号；None 表示不启用。"
+CHARUCO_OFFSET_LEFT_CSV_SEQUENCE: list[int] = [2, 9]
+"需要应用头部 ChArUco offset 的左臂 CSV 序号列表；空列表表示不启用。"
 
-CHARUCO_OFFSET_RIGHT_CSV_SEQUENCE: int | None = None
-"需要应用头部 ChArUco offset 的右臂 CSV 序号；None 表示不启用。"
+CHARUCO_OFFSET_RIGHT_CSV_SEQUENCE: list[int] = [2, 3]
+"需要应用头部 ChArUco offset 的右臂 CSV 序号列表；空列表表示不启用。"
 
-LEFT_HEAD_BASE_CAMERA_PATH: Path | None = None
+LEFT_HEAD_BASE_CAMERA_PATH: Path  = (
+    PROJECT_ROOT / "experiments" / "hand_eye" / "runs" / "L_EtH_20260715_163827" / "L_EtH_T_base_camera.npy"
+)
 "左臂基坐标系下的 T_base_camera.npy；启用左臂 ChArUco offset 时必须配置 Path。"
 
-RIGHT_HEAD_BASE_CAMERA_PATH: Path | None = None
+RIGHT_HEAD_BASE_CAMERA_PATH: Path  = (
+    PROJECT_ROOT / "experiments" / "hand_eye" / "runs" / "R_EtH_20260715_164335" / "R_EtH_T_base_camera.npy"
+)
 "右臂基坐标系下的 T_base_camera.npy；启用右臂 ChArUco offset 时必须配置 Path。"
 
 DEFAULT_OFFSET_SERVICE_ADDR = DEFAULT_BALL_POSE_SERVICE_ADDR
@@ -396,15 +400,15 @@ def _should_apply_global_cartesian_offset(csv_name: str) -> bool:
     return _extract_csv_sequence(csv_name) in CSV_CARTESIAN_OFFSET_TARGETS
 
 
-def _charuco_offset_csv_sequence(arm_side: str) -> int | None:
+def _charuco_offset_csv_sequences(arm_side: str) -> list[int]:
     if arm_side == "left":
         return CHARUCO_OFFSET_LEFT_CSV_SEQUENCE
     return CHARUCO_OFFSET_RIGHT_CSV_SEQUENCE
 
 
 def _should_apply_charuco_cartesian_offset(runtime: ReplayRuntime, csv_name: str) -> bool:
-    configured_sequence = _charuco_offset_csv_sequence(runtime.connected_arm.arm_side)
-    return configured_sequence is not None and _extract_csv_sequence(csv_name) == configured_sequence
+    configured_sequences = _charuco_offset_csv_sequences(runtime.connected_arm.arm_side)
+    return _extract_csv_sequence(csv_name) in configured_sequences
 
 
 def _resolve_cartesian_offset(

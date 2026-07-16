@@ -42,7 +42,7 @@ from src.calibration import CharucoPoseEstimator, CharucoPoseResult
 from src.wuji.head_client import WujiHeadClient
 
 # region 默认参数
-DEFAULT_ORIN_SERVICE_ADDR = "tcp://192.168.1.121:6200"
+DEFAULT_ORIN_SERVICE_ADDR = "tcp://192.168.1.128:6200"
 DEFAULT_CAMERA_NAME = "head_camera"
 DEFAULT_LEFT_ARM_IP = "192.168.1.161"
 DEFAULT_RIGHT_ARM_IP = "192.168.1.160"
