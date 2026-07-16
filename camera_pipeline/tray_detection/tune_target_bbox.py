@@ -7,6 +7,7 @@ import gc
 import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import TypeAlias
 
 import cv2
 import numpy as np
@@ -16,6 +17,9 @@ from ..camera_stream import CameraStreamRuntime, CameraStreamRuntimeConfig
 
 from .detector import TrayPointExcluder
 from .types import TrayDetection, TrayDetectionConfig
+
+JsonScalar: TypeAlias = None | bool | int | float | str
+JsonValue: TypeAlias = JsonScalar | list["JsonValue"] | dict[str, "JsonValue"]
 
 # region 常量
 DEFAULT_OUTPUT_DIR = (
@@ -589,8 +593,8 @@ def _debug_color_bgr(index: int) -> tuple[int, int, int]:
     return palette[int(index) % len(palette)]
 
 
-def _summary_to_json(item: CandidateRunSummary) -> dict:
-    data = asdict(item)
+def _summary_to_json(item: CandidateRunSummary) -> dict[str, JsonValue]:
+    data: dict[str, JsonValue] = asdict(item)
     data["frame_scores"] = [asdict(score) for score in item.frame_scores]
     return data
 

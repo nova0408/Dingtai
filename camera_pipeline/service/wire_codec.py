@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import json
 import struct
+from collections.abc import Callable
 from dataclasses import fields, is_dataclass
-from typing import Any
+from typing import TypeAlias, TypeVar
 
 import numpy as np
 
@@ -14,20 +15,7 @@ from ..ball_pose_detection.protocol import (
     BallPoseDetectionResponse,
     BallPosePriorInfo,
 )
-from ..opening_detection.protocol import (
-    DebugArtifacts,
-    GraspPoseInfo,
-    OpeningDetectionPipelineRequest,
-    OpeningDetectionPipelineResponse,
-    TrayPoseInfo,
-)
 from ..protocol import CameraColorFramePacket, CameraDepthFramePacket, CameraFramePacket
-from ..tray_detection.protocol import (
-    OrinTrayDetectionDebugArtifacts,
-    OrinTrayDetectionInfo,
-    OrinTrayDetectionRequest,
-    OrinTrayDetectionResponse,
-)
 from .protocol import (
     CameraColorFrameSubscribeRequest,
     CameraColorFrameSubscribeResponse,
@@ -51,6 +39,54 @@ _MAGIC = b"CPW1"
 _HEADER = struct.Struct("!4sI")
 _MAX_METADATA_BYTES = 64 * 1024 * 1024
 
+JsonScalar: TypeAlias = None | bool | int | float | str
+JsonValue: TypeAlias = JsonScalar | list["JsonValue"] | dict[str, "JsonValue"]
+
+WireDataclass: TypeAlias = (
+    CameraFramePacket
+    | CameraColorFramePacket
+    | CameraDepthFramePacket
+    | BallPosePriorInfo
+    | BallPoseDetectionRequest
+    | BallDetectionInfo
+    | BallPoseDetectionDebugArtifacts
+    | BallPoseDetectionResponse
+    | CameraSummaryRequest
+    | CameraSummaryResponse
+    | CameraIntrinsicsRequest
+    | CameraIntrinsicsResponse
+    | CameraStatusRequest
+    | CameraStatusResponse
+    | StableFrameRequest
+    | StableFrameResponse
+    | CameraFrameSubscribeRequest
+    | CameraFrameSubscribeResponse
+    | CameraColorFrameSubscribeRequest
+    | CameraColorFrameSubscribeResponse
+    | CameraDepthFrameSubscribeRequest
+    | CameraDepthFrameSubscribeResponse
+    | CameraPipelineServiceRequest
+    | CameraPipelineServiceResponse
+)
+WireValue: TypeAlias = (
+    JsonScalar
+    | np.generic
+    | np.ndarray
+    | tuple["WireValue", ...]
+    | list["WireValue"]
+    | dict[str, "WireValue"]
+    | WireDataclass
+)
+DecodedValue: TypeAlias = (
+    JsonScalar
+    | np.ndarray
+    | tuple["DecodedValue", ...]
+    | list["DecodedValue"]
+    | dict[str, "DecodedValue"]
+    | WireDataclass
+)
+DecodedT = TypeVar("DecodedT", bound=DecodedValue)
+
 _DATACLASS_TYPES = (
     CameraFramePacket,
     CameraColorFramePacket,
@@ -60,15 +96,6 @@ _DATACLASS_TYPES = (
     BallDetectionInfo,
     BallPoseDetectionDebugArtifacts,
     BallPoseDetectionResponse,
-    OrinTrayDetectionRequest,
-    OrinTrayDetectionInfo,
-    OrinTrayDetectionDebugArtifacts,
-    OrinTrayDetectionResponse,
-    GraspPoseInfo,
-    TrayPoseInfo,
-    DebugArtifacts,
-    OpeningDetectionPipelineRequest,
-    OpeningDetectionPipelineResponse,
     CameraSummaryRequest,
     CameraSummaryResponse,
     CameraIntrinsicsRequest,
@@ -86,15 +113,19 @@ _DATACLASS_TYPES = (
     CameraPipelineServiceRequest,
     CameraPipelineServiceResponse,
 )
-_TYPE_TO_ID = {item: item.__name__ for item in _DATACLASS_TYPES}
-_ID_TO_TYPE = {item.__name__: item for item in _DATACLASS_TYPES}
+_TYPE_TO_ID: dict[type[WireDataclass], str] = {
+    item: item.__name__ for item in _DATACLASS_TYPES
+}
+_ID_TO_FACTORY: dict[str, Callable[..., WireDataclass]] = {
+    item.__name__: item for item in _DATACLASS_TYPES
+}
 
 
 class WireCodecError(RuntimeError):
     """显式二进制协议编码或解码失败。"""
 
 
-def encode_wire(value: Any) -> bytes:
+def encode_wire(value: WireValue) -> bytes:
     """把白名单协议对象编码为 JSON 元数据和 NumPy 原始字节块。"""
 
     blobs: list[bytes] = []
@@ -110,7 +141,7 @@ def encode_wire(value: Any) -> bytes:
     return b"".join((_HEADER.pack(_MAGIC, len(metadata_bytes)), metadata_bytes, *blobs))
 
 
-def decode_wire(payload: bytes, expected_type: type[Any]) -> Any:
+def decode_wire(payload: bytes, expected_type: type[DecodedT]) -> DecodedT:
     """解码显式二进制协议，并校验最外层协议类型。"""
 
     if len(payload) < _HEADER.size:
@@ -124,7 +155,9 @@ def decode_wire(payload: bytes, expected_type: type[Any]) -> Any:
     if metadata_end > len(payload):
         raise WireCodecError("wire metadata is truncated")
     try:
-        metadata = json.loads(payload[_HEADER.size:metadata_end].decode("utf-8"))
+        metadata: JsonValue = json.loads(
+            payload[_HEADER.size:metadata_end].decode("utf-8")
+        )
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise WireCodecError(f"invalid wire metadata: {exc}") from exc
     value = _decode_value(metadata, memoryview(payload)[metadata_end:])
@@ -135,7 +168,7 @@ def decode_wire(payload: bytes, expected_type: type[Any]) -> Any:
     return value
 
 
-def _encode_value(value: Any, blobs: list[bytes]) -> Any:
+def _encode_value(value: WireValue, blobs: list[bytes]) -> JsonValue:
     if value is None or isinstance(value, (bool, int, float, str)):
         return value
     if isinstance(value, np.generic):
@@ -176,7 +209,7 @@ def _encode_value(value: Any, blobs: list[bytes]) -> Any:
     }
 
 
-def _decode_value(value: Any, binary: memoryview) -> Any:
+def _decode_value(value: JsonValue, binary: memoryview) -> DecodedValue:
     if value is None or isinstance(value, (bool, int, float, str)):
         return value
     if isinstance(value, list):
@@ -195,16 +228,33 @@ def _decode_value(value: Any, binary: memoryview) -> Any:
     return {key: _decode_value(item, binary) for key, item in value.items()}
 
 
-def _decode_array(metadata: Any, binary: memoryview) -> np.ndarray:
+def _decode_array(metadata: JsonValue, binary: memoryview) -> np.ndarray:
     if not isinstance(metadata, dict):
         raise WireCodecError("array metadata must be a dictionary")
+    dtype_value = metadata.get("dtype")
+    shape_value = metadata.get("shape")
+    offset_value = metadata.get("offset")
+    nbytes_value = metadata.get("nbytes")
+    if not isinstance(dtype_value, str):
+        raise WireCodecError("array dtype must be a string")
+    if not isinstance(shape_value, list):
+        raise WireCodecError("array shape must contain integers")
+    shape_items: list[int] = []
+    for item in shape_value:
+        if not isinstance(item, int) or isinstance(item, bool):
+            raise WireCodecError("array shape must contain integers")
+        shape_items.append(item)
+    if not isinstance(offset_value, int) or isinstance(offset_value, bool):
+        raise WireCodecError("array offset must be an integer")
+    if not isinstance(nbytes_value, int) or isinstance(nbytes_value, bool):
+        raise WireCodecError("array nbytes must be an integer")
     try:
-        dtype = np.dtype(metadata["dtype"])
-        shape = tuple(int(item) for item in metadata["shape"])
-        offset = int(metadata["offset"])
-        nbytes = int(metadata["nbytes"])
-    except (KeyError, TypeError, ValueError) as exc:
-        raise WireCodecError(f"invalid array metadata: {exc}") from exc
+        dtype = np.dtype(dtype_value)
+    except TypeError as exc:
+        raise WireCodecError(f"invalid array dtype: {exc}") from exc
+    shape = tuple(shape_items)
+    offset = offset_value
+    nbytes = nbytes_value
     if dtype.hasobject or offset < 0 or nbytes < 0:
         raise WireCodecError("invalid array dtype or byte range")
     expected_nbytes = int(np.prod(shape, dtype=np.int64)) * dtype.itemsize
@@ -213,18 +263,20 @@ def _decode_array(metadata: Any, binary: memoryview) -> np.ndarray:
     return np.frombuffer(binary[offset : offset + nbytes], dtype=dtype).reshape(shape).copy()
 
 
-def _decode_dataclass(metadata: dict[str, Any], binary: memoryview) -> Any:
+def _decode_dataclass(
+    metadata: dict[str, JsonValue], binary: memoryview
+) -> WireDataclass:
     type_id = metadata.get("@type")
     field_values = metadata.get("fields")
     if not isinstance(type_id, str) or not isinstance(field_values, dict):
         raise WireCodecError("invalid dataclass metadata")
-    dataclass_type = _ID_TO_TYPE.get(type_id)
-    if dataclass_type is None:
+    dataclass_factory = _ID_TO_FACTORY.get(type_id)
+    if dataclass_factory is None:
         raise WireCodecError(f"wire dataclass is not allowed: {type_id}")
     decoded_fields = {
         key: _decode_value(item, binary) for key, item in field_values.items()
     }
     try:
-        return dataclass_type(**decoded_fields)
+        return dataclass_factory(**decoded_fields)
     except TypeError as exc:
         raise WireCodecError(f"invalid {type_id} fields: {exc}") from exc

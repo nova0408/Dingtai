@@ -3,7 +3,15 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 
+import cv2
+from loguru import logger
+
 from .camera_stream import CameraStreamRuntime, CameraStreamRuntimeConfig
+from .charuco_detection import (
+    CharucoDetectionConfig,
+    CharucoDetectionResult,
+    CharucoDetector,
+)
 from .protocol import RgbdFrameProtocol
 from .stable_frame import StableFrameConfig, StableFrameDetector
 
@@ -260,6 +268,11 @@ class PipelineContext:
             raise ValueError("timeout_s must be greater than zero")
 
         resolved_name = self._config.camera_name if camera_name is None else camera_name
+        logger.info(
+            "stable frame wait started camera_name={} timeout_s={:.3f}",
+            resolved_name,
+            timeout_s,
+        )
         endpoint = self._find_camera_endpoint(resolved_name)
         detector = StableFrameDetector(config=endpoint.stable_frame_config)
         deadline = time.monotonic() + timeout_s
@@ -277,14 +290,129 @@ class PipelineContext:
                 continue
             stable_frame = self.get_frame_by_id(stable_frame_id, resolved_name)
             if stable_frame is not None:
+                logger.info(
+                    "stable frame detected camera_name={} frame_id={} evidence_frame_id={}",
+                    resolved_name,
+                    stable_frame.frame_id,
+                    frame.frame_id,
+                )
                 return stable_frame
             missing_stable_frame_id = stable_frame_id
 
         if missing_stable_frame_id is not None:
+            logger.warning(
+                "stable frame evicted before retrieval camera_name={} frame_id={}",
+                resolved_name,
+                missing_stable_frame_id,
+            )
             raise RuntimeError(
                 f"stable frame {missing_stable_frame_id} is no longer available in camera frame cache"
             )
+        logger.warning(
+            "stable frame wait timed out camera_name={} timeout_s={:.3f} last_frame_id={}",
+            resolved_name,
+            timeout_s,
+            last_frame_id,
+        )
         raise RuntimeError(f"camera did not become stable within {timeout_s:.1f}s")
+
+    def detect_charuco(
+        self,
+        board: cv2.aruco.CharucoBoard,
+        *,
+        camera_name: str | None = None,
+        config: CharucoDetectionConfig | None = None,
+        enable_debug: bool = False,
+        max_frames: int = 5,
+        stable_timeout_s: float = 10.0,
+    ) -> CharucoDetectionResult:
+        """使用连续稳定帧检测 ChArUco 标定板。
+
+        Parameters
+        ----------
+        board:
+            原生 OpenCV ChArUco 板对象。方格和 marker 长度统一使用 mm。
+        camera_name:
+            逻辑相机名；未指定时使用默认算法相机。
+        config:
+            单帧 ChArUco 检测和图像增强配置；为空时使用默认配置。
+        enable_debug:
+            是否为每次检测构造 marker、ChArUco 和 pose 叠加图。仅最终结果返回。
+        max_frames:
+            单次调用允许尝试的稳定帧数量，单位 帧，默认 5。
+        stable_timeout_s:
+            每次等待下一稳定帧的最长时间，单位 s。
+
+        Returns
+        -------
+        CharucoDetectionResult
+            首个有效位姿结果；达到帧数上限仍失败时返回最后一帧的 `missing` 结果。
+
+        Raises
+        ------
+        ValueError
+            帧数上限或稳定帧超时不大于零。
+        RuntimeError
+            相机不可用、稳定等待超时或稳定帧已被缓存淘汰。
+
+        Notes
+        -----
+        本方法只负责稳定帧获取与重试编排。单帧预处理、融合和 PnP 全部由
+        `CharucoDetector` 完成。每次重新调用 `wait_for_stable_frame` 都创建新的稳定
+        时间窗，因此失败后输入的是后续稳定帧，不重复使用同一证据帧。
+        """
+
+        if max_frames <= 0:
+            raise ValueError("max_frames must be greater than zero")
+        if stable_timeout_s <= 0.0:
+            raise ValueError("stable_timeout_s must be greater than zero")
+
+        detector = CharucoDetector(board=board, config=config)
+        last_result: CharucoDetectionResult | None = None
+        resolved_name = self._config.camera_name if camera_name is None else camera_name
+        logger.info(
+            "charuco detection started camera_name={} max_frames={} stable_timeout_s={:.3f} debug_enabled={}",
+            resolved_name,
+            max_frames,
+            stable_timeout_s,
+            enable_debug,
+        )
+        for attempt_index in range(1, max_frames + 1):
+            frame = self.wait_for_stable_frame(
+                timeout_s=stable_timeout_s,
+                camera_name=camera_name,
+            )
+            last_result = detector.detect(frame, enable_debug=enable_debug)
+            logger.info(
+                "charuco detection attempt camera_name={} attempt={}/{} frame_id={} status={} marker_count={} charuco_count={} error_px={:.6f}",
+                resolved_name,
+                attempt_index,
+                max_frames,
+                frame.frame_id,
+                last_result.status,
+                last_result.marker_num,
+                last_result.charuco_num,
+                last_result.error_px,
+            )
+            if last_result.status == "detected":
+                logger.info(
+                    "charuco detection completed camera_name={} frame_id={} attempts={} status=detected",
+                    resolved_name,
+                    frame.frame_id,
+                    attempt_index,
+                )
+                return last_result
+
+        if last_result is None:
+            raise RuntimeError("charuco detection did not receive a stable frame")
+        logger.warning(
+            "charuco detection completed camera_name={} attempts={} status=missing marker_count={} charuco_count={}",
+            resolved_name,
+            max_frames,
+            last_result.marker_num,
+            last_result.charuco_num,
+        )
+        return last_result
 
     # region 相机配置
 

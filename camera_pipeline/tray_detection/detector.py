@@ -9,11 +9,12 @@ import numpy as np
 import torch
 from PIL import Image
 from transformers import (
+    AutoModel,
     AutoModelForZeroShotObjectDetection,
     AutoProcessor,
-    SamModel,
     SamProcessor,
 )
+from transformers.tokenization_utils_base import BatchEncoding
 
 from .model_cache import (
     apply_download_proxy,
@@ -64,6 +65,7 @@ class TrayPointExcluder:
         apply_download_proxy(str(config.proxy_url).strip())
         self.gd_processor = load_pretrained_with_project_cache(
             loader=AutoProcessor.from_pretrained,
+            saver=lambda resource, path: resource.save_pretrained(path),
             model_id=config.gd_model_id,
             cache_dir=self.hf_cache_dir,
             local_files_only=config.hf_local_files_only,
@@ -71,6 +73,7 @@ class TrayPointExcluder:
         )
         self.gd_model = load_pretrained_with_project_cache(
             loader=AutoModelForZeroShotObjectDetection.from_pretrained,
+            saver=lambda resource, path: resource.save_pretrained(path),
             model_id=config.gd_model_id,
             cache_dir=self.hf_cache_dir,
             local_files_only=config.hf_local_files_only,
@@ -83,13 +86,15 @@ class TrayPointExcluder:
         if self.use_sam:
             self.sam_processor = load_pretrained_with_project_cache(
                 loader=SamProcessor.from_pretrained,
+                saver=lambda resource, path: resource.save_pretrained(path),
                 model_id=config.sam_model_id,
                 cache_dir=self.hf_cache_dir,
                 local_files_only=config.hf_local_files_only,
                 role="sam_processor",
             )
             self.sam_model = load_pretrained_with_project_cache(
-                loader=SamModel.from_pretrained,
+                loader=AutoModel.from_pretrained,
+                saver=lambda resource, path: resource.save_pretrained(path),
                 model_id=config.sam_model_id,
                 cache_dir=self.hf_cache_dir,
                 local_files_only=config.hf_local_files_only,
@@ -195,7 +200,7 @@ class TrayPointExcluder:
     ) -> list[tuple[np.ndarray, float, str]]:
         text = prompt_text if str(prompt_text).endswith(".") else f"{prompt_text}."
         inputs = self.gd_processor(images=pil_img, text=text, return_tensors="pt")
-        inputs = _tensor_dict_to_device(inputs, self.device)
+        inputs = _move_batch_to_device(inputs, self.device)
         with torch.inference_mode():
             with self._autocast_ctx():
                 outputs = self.gd_model(**inputs)
@@ -274,7 +279,7 @@ class TrayPointExcluder:
         sam_inputs = self.sam_processor(
             images=pil_img, input_boxes=[[box[0].tolist()]], return_tensors="pt"
         )
-        sam_inputs = _tensor_dict_to_device(sam_inputs, self.device)
+        sam_inputs = _move_batch_to_device(sam_inputs, self.device)
         with torch.inference_mode():
             with self._autocast_ctx():
                 outputs = self.sam_model(**sam_inputs, multimask_output=False)
@@ -301,11 +306,7 @@ def _resolve_device(device: str) -> str:
     return "cpu" if d == "cpu" else d
 
 
-def _tensor_dict_to_device(batch: dict, device: str) -> dict:
-    out = {}
-    for k, v in batch.items():
-        if hasattr(v, "to"):
-            out[k] = v.to(device)
-        else:
-            out[k] = v
-    return out
+def _move_batch_to_device(batch: BatchEncoding, device: str) -> BatchEncoding:
+    """通过 Transformers 标准接口把完整批次移动到目标设备。"""
+
+    return batch.to(device)

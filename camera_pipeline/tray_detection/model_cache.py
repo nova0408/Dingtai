@@ -1,7 +1,13 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Callable
 from pathlib import Path
+from typing import TypeAlias, TypeVar
+
+
+PretrainedResourceT = TypeVar("PretrainedResourceT")
+SavePretrainedResult: TypeAlias = None | str | list[str] | tuple[str, ...]
 
 
 def apply_download_proxy(proxy_url: str) -> None:
@@ -24,8 +30,13 @@ def prepare_hf_cache_dir(cache_dir: str) -> str:
 
 
 def load_pretrained_with_project_cache(
-    loader, model_id: str, cache_dir: str, local_files_only: bool, role: str
-):
+    loader: Callable[..., PretrainedResourceT],
+    saver: Callable[[PretrainedResourceT, str], SavePretrainedResult],
+    model_id: str,
+    cache_dir: str,
+    local_files_only: bool,
+    role: str,
+) -> PretrainedResourceT:
     store_dir = _project_model_store_dir(
         cache_dir=cache_dir, role=role, model_id=model_id
     )
@@ -34,8 +45,7 @@ def load_pretrained_with_project_cache(
     obj = loader(model_id, cache_dir=cache_dir, local_files_only=local_files_only)
     try:
         store_dir.mkdir(parents=True, exist_ok=True)
-        if hasattr(obj, "save_pretrained"):
-            obj.save_pretrained(str(store_dir))
+        saver(obj, str(store_dir))
     except Exception:
         pass
     return obj

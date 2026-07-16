@@ -57,6 +57,7 @@ def test_frame_round_trip_preserves_numpy_dtype_and_values() -> None:
         fy=601.0,
         cx=2.0,
         cy=1.5,
+        distortion=(0.1, -0.2, 0.001, -0.002, 0.03),
     )
 
     decoded = decode_wire(encode_wire(frame), CameraFramePacket)
@@ -66,6 +67,7 @@ def test_frame_round_trip_preserves_numpy_dtype_and_values() -> None:
     assert decoded.depth_mm.dtype == np.uint16
     assert np.array_equal(decoded.color_bgr, frame.color_bgr)
     assert np.array_equal(decoded.depth_mm, frame.depth_mm)
+    assert decoded.distortion == frame.distortion
 
 
 def test_decoder_rejects_non_wire_payload() -> None:

@@ -7,16 +7,7 @@ from ..ball_pose_detection.protocol import (
     BallPoseDetectionRequest,
     BallPoseDetectionResponse,
 )
-from ..opening_detection.protocol import (
-    OpeningDetectionPipelineRequest,
-    OpeningDetectionPipelineResponse,
-)
-from ..tray_detection.protocol import (
-    OrinTrayDetectionRequest,
-    OrinTrayDetectionResponse,
-)
-
-PROTOCOL_VERSION = 3
+PROTOCOL_VERSION = 4
 
 CAMERA_STREAM_TOPIC_SEPARATOR = b"\x00"
 "相机名与帧协议载荷之间的 topic 分隔字节。"
@@ -29,8 +20,6 @@ CameraPipelineOperation = Literal[
     "camera_frame_subscribe",
     "camera_color_frame_subscribe",
     "camera_depth_frame_subscribe",
-    "tray_detection",
-    "opening_detection",
     "ball_pose_detection",
 ]
 
@@ -213,8 +202,6 @@ class CameraPipelineServiceRequest:
     camera_frame_subscribe: CameraFrameSubscribeRequest | None = None
     camera_color_frame_subscribe: CameraColorFrameSubscribeRequest | None = None
     camera_depth_frame_subscribe: CameraDepthFrameSubscribeRequest | None = None
-    tray_detection: OrinTrayDetectionRequest | None = None
-    opening_detection: OpeningDetectionPipelineRequest | None = None
     ball_pose_detection: BallPoseDetectionRequest | None = None
     "球位姿请求 payload；operation 不是 `ball_pose_detection` 时必须为空。"
 
@@ -234,8 +221,6 @@ class CameraPipelineServiceResponse:
     camera_frame_subscribe: CameraFrameSubscribeResponse | None = None
     camera_color_frame_subscribe: CameraColorFrameSubscribeResponse | None = None
     camera_depth_frame_subscribe: CameraDepthFrameSubscribeResponse | None = None
-    tray_detection: OrinTrayDetectionResponse | None = None
-    opening_detection: OpeningDetectionPipelineResponse | None = None
     ball_pose_detection: BallPoseDetectionResponse | None = None
     "球位姿成功响应 payload；失败时为空并由 error 表达失败。"
     error: str | None = None

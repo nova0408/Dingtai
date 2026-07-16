@@ -91,6 +91,7 @@ class _TestPipelineContext(PipelineContext):
             fy=focal_px,
             cx=32.0,
             cy=24.0,
+            distortion=(0.0, 0.0, 0.0, 0.0, 0.0),
         )
 
 

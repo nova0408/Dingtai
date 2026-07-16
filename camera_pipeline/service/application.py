@@ -2,14 +2,11 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from loguru import logger
+
 from ..ball_pose_detection.protocol import BallPoseDetectionResponse
 from ..protocol import RgbdFrameProtocol
-from ..opening_detection.protocol import (
-    OpeningDetectionPipelineResponse,
-)
 from ..pipeline_context import PipelineContext
-from ..tray_detection.protocol import OrinTrayDetectionRequest
-from ..tray_detection.protocol import OrinTrayDetectionResponse
 from .frame_publisher import CameraFramePublisher
 from .protocol import (
     PROTOCOL_VERSION,
@@ -26,8 +23,6 @@ from .protocol import (
 
 if TYPE_CHECKING:
     from ..ball_pose_detection.service import BallPoseDetectionService
-    from ..opening_detection.service import OpeningDetectionPipelineService
-    from ..tray_detection.service import OrinTrayDetectionService
 
 
 class CameraPipelineApplication:
@@ -45,8 +40,6 @@ class CameraPipelineApplication:
     ) -> None:
         self._pipeline_context = pipeline_context
         self._frame_publisher = frame_publisher
-        self._tray_service: OrinTrayDetectionService | None = None
-        self._opening_service: OpeningDetectionPipelineService | None = None
         self._ball_service: BallPoseDetectionService | None = None
 
     # region 请求分发
@@ -99,16 +92,6 @@ class CameraPipelineApplication:
                     request
                 ),
             )
-        if request.operation == "tray_detection":
-            return CameraPipelineServiceResponse(
-                operation=request.operation,
-                tray_detection=self._handle_tray_detection(request),
-            )
-        if request.operation == "opening_detection":
-            return CameraPipelineServiceResponse(
-                operation=request.operation,
-                opening_detection=self._handle_opening_detection(request),
-            )
         if request.operation == "ball_pose_detection":
             return CameraPipelineServiceResponse(
                 operation=request.operation,
@@ -127,6 +110,13 @@ class CameraPipelineApplication:
         if payload is None:
             raise RuntimeError("camera_summary payload missing")
         frame = self._wait_for_latest_frame(payload.timeout_s, "camera first frame")
+        logger.info(
+            "api camera_summary resolved camera_name={} frame_id={} color_shape={} depth_shape={}",
+            frame.camera_name,
+            frame.frame_id,
+            frame.color_bgr.shape,
+            frame.depth_mm.shape,
+        )
         return CameraSummaryResponse(
             frame_id=frame.frame_id,
             camera_name=frame.camera_name,
@@ -154,13 +144,21 @@ class CameraPipelineApplication:
             "camera intrinsics",
             camera_name=payload.camera_name,
         )
+        logger.info(
+            "api camera_intrinsics resolved camera_name={} frame_id={} size={}x{} distortion_count={}",
+            frame.camera_name,
+            frame.frame_id,
+            frame.color_bgr.shape[1],
+            frame.color_bgr.shape[0],
+            len(frame.distortion),
+        )
         return CameraIntrinsicsResponse(
             camera_name=frame.camera_name,
             fx=frame.fx,
             fy=frame.fy,
             cx=frame.cx,
             cy=frame.cy,
-            distortion=tuple(),
+            distortion=frame.distortion,
             width=frame.color_bgr.shape[1],
             height=frame.color_bgr.shape[0],
         )
@@ -172,6 +170,11 @@ class CameraPipelineApplication:
         if payload is None:
             raise RuntimeError("camera_status payload missing")
         frame = self._wait_for_latest_frame(payload.timeout_s, "camera status")
+        logger.info(
+            "api camera_status resolved camera_name={} frame_id={} online=True",
+            frame.camera_name,
+            frame.frame_id,
+        )
         return CameraStatusResponse(
             camera_name=frame.camera_name,
             camera_id=self._pipeline_context.get_camera_id(frame.camera_name),
@@ -192,6 +195,12 @@ class CameraPipelineApplication:
         frame = self._pipeline_context.wait_for_stable_frame(
             timeout_s=payload.timeout_s,
             camera_name=payload.camera_name,
+        )
+        logger.info(
+            "api stable_frame resolved camera_name={} frame_id={} timeout_s={:.3f}",
+            frame.camera_name,
+            frame.frame_id,
+            payload.timeout_s,
         )
         return StableFrameResponse(
             frame_id=frame.frame_id,
@@ -227,6 +236,11 @@ class CameraPipelineApplication:
             raise RuntimeError("camera_frame_subscribe payload missing")
         self._pipeline_context.get_camera_runtime(payload.camera_name)
         self._frame_publisher.start()
+        logger.info(
+            "api camera_frame_subscribe ready camera_name={} stream_addr={}",
+            payload.camera_name,
+            self._frame_publisher.frame_bind_addr,
+        )
         return CameraFrameSubscribeResponse(
             stream_addr=self._frame_publisher.frame_bind_addr,
             camera_name=payload.camera_name,
@@ -241,6 +255,11 @@ class CameraPipelineApplication:
             raise RuntimeError("camera_color_frame_subscribe payload missing")
         self._pipeline_context.get_camera_runtime(payload.camera_name)
         self._frame_publisher.start()
+        logger.info(
+            "api camera_color_frame_subscribe ready camera_name={} stream_addr={}",
+            payload.camera_name,
+            self._frame_publisher.color_bind_addr,
+        )
         return CameraColorFrameSubscribeResponse(
             stream_addr=self._frame_publisher.color_bind_addr,
             camera_name=payload.camera_name,
@@ -255,6 +274,11 @@ class CameraPipelineApplication:
             raise RuntimeError("camera_depth_frame_subscribe payload missing")
         self._pipeline_context.get_camera_runtime(payload.camera_name)
         self._frame_publisher.start()
+        logger.info(
+            "api camera_depth_frame_subscribe ready camera_name={} stream_addr={}",
+            payload.camera_name,
+            self._frame_publisher.depth_bind_addr,
+        )
         return CameraDepthFrameSubscribeResponse(
             stream_addr=self._frame_publisher.depth_bind_addr,
             camera_name=payload.camera_name,
@@ -264,84 +288,32 @@ class CameraPipelineApplication:
 
     # region 算法业务编排
 
-    def _handle_tray_detection(
-        self, request: CameraPipelineServiceRequest
-    ) -> OrinTrayDetectionResponse:
-        payload = request.tray_detection
-        if payload is None:
-            raise RuntimeError("tray_detection payload missing")
-        frame = self._pipeline_context.resolve_frame(payload.frame_id)
-        return self._get_tray_service().compute(frame, payload)
-
-    def _handle_opening_detection(
-        self,
-        request: CameraPipelineServiceRequest,
-    ) -> OpeningDetectionPipelineResponse:
-        payload = request.opening_detection
-        if payload is None:
-            raise RuntimeError("opening_detection payload missing")
-        frame = self._pipeline_context.resolve_frame(payload.frame_id)
-        tray_response = self._get_tray_service().compute(
-            frame,
-            OrinTrayDetectionRequest(
-                request_id=payload.request_id,
-                camera_name=payload.camera_name,
-                frame_id=frame.frame_id,
-                enable_debug=True,
-            ),
-        )
-        target_index = payload.target_tray_index
-        if target_index < 0 or target_index >= len(tray_response.tray_results):
-            raise RuntimeError(f"target tray index out of range: {target_index}")
-        if not tray_response.debug_artifacts:
-            raise RuntimeError("tray detection masks unavailable for opening detection")
-        tray_debug = tray_response.debug_artifacts[0]
-        if len(tray_debug.tray_masks) <= target_index:
-            raise RuntimeError("target tray mask unavailable for opening detection")
-
-        tray_pose, opening_debug_artifacts = self._get_opening_service().compute(
-            frame=frame,
-            tray_mask=tray_debug.tray_masks[target_index],
-            request_id=payload.request_id,
-            target_tray_index=target_index,
-            enable_debug=payload.enable_debug,
-        )
-        return OpeningDetectionPipelineResponse(
-            request_id=payload.request_id,
-            frame_id=tray_response.frame_id,
-            camera_name=tray_response.camera_name,
-            timestamp_ms=tray_response.timestamp_ms,
-            elapsed_ms=tray_response.elapsed_ms,
-            tray_count=tray_response.tray_count,
-            tray_results=tray_response.tray_results,
-            selected_tray_index=target_index,
-            selected_result=tray_pose,
-            all_tray_results=(tray_pose,),
-            debug_artifacts=opening_debug_artifacts,
-        )
-
     def _handle_ball_pose_detection(
         self, request: CameraPipelineServiceRequest
     ) -> BallPoseDetectionResponse:
         payload = request.ball_pose_detection
         if payload is None:
             raise RuntimeError("ball_pose_detection payload missing")
+        logger.info(
+            "api ball_pose_detection requested request_id={} camera_name={} requested_frame_id={} prior_count={} debug_enabled={}",
+            payload.request_id,
+            payload.camera_name,
+            payload.frame_id,
+            len(payload.priors),
+            payload.enable_debug,
+        )
         frame = self._pipeline_context.resolve_frame(payload.frame_id)
-        return self._get_ball_service().compute(frame, payload)
-
-    def _get_tray_service(self) -> OrinTrayDetectionService:
-        if self._tray_service is None:
-            from ..tray_detection.service import OrinTrayDetectionService
-
-            self._tray_service = OrinTrayDetectionService()
-        return self._tray_service
-
-    def _get_opening_service(self) -> OpeningDetectionPipelineService:
-        if self._opening_service is None:
-            from ..opening_detection.service import OpeningDetectionPipelineService
-
-            self._opening_service = OpeningDetectionPipelineService()
-        return self._opening_service
+        response = self._get_ball_service().compute(frame, payload)
+        logger.info(
+            "api ball_pose_detection completed request_id={} camera_name={} frame_id={} matched_count={} detection_count={} elapsed_ms={:.3f}",
+            response.request_id,
+            response.camera_name,
+            response.frame_id,
+            response.matched_count,
+            len(response.detections),
+            response.elapsed_ms,
+        )
+        return response
 
     def _get_ball_service(self) -> BallPoseDetectionService:
         if self._ball_service is None:

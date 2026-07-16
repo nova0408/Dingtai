@@ -1,16 +1,14 @@
 from __future__ import annotations
 
-import logging
 import threading
+import time
 
 import zmq
+from loguru import logger
 
 from .application import CameraPipelineApplication
 from .protocol import CameraPipelineServiceResponse
 from .transport import CameraPipelineRpcServer
-
-LOGGER = logging.getLogger(__name__)
-
 
 class CameraPipelineServer:
     """运行统一 REP 请求循环，并把业务处理委托给 application。"""
@@ -32,7 +30,7 @@ class CameraPipelineServer:
             except zmq.error.Again:
                 continue
             except Exception as exc:  # noqa: BLE001
-                LOGGER.exception("camera pipeline request decode failed: %s", exc)
+                logger.exception("camera pipeline request decode failed: {}", exc)
                 self._transport.send(
                     CameraPipelineServiceResponse(
                         operation="camera_status",
@@ -40,12 +38,23 @@ class CameraPipelineServer:
                     )
                 )
                 continue
+            started_at = time.perf_counter()
             try:
                 response = self._application.handle(request)
             except Exception as exc:  # noqa: BLE001
-                LOGGER.exception("camera pipeline request failed: %s", exc)
+                logger.exception(
+                    "camera pipeline request failed operation={} error={}",
+                    request.operation,
+                    exc,
+                )
                 response = CameraPipelineServiceResponse(
                     operation=request.operation,
                     error=f"{type(exc).__name__}: {exc}",
                 )
             self._transport.send(response)
+            logger.info(
+                "camera pipeline request completed operation={} success={} elapsed_ms={:.3f}",
+                request.operation,
+                response.error is None,
+                (time.perf_counter() - started_at) * 1000.0,
+            )

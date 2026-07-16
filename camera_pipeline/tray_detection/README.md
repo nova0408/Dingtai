@@ -1,5 +1,8 @@
 # Tray Detection
 
+> 暂时移除：本模块已从 CameraPipeline 运行时、RPC 协议和公共 client API 摘除，
+> `__init__.py` 已删除。目录内源码仅作后续恢复参考，当前 Python 3.12 部署不会加载本模块。
+
 ## 单一职责
 
 `tray_detection` 只负责在输入彩色帧中检测、分割并排序托盘，输出托盘几何摘要和可选 mask/debug。它不连接相机、不创建 RPC、不等待稳定帧，也不调用 opening 算法。

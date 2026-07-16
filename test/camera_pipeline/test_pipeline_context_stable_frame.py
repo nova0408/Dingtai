@@ -86,6 +86,7 @@ def _build_frame(frame_id: int) -> CameraFramePacket:
         fy=600.0,
         cx=32.0,
         cy=24.0,
+        distortion=(0.0, 0.0, 0.0, 0.0, 0.0),
     )
 
 

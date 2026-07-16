@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import cv2
 import numpy as np
+from loguru import logger
 
 from ..protocol import RgbdFrameProtocol
 
@@ -57,12 +58,31 @@ class BallPoseDetector:
     def detect(
         self, frame: RgbdFrameProtocol, priors: list[BallPosePrior]
     ) -> BallPoseDetectionResult:
+        logger.info(
+            "ball detector started camera_name={} frame_id={} prior_count={}",
+            frame.camera_name,
+            frame.frame_id,
+            len(priors),
+        )
         masks = self._build_color_masks(frame.color_bgr)
         ranked: dict[str, list[_BallDetection]] = {}
         for prior in priors:
             candidates = self._collect_color_candidates(
                 prior.color_hex, masks[prior.color_hex]
             )
+            if candidates:
+                logger.info(
+                    "ball detector color candidates frame_id={} color={} candidate_count={}",
+                    frame.frame_id,
+                    prior.color_hex,
+                    len(candidates),
+                )
+            else:
+                logger.warning(
+                    "ball detector color candidates missing frame_id={} color={}",
+                    frame.frame_id,
+                    prior.color_hex,
+                )
             ranked[prior.color_hex] = self._rank_ball_candidates(
                 frame, prior, candidates
             )
@@ -83,7 +103,7 @@ class BallPoseDetector:
             prior.color_hex: np.asarray(prior.model_center_mm, dtype=np.float64).copy()
             for prior in priors
         }
-        return BallPoseDetectionResult(
+        result = BallPoseDetectionResult(
             detections=observations,
             matched_count=sum(
                 1
@@ -99,6 +119,15 @@ class BallPoseDetector:
             ),
             timings_ms={},
         )
+        logger.info(
+            "ball detector completed camera_name={} frame_id={} status={} matched_count={}/{}",
+            frame.camera_name,
+            frame.frame_id,
+            result.status,
+            result.matched_count,
+            len(priors),
+        )
+        return result
 
     def _build_color_masks(self, color_bgr: np.ndarray) -> dict[str, np.ndarray]:
         blurred = cv2.GaussianBlur(np.asarray(color_bgr, dtype=np.uint8), (5, 5), 0)
@@ -139,7 +168,13 @@ class BallPoseDetector:
             if fill_ratio < float(self._config.min_fill_ratio):
                 continue
             candidate_mask = np.zeros(mask.shape, dtype=np.uint8)
-            cv2.drawContours(candidate_mask, [contour], -1, 255, thickness=cv2.FILLED)
+            cv2.drawContours(
+                candidate_mask,
+                [contour],
+                -1,
+                (255.0,),
+                thickness=cv2.FILLED,
+            )
             center_norm, radius_norm = self._normalize_geometry(contour)
             candidates.append(
                 _ColorCandidate(

@@ -3,9 +3,15 @@ from __future__ import annotations
 import threading
 
 import zmq
+from loguru import logger
 
 from ..pipeline_context import PipelineContext
-from ..protocol import CameraColorFramePacket, CameraDepthFramePacket, RgbdFrameProtocol
+from ..protocol import (
+    CameraColorFramePacket,
+    CameraDepthFramePacket,
+    CameraFramePacket,
+    RgbdFrameProtocol,
+)
 from .protocol import build_camera_stream_topic
 from .wire_codec import encode_wire
 
@@ -56,6 +62,7 @@ class CameraFramePublisher:
             self._color_socket = self._create_socket(self._color_bind_addr)
             self._depth_socket = self._create_socket(self._depth_bind_addr)
         except Exception:
+            logger.exception("camera frame publisher socket initialization failed")
             self.close()
             raise
         self._stop_event.clear()
@@ -63,10 +70,17 @@ class CameraFramePublisher:
             target=self._publish_loop, name="camera-frame-publisher", daemon=True
         )
         self._thread.start()
+        logger.info(
+            "camera frame publisher started frame_addr={} color_addr={} depth_addr={}",
+            self._frame_bind_addr,
+            self._color_bind_addr,
+            self._depth_bind_addr,
+        )
 
     def close(self) -> None:
         """停止发布线程并释放全部 PUB socket。"""
 
+        was_running = self._thread is not None
         self._stop_event.set()
         if self._thread is not None:
             self._thread.join(timeout=1.0)
@@ -80,6 +94,8 @@ class CameraFramePublisher:
         self._frame_subscriptions.clear()
         self._color_subscriptions.clear()
         self._depth_subscriptions.clear()
+        if was_running:
+            logger.info("camera frame publisher stopped")
 
     def _create_socket(self, bind_addr: str) -> zmq.Socket:
         socket = zmq.Context.instance().socket(zmq.XPUB)
@@ -118,9 +134,14 @@ class CameraFramePublisher:
             or self._depth_socket is None
         ):
             raise RuntimeError("camera frame publisher sockets are not ready")
-        packets: list[tuple[zmq.Socket, RgbdFrameProtocol | CameraColorFramePacket | CameraDepthFramePacket]] = []
+        packets: list[
+            tuple[
+                zmq.Socket,
+                CameraFramePacket | CameraColorFramePacket | CameraDepthFramePacket,
+            ]
+        ] = []
         if self._frame_subscriptions.get(topic, 0) > 0:
-            packets.append((self._frame_socket, frame))
+            packets.append((self._frame_socket, self._build_frame_packet(frame)))
         if self._color_subscriptions.get(topic, 0) > 0:
             packets.append((self._color_socket, self._build_color_packet(frame)))
         if self._depth_subscriptions.get(topic, 0) > 0:
@@ -130,6 +151,23 @@ class CameraFramePublisher:
                 socket.send(topic + encode_wire(packet), flags=zmq.NOBLOCK)
             except zmq.error.Again:
                 continue
+
+    @staticmethod
+    def _build_frame_packet(frame: RgbdFrameProtocol) -> CameraFramePacket:
+        """在传输边界把算法帧协议转换为完整 RGBD packet。"""
+
+        return CameraFramePacket(
+            frame_id=frame.frame_id,
+            camera_name=frame.camera_name,
+            timestamp_ms=frame.timestamp_ms,
+            color_bgr=frame.color_bgr,
+            depth_mm=frame.depth_mm,
+            fx=frame.fx,
+            fy=frame.fy,
+            cx=frame.cx,
+            cy=frame.cy,
+            distortion=frame.distortion,
+        )
 
     def _drain_subscription_events(self) -> None:
         """消费 XPUB 订阅事件并更新每个相机 topic 的订阅者数量。"""
@@ -192,6 +230,7 @@ class CameraFramePublisher:
             fy=frame.fy,
             cx=frame.cx,
             cy=frame.cy,
+            distortion=frame.distortion,
         )
 
     @staticmethod
@@ -205,4 +244,5 @@ class CameraFramePublisher:
             fy=frame.fy,
             cx=frame.cx,
             cy=frame.cy,
+            distortion=frame.distortion,
         )

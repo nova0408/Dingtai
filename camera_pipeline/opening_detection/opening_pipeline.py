@@ -292,7 +292,11 @@ class OpeningDetectionPipeline:
                     continue
                 box = cv2.boxPoints(rect)
                 patch_mask = np.zeros_like(mask, dtype=np.uint8)
-                cv2.fillConvexPoly(patch_mask, np.round(box).astype(np.int32), 255)
+                cv2.fillConvexPoly(
+                    patch_mask,
+                    np.round(box).astype(np.int32),
+                    (255.0,),
+                )
                 in_roi = (patch_mask > 0) & (roi_tray > 0)
                 if np.count_nonzero(in_roi) < 20:
                     continue
@@ -317,7 +321,7 @@ class OpeningDetectionPipeline:
                         np.zeros_like(mask),
                         [np.round(box).astype(np.int32)],
                         True,
-                        255,
+                        (255.0,),
                         2,
                         cv2.LINE_AA,
                     )
@@ -401,7 +405,11 @@ class OpeningDetectionPipeline:
         if roi_poly is None:
             return None
         poly_mask = np.zeros((h, w), dtype=np.uint8)
-        cv2.fillConvexPoly(poly_mask, np.round(roi_poly).astype(np.int32), 255)
+        cv2.fillConvexPoly(
+            poly_mask,
+            np.round(roi_poly).astype(np.int32),
+            (255.0,),
+        )
         base_mask = cv2.bitwise_and(poly_mask, tray_mask)
         if np.count_nonzero(base_mask) == 0:
             return None
@@ -543,7 +551,11 @@ class OpeningDetectionPipeline:
         poly[:, 0] = np.clip(poly[:, 0], 0, w - 1)
         poly[:, 1] = np.clip(poly[:, 1], 0, h - 1)
         mask = np.zeros((h, w), dtype=np.uint8)
-        cv2.fillConvexPoly(mask, np.round(poly).astype(np.int32), 255)
+        cv2.fillConvexPoly(
+            mask,
+            np.round(poly).astype(np.int32),
+            (255.0,),
+        )
         return mask
 
     @staticmethod
@@ -566,8 +578,8 @@ class OpeningDetectionPipeline:
         inner[:, 0] = np.clip(inner[:, 0], 0, w - 1)
         inner[:, 1] = np.clip(inner[:, 1], 0, h - 1)
         mask = np.zeros((h, w), dtype=np.uint8)
-        cv2.fillConvexPoly(mask, np.round(outer).astype(np.int32), 255)
-        cv2.fillConvexPoly(mask, np.round(inner).astype(np.int32), 0)
+        cv2.fillConvexPoly(mask, np.round(outer).astype(np.int32), (255.0,))
+        cv2.fillConvexPoly(mask, np.round(inner).astype(np.int32), (0.0,))
         return mask
 
     @staticmethod
@@ -577,7 +589,7 @@ class OpeningDetectionPipeline:
         h, w = allowed_mask.shape[:2]
         quad = np.round(opening.quad_uv).astype(np.int32)
         edge_mask = np.zeros((h, w), dtype=np.uint8)
-        cv2.polylines(edge_mask, [quad], True, 255, 2, cv2.LINE_AA)
+        cv2.polylines(edge_mask, [quad], True, (255.0,), 2, cv2.LINE_AA)
         edge_mask = cv2.dilate(edge_mask, np.ones((3, 3), dtype=np.uint8), iterations=1)
         seed_mask = cv2.bitwise_and(edge_mask, allowed_mask)
         ys, xs = np.where(seed_mask > 0)

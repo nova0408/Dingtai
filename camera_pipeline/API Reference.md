@@ -14,7 +14,7 @@ finally:
     client.close()
 ```
 
-当前协议版本为 `3`。RPC 失败统一写入
+当前协议版本为 `4`。RPC 失败统一写入
 `CameraPipelineServiceResponse.error`，client 将其转换为 `RuntimeError`。
 网络超时、服务未启动、协议版本不匹配、相机未连接或目标 payload 缺失都不作为成功结果返回。
 
@@ -95,31 +95,60 @@ finally:
 ### 帧数据包字段
 
 - `CameraFramePacket`：`frame_id`、`camera_name`、`timestamp_ms`、
-  `color_bgr`、`depth_mm`、`fx`、`fy`、`cx`、`cy`。
+  `color_bgr`、`depth_mm`、`fx`、`fy`、`cx`、`cy`、`distortion`。
 - `CameraColorFramePacket`：`frame_id`、`camera_name`、`timestamp_ms`、
-  `color_bgr`、`fx`、`fy`、`cx`、`cy`。
+  `color_bgr`、`fx`、`fy`、`cx`、`cy`、`distortion`。
 - `CameraDepthFramePacket`：`frame_id`、`camera_name`、`timestamp_ms`、
-  `depth_mm`、`fx`、`fy`、`cx`、`cy`。
+  `depth_mm`、`fx`、`fy`、`cx`、`cy`、`distortion`。
 
 `color_bgr` 形状为 `(H, W, 3)`、dtype 为 `uint8`、通道顺序 BGR；
 `depth_mm` 形状为 `(H, W)`、dtype 为 `uint16`、单位 mm，零值表示无效深度。
+`distortion` 是彩色相机 OpenCV 畸变系数元组，通常按
+`(k1, k2, p1, p2, k3, ...)` 排列。
+
+## 进程内 ChArUco 检测 API
+
+### `PipelineContext.detect_charuco(...) -> CharucoDetectionResult`
+
+```python
+result = pipeline_context.detect_charuco(
+    board,
+    camera_name="left_hand_camera",
+    enable_debug=False,
+    max_frames=5,
+    stable_timeout_s=10.0,
+)
+```
+
+`board` 直接使用 `cv2.aruco.CharucoBoard`，其 `squares_x/squares_y`、dictionary、
+`square_length` 和 `marker_length` 由调用方构造。板尺寸统一使用 mm。
+
+该 API 由 `PipelineContext` 获取稳定相机帧并调用独立的
+`camera_pipeline.charuco_detection.CharucoDetector`。单帧位姿失败时继续等待下一稳定帧，
+最多尝试 `max_frames` 帧，默认 5。单帧内部先执行原图检测；失败后增加 CLAHE 和
+unsharp 两条分支，并按唯一 ID 融合三路角点后再次执行 PnP。
+
+返回字段：
+
+- `status`：`detected` 或 `missing`。
+- `t_cam_board_mm`：`T_cam_board` 齐次矩阵，满足
+  `p_cam = T_cam_board @ p_board`；平移单位 mm。
+- `error_px`：参与 PnP 的唯一 ChArUco 角点平均重投影误差，单位 pixel。
+- `marker_num`：融合后的唯一 marker ID 数量。
+- `charuco_num`：融合后的唯一 ChArUco 角点 ID 数量。
+- `debug_artifacts`：关闭 debug 时为空元组；开启时包含 marker、ChArUco、pose
+  overlay 和融合角点数据。
+
+该入口是 Orin 进程内算法 API。原生 OpenCV `CharucoBoard` 不进入当前 wire codec，
+因此本版本不提供对应 RPC client 方法。稳定帧超时或相机不可用抛出 `RuntimeError`；
+达到 5 帧仍未识别到位姿属于合法算法空结果，返回最后一帧的 `missing` 结果。
 
 ## 算法请求 API
 
-### `request_tray_detection(request) -> OrinTrayDetectionResponse`
-
-请求类型为 `OrinTrayDetectionRequest`，主要字段为 `request_id`、
-`camera_name`、`frame_id`、`enable_debug`。成功响应包含实际帧号、相机名、
-时间戳、耗时、`tray_count`、`tray_results`和 `debug_artifacts`。
-未检测到托盘是合法空结果：`tray_count=0`、`tray_results=()`。
-关闭 debug 时 `debug_artifacts=()`。帧不可回取、模型加载/推理失败或协议非法会抛出 `RuntimeError`。
-
-### `request_opening_detection(request) -> OpeningDetectionPipelineResponse`
-
-请求类型为 `OpeningDetectionPipelineRequest`，主要字段为 `request_id`、
-`camera_name`、`frame_id`、`target_tray_index`、`enable_debug`。成功响应包含
-托盘列表、选中索引、`selected_result`、`all_tray_results` 和可选 debug 产物。
-该 API 没有合法空结果；目标托盘不存在、mask 无效、深度点不足或位姿无法计算均为失败。
+`request_tray_detection()` 和 `request_opening_detection()` 已暂时移除。协议版本 4
+不再接受 `tray_detection`、`opening_detection` operation，也不再暴露对应的请求、
+响应字段或 wire codec 类型。调用方不得继续构造旧版 operation；需要恢复时应同步
+恢复子模块入口、服务编排、协议、codec、client API 和测试后再提升协议版本。
 
 ### `request_ball_pose_detection(request) -> BallPoseDetectionResponse`
 

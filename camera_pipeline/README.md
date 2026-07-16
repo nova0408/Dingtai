@@ -2,7 +2,9 @@
 
 ## 目标
 
-`camera_pipeline` 是部署在 NVIDIA Orin 上的相机数据与视觉算法服务。它统一连接上游 RGBD 相机流，对外提供相机状态、稳定帧、帧订阅以及 tray/opening/ball 三类算法请求。
+`camera_pipeline` 是以 Python 3.12 部署在 NVIDIA Orin 上的相机数据与视觉算法服务。它统一连接上游 RGBD 相机流，对外提供相机状态、稳定帧、帧订阅以及 ball 位姿算法请求。
+
+> `tray_detection` 和 `opening_detection` 已暂时从运行时、RPC 协议和公共 client API 移除，其目录内源码仅作为后续恢复参考，不参与当前部署。两个子目录的 `__init__.py` 已删除。
 
 本项目同时支持两种消费者：
 
@@ -35,8 +37,7 @@ from camera_pipeline.client import CameraPipelineClient
 | --- | --- | --- |
 | `camera_stream` | 连接上游相机服务、解码 RGBD、维护最近帧缓存 | [camera_stream/README.md](camera_stream/README.md) |
 | `stable_frame` | 根据连续 RGBD 帧判断稳定窗口并输出中点帧号 | [stable_frame/README.md](stable_frame/README.md) |
-| `tray_detection` | 在单帧彩色图中检测并分割托盘 | [tray_detection/README.md](tray_detection/README.md) |
-| `opening_detection` | 基于单帧 RGBD 和单个托盘 mask 计算开口及抓取位姿 | [opening_detection/README.md](opening_detection/README.md) |
+| `charuco_detection` | 使用原图、CLAHE 和 unsharp 回退融合检测 ChArUco 位姿 | [charuco_detection/README.md](charuco_detection/README.md) |
 | `ball_pose_detection` | 根据颜色和几何先验检测球心三维坐标 | [ball_pose_detection/README.md](ball_pose_detection/README.md) |
 | `service` | 统一 RPC、帧发布、业务编排和部署入口 | [service/README.md](service/README.md) |
 | `pipeline_context.py` | 组装相机运行时，解析指定帧或稳定帧 | 本文“帧选择” |
@@ -61,18 +62,6 @@ CameraPipelineClient
 ### 指定帧请求
 
 调用方可以先显式获取稳定帧，再把返回的正数 `frame_id` 传给算法请求。`resolve_frame()` 会精确使用该缓存帧，不会重新等待。
-
-### opening 业务流程
-
-```text
-resolve one frame
-  -> tray detection
-  -> select target tray mask
-  -> opening detection
-  -> compose OpeningDetectionPipelineResponse
-```
-
-该组合逻辑属于业务层，位于 `service/application.py`；两个算法仍保持独立纯计算。
 
 ## 调用方式
 
@@ -116,13 +105,18 @@ left_color_frames = client.subscribe_left_arm_camera_color_frames()
 ## 部署
 
 ```bash
-python -m camera_pipeline.service \
+python3.12 -m camera_pipeline.service \
   --bind-addr tcp://0.0.0.0:6200 \
   --control-port 5570 \
   --stream-port 5562 \
   --camera-id LEFT \
   --camera-name left_hand_camera
 ```
+
+服务默认同时写入 systemd/journald 控制台日志和
+`logs/camera_pipeline_service.log` 文件日志。文件按 `20 MB` 轮转、ZIP 压缩并保留
+`14 days`；可通过 `--log-path`、`--log-rotation`、`--log-retention` 覆盖。
+当前最低日志级别为 `INFO`，不输出 `DEBUG`。
 
 仓库脚本：
 
@@ -157,9 +151,9 @@ After=camera-pipeline.service
 
 ## 协议与安全
 
-统一请求包含 `protocol_version`。网络数据采用白名单协议 dataclass 的 JSON 元数据
-与 NumPy 原始字节块，不使用 Python pickle，不依赖 Python 3.8/3.10+ 的 dataclass
-内部布局。解码器拒绝未知类型、非法数组范围和字段不匹配；端口仍只应开放在受控
+统一请求包含 `protocol_version`。当前版本 4 已移除 tray/opening 请求和响应类型。
+网络数据采用白名单协议 dataclass 的 JSON 元数据与 NumPy 原始字节块，不使用
+Python pickle。服务端部署基线为 Python 3.12。解码器拒绝未知类型、非法数组范围和字段不匹配；端口仍只应开放在受控
 开发网络中。
 
 ## 测试
@@ -175,8 +169,8 @@ After=camera-pipeline.service
 以下内容必须在 Orin 和真实相机上验证：
 
 - 上游相机控制与 RGBD 解码；
-- 模型文件、CUDA 和显存；
+- ball 模型文件、CUDA 和显存；
 - 真实帧率下的缓存容量；
 - 稳定帧阈值；
-- tray/opening/ball 精度与耗时；
+- ball 精度与耗时；
 - 外接设备和 Orin 本地业务服务的实际连通性。

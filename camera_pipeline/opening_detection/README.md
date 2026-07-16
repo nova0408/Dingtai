@@ -1,5 +1,8 @@
 # Opening Detection
 
+> 暂时移除：本模块已从 CameraPipeline 运行时、RPC 协议和公共 client API 摘除，
+> `__init__.py` 已删除。目录内源码仅作后续恢复参考，当前 Python 3.12 部署不会加载本模块。
+
 ## 单一职责
 
 `opening_detection` 接收一帧 RGBD 和一个已经选定的托盘 mask，检测矩形开口、拟合局部三维平面并计算抓取位姿。它不检测托盘、不选择托盘索引、不访问相机，也不创建 RPC。

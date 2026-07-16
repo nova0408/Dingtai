@@ -16,8 +16,8 @@ if str(PROJECT_ROOT) not in sys.path:
 from src.rgbd_camera import (
     CameraParamPatch,
     DistortionPatch,
-    IntrinsicPatch,
     Gemini305,
+    IntrinsicPatch,
     SessionOptions,
     apply_camera_param_patch,
     camera_param_summary,
@@ -256,7 +256,7 @@ def main(
                     rgb = rgb / 255.0
                 pcd.colors = o3d.utility.Vector3dVector(np.clip(rgb, 0.0, 1.0).astype(np.float64))
             output_path = output_dir / f"{item.name}.ply"
-            o3d.io.write_point_cloud(str(output_path), pcd)
+            o3d.io.write_point_cloud(output_path, pcd)
             logger.info(f"saved: {output_path}")
 
 

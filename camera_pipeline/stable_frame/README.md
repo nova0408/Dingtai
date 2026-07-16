@@ -1,5 +1,11 @@
 # Stable Frame
 
+## 日志约定
+
+`PipelineContext.wait_for_stable_frame()` 以 `INFO` 记录等待开始、相机名、超时和成功
+返回的稳定帧号；稳定帧在返回前被缓存淘汰或等待超时时记录 `WARNING`。逐帧差分与
+窗口内部状态不逐帧写日志，避免相机常驻运行时产生高频日志。
+
 ## 单一职责
 
 `stable_frame` 按时间顺序接收 RGBD 帧，判断连续画面是否稳定；达到稳定时长后，只输出稳定窗口时间中点附近的 `frame_id`。

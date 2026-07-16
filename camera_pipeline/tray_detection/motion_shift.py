@@ -85,5 +85,5 @@ def warp_mask(mask: np.ndarray, dx_px: float, dy_px: float) -> np.ndarray:
         (w, h),
         flags=cv2.INTER_NEAREST,
         borderMode=cv2.BORDER_CONSTANT,
-        borderValue=0,
+        borderValue=(0.0,),
     )

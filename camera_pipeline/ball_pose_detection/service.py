@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import cv2
 import numpy as np
+from loguru import logger
+import time
 
 from ..protocol import RgbdFrameProtocol
 from .detector import BallPoseDetector
@@ -30,6 +32,15 @@ class BallPoseDetectionService:
     ) -> BallPoseDetectionResponse:
         """基于输入帧和请求计算球位姿结果。"""
 
+        started_at = time.perf_counter()
+        logger.info(
+            "ball pose service compute started request_id={} camera_name={} frame_id={} prior_count={} debug_enabled={}",
+            request.request_id,
+            request.camera_name,
+            frame.frame_id,
+            len(request.priors),
+            request.enable_debug,
+        )
         priors = [
             BallPosePrior(
                 color_hex=prior.color_hex,
@@ -55,17 +66,31 @@ class BallPoseDetectionService:
                     detections=detections,
                 ),
             )
-        return BallPoseDetectionResponse(
+        elapsed_ms = (time.perf_counter() - started_at) * 1000.0
+        response = BallPoseDetectionResponse(
             request_id=request.request_id,
             frame_id=frame.frame_id,
             camera_name=request.camera_name,
             timestamp_ms=frame.timestamp_ms,
-            elapsed_ms=result.timings_ms.get("detect_balls", 0.0)
-            + result.timings_ms.get("estimate_pose", 0.0),
+            elapsed_ms=elapsed_ms,
             matched_count=result.matched_count,
             detections=detections,
             debug_artifacts=debug_artifacts,
         )
+        log_method = logger.info
+        if result.matched_count < len(priors):
+            log_method = logger.warning
+        log_method(
+            "ball pose service compute completed request_id={} camera_name={} frame_id={} status={} matched_count={}/{} elapsed_ms={:.3f}",
+            request.request_id,
+            request.camera_name,
+            frame.frame_id,
+            result.status,
+            result.matched_count,
+            len(priors),
+            elapsed_ms,
+        )
+        return response
 
 
 def _build_detection_info(

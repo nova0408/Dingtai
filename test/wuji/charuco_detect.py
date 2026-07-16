@@ -123,7 +123,6 @@ def main(config: AppConfig) -> None:
             f"camera={DEFAULT_CAMERA_NAME}, "
             f"calibration={calibration.width}x{calibration.height}, "
             f"status={status_response.camera_model}/{status_response.width}x{status_response.height}, "
-            f"source_meta={summary_response.source_meta}"
         )
         cv2.namedWindow(DEFAULT_WINDOW_NAME, cv2.WINDOW_NORMAL)
         frame_index = 0

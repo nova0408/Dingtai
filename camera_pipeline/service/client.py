@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
-from typing import TypeVar, cast
+from typing import TypeVar
 
 import zmq
 
@@ -9,15 +9,7 @@ from ..ball_pose_detection.protocol import (
     BallPoseDetectionRequest,
     BallPoseDetectionResponse,
 )
-from ..opening_detection.protocol import (
-    OpeningDetectionPipelineRequest,
-    OpeningDetectionPipelineResponse,
-)
 from ..protocol import CameraColorFramePacket, CameraDepthFramePacket, CameraFramePacket
-from ..tray_detection.protocol import (
-    OrinTrayDetectionRequest,
-    OrinTrayDetectionResponse,
-)
 from .protocol import (
     CameraColorFrameSubscribeRequest,
     CameraDepthFrameSubscribeRequest,
@@ -36,7 +28,10 @@ from .protocol import (
 from .transport import CameraPipelineRpcClient, ZmqSocketOptions
 from .wire_codec import decode_wire
 
-PacketT = TypeVar("PacketT")
+PacketT = TypeVar(
+    "PacketT",
+    bound=CameraFramePacket | CameraColorFramePacket | CameraDepthFramePacket,
+)
 _TCP_PREFIX = "tcp://"
 _HEAD_CAMERA_NAME = "head_camera"
 _CHEST_CAMERA_NAME = "chest_camera"
@@ -348,8 +343,7 @@ class CameraPipelineClient:
                 message = socket.recv()
                 if not message.startswith(topic):
                     raise RuntimeError(f"camera stream topic mismatch: {camera_name}")
-                packet = decode_wire(message[len(topic) :], packet_type)
-                yield cast(PacketT, packet)
+                yield decode_wire(message[len(topic) :], packet_type)
         finally:
             socket.close(linger=0)
 
@@ -369,31 +363,6 @@ class CameraPipelineClient:
     # endregion
 
     # region 算法请求
-
-    def request_tray_detection(
-        self, request: OrinTrayDetectionRequest
-    ) -> OrinTrayDetectionResponse:
-        response = self._rpc_client.call(
-            CameraPipelineServiceRequest(
-                operation="tray_detection", tray_detection=request
-            )
-        )
-        if response.error is not None or response.tray_detection is None:
-            raise RuntimeError(response.error or "tray detection response missing")
-        return response.tray_detection
-
-    def request_opening_detection(
-        self,
-        request: OpeningDetectionPipelineRequest,
-    ) -> OpeningDetectionPipelineResponse:
-        response = self._rpc_client.call(
-            CameraPipelineServiceRequest(
-                operation="opening_detection", opening_detection=request
-            )
-        )
-        if response.error is not None or response.opening_detection is None:
-            raise RuntimeError(response.error or "opening detection response missing")
-        return response.opening_detection
 
     def request_ball_pose_detection(
         self, request: BallPoseDetectionRequest

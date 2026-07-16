@@ -14,8 +14,9 @@
 | `transport.py` | ZMQ REQ/REP 收发与消息类型校验 |
 | `client.py` | 外接开发机和 Orin 本地业务服务共用的客户端实现 |
 | `frame_publisher.py` | 单线程发布 RGBD、彩色、深度最新帧 |
-| `application.py` | 相机请求和 tray/opening/ball 业务调用编排 |
+| `application.py` | 相机请求和 ball 业务调用编排 |
 | `server.py` | 通用 REP 请求循环和统一异常边界 |
+| `logging_config.py` | 服务入口唯一的 Loguru 控制台与轮转文件 sink 配置 |
 | `__main__.py` | 参数解析、信号处理、对象组装和资源释放 |
 
 ## 数据流
@@ -30,7 +31,7 @@ CameraPipelineClient
   -> protocol response
 ```
 
-opening 请求属于业务组合流程：application 使用同一个稳定帧先执行 tray，取得目标托盘 mask 后执行 opening。该组合不进入算法实现，也不进入网络 transport。
+`tray_detection` 和 `opening_detection` 已暂时从 application、统一协议、wire codec 与公共 client API 移除，不参与当前服务进程。
 
 ## 部署拓扑
 
@@ -57,13 +58,37 @@ client = CameraPipelineClient(service_addr="tcp://<orin-ip>:6200")
 启动命令：
 
 ```bash
-python -m camera_pipeline.service \
+python3.12 -m camera_pipeline.service \
   --bind-addr tcp://0.0.0.0:6200 \
   --control-port 5570 \
   --stream-port 5562 \
   --camera-id LEFT \
   --camera-name left_hand_camera
 ```
+
+可按部署环境覆盖日志参数：
+
+```bash
+python3.12 -m camera_pipeline.service \
+  --log-path logs/camera_pipeline_service.log \
+  --log-rotation "20 MB" \
+  --log-retention "14 days"
+```
+
+## 日志
+
+服务统一使用 Loguru，最低级别固定为 `INFO`，暂不启用 `DEBUG`。服务入口同时创建：
+
+- 控制台 sink：写入 stderr，由 systemd/journald 收集；
+- 文件 sink：默认写入 `logs/camera_pipeline_service.log`，UTF-8 编码；
+- 文件达到 `20 MB` 后轮转，轮转文件 ZIP 压缩并保留 `14 days`；
+- 两个 sink 都使用 `enqueue=True`，避免服务线程直接执行文件写入。
+
+日志覆盖服务启动与停止、信号退出、请求 operation/耗时/结果、API 请求参数与响应摘要、
+相机流启动与恢复、稳定帧判定、ChArUco 每次尝试、ball 候选与匹配摘要、解码失败和
+发布器生命周期。正常逐帧数据不写日志，发布队列的预期丢帧也不逐条记录，避免长期
+运行时产生高频日志。日志只记录标量、状态和计数，不写图像、mask、点云数组或完整
+协议对象。日志目录无法创建或文件 sink 无法初始化时，服务启动失败。
 
 `--stream-port/--camera-id/--camera-name` 指定默认算法相机的覆盖参数。
 头部、胸腔和左臂运行时仍按端点表同时启动。
@@ -95,14 +120,14 @@ systemd 模板位于 `camera-pipeline.service`。Orin 本地其他业务服务�
 
 ## 协议与安全边界
 
-请求包含 `protocol_version`，当前版本为 `3`。版本 2 增加了分相机内参请求和
-帧 topic，版本 3 增加了分相机稳定帧请求。客户端与服务端版本不一致时服务端明确拒绝。
+请求包含 `protocol_version`，当前版本为 `4`。版本 4 移除了
+`tray_detection` 和 `opening_detection` operation 及其请求/响应载荷。客户端与服务端版本不一致时服务端明确拒绝。
 
 REQ/REP 和三路帧流使用同一显式二进制协议：固定头部携带 JSON 元数据长度，
 元数据只允许白名单中的协议 dataclass、基础类型和元组，NumPy 图像与 mask 以
 连续原始字节块附加，并在元数据中记录 `dtype`、`shape`、偏移和长度。协议不使用
-Python pickle，不依赖 dataclass 的 Python 版本内存布局，可在 Windows Python
-3.10+ 客户端与 Orin Python 3.8 服务之间互通。未知类型、未知协议标识、越界数组
+Python pickle，不依赖 dataclass 的 Python 版本内存布局。Orin 服务使用 Python 3.12，
+不再使用 `pytorch_38`/`py38_tourch` 环境。未知类型、未知协议标识、越界数组
 和字段不匹配均会明确拒绝。
 
 ## 错误约定
@@ -110,6 +135,10 @@ Python pickle，不依赖 dataclass 的 Python 版本内存布局，可在 Windo
 请求解码失败和业务异常均由 `CameraPipelineServer` 捕获，写入统一响应的 `error`
 字段；单个非法请求不会终止服务循环。客户端发现顶层错误或目标 payload 缺失时
 抛出 `RuntimeError`。算法模块不负责网络错误转换。
+
+请求解码失败和业务异常写入 `ERROR`，可恢复的相机控制、重连和停止异常写入
+`WARNING`；稳定帧超时、ChArUco 最终未识别和 ball 候选/匹配不足也写入 `WARNING`；
+正常生命周期、API 响应、算法开始与成功摘要写入 `INFO`。
 
 ## API Reference
 

@@ -19,3 +19,9 @@ class CameraPipelineServiceConfig:
     "REP 循环接收超时，单位 ms，用于及时响应停止事件。"
     response_send_timeout_ms: int = 30_000
     "REP 响应发送超时，单位 ms。"
+    log_path: str = "logs/camera_pipeline_service.log"
+    "长期运行日志文件路径；相对路径基于服务工作目录。"
+    log_rotation: str = "20 MB"
+    "单个日志文件达到该大小后轮转。"
+    log_retention: str = "14 days"
+    "轮转日志保留时间。"

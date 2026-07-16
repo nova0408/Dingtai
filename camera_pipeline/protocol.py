@@ -41,6 +41,9 @@ class RgbdFrameProtocol(StableRgbdFrameProtocol, Protocol):
     @property
     def cy(self) -> float: ...
 
+    @property
+    def distortion(self) -> tuple[float, ...]: ...
+
 
 @dataclass(frozen=True, slots=True)
 class CameraFramePacket:
@@ -64,6 +67,8 @@ class CameraFramePacket:
     "主点 X 坐标，单位 pixel。"
     cy: float
     "主点 Y 坐标，单位 pixel。"
+    distortion: tuple[float, ...]
+    "彩色相机 OpenCV 畸变系数，通常为 `(k1, k2, p1, p2, k3, ...)`。"
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,6 +91,8 @@ class CameraColorFramePacket:
     "主点 X 坐标，单位 pixel。"
     cy: float
     "主点 Y 坐标，单位 pixel。"
+    distortion: tuple[float, ...]
+    "彩色相机 OpenCV 畸变系数，通常为 `(k1, k2, p1, p2, k3, ...)`。"
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,3 +115,5 @@ class CameraDepthFramePacket:
     "主点 X 坐标，单位 pixel。"
     cy: float
     "主点 Y 坐标，单位 pixel。"
+    distortion: tuple[float, ...]
+    "彩色相机 OpenCV 畸变系数；仅用于保持统一帧内参协议。"
