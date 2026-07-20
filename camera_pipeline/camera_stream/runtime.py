@@ -74,6 +74,12 @@ class CameraStreamRuntime:
     _FRAME_HEADER_STRUCT = struct.Struct("<4sBBBBIIIIIIIQI")
     _FRAME_HEADER_SIZE = _FRAME_HEADER_STRUCT.size
 
+    @property
+    def keeps_frame_history(self) -> bool:
+        """表示 ZMQ 模式维护有限历史帧缓存。"""
+
+        return True
+
     def __init__(self, config: CameraStreamRuntimeConfig | None = None) -> None:
         self._config = CameraStreamRuntimeConfig() if config is None else config
         self._context = zmq.Context()

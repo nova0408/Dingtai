@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
+from typing import Literal
 
 import cv2
 from loguru import logger
 
+from .camera_local.config import LocalCameraRuntimeConfig, LocalStreamProfileConfig
+from .camera_runtime_protocol import CameraRuntimeProtocol
 from .camera_stream import CameraStreamRuntime, CameraStreamRuntimeConfig
 from .charuco_detection import (
     CharucoDetectionConfig,
@@ -41,6 +44,19 @@ class CameraEndpointConfig:
 
     connected: bool = True
     "现场是否已连接该相机；为 `False` 时保留 API 但不启动运行时。"
+
+    serial_number: str = ""
+    "本机 USB 模式使用的 Orbbec 设备 SN；ZMQ 模式忽略。"
+
+    color_profile: LocalStreamProfileConfig = LocalStreamProfileConfig(
+        1280, 720, 30, "MJPG"
+    )
+    "本机 USB 彩色流 profile。"
+
+    depth_profile: LocalStreamProfileConfig = LocalStreamProfileConfig(
+        848, 480, 30, "Y16"
+    )
+    "本机 USB 深度流 profile。"
 
 
 DEFAULT_CAMERA_ENDPOINTS: tuple[CameraEndpointConfig, ...] = (
@@ -96,6 +112,12 @@ class PipelineContextConfig:
     - 不继承业务基类，仅作为上下文配置数据结构。
     """
 
+    camera_source_mode: Literal["zmq", "usb"] = "zmq"
+    "相机输入模式；默认 `zmq`，本机 USB 直连时使用 `usb`。"
+
+    camera_host: str = "192.168.100.60"
+    "ZMQ 相机服务主机地址。"
+
     camera_control_port: int = 5570
     "相机控制口端口号，单位 端口号。"
 
@@ -120,6 +142,16 @@ class PipelineContextConfig:
     camera_endpoints: tuple[CameraEndpointConfig, ...] = DEFAULT_CAMERA_ENDPOINTS
     "所有相机安装位配置；主相机对应项由上方单路参数覆盖。"
 
+    usb_frame_timeout_ms: int = 2000
+    "USB 模式单次等待帧组超时，单位 ms。"
+
+    usb_reconnect_initial_interval_s: float = 5.0
+    "USB 设备断线或首次连接失败后的重试间隔，单位 s。"
+
+    usb_reconnect_max_interval_s: float = 60.0
+    "USB 连续连接失败时指数退避的最大间隔，单位 s。"
+
+
 class PipelineContext:
     """统一管理相机流和帧数据输入输出的上下文。
 
@@ -142,18 +174,8 @@ class PipelineContext:
     def __init__(self, config: PipelineContextConfig) -> None:
         self._config = config
         self._camera_endpoints = self._resolve_camera_endpoints(config)
-        self._frame_runtimes = {
-            endpoint.camera_name: CameraStreamRuntime(
-                CameraStreamRuntimeConfig(
-                    control_port=config.camera_control_port,
-                    stream_port=endpoint.stream_port,
-                    camera_id=endpoint.camera_id,
-                    camera_name=endpoint.camera_name,
-                    request_timeout_ms=config.camera_request_timeout_ms,
-                    stream_timeout_ms=config.camera_stream_timeout_ms,
-                    cache_size=config.camera_frame_cache_size,
-                )
-            )
+        self._frame_runtimes: dict[str, CameraRuntimeProtocol] = {
+            endpoint.camera_name: self._build_camera_runtime(endpoint)
             for endpoint in self._camera_endpoints
             if endpoint.connected
         }
@@ -182,7 +204,7 @@ class PipelineContext:
     def get_camera_runtime(
         self,
         camera_name: str | None = None,
-    ) -> CameraStreamRuntime:
+    ) -> CameraRuntimeProtocol:
         """返回指定相机运行时，未指定时返回主相机运行时。"""
 
         resolved_name = self._config.camera_name if camera_name is None else camera_name
@@ -288,6 +310,14 @@ class PipelineContext:
             stable_frame_id = detector.update(frame)
             if stable_frame_id is None:
                 continue
+            if self._config.camera_source_mode == "usb":
+                logger.info(
+                    "stable frame detected in current-frame mode camera_name={} frame_id={} evidence_frame_id={}",
+                    resolved_name,
+                    frame.frame_id,
+                    frame.frame_id,
+                )
+                return frame
             stable_frame = self.get_frame_by_id(stable_frame_id, resolved_name)
             if stable_frame is not None:
                 logger.info(
@@ -436,6 +466,9 @@ class PipelineContext:
                     stream_port=config.camera_stream_port,
                     stable_frame_config=endpoint.stable_frame_config,
                     connected=True,
+                    serial_number=endpoint.serial_number,
+                    color_profile=endpoint.color_profile,
+                    depth_profile=endpoint.depth_profile,
                 )
             )
         if not primary_found:
@@ -451,6 +484,42 @@ class PipelineContext:
             if endpoint.camera_name == camera_name:
                 return endpoint
         raise ValueError(f"unsupported camera: {camera_name}")
+
+    def _build_camera_runtime(
+        self, endpoint: CameraEndpointConfig
+    ) -> CameraRuntimeProtocol:
+        """按上下文模式为一个安装位构造采集运行时。"""
+
+        if self._config.camera_source_mode == "zmq":
+            return CameraStreamRuntime(
+                CameraStreamRuntimeConfig(
+                    host=self._config.camera_host,
+                    control_port=self._config.camera_control_port,
+                    stream_port=endpoint.stream_port,
+                    camera_id=endpoint.camera_id,
+                    camera_name=endpoint.camera_name,
+                    request_timeout_ms=self._config.camera_request_timeout_ms,
+                    stream_timeout_ms=self._config.camera_stream_timeout_ms,
+                    cache_size=self._config.camera_frame_cache_size,
+                )
+            )
+        if self._config.camera_source_mode == "usb":
+            # 仅 USB 模式加载 pyorbbecsdk，默认 ZMQ 部署不承担本机 SDK 依赖。
+            from .camera_local.runtime import LocalCameraRuntime
+
+            return LocalCameraRuntime(
+                LocalCameraRuntimeConfig(
+                    camera_name=endpoint.camera_name,
+                    camera_id=endpoint.camera_id,
+                    serial_number=endpoint.serial_number,
+                    color=endpoint.color_profile,
+                    depth=endpoint.depth_profile,
+                    frame_timeout_ms=self._config.usb_frame_timeout_ms,
+                    reconnect_initial_interval_s=self._config.usb_reconnect_initial_interval_s,
+                    reconnect_max_interval_s=self._config.usb_reconnect_max_interval_s,
+                )
+            )
+        raise ValueError(f"unsupported camera source mode: {self._config.camera_source_mode}")
 
     # endregion
 

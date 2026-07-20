@@ -6,7 +6,16 @@
 from pathlib import Path
 from typing import Any
 
-from pyorbbecsdk import *
+from pyorbbecsdk import (
+    Context,
+    Device,
+    DeviceList,
+    OBCameraDistortionModel,
+    SensorList,
+    StreamProfile,
+    StreamProfileList,
+    VideoStreamProfile,
+)
 
 OUTPUT_FILE = Path("orbbec_device_profiles.md")
 
@@ -60,6 +69,23 @@ def append_profile_table_header(lines: list[str]) -> None:
     lines.append("| ---: | :--- | :--- | ---: | :--- | :--- | :--- |")
 
 
+def append_distortion_model_table(lines: list[str]) -> None:
+    """列出 Python SDK 导出的相机畸变模型枚举。"""
+    lines.append("## SDK 支持的相机畸变模型")
+    lines.append("")
+    lines.append("| 枚举名称 | 枚举值 |")
+    lines.append("| :--- | ---: |")
+    for name, model in OBCameraDistortionModel.__members__.items():
+        lines.append(f"| `{name}` | {int(model)} |")
+    lines.append("")
+    lines.append(
+        "> `OBCameraDistortionModel` 由 `pyorbbecsdk` 直接导出；"
+        "当前 Python 绑定的 `OBCameraDistortion` 未暴露底层 `model` 字段，"
+        "因此只能列出 SDK 支持的枚举，不能从 Stream Profile 读取当前实际模型。"
+    )
+    lines.append("")
+
+
 def main() -> None:
     lines: list[str] = []
     lines.append("# Orbbec 设备信息与 Stream Profile 列表")
@@ -67,7 +93,7 @@ def main() -> None:
 
     try:
         context = Context()
-        device_list = context.query_devices()
+        device_list: DeviceList = context.query_devices()
         device_count = device_list.get_count()
 
         if device_count < 1:
@@ -78,9 +104,10 @@ def main() -> None:
 
         lines.append(f"> 发现 **{device_count}** 个设备")
         lines.append("")
+        append_distortion_model_table(lines)
 
         for i in range(device_count):
-            device = device_list[i]
+            device: Device = device_list[i]
             device_info = device.get_device_info()
 
             lines.append(f"## 设备 {i}")
@@ -94,7 +121,7 @@ def main() -> None:
             lines.append(f"| 连接类型 | {md_escape(device_info.get_connection_type())} |")
             lines.append("")
 
-            sensor_list = device.get_sensor_list()
+            sensor_list: SensorList = device.get_sensor_list()
 
             for j in range(sensor_list.get_count()):
                 sensor = sensor_list.get_sensor_by_index(j)
@@ -105,16 +132,12 @@ def main() -> None:
                 append_profile_table_header(lines)
 
                 try:
-                    profiles = sensor.get_stream_profile_list()
+                    profiles: StreamProfileList = sensor.get_stream_profile_list()
 
                     for k in range(profiles.get_count()):
-                        profile = profiles.get_stream_profile_by_index(k)
-                        profile_type = type(profile).__name__
-
-                        if not hasattr(profile, "get_width"):
-                            lines.append(f"| {k} | - | - | - | {md_escape(profile_type)} | - | - |")
+                        profile: StreamProfile = profiles.get_stream_profile_by_index(k)
+                        if not isinstance(profile, VideoStreamProfile):
                             continue
-
                         fmt = profile.get_format()
                         width = profile.get_width()
                         height = profile.get_height()
@@ -124,24 +147,18 @@ def main() -> None:
                         intrinsic_text = "-"
                         distortion_text = "-"
 
-                        try:
-                            intrinsic = profile.get_intrinsic()
-                            intrinsic_text = format_intrinsic(intrinsic)
-                        except Exception as e:
-                            intrinsic_text = f"读取失败：{md_escape(e)}"
+                        intrinsic = profile.get_intrinsic()
+                        intrinsic_text = format_intrinsic(intrinsic)
 
-                        try:
-                            distortion = profile.get_distortion()
-                            distortion_text = format_distortion(distortion)
-                        except Exception as e:
-                            distortion_text = f"读取失败：{md_escape(e)}"
+                        distortion = profile.get_distortion()
+                        distortion_text = format_distortion(distortion)
 
                         lines.append(
                             f"| {k}"
                             f" | {md_escape(fmt)}"
                             f" | {resolution}"
                             f" | {fps}"
-                            f" | {md_escape(profile_type)}"
+                            f" | {md_escape(type(profile))}"
                             f" | {intrinsic_text}"
                             f" | {distortion_text} |"
                         )

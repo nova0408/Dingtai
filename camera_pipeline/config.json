@@ -1,0 +1,93 @@
+{
+  "camera_source_mode": "zmq",
+  "zmq": {
+    "host": "192.168.100.60",
+    "control_port": 5570,
+    "request_timeout_ms": 3000,
+    "stream_timeout_ms": 8000,
+    "frame_cache_size": 64
+  },
+  "usb": {
+    "frame_timeout_ms": 2000,
+    "reconnect_initial_interval_s": 5.0,
+    "reconnect_max_interval_s": 60.0
+  },
+  "cameras": {
+    "HEAD": {
+      "camera_name": "head_camera",
+      "serial_number": "",
+      "zmq_enabled": true,
+      "usb_enabled": true,
+      "zmq_stream_port": 5560,
+      "color": {
+        "width": 1280,
+        "height": 720,
+        "fps": 30,
+        "format": "MJPG"
+      },
+      "depth": {
+        "width": 1280,
+        "height": 720,
+        "fps": 30,
+        "format": "Y16"
+      }
+    },
+    "CHEST": {
+      "camera_name": "chest_camera",
+      "serial_number": "",
+      "zmq_enabled": true,
+      "usb_enabled": true,
+      "zmq_stream_port": 5561,
+      "color": {
+        "width": 1280,
+        "height": 720,
+        "fps": 30,
+        "format": "MJPG"
+      },
+      "depth": {
+        "width": 1280,
+        "height": 720,
+        "fps": 30,
+        "format": "Y16"
+      }
+    },
+    "LEFT": {
+      "camera_name": "left_hand_camera",
+      "serial_number": "",
+      "zmq_enabled": true,
+      "usb_enabled": true,
+      "zmq_stream_port": 5562,
+      "color": {
+        "width": 1280,
+        "height": 720,
+        "fps": 30,
+        "format": "MJPG"
+      },
+      "depth": {
+        "width": 1280,
+        "height": 720,
+        "fps": 30,
+        "format": "Y16"
+      }
+    },
+    "RIGHT": {
+      "camera_name": "right_hand_camera",
+      "serial_number": "",
+      "zmq_enabled": false,
+      "usb_enabled": true,
+      "zmq_stream_port": 5563,
+      "color": {
+        "width": 1280,
+        "height": 720,
+        "fps": 30,
+        "format": "MJPG"
+      },
+      "depth": {
+        "width": 1280,
+        "height": 720,
+        "fps": 30,
+        "format": "Y16"
+      }
+    }
+  }
+}

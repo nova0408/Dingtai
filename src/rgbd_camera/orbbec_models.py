@@ -129,7 +129,7 @@ class CameraExtrinsics:
 
 
 # region 会话与视锥配置数据结构
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class SensorFrustumConfig:
     """传感器理论视锥参数（单位：毫米）
 
@@ -137,17 +137,17 @@ class SensorFrustumConfig:
     不同近远端几何参数，以保持实时过滤逻辑和硬件型号解耦
     """
 
-    min_depth: float = 70.0
+    min_depth_mm: float
     "最小有效深度阈值，单位 mm"
-    max_depth: float = 430.0
+    max_depth_mm: float
     "最大有效深度阈值，单位 mm"
-    near_width: float = 117.0
+    near_width_mm: float
     "近端平面的理论宽度，单位 mm"
-    near_height: float = 89.0
+    near_height_mm: float
     "近端平面的理论高度，单位 mm"
-    far_width: float = 839.0
+    far_width_mm: float
     "远端平面的理论宽度，单位 mm"
-    far_height: float = 637.0
+    far_height_mm: float
     "远端平面的理论高度，单位 mm"
 
 

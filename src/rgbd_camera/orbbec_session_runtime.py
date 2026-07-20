@@ -15,11 +15,11 @@ from pyorbbecsdk import (
     Context,
     OBCameraIntrinsic,
     OBCameraParam,
-    OBExtrinsic,
     OBError,
+    OBExtrinsic,
     OBFormat,
-    OBFrameType,
     OBFrameAggregateOutputMode,
+    OBFrameType,
     OBLogLevel,
     OBSensorType,
     OBStreamType,
@@ -515,12 +515,12 @@ class OrbbecSession:
         """解析本次调用的视锥参数（调用参数优先，实例默认次之）。"""
         cfg = self.sensor_frustum
         return SensorFrustumConfig(
-            min_depth=(cfg.min_depth if min_depth_mm is None else float(min_depth_mm)),
-            max_depth=(cfg.max_depth if frustum_max_depth_mm is None else float(frustum_max_depth_mm)),
-            near_width=(cfg.near_width if near_width_mm is None else float(near_width_mm)),
-            near_height=(cfg.near_height if near_height_mm is None else float(near_height_mm)),
-            far_width=(cfg.far_width if far_width_mm is None else float(far_width_mm)),
-            far_height=(cfg.far_height if far_height_mm is None else float(far_height_mm)),
+            min_depth_mm=(cfg.min_depth_mm if min_depth_mm is None else float(min_depth_mm)),
+            max_depth_mm=(cfg.max_depth_mm if frustum_max_depth_mm is None else float(frustum_max_depth_mm)),
+            near_width_mm=(cfg.near_width_mm if near_width_mm is None else float(near_width_mm)),
+            near_height_mm=(cfg.near_height_mm if near_height_mm is None else float(near_height_mm)),
+            far_width_mm=(cfg.far_width_mm if far_width_mm is None else float(far_width_mm)),
+            far_height_mm=(cfg.far_height_mm if far_height_mm is None else float(far_height_mm)),
         )
 
     def filter_points_for_sensor(
@@ -562,7 +562,7 @@ class OrbbecSession:
             far_height_mm=far_height_mm,
         )
 
-        effective_depth_limit = frustum_cfg.max_depth if max_depth_mm is None else float(max_depth_mm)
+        effective_depth_limit = frustum_cfg.max_depth_mm if max_depth_mm is None else float(max_depth_mm)
         normalized = normalize_points(points)
         valid_points, _ = filter_valid_points(normalized, max_depth_mm=effective_depth_limit)
         if len(valid_points) == 0:
@@ -571,15 +571,15 @@ class OrbbecSession:
         if not apply_sensor_frustum:
             return valid_points
 
-        frustum_depth = min(frustum_cfg.max_depth, effective_depth_limit)
+        frustum_depth = min(frustum_cfg.max_depth_mm, effective_depth_limit)
         return filter_points_in_sensor_frustum(
             valid_points,
-            min_depth_mm=frustum_cfg.min_depth,
+            min_depth_mm=frustum_cfg.min_depth_mm,
             max_depth_mm=frustum_depth,
-            near_width_mm=frustum_cfg.near_width,
-            near_height_mm=frustum_cfg.near_height,
-            far_width_mm=frustum_cfg.far_width,
-            far_height_mm=frustum_cfg.far_height,
+            near_width_mm=frustum_cfg.near_width_mm,
+            near_height_mm=frustum_cfg.near_height_mm,
+            far_width_mm=frustum_cfg.far_width_mm,
+            far_height_mm=frustum_cfg.far_height_mm,
         )
 
     def calculate_points_from_frames(
@@ -661,7 +661,7 @@ class OrbbecSession:
             valid_points = self.calculate_points_from_frames(
                 frames=frames,
                 point_filter=point_filter,
-                max_depth_mm=self.sensor_frustum.max_depth,
+                max_depth_mm=self.sensor_frustum.max_depth_mm,
                 apply_sensor_frustum=True,
             )
             if len(valid_points) == 0:
@@ -742,9 +742,7 @@ class OrbbecSession:
                 color_profile = _select_profile_with_preferred_fps(
                     profile_list=color_profile_list,
                     preferred_fps=self.options.preferred_capture_fps,
-                    preferred_format=_resolve_color_preferred_format(
-                        self.options.preferred_color_format_name
-                    ),
+                    preferred_format=_resolve_color_preferred_format(self.options.preferred_color_format_name),
                     preferred_width=self.options.preferred_color_width,
                     preferred_height=self.options.preferred_color_height,
                 )
@@ -875,26 +873,6 @@ class OrbbecSession:
             )
 
     # endregion
-
-
-# endregion
-
-
-# region 设备默认配置
-class Gemini305(OrbbecSession):
-    """Gemini305 专用会话，集中维护该型号默认视锥参数。"""
-
-    @classmethod
-    def get_default_sensor_frustum(cls) -> SensorFrustumConfig:
-        """返回 Gemini305 的默认视锥参数。"""
-        return SensorFrustumConfig(
-            min_depth=70.0,
-            max_depth=430.0,
-            near_width=117.0,
-            near_height=89.0,
-            far_width=839.0,
-            far_height=637.0,
-        )
 
 
 # endregion

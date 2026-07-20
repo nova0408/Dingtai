@@ -1,5 +1,17 @@
 # CameraPipeline
 
+## 相机输入模式
+
+`config.json` 的 `camera_source_mode` 是部署时的硬编码模式开关：
+
+- `zmq`：默认模式，继续使用 `camera_stream` 连接远端相机控制口和数据口，并维护有限历史帧缓存。
+- `usb`：使用 `camera_local` 按 LEFT/RIGHT/HEAD/CHEST 的 SN 连接本机 Orbbec 相机，只保存当前最新帧，断线后持续自动重连。
+
+四个安装位的逻辑名称、SN、启用状态、ZMQ 端口以及 USB color/depth profile 均定义在
+`config.json`。默认调用相机不在 JSON 中配置，由 `PipelineContextConfig` 的代码默认值决定。
+USB 模式不允许以枚举顺序代替 SN；设备缺失时按指数退避持续重试，SN 为空时线程保持空闲，
+同时通过服务 Loguru 配置记录连接、断线、异常和恢复日志。
+
 ## 目标
 
 `camera_pipeline` 是以 Python 3.12 部署在 NVIDIA Orin 上的相机数据与视觉算法服务。它统一连接上游 RGBD 相机流，对外提供相机状态、稳定帧、帧订阅以及 ball 位姿算法请求。
