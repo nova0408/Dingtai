@@ -5,6 +5,7 @@ import ast
 import csv
 import gc
 import math
+import subprocess
 import sys
 import time
 from dataclasses import dataclass
@@ -34,8 +35,16 @@ from src.wuji.body_client import WujiBodyClient
 from src.wuji.dahuan_gripper_client import DahuanGripperClient
 from src.wuji.right_hand_client import WujiRightHandClient
 
-LEFT_ARM_IP = "192.168.1.161"
-RIGHT_ARM_IP = "192.168.1.160"
+# 机械臂控制器位于 Orin 所连交换机的新网段。
+LEFT_ARM_CONTROLLER_IP = "192.168.100.161"
+RIGHT_ARM_CONTROLLER_IP = "192.168.100.160"
+# 两台机械臂分别使用独立 loopback 地址，以复用 SDK 固定端口。
+LEFT_ARM_IP = "127.0.0.2"
+RIGHT_ARM_IP = "127.0.0.3"
+ARM_SSH_ALIAS = "orin"
+# 实测当前 xCoreSDK 构造对象需要 6666/7777；同时保留控制器与升级服务端口。
+ARM_SSH_FORWARD_PORTS: tuple[int, ...] = (5050, 4567, 6666, 7777)
+ARM_SSH_START_WAIT_S = 1.0
 MM_PER_M = 1000.0
 DEFAULT_CARTESIAN_SPEED = 50.0
 DEFAULT_CARTESIAN_ZONE = 1.0
@@ -67,7 +76,7 @@ class ConnectedArm:
     "机械臂侧别，取值为 `left` 或 `right`。"
 
     robot_ip: str
-    "机器人控制器 IP 地址。"
+    "SDK 本地连接地址，经 SSH 转发到机器人控制器。"
 
     robot: xCoreSDK_python.xMateErProRobot
     "SDK 机器人对象。"
@@ -1052,6 +1061,49 @@ def _write_drag_records_csv(records: list[dict[str, str]], arm_side: str) -> Pat
 
 
 # region 机器人控制
+def _start_arm_ssh_tunnel() -> subprocess.Popen[bytes]:
+    """通过 Orin 为两台机械臂建立 SDK 固定端口转发。"""
+
+    arm_routes = (
+        (LEFT_ARM_IP, LEFT_ARM_CONTROLLER_IP),
+        (RIGHT_ARM_IP, RIGHT_ARM_CONTROLLER_IP),
+    )
+    command = [
+        "ssh",
+        "-o",
+        "ExitOnForwardFailure=yes",
+        "-o",
+        "ServerAliveInterval=5",
+        "-o",
+        "ServerAliveCountMax=3",
+        "-o",
+        "TCPKeepAlive=yes",
+        "-N",
+    ]
+    for local_ip, controller_ip in arm_routes:
+        for port in ARM_SSH_FORWARD_PORTS:
+            command.extend(["-L", f"{local_ip}:{port}:{controller_ip}:{port}"])
+    command.append(ARM_SSH_ALIAS)
+
+    logger.info(
+        "启动双臂 SSH 转发，left={} -> {}，right={} -> {}，ports={}",
+        LEFT_ARM_IP,
+        LEFT_ARM_CONTROLLER_IP,
+        RIGHT_ARM_IP,
+        RIGHT_ARM_CONTROLLER_IP,
+        ARM_SSH_FORWARD_PORTS,
+    )
+    process = subprocess.Popen(command, stderr=subprocess.PIPE)
+    time.sleep(ARM_SSH_START_WAIT_S)
+    if process.poll() is None:
+        logger.success("双臂 SSH 转发启动成功，pid={}", process.pid)
+        return process
+
+    stderr_data = process.stderr.read() if process.stderr is not None else b""
+    error_text = stderr_data.decode("utf-8", errors="replace").strip()
+    raise RuntimeError(f"双臂 SSH 转发启动失败: {error_text or 'ssh 提前退出'}")
+
+
 def _detect_arm_side(robot_type: str) -> str:
     """根据控制器上报的机型名称判断左右臂。"""
 
@@ -1742,30 +1794,34 @@ def _main_menu(connected_arms: dict[str, ConnectedArm], hand_clients: Persistent
 def main() -> int:
     """程序入口。"""
 
-    connected_arms = _connect_arms()
-    gripper_process, gripper_channel = create_wuyou_channel(GRIPPER_PORT)
-    right_hand_process, right_hand_channel = create_wuyou_channel(DEFAULT_PORT)
-    hand_clients = PersistentHandClients(
-        gripper_process=gripper_process,
-        gripper=DahuanGripperClient(gripper_channel),
-        right_hand_process=right_hand_process,
-        right_hand=WujiRightHandClient(right_hand_channel),
-        body=WujiBodyClient(right_hand_channel),
-    )
+    arm_ssh_process = _start_arm_ssh_tunnel()
     try:
-        _main_menu(connected_arms, hand_clients)
-        return 0
+        connected_arms = _connect_arms()
+        gripper_process, gripper_channel = create_wuyou_channel(GRIPPER_PORT)
+        right_hand_process, right_hand_channel = create_wuyou_channel(DEFAULT_PORT)
+        hand_clients = PersistentHandClients(
+            gripper_process=gripper_process,
+            gripper=DahuanGripperClient(gripper_channel),
+            right_hand_process=right_hand_process,
+            right_hand=WujiRightHandClient(right_hand_channel),
+            body=WujiBodyClient(right_hand_channel),
+        )
+        try:
+            _main_menu(connected_arms, hand_clients)
+            return 0
+        finally:
+            preserved_gripper_process = hand_clients.gripper_process
+            preserved_right_hand_process = hand_clients.right_hand_process
+            for connected_arm in connected_arms.values():
+                _shutdown_robot(connected_arm.robot, connected_arm.ec)
+            del hand_clients
+            gc.collect()
+            close_wuyou_channel(gripper_channel)
+            close_wuyou_channel(right_hand_channel)
+            stop_ssh_process(preserved_gripper_process)
+            stop_ssh_process(preserved_right_hand_process)
     finally:
-        preserved_gripper_process = hand_clients.gripper_process
-        preserved_right_hand_process = hand_clients.right_hand_process
-        for connected_arm in connected_arms.values():
-            _shutdown_robot(connected_arm.robot, connected_arm.ec)
-        del hand_clients
-        gc.collect()
-        close_wuyou_channel(gripper_channel)
-        close_wuyou_channel(right_hand_channel)
-        stop_ssh_process(preserved_gripper_process)
-        stop_ssh_process(preserved_right_hand_process)
+        stop_ssh_process(arm_ssh_process)
 
 
 if __name__ == "__main__":
