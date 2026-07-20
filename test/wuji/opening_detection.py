@@ -15,7 +15,7 @@ PROJECT_ROOT = next(parent for parent in Path(__file__).resolve().parents if (pa
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 DEFAULT_CAMERA_NAME = "left_hand_camera"
-DEFAULT_SERVICE_ADDR = "tcp://192.168.1.121:6200"
+DEFAULT_SERVICE_ADDR = "tcp://192.168.1.128:6200"
 DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "test" / "wuji" / ".archive" / "opening_detection_capture"
 DEFAULT_RETRY_TIMEOUT_S = 60.0
 

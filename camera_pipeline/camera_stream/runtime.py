@@ -374,23 +374,12 @@ class CameraStreamRuntime:
         data = payload.get("data", {})
         if not isinstance(data, dict):
             raise RuntimeError("invalid get_intrinsics payload")
-        distortion_raw = data.get("distortion", ())
-        if not isinstance(distortion_raw, (list, tuple)):
-            raise RuntimeError("invalid get_intrinsics distortion")
-        distortion_values: list[float] = []
-        for item in distortion_raw:
-            if not isinstance(item, (int, float)) or isinstance(item, bool):
-                raise RuntimeError("invalid get_intrinsics distortion value")
-            distortion_values.append(float(item))
-        distortion = tuple(distortion_values)
-        if not distortion:
-            raise RuntimeError("get_intrinsics distortion is empty")
         return (
             _read_json_number(data, "fx", 910.0),
             _read_json_number(data, "fy", 910.0),
             _read_json_number(data, "cx", 640.0),
             _read_json_number(data, "cy", 360.0),
-            distortion,
+            _read_zmq_distortion(data),
         )
 
     def _tcp_addr(self, port: int) -> str:
@@ -436,3 +425,22 @@ def _read_json_number(
     if not isinstance(value, (int, float)) or isinstance(value, bool):
         raise RuntimeError(f"invalid camera control numeric field: {key}")
     return float(value)
+
+
+def _read_zmq_distortion(payload: dict[str, JsonValue]) -> tuple[float, ...]:
+    """读取远端 SDK 顺序的彩色相机畸变参数并转换为 OpenCV 顺序。"""
+
+    distortion_raw = payload.get("dist", ())
+    if not isinstance(distortion_raw, (list, tuple)):
+        raise RuntimeError("invalid get_intrinsics dist")
+    if len(distortion_raw) != 8:
+        raise RuntimeError("get_intrinsics dist must contain 8 coefficients")
+
+    distortion_values: list[float] = []
+    for item in distortion_raw:
+        if not isinstance(item, (int, float)) or isinstance(item, bool):
+            raise RuntimeError("invalid get_intrinsics dist value")
+        distortion_values.append(float(item))
+
+    k1, k2, k3, k4, k5, k6, p1, p2 = distortion_values
+    return k1, k2, p1, p2, k3, k4, k5, k6

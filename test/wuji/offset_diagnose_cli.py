@@ -25,7 +25,7 @@ from test.wuji.ball_pose_detection import (
     _build_three_ball_basis_transform,
     _load_prior_capture,
 )
-from test.wuji.record_left_replay_cli import (
+from test.wuji.record_replay_cli import (
     DEFAULT_HAND_EYE_RESULT_PATH,
     _format_sequence,
     _homogeneous_matrix_to_cartesian_position,

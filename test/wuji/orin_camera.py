@@ -28,7 +28,7 @@ from camera_pipeline.service.protocol import (
 
 # Windows 从开发机访问 Orin，Linux 在 Orin 本机访问统一服务。
 DEFAULT_ORIN_SERVICE_ADDR = (
-    "tcp://192.168.1.121:6200"
+    "tcp://192.168.1.128:6200"
     if sys.platform == "win32"
     else "tcp://127.0.0.1:6200"
 )

@@ -2,12 +2,13 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
-from math import atan2, pi, sqrt
+from math import pi
 from typing import Any, cast
 
 import numpy as np
 from qmlinker import QMArm
 from qmlinker.grpc_py import arm_pb2
+from scipy.spatial.transform import Rotation
 
 from src.arm.wuji_arm_protocol import ArmDeviceName
 
@@ -292,9 +293,7 @@ class WujiArmClient(QMArm):
 
             - `x` / `y` / `z` 单位为 m；
             - `roll_deg` / `pitch_deg` / `yaw_deg` 单位为 deg；
-            - RPY 使用 ZYX 欧拉角约定；
-            - 对应旋转矩阵关系为
-                `R = Rz(yaw) @ Ry(pitch) @ Rx(roll)`。
+            - RPY 使用 SciPy 小写外禀 `xyz` 欧拉角约定。
 
         Raises
         ------
@@ -551,18 +550,8 @@ class WujiArmClient(QMArm):
 
         Notes
         -----
-        RPY 使用 ZYX 欧拉角约定：
-
-        ``R = Rz(yaw) @ Ry(pitch) @ Rx(roll)``
-
-        常规情况下分解公式为：
-
-        - `roll  = atan2(R[2, 1], R[2, 2])`
-        - `pitch = atan2(-R[2, 0], sqrt(R[0, 0]^2 + R[1, 0]^2))`
-        - `yaw   = atan2(R[1, 0], R[0, 0])`
-
-        当 `pitch` 接近 ±90 deg 时会出现万向节锁，`roll` 和 `yaw`
-        不再唯一。这里采用固定 `roll=0` 的稳定输出策略。
+        RPY 统一使用 SciPy 小写外禀 `xyz` 欧拉角约定。奇异位姿的分支选择与
+        角度规范化由 SciPy 负责，避免手写分解公式产生另一套约定。
         """
 
         matrix = np.asarray(se3, dtype=float)
@@ -577,35 +566,15 @@ class WujiArmClient(QMArm):
         y = float(matrix[1, 3])
         z = float(matrix[2, 3])
 
-        r00 = float(matrix[0, 0])
-        r10 = float(matrix[1, 0])
-        r20 = float(matrix[2, 0])
-        r21 = float(matrix[2, 1])
-        r22 = float(matrix[2, 2])
-
-        # ZYX 欧拉角分解。
-        # cy 表示 cos(pitch) 的绝对尺度。
-        # 当 cy 接近 0 时，pitch 接近 ±90 deg，此时会出现万向节锁。
-        cy = sqrt(r00 * r00 + r10 * r10)
-
-        if cy > 1e-9:
-            roll_rad = atan2(r21, r22)
-            pitch_rad = atan2(-r20, cy)
-            yaw_rad = atan2(r10, r00)
-        else:
-            # 万向节锁附近，roll 和 yaw 不再唯一。
-            # 这里固定 roll=0，并把剩余旋转量放到 yaw 中，保证输出稳定。
-            roll_rad = 0.0
-            pitch_rad = atan2(-r20, cy)
-            yaw_rad = atan2(-float(matrix[0, 1]), float(matrix[1, 1]))
+        rpy_deg = Rotation.from_matrix(matrix[:3, :3]).as_euler("xyz", degrees=True)
 
         return (
             x,
             y,
             z,
-            float(np.rad2deg(roll_rad)),
-            float(np.rad2deg(pitch_rad)),
-            float(np.rad2deg(yaw_rad)),
+            float(rpy_deg[0]),
+            float(rpy_deg[1]),
+            float(rpy_deg[2]),
         )
 
     # endregion

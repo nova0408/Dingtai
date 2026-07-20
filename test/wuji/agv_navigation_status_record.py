@@ -50,12 +50,12 @@ DEFAULT_IDLE_STABLE_SAMPLE_COUNT = 3
 "观察到运动后，判定最终空闲或到位所需的连续状态数量。"
 
 AGV_IDLE_OR_ARRIVED_STATUSES = frozenset(
-    {"arrived", "succeeded", "success", "idle", "none", "0"}
+    {"idel"}
 )
 "明确表示 AGV 空闲、成功或运动到位的原始状态值。"
 
 AGV_MOVING_STATUSES = frozenset(
-    {"moving", "navigating", "running", "active", "executing", "1"}
+    {"busy"}
 )
 "可能表示 AGV 正在运动或执行导航的原始状态值。"
 # endregion

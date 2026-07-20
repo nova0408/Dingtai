@@ -103,8 +103,10 @@ finally:
 
 `color_bgr` 形状为 `(H, W, 3)`、dtype 为 `uint8`、通道顺序 BGR；
 `depth_mm` 形状为 `(H, W)`、dtype 为 `uint16`、单位 mm，零值表示无效深度。
-`distortion` 是彩色相机 OpenCV 畸变系数元组，通常按
-`(k1, k2, p1, p2, k3, ...)` 排列。
+`distortion` 是彩色相机 OpenCV 8 参数畸变系数元组，固定按
+`(k1, k2, p1, p2, k3, k4, k5, k6)` 排列。上游 ZMQ 的 `data["dist"]`
+使用 Orbbec SDK 顺序 `(k1, k2, k3, k4, k5, k6, p1, p2)`；该差异已在
+`CameraStreamRuntime` 的控制协议边界完成转换，不向算法和 RPC 客户端传播。
 
 ## 进程内 ChArUco 检测 API
 

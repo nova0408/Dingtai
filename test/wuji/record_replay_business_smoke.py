@@ -50,16 +50,20 @@ class _FakeAgvClient:
 
     def __init__(self) -> None:
         self.targets: list[str] = []
+        self._status_read_count = 0
 
     def navigate_to(self, target_name: str) -> None:
         """记录导航目标。"""
 
         self.targets.append(target_name)
+        self._status_read_count = 0
 
     def get_runtime_info(self) -> dict[str, object]:
-        """每次查询均模拟 AGV 已到位。"""
+        """依次模拟 AGV 导航中的 busy 和导航结束后的 idel。"""
 
-        return {"agv_navi_status": "arrived"}
+        self._status_read_count += 1
+        raw_status = "busy" if self._status_read_count == 1 else "idel"
+        return {"agv_navi_status": raw_status}
 
 
 class _FakeDualArmExecutor(DualArmExecutor):

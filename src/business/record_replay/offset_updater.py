@@ -63,7 +63,7 @@ def _cartesian_pose_to_matrix(pose: xCoreSDK_python.CartesianPosition) -> np.nda
     """将 SDK 的 trans(m)+rpy(rad) 位姿转换为 4x4 齐次矩阵。"""
 
     matrix = np.eye(4, dtype=np.float64)
-    matrix[:3, :3] = Rotation.from_euler("XYZ", pose.rpy, degrees=False).as_matrix()
+    matrix[:3, :3] = Rotation.from_euler("xyz", pose.rpy, degrees=False).as_matrix()
     matrix[:3, 3] = np.asarray(pose.trans, dtype=np.float64)
     return matrix
 

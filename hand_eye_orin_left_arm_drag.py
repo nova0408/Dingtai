@@ -590,7 +590,7 @@ def _write_extrinsic_result_file(
         "constraint=T_ref_end @ T_end_camera @ T_board_camera = constant",
         "robot_pose_source=cartPosture(endInRef).trans+rpy",
         "robot_translation_source=cartPosture(endInRef).trans * 1000",
-        "robot_rotation_source=Rotation.from_euler('XYZ', cartPosture(endInRef).rpy, degrees=False)",
+        "robot_rotation_source=Rotation.from_euler('xyz', cartPosture(endInRef).rpy, degrees=False)",
         "board_to_camera_solver=multi_method",
         "camera_to_board_solver=multi_method",
         "",
@@ -871,7 +871,7 @@ def _build_overlay_lines(
 ) -> list[str]:
     joint_text = ", ".join(f"J{index + 1}={value:.1f}" for index, value in enumerate(robot_snapshot.joint_degrees))
     tcp_matrix = _cartesian_pose_to_matrix(robot_snapshot.cartesian_pose)
-    tcp_rpy_deg = Rotation3D.from_matrix(tcp_matrix[:3, :3]).as_euler("XYZ", degrees=True)
+    tcp_rpy_deg = Rotation3D.from_matrix(tcp_matrix[:3, :3]).as_euler("xyz", degrees=True)
     robot_rpy_text = f"({float(tcp_rpy_deg[0]):.1f}, {float(tcp_rpy_deg[1]):.1f}, " f"{float(tcp_rpy_deg[2]):.1f})"
     board_pose_camera_board = None
     if charuco_result.transform_se3 is not None:
@@ -900,7 +900,7 @@ def _build_overlay_lines(
         camera_to_board = calibration_result.camera_to_board
         if board_to_camera is not None:
             flange_camera = np.asarray(board_to_camera.transform_matrix, dtype=np.float64).reshape(4, 4)
-            flange_camera_rpy_deg = Rotation3D.from_matrix(flange_camera[:3, :3]).as_euler("XYZ", degrees=True)
+            flange_camera_rpy_deg = Rotation3D.from_matrix(flange_camera[:3, :3]).as_euler("xyz", degrees=True)
             lines.append(
                 f"T_end_board_mm=({float(flange_camera[0, 3]):.1f}, {float(flange_camera[1, 3]):.1f}, {float(flange_camera[2, 3]):.1f})"
             )
@@ -915,7 +915,7 @@ def _build_overlay_lines(
             )
         if camera_to_board is not None:
             inv_matrix = np.asarray(camera_to_board.transform_matrix, dtype=np.float64).reshape(4, 4)
-            inv_rpy_deg = Rotation3D.from_matrix(inv_matrix[:3, :3]).as_euler("XYZ", degrees=True)
+            inv_rpy_deg = Rotation3D.from_matrix(inv_matrix[:3, :3]).as_euler("xyz", degrees=True)
             lines.append(
                 f"T_end_camera_mm=({float(inv_matrix[0, 3]):.1f}, {float(inv_matrix[1, 3]):.1f}, {float(inv_matrix[2, 3]):.1f})"
             )
@@ -1146,7 +1146,7 @@ def _validate_runtime_requirements() -> None:
 
 def _cartesian_pose_to_matrix(cartesian_pose: xCoreSDK_python.CartesianPosition) -> np.ndarray:
     rotation = Rotation3D.from_euler(
-        "XYZ",
+        "xyz",
         np.asarray(cartesian_pose.rpy, dtype=np.float64).reshape(3),
         degrees=False,
     ).as_matrix()
@@ -1170,7 +1170,7 @@ def _format_pose_text(transform: np.ndarray | None) -> str:
     if transform is None:
         return "NA"
     matrix = np.asarray(transform, dtype=np.float64).reshape(4, 4)
-    rpy_deg = Rotation3D.from_matrix(matrix[:3, :3]).as_euler("XYZ", degrees=True)
+    rpy_deg = Rotation3D.from_matrix(matrix[:3, :3]).as_euler("xyz", degrees=True)
     return (
         f"t_mm=({float(matrix[0, 3]):.1f}, {float(matrix[1, 3]):.1f}, {float(matrix[2, 3]):.1f}) "
         f"rpy_deg=({float(rpy_deg[0]):.1f}, {float(rpy_deg[1]):.1f}, {float(rpy_deg[2]):.1f})"

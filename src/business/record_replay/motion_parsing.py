@@ -15,7 +15,7 @@ class ParsedArmPose:
     xyz_mm: tuple[float, float, float]
     "平移坐标，单位 mm。"
     rpy_deg: tuple[float, float, float]
-    "XYZ 欧拉角，单位 deg。"
+    "SciPy 小写外禀 xyz 欧拉角，单位 deg。"
     has_elbow: bool | None
     "肘部约束开关；None 表示复用当前上下文。"
     elbow_deg: float | None

@@ -5,6 +5,7 @@ import ast
 import csv
 import gc
 import math
+import subprocess
 import sys
 import time
 from dataclasses import dataclass
@@ -34,8 +35,16 @@ from src.wuji.body_client import WujiBodyClient
 from src.wuji.dahuan_gripper_client import DahuanGripperClient
 from src.wuji.right_hand_client import WujiRightHandClient
 
-LEFT_ARM_IP = "192.168.1.161"
-RIGHT_ARM_IP = "192.168.1.160"
+# 机械臂控制器位于 Orin 所连交换机的新网段。
+LEFT_ARM_CONTROLLER_IP = "192.168.100.161"
+RIGHT_ARM_CONTROLLER_IP = "192.168.100.160"
+# 两台机械臂分别使用独立 loopback 地址，以复用 SDK 固定端口。
+LEFT_ARM_IP = "127.0.0.2"
+RIGHT_ARM_IP = "127.0.0.3"
+ARM_SSH_ALIAS = "orin"
+# 实测当前 xCoreSDK 构造对象需要 6666/7777；同时保留控制器与升级服务端口。
+ARM_SSH_FORWARD_PORTS: tuple[int, ...] = (5050, 4567, 6666, 7777)
+ARM_SSH_START_WAIT_S = 1.0
 MM_PER_M = 1000.0
 DEFAULT_CARTESIAN_SPEED = 50.0
 DEFAULT_CARTESIAN_ZONE = 1.0
@@ -46,8 +55,8 @@ DEFAULT_PREDEFINED_JOINT_ZONE = 10.0
 DEFAULT_POWER_ON_TIMEOUT_S = 3.0
 DEFAULT_REQUEST_TIMEOUT_S = 10.0
 POSITION_POLL_INTERVAL_S = 0.2
-LIFT_SETTLE_DELAY_S = 4.0
-LIFT_RETRY_COUNT = 3
+LIFT_MOTION_TIMEOUT_S = 10.0
+LIFT_POLL_INTERVAL_S = 0.1
 LIFT_HEIGHT_TOLERANCE_MM = 1.0
 DEFAULT_TOOL_NAME = "g_tool_0"
 DEFAULT_WOBJ_NAME = "g_wobj_0"
@@ -67,7 +76,7 @@ class ConnectedArm:
     "机械臂侧别，取值为 `left` 或 `right`。"
 
     robot_ip: str
-    "机器人控制器 IP 地址。"
+    "SDK 本地连接地址，经 SSH 转发到机器人控制器。"
 
     robot: xCoreSDK_python.xMateErProRobot
     "SDK 机器人对象。"
@@ -813,31 +822,53 @@ def _read_lift_height_mm(result: object) -> float:
 
 
 def _wait_lift_until_near_target(body: WujiBodyClient, target_height_mm: int) -> float:
-    """等待 lift 尽量接近目标高度，并返回最终物理高度。"""
+    """在总超时内持续等待 lift 到位，未到位时禁止放行后续动作。"""
 
     lift = body.lift
-    time.sleep(LIFT_SETTLE_DELAY_S)
-    attempt_index = 0
-    current_height_mm = _read_lift_height_mm(lift.get_lift_physical_height())
-    while attempt_index < LIFT_RETRY_COUNT:
-        if current_height_mm == -1.0:
-            print("lift 返回值 -1，判定为无效读数，立即重新请求且不计次数")
-            current_height_mm = _read_lift_height_mm(lift.get_lift_physical_height())
+    deadline = time.monotonic() + LIFT_MOTION_TIMEOUT_S
+    valid_read_index = 0
+    while True:
+        current_height_mm = _read_lift_height_mm(lift.get_lift_physical_height())
+        if current_height_mm < 0.0:
+            if time.monotonic() >= deadline:
+                raise TimeoutError(
+                    f"等待 lift 有效高度超时: target={target_height_mm} mm, "
+                    f"timeout={LIFT_MOTION_TIMEOUT_S:.1f} s, last={current_height_mm:.1f} mm"
+                )
+            print(f"lift 返回无效高度 {current_height_mm:.1f} mm，判定为通信失败并立即重读")
             continue
+        valid_read_index += 1
         current_error_mm = abs(current_height_mm - float(target_height_mm))
-        print(
-            f"lift 到位检查 {attempt_index + 1}/{LIFT_RETRY_COUNT}: "
-            f"target={target_height_mm} mm, actual={current_height_mm:.1f} mm, error={current_error_mm:.1f} mm"
-        )
+        # print(
+        #     f"lift 到位检查 valid_read={valid_read_index}: "
+        #     f"target={target_height_mm} mm, actual={current_height_mm:.1f} mm, error={current_error_mm:.1f} mm"
+        # )
         if current_error_mm <= LIFT_HEIGHT_TOLERANCE_MM:
             return current_height_mm
-        attempt_index += 1
-        if attempt_index < LIFT_RETRY_COUNT:
-            lift.set_lift_physical_height(target_height_mm)
-            print(f"lift 超出误差，重新下发目标高度: {target_height_mm} mm")
-            time.sleep(LIFT_SETTLE_DELAY_S)
-            current_height_mm = _read_lift_height_mm(lift.get_lift_physical_height())
-    return current_height_mm
+        remaining_s = deadline - time.monotonic()
+        if remaining_s <= 0.0:
+            raise TimeoutError(
+                f"等待 lift 到位超时: target={target_height_mm} mm, actual={current_height_mm:.1f} mm, "
+                f"error={current_error_mm:.1f} mm, timeout={LIFT_MOTION_TIMEOUT_S:.1f} s"
+            )
+        time.sleep(min(LIFT_POLL_INTERVAL_S, remaining_s))
+
+
+def _read_valid_lift_height_mm(body: WujiBodyClient) -> float:
+    """在总超时内持续读取 lift，通信无效值不向用户显示。"""
+
+    lift = body.lift
+    deadline = time.monotonic() + LIFT_MOTION_TIMEOUT_S
+    while True:
+        current_height_mm = _read_lift_height_mm(lift.get_lift_physical_height())
+        if current_height_mm >= 0.0:
+            return current_height_mm
+        if time.monotonic() >= deadline:
+            raise TimeoutError(
+                f"读取 lift 有效高度超时: timeout={LIFT_MOTION_TIMEOUT_S:.1f} s, "
+                f"last={current_height_mm:.1f} mm"
+            )
+        print(f"lift 返回无效高度 {current_height_mm:.1f} mm，判定为通信失败并立即重读")
 
 
 def _run_gripper_control_prompt(client: DahuanGripperClient, prompt: str) -> float | None:
@@ -875,7 +906,7 @@ def _manual_lift_record(body: WujiBodyClient, records: list[dict[str, str]]) -> 
 
     lift = body.lift
     lift.set_enable(True)
-    current_height_mm = _read_lift_height_mm(lift.get_lift_physical_height())
+    current_height_mm = _read_valid_lift_height_mm(body)
     print(f"当前 lift 物理高度(mm): {current_height_mm:.1f}")
     raw_value = input("请输入 lift 目标高度(mm)并回车: ").strip()
     if raw_value == "":
@@ -988,7 +1019,7 @@ def _temporary_lift_control(body: WujiBodyClient) -> None:
     lift = body.lift
     lift.set_enable(True)
     while True:
-        current_height_mm = _read_lift_height_mm(lift.get_lift_physical_height())
+        current_height_mm = _read_valid_lift_height_mm(body)
         print(f"当前 lift 物理高度(mm): {current_height_mm:.1f}")
         raw_value = input("请输入 lift 目标高度(mm)，或输入 q 返回: ").strip().lower()
         if raw_value == "q":
@@ -1030,6 +1061,49 @@ def _write_drag_records_csv(records: list[dict[str, str]], arm_side: str) -> Pat
 
 
 # region 机器人控制
+def _start_arm_ssh_tunnel() -> subprocess.Popen[bytes]:
+    """通过 Orin 为两台机械臂建立 SDK 固定端口转发。"""
+
+    arm_routes = (
+        (LEFT_ARM_IP, LEFT_ARM_CONTROLLER_IP),
+        (RIGHT_ARM_IP, RIGHT_ARM_CONTROLLER_IP),
+    )
+    command = [
+        "ssh",
+        "-o",
+        "ExitOnForwardFailure=yes",
+        "-o",
+        "ServerAliveInterval=5",
+        "-o",
+        "ServerAliveCountMax=3",
+        "-o",
+        "TCPKeepAlive=yes",
+        "-N",
+    ]
+    for local_ip, controller_ip in arm_routes:
+        for port in ARM_SSH_FORWARD_PORTS:
+            command.extend(["-L", f"{local_ip}:{port}:{controller_ip}:{port}"])
+    command.append(ARM_SSH_ALIAS)
+
+    logger.info(
+        "启动双臂 SSH 转发，left={} -> {}，right={} -> {}，ports={}",
+        LEFT_ARM_IP,
+        LEFT_ARM_CONTROLLER_IP,
+        RIGHT_ARM_IP,
+        RIGHT_ARM_CONTROLLER_IP,
+        ARM_SSH_FORWARD_PORTS,
+    )
+    process = subprocess.Popen(command, stderr=subprocess.PIPE)
+    time.sleep(ARM_SSH_START_WAIT_S)
+    if process.poll() is None:
+        logger.success("双臂 SSH 转发启动成功，pid={}", process.pid)
+        return process
+
+    stderr_data = process.stderr.read() if process.stderr is not None else b""
+    error_text = stderr_data.decode("utf-8", errors="replace").strip()
+    raise RuntimeError(f"双臂 SSH 转发启动失败: {error_text or 'ssh 提前退出'}")
+
+
 def _detect_arm_side(robot_type: str) -> str:
     """根据控制器上报的机型名称判断左右臂。"""
 
@@ -1720,30 +1794,34 @@ def _main_menu(connected_arms: dict[str, ConnectedArm], hand_clients: Persistent
 def main() -> int:
     """程序入口。"""
 
-    connected_arms = _connect_arms()
-    gripper_process, gripper_channel = create_wuyou_channel(GRIPPER_PORT)
-    right_hand_process, right_hand_channel = create_wuyou_channel(DEFAULT_PORT)
-    hand_clients = PersistentHandClients(
-        gripper_process=gripper_process,
-        gripper=DahuanGripperClient(gripper_channel),
-        right_hand_process=right_hand_process,
-        right_hand=WujiRightHandClient(right_hand_channel),
-        body=WujiBodyClient(right_hand_channel),
-    )
+    arm_ssh_process = _start_arm_ssh_tunnel()
     try:
-        _main_menu(connected_arms, hand_clients)
-        return 0
+        connected_arms = _connect_arms()
+        gripper_process, gripper_channel = create_wuyou_channel(GRIPPER_PORT)
+        right_hand_process, right_hand_channel = create_wuyou_channel(DEFAULT_PORT)
+        hand_clients = PersistentHandClients(
+            gripper_process=gripper_process,
+            gripper=DahuanGripperClient(gripper_channel),
+            right_hand_process=right_hand_process,
+            right_hand=WujiRightHandClient(right_hand_channel),
+            body=WujiBodyClient(right_hand_channel),
+        )
+        try:
+            _main_menu(connected_arms, hand_clients)
+            return 0
+        finally:
+            preserved_gripper_process = hand_clients.gripper_process
+            preserved_right_hand_process = hand_clients.right_hand_process
+            for connected_arm in connected_arms.values():
+                _shutdown_robot(connected_arm.robot, connected_arm.ec)
+            del hand_clients
+            gc.collect()
+            close_wuyou_channel(gripper_channel)
+            close_wuyou_channel(right_hand_channel)
+            stop_ssh_process(preserved_gripper_process)
+            stop_ssh_process(preserved_right_hand_process)
     finally:
-        preserved_gripper_process = hand_clients.gripper_process
-        preserved_right_hand_process = hand_clients.right_hand_process
-        for connected_arm in connected_arms.values():
-            _shutdown_robot(connected_arm.robot, connected_arm.ec)
-        del hand_clients
-        gc.collect()
-        close_wuyou_channel(gripper_channel)
-        close_wuyou_channel(right_hand_channel)
-        stop_ssh_process(preserved_gripper_process)
-        stop_ssh_process(preserved_right_hand_process)
+        stop_ssh_process(arm_ssh_process)
 
 
 if __name__ == "__main__":

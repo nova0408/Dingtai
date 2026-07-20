@@ -12,6 +12,9 @@ from types import FrameType
 
 from loguru import logger
 
+if sys.platform == "win32":
+    import msvcrt
+
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -58,10 +61,12 @@ TUNNEL_READY_TIMEOUT_S = 5.0
 
 LEFT_RECORD_DIR = PROJECT_ROOT / "record_left"
 RIGHT_RECORD_DIR = PROJECT_ROOT / "record_right"
-TRIGGER_FILE = PROJECT_ROOT / "record__replay_next_cycle.trigger"
 OFFSET_CAMERA_NAME = "left_hand_camera"
 OFFSET_PRIOR_CAPTURE_PATH = PROJECT_ROOT / "test" / "wuji" / ".archive" / "ball_pose_detection_capture" / "summary.json"
 HAND_EYE_RESULT_PATH = PROJECT_ROOT / "experiments" / "hand_eye" / "runs" / "20260708_152829" / "hand_eye_result.txt"
+
+DEFAULT_AGV_POINT = "3"
+"按下 a 后首先导航到的 AGV 地图站点名称。"
 
 # endregion
 
@@ -259,6 +264,29 @@ def _raise_keyboard_interrupt(signum: int, frame: FrameType | None) -> None:
     raise KeyboardInterrupt
 
 
+def _read_trigger_key() -> str:
+    """读取启动按键，Windows 使用单键输入，其他平台使用标准输入。"""
+
+    if sys.platform == "win32":
+        return msvcrt.getwch().lower()
+    return input().strip().lower()[:1]
+
+
+def _run_on_keypress(service: RecordReplayCycleService) -> None:
+    """按下 a 时执行一轮 AGV 导航与双臂动作，按 q 退出。"""
+
+    logger.info("双臂服务已启动：按 a 导航到 {} 并执行双臂动作，按 q 退出", DEFAULT_AGV_POINT)
+    while True:
+        key = _read_trigger_key()
+        if key == "a":
+            logger.info("收到 a 键，开始导航到 AGV 站点 {}", DEFAULT_AGV_POINT)
+            service.run_once()
+            logger.success("本轮 AGV 导航与双臂动作执行完成，可再次按 a 启动下一轮")
+        elif key == "q":
+            logger.info("收到 q 键，退出本机双臂测试")
+            return
+
+
 def main() -> None:
     """启动本机双臂常态化测试服务。"""
 
@@ -273,7 +301,7 @@ def main() -> None:
                 RIGHT_RECORD_DIR,
                 tunnel_group.device_connection,
                 service_settings,
-                trigger_file=TRIGGER_FILE,
+                start_station=DEFAULT_AGV_POINT,
             )
         )
         offset_config = OffsetConfig(
@@ -293,8 +321,7 @@ def main() -> None:
             tunnel_group,
             offset_updater=GlobalOffsetUpdater(offset_config, detector),
         )
-        logger.info("双臂服务已启动，创建触发文件后执行下一轮：{}", TRIGGER_FILE)
-        service.run_forever()
+        _run_on_keypress(service)
     finally:
         tunnel_group.close()
 

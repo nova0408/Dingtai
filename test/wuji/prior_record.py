@@ -22,7 +22,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 DEFAULT_BALL_CAMERA_NAME = "left_hand_camera"
 DEFAULT_HEAD_CAMERA_NAME = "head_camera"
-DEFAULT_SERVICE_ADDR = "tcp://192.168.1.121:6200"
+DEFAULT_SERVICE_ADDR = "tcp://192.168.1.128:6200"
 DEFAULT_TIMEOUT_MS = 60_000
 DEFAULT_CAMERA_TIMEOUT_S = 10.0
 DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "test" / "wuji" / ".archive" / "prior_record"
@@ -124,7 +124,7 @@ def _pose_snapshot_from_sdk_pose(cartesian_pose: xCoreSDK_python.CartesianPositi
 
 def _matrix_to_pose_snapshot(pose_matrix: np.ndarray) -> PoseSnapshot:
     matrix = np.asarray(pose_matrix, dtype=np.float64).reshape(4, 4)
-    rpy_deg = Rotation.from_matrix(matrix[:3, :3]).as_euler("XYZ", degrees=True)
+    rpy_deg = Rotation.from_matrix(matrix[:3, :3]).as_euler("xyz", degrees=True)
     return PoseSnapshot(
         pose_matrix=matrix,
         translation_mm=(float(matrix[0, 3]), float(matrix[1, 3]), float(matrix[2, 3])),
@@ -489,7 +489,7 @@ def _build_depth_view(depth_mm: np.ndarray) -> np.ndarray:
 
 def _matrix_to_xyzrpy(transform: np.ndarray) -> tuple[float, float, float, float, float, float]:
     rotation = Rotation.from_matrix(np.asarray(transform[:3, :3], dtype=np.float64))
-    roll_deg, pitch_deg, yaw_deg = rotation.as_euler("XYZ", degrees=True)
+    roll_deg, pitch_deg, yaw_deg = rotation.as_euler("xyz", degrees=True)
     translation = np.asarray(transform[:3, 3], dtype=np.float64)
     return (
         float(translation[0]),

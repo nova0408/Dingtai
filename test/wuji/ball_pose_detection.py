@@ -27,7 +27,7 @@ from camera_pipeline.client import CameraPipelineClient
 
 DEFAULT_CAMERA_NAME = "left_hand_camera"
 # 远端统一 camera_pipeline 服务地址；在 Orin 本机执行时建议覆盖为 tcp://127.0.0.1:6200
-DEFAULT_SERVICE_ADDR = "tcp://192.168.1.121:6200"
+DEFAULT_SERVICE_ADDR = "tcp://192.168.1.128:6200"
 # RPC 超时时间，单位 ms
 DEFAULT_TIMEOUT_MS = 60_000
 # 等待稳定帧超时时间，单位 s
