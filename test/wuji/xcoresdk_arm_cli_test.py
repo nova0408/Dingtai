@@ -46,8 +46,8 @@ DEFAULT_PREDEFINED_JOINT_ZONE = 10.0
 DEFAULT_POWER_ON_TIMEOUT_S = 3.0
 DEFAULT_REQUEST_TIMEOUT_S = 10.0
 POSITION_POLL_INTERVAL_S = 0.2
-LIFT_SETTLE_DELAY_S = 4.0
-LIFT_RETRY_COUNT = 3
+LIFT_MOTION_TIMEOUT_S = 10.0
+LIFT_POLL_INTERVAL_S = 0.1
 LIFT_HEIGHT_TOLERANCE_MM = 1.0
 DEFAULT_TOOL_NAME = "g_tool_0"
 DEFAULT_WOBJ_NAME = "g_wobj_0"
@@ -813,31 +813,53 @@ def _read_lift_height_mm(result: object) -> float:
 
 
 def _wait_lift_until_near_target(body: WujiBodyClient, target_height_mm: int) -> float:
-    """等待 lift 尽量接近目标高度，并返回最终物理高度。"""
+    """在总超时内持续等待 lift 到位，未到位时禁止放行后续动作。"""
 
     lift = body.lift
-    time.sleep(LIFT_SETTLE_DELAY_S)
-    attempt_index = 0
-    current_height_mm = _read_lift_height_mm(lift.get_lift_physical_height())
-    while attempt_index < LIFT_RETRY_COUNT:
-        if current_height_mm == -1.0:
-            print("lift 返回值 -1，判定为无效读数，立即重新请求且不计次数")
-            current_height_mm = _read_lift_height_mm(lift.get_lift_physical_height())
+    deadline = time.monotonic() + LIFT_MOTION_TIMEOUT_S
+    valid_read_index = 0
+    while True:
+        current_height_mm = _read_lift_height_mm(lift.get_lift_physical_height())
+        if current_height_mm < 0.0:
+            if time.monotonic() >= deadline:
+                raise TimeoutError(
+                    f"等待 lift 有效高度超时: target={target_height_mm} mm, "
+                    f"timeout={LIFT_MOTION_TIMEOUT_S:.1f} s, last={current_height_mm:.1f} mm"
+                )
+            print(f"lift 返回无效高度 {current_height_mm:.1f} mm，判定为通信失败并立即重读")
             continue
+        valid_read_index += 1
         current_error_mm = abs(current_height_mm - float(target_height_mm))
-        print(
-            f"lift 到位检查 {attempt_index + 1}/{LIFT_RETRY_COUNT}: "
-            f"target={target_height_mm} mm, actual={current_height_mm:.1f} mm, error={current_error_mm:.1f} mm"
-        )
+        # print(
+        #     f"lift 到位检查 valid_read={valid_read_index}: "
+        #     f"target={target_height_mm} mm, actual={current_height_mm:.1f} mm, error={current_error_mm:.1f} mm"
+        # )
         if current_error_mm <= LIFT_HEIGHT_TOLERANCE_MM:
             return current_height_mm
-        attempt_index += 1
-        if attempt_index < LIFT_RETRY_COUNT:
-            lift.set_lift_physical_height(target_height_mm)
-            print(f"lift 超出误差，重新下发目标高度: {target_height_mm} mm")
-            time.sleep(LIFT_SETTLE_DELAY_S)
-            current_height_mm = _read_lift_height_mm(lift.get_lift_physical_height())
-    return current_height_mm
+        remaining_s = deadline - time.monotonic()
+        if remaining_s <= 0.0:
+            raise TimeoutError(
+                f"等待 lift 到位超时: target={target_height_mm} mm, actual={current_height_mm:.1f} mm, "
+                f"error={current_error_mm:.1f} mm, timeout={LIFT_MOTION_TIMEOUT_S:.1f} s"
+            )
+        time.sleep(min(LIFT_POLL_INTERVAL_S, remaining_s))
+
+
+def _read_valid_lift_height_mm(body: WujiBodyClient) -> float:
+    """在总超时内持续读取 lift，通信无效值不向用户显示。"""
+
+    lift = body.lift
+    deadline = time.monotonic() + LIFT_MOTION_TIMEOUT_S
+    while True:
+        current_height_mm = _read_lift_height_mm(lift.get_lift_physical_height())
+        if current_height_mm >= 0.0:
+            return current_height_mm
+        if time.monotonic() >= deadline:
+            raise TimeoutError(
+                f"读取 lift 有效高度超时: timeout={LIFT_MOTION_TIMEOUT_S:.1f} s, "
+                f"last={current_height_mm:.1f} mm"
+            )
+        print(f"lift 返回无效高度 {current_height_mm:.1f} mm，判定为通信失败并立即重读")
 
 
 def _run_gripper_control_prompt(client: DahuanGripperClient, prompt: str) -> float | None:
@@ -875,7 +897,7 @@ def _manual_lift_record(body: WujiBodyClient, records: list[dict[str, str]]) -> 
 
     lift = body.lift
     lift.set_enable(True)
-    current_height_mm = _read_lift_height_mm(lift.get_lift_physical_height())
+    current_height_mm = _read_valid_lift_height_mm(body)
     print(f"当前 lift 物理高度(mm): {current_height_mm:.1f}")
     raw_value = input("请输入 lift 目标高度(mm)并回车: ").strip()
     if raw_value == "":
@@ -988,7 +1010,7 @@ def _temporary_lift_control(body: WujiBodyClient) -> None:
     lift = body.lift
     lift.set_enable(True)
     while True:
-        current_height_mm = _read_lift_height_mm(lift.get_lift_physical_height())
+        current_height_mm = _read_valid_lift_height_mm(body)
         print(f"当前 lift 物理高度(mm): {current_height_mm:.1f}")
         raw_value = input("请输入 lift 目标高度(mm)，或输入 q 返回: ").strip().lower()
         if raw_value == "q":

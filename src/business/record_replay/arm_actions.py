@@ -223,10 +223,10 @@ def _apply_global_offset(
     if matrix.shape != (4, 4):
         raise ValueError(f"全局纠偏矩阵必须为 (4, 4)，实际为 {matrix.shape}")
     tcp_matrix = np.eye(4, dtype=np.float64)
-    tcp_matrix[:3, :3] = Rotation.from_euler("XYZ", target_pose.rpy, degrees=False).as_matrix()
+    tcp_matrix[:3, :3] = Rotation.from_euler("xyz", target_pose.rpy, degrees=False).as_matrix()
     tcp_matrix[:3, 3] = np.asarray(target_pose.trans, dtype=np.float64)
     corrected = matrix @ tcp_matrix
-    rpy_rad = Rotation.from_matrix(corrected[:3, :3]).as_euler("XYZ", degrees=False)
+    rpy_rad = Rotation.from_matrix(corrected[:3, :3]).as_euler("xyz", degrees=False)
     corrected_pose = xCoreSDK_python.CartesianPosition(corrected[:3, 3].tolist() + rpy_rad.tolist())
     corrected_pose.confData = list(target_pose.confData)
     corrected_pose.hasElbow = target_pose.hasElbow

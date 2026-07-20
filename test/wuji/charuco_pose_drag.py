@@ -316,7 +316,7 @@ def _pose_snapshot_from_matrix_m(pose_matrix: np.ndarray) -> PoseSnapshot:
     """
 
     matrix = np.asarray(pose_matrix, dtype=np.float64).reshape(4, 4)
-    rpy_deg = Rotation3D.from_matrix(matrix[:3, :3]).as_euler("XYZ", degrees=True)
+    rpy_deg = Rotation3D.from_matrix(matrix[:3, :3]).as_euler("xyz", degrees=True)
     return PoseSnapshot(
         pose_matrix=matrix,
         translation_mm=(float(matrix[0, 3] * 1000.0), float(matrix[1, 3] * 1000.0), float(matrix[2, 3] * 1000.0)),

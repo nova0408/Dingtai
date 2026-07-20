@@ -236,7 +236,7 @@ def _parse_base_board_mean_from_result(lines: list[str]) -> np.ndarray:
         if match is None:
             continue
         x_mm, y_mm, z_mm, roll_deg, pitch_deg, yaw_deg = [float(value) for value in match.groups()]
-        sample_rotations.append(Rotation3D.from_euler("XYZ", [roll_deg, pitch_deg, yaw_deg], degrees=True).as_matrix())
+        sample_rotations.append(Rotation3D.from_euler("xyz", [roll_deg, pitch_deg, yaw_deg], degrees=True).as_matrix())
     if mean_translation_m is None or not sample_rotations:
         raise ValueError("hand_eye_result.txt 中缺少 [per_sample_base_board] 段，无法恢复 T_base_board")
     mean_rotation = _mean_rotation_matrix(sample_rotations)
@@ -520,7 +520,7 @@ def _pose_snapshot_from_sdk_pose(cartesian_pose: xCoreSDK_python.CartesianPositi
 
 def _pose_snapshot_from_matrix_m(pose_matrix: np.ndarray) -> PoseSnapshot:
     matrix = np.asarray(pose_matrix, dtype=np.float64).reshape(4, 4)
-    rpy_deg = Rotation3D.from_matrix(matrix[:3, :3]).as_euler("XYZ", degrees=True)
+    rpy_deg = Rotation3D.from_matrix(matrix[:3, :3]).as_euler("xyz", degrees=True)
     return PoseSnapshot(
         pose_matrix=matrix,
         translation_mm=(float(matrix[0, 3] * 1000.0), float(matrix[1, 3] * 1000.0), float(matrix[2, 3] * 1000.0)),

@@ -1,6 +1,6 @@
 # 双臂记录回放服务
 
-本包从 `test/wuji/record_left_replay_cli.py` 拆分而来，但业务代码不导入
+本包从 `test/wuji/record_replay_cli.py` 拆分而来，但业务代码不导入
 `test` 目录。它只负责自动双臂回放：AGV 到执行点、CSV 回放、AGV 返回等待点。
 
 ## 循环状态

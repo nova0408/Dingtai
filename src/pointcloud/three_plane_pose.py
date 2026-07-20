@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 import open3d as o3d
+from scipy.spatial.transform import Rotation
 
 from src.utils.datas import Axis, Point, Vector
 
@@ -240,20 +241,11 @@ def rotation_matrix_to_rpy_deg(rotation: np.ndarray) -> np.ndarray:
 
     Notes
     -----
-    当 pitch 接近奇异位姿时使用简化分支，并将 yaw 置为 0。
+    统一使用 SciPy 小写外禀 `xyz` 约定。奇异位姿的分支选择和角度规范化由
+    SciPy 负责。
     """
-    r = np.asarray(rotation, dtype=np.float64)
-    # sy 是 R 的第一列在 XY 平面的长度，用于判断 pitch 接近 +/-90 度的奇异情况。
-    sy = float(np.sqrt(r[0, 0] * r[0, 0] + r[1, 0] * r[1, 0]))
-    if sy >= 1e-8:
-        roll = np.arctan2(r[2, 1], r[2, 2])
-        pitch = np.arctan2(-r[2, 0], sy)
-        yaw = np.arctan2(r[1, 0], r[0, 0])
-    else:
-        roll = np.arctan2(-r[1, 2], r[1, 1])
-        pitch = np.arctan2(-r[2, 0], sy)
-        yaw = 0.0
-    return np.rad2deg(np.asarray([roll, pitch, yaw], dtype=np.float64))
+    rotation_matrix = np.asarray(rotation, dtype=np.float64).reshape(3, 3)
+    return Rotation.from_matrix(rotation_matrix).as_euler("xyz", degrees=True)
 
 
 # endregion

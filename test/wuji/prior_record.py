@@ -124,7 +124,7 @@ def _pose_snapshot_from_sdk_pose(cartesian_pose: xCoreSDK_python.CartesianPositi
 
 def _matrix_to_pose_snapshot(pose_matrix: np.ndarray) -> PoseSnapshot:
     matrix = np.asarray(pose_matrix, dtype=np.float64).reshape(4, 4)
-    rpy_deg = Rotation.from_matrix(matrix[:3, :3]).as_euler("XYZ", degrees=True)
+    rpy_deg = Rotation.from_matrix(matrix[:3, :3]).as_euler("xyz", degrees=True)
     return PoseSnapshot(
         pose_matrix=matrix,
         translation_mm=(float(matrix[0, 3]), float(matrix[1, 3]), float(matrix[2, 3])),
@@ -489,7 +489,7 @@ def _build_depth_view(depth_mm: np.ndarray) -> np.ndarray:
 
 def _matrix_to_xyzrpy(transform: np.ndarray) -> tuple[float, float, float, float, float, float]:
     rotation = Rotation.from_matrix(np.asarray(transform[:3, :3], dtype=np.float64))
-    roll_deg, pitch_deg, yaw_deg = rotation.as_euler("XYZ", degrees=True)
+    roll_deg, pitch_deg, yaw_deg = rotation.as_euler("xyz", degrees=True)
     translation = np.asarray(transform[:3, 3], dtype=np.float64)
     return (
         float(translation[0]),

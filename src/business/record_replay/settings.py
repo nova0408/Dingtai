@@ -97,10 +97,20 @@ class ReplayArmSettings:
 class ReplayHandSettings:
     """夹爪、M11 与升降动作参数。"""
 
-    lift_settle_delay_s: float = 1.0
-    "升降机构单次到位等待时间，单位 s。"
-    lift_retry_count: int = 2
-    "升降机构最大重试次数。"
+    m11_state_read_timeout_s: float = 10.0
+    "读取至少 11 个有效右手执行器状态的总超时时间，单位 s。"
+    m11_state_read_poll_interval_s: float = 0.1
+    "右手状态内容无效时的重新读取间隔，单位 s。"
+    lift_enable_state_timeout_s: float = 10.0
+    "下发 lift enable 后等待 get_enable() 状态为 True 的总超时时间，单位 s。"
+    lift_enable_retry_interval_s: float = 0.2
+    "lift enable 状态尚未生效时的重新下发间隔，单位 s。"
+    lift_target_reissue_interval_s: float = 1.0
+    "lift 实际高度尚未到位时重新下发目标高度的间隔，单位 s。"
+    lift_motion_timeout_s: float = 30.0
+    "等待升降机构到位的总超时时间，单位 s。"
+    lift_poll_interval_s: float = 0.1
+    "有效高度尚未到位时的轮询间隔，单位 s；负数通信无效值立即重读。"
     lift_height_tolerance_mm: float = 4.0
     "升降机构到位误差容忍，单位 mm。"
     m11_root_actuator_ids: tuple[int, ...] = (3, 5, 7, 9)

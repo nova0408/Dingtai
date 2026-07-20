@@ -52,9 +52,9 @@ def main() -> int:
                 f"{base_board[0, 3] * 1000.0:.3f}",
                 f"{base_board[1, 3] * 1000.0:.3f}",
                 f"{base_board[2, 3] * 1000.0:.3f}",
-                f"{Rotation3D.from_matrix(base_board[:3, :3]).as_euler('XYZ', degrees=True)[0]:.3f}",
-                f"{Rotation3D.from_matrix(base_board[:3, :3]).as_euler('XYZ', degrees=True)[1]:.3f}",
-                f"{Rotation3D.from_matrix(base_board[:3, :3]).as_euler('XYZ', degrees=True)[2]:.3f}",
+                f"{Rotation3D.from_matrix(base_board[:3, :3]).as_euler('xyz', degrees=True)[0]:.3f}",
+                f"{Rotation3D.from_matrix(base_board[:3, :3]).as_euler('xyz', degrees=True)[1]:.3f}",
+                f"{Rotation3D.from_matrix(base_board[:3, :3]).as_euler('xyz', degrees=True)[2]:.3f}",
                 t_err_mm,
                 r_err_deg,
             )
@@ -65,9 +65,9 @@ def main() -> int:
                 f"{base_board[0, 3] * 1000.0:.3f}",
                 f"{base_board[1, 3] * 1000.0:.3f}",
                 f"{base_board[2, 3] * 1000.0:.3f}",
-                f"{Rotation3D.from_matrix(base_board[:3, :3]).as_euler('XYZ', degrees=True)[0]:.3f}",
-                f"{Rotation3D.from_matrix(base_board[:3, :3]).as_euler('XYZ', degrees=True)[1]:.3f}",
-                f"{Rotation3D.from_matrix(base_board[:3, :3]).as_euler('XYZ', degrees=True)[2]:.3f}",
+                f"{Rotation3D.from_matrix(base_board[:3, :3]).as_euler('xyz', degrees=True)[0]:.3f}",
+                f"{Rotation3D.from_matrix(base_board[:3, :3]).as_euler('xyz', degrees=True)[1]:.3f}",
+                f"{Rotation3D.from_matrix(base_board[:3, :3]).as_euler('xyz', degrees=True)[2]:.3f}",
             )
 
     if errors_t:

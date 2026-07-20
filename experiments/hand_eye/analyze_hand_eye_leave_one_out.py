@@ -158,7 +158,7 @@ def _robot_pose_from_csv(row: dict[str, str]) -> np.ndarray:
         [float(row["robot_tcp_roll_deg"]), float(row["robot_tcp_pitch_deg"]), float(row["robot_tcp_yaw_deg"])],
         dtype=np.float64,
     )
-    rotation = Rotation3D.from_euler("XYZ", rpy_deg, degrees=True).as_matrix()
+    rotation = Rotation3D.from_euler("xyz", rpy_deg, degrees=True).as_matrix()
     pose = np.eye(4, dtype=np.float64)
     pose[:3, :3] = rotation
     pose[:3, 3] = translation

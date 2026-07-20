@@ -8,6 +8,7 @@ from typing import Any
 
 import numpy as np
 from loguru import logger
+from scipy.spatial.transform import Rotation
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
@@ -117,42 +118,15 @@ def _xyzrpy_to_pose(
 
     Notes
     -----
-    RPY 使用 ZYX 欧拉角约定：
-
-    ``R = Rz(yaw) @ Ry(pitch) @ Rx(roll)``
+    RPY 使用 SciPy 小写外禀 `xyz` 欧拉角约定。
     """
 
-    roll_rad = np.deg2rad(roll_deg)
-    pitch_rad = np.deg2rad(pitch_deg)
-    yaw_rad = np.deg2rad(yaw_deg)
-
-    rx = np.array(
-        [
-            [1.0, 0.0, 0.0],
-            [0.0, np.cos(roll_rad), -np.sin(roll_rad)],
-            [0.0, np.sin(roll_rad), np.cos(roll_rad)],
-        ],
-        dtype=float,
-    )
-    ry = np.array(
-        [
-            [np.cos(pitch_rad), 0.0, np.sin(pitch_rad)],
-            [0.0, 1.0, 0.0],
-            [-np.sin(pitch_rad), 0.0, np.cos(pitch_rad)],
-        ],
-        dtype=float,
-    )
-    rz = np.array(
-        [
-            [np.cos(yaw_rad), -np.sin(yaw_rad), 0.0],
-            [np.sin(yaw_rad), np.cos(yaw_rad), 0.0],
-            [0.0, 0.0, 1.0],
-        ],
-        dtype=float,
-    )
-
     pose = np.eye(4, dtype=float)
-    pose[:3, :3] = rz @ ry @ rx
+    pose[:3, :3] = Rotation.from_euler(
+        "xyz",
+        [roll_deg, pitch_deg, yaw_deg],
+        degrees=True,
+    ).as_matrix()
     pose[0, 3] = x
     pose[1, 3] = y
     pose[2, 3] = z
