@@ -15,7 +15,7 @@ PROJECT_ROOT = next(parent for parent in Path(__file__).resolve().parents if (pa
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from camera_pipeline.client import CameraPipelineClient
+from camera_pipeline.client import CameraName, CameraPipelineClient
 from camera_pipeline.opening_detection.protocol import OpeningDetectionPipelineRequest
 from camera_pipeline.tray_detection.protocol import OrinTrayDetectionRequest
 
@@ -69,8 +69,9 @@ def main(
 
     snapshot: OpeningDetectionSnapshot | None = None
     try:
-        status = client.get_camera_status(timeout_s=float(timeout_s))
-        intrinsics = client.get_camera_intrinsics(timeout_s=float(timeout_s))
+        selected_camera = CameraName(camera_name)
+        status = client.get_camera_status(selected_camera, timeout_s=float(timeout_s))
+        intrinsics = client.get_camera_intrinsics(selected_camera, timeout_s=float(timeout_s))
         logger.info(
             "相机状态 online={} color_enabled={} depth_enabled={} model={} size={}x{}",
             status.online,
@@ -88,7 +89,7 @@ def main(
             intrinsics.cy,
         )
 
-        stream = client.subscribe_camera_frames(camera_name=camera_name)
+        stream = client.subscribe_camera_frames(camera_name=selected_camera)
         for frame_idx, frame in enumerate(stream, start=1):
             if stop_flag["flag"]:
                 break

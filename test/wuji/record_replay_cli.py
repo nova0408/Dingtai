@@ -14,7 +14,6 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-import cv2
 import numpy as np
 from loguru import logger
 from qmlinker import create_channel
@@ -84,9 +83,9 @@ from camera_pipeline.ball_pose_detection.protocol import (
     BallDetectionInfo,
     BallPoseDetectionRequest,
 )
-from camera_pipeline.client import CameraPipelineClient
+from camera_pipeline.client import CameraName, CameraPipelineClient
+from camera_pipeline.service.protocol import CharucoDetectionRequest
 from sdk.xcoresdk import xCoreSDK_python
-from src.calibration import CharucoPoseEstimator
 from src.wuji.agv_client import WujiAgvClient
 from src.wuji.head_client import WujiHeadClient
 
@@ -196,6 +195,7 @@ DEFAULT_OFFSET_SERVICE_ADDR = DEFAULT_BALL_POSE_SERVICE_ADDR
 "计算全局 offset 时使用的球位姿检测服务地址。"
 
 DEFAULT_OFFSET_CAMERA_NAME = DEFAULT_BALL_POSE_CAMERA_NAME
+DEFAULT_HEAD_CAMERA_NAME = "head_camera"
 "计算全局 offset 时使用的相机名称。"
 
 DEFAULT_PRIOR_RECORD_DIR = PROJECT_ROOT / "test" / "wuji" / ".archive" / "prior_record"
@@ -1272,10 +1272,10 @@ def _detect_current_three_ball_basis_transform(
     try:
         for sample_index in range(OFFSET_BALL_CAPTURE_SAMPLE_COUNT):
             try:
-                response = client.request_ball_pose_detection(
+                response = client.detect_ball(
                     BallPoseDetectionRequest(
                         request_id=sample_index + 1,
-                        camera_name=str(camera_name),
+                        camera_name=CameraName(camera_name),
                         frame_id=BALL_DETECTION_FRAME_ID,
                         enable_debug=BALL_DETECTION_ENABLE_DEBUG,
                         priors=tuple(priors),
@@ -1548,18 +1548,6 @@ def _load_prior_camera_board_transform_m() -> np.ndarray:
     return matrix_m
 
 
-def _build_charuco_board() -> cv2.aruco.CharucoBoard:
-    if DEFAULT_DICTIONARY_NAME != "DICT_APRILTAG_16H5":
-        raise ValueError(f"不支持的 ChArUco 字典：{DEFAULT_DICTIONARY_NAME}")
-    dictionary = cv2.aruco.getPredefinedDictionary(int(cv2.aruco.DICT_APRILTAG_16h5))
-    return cv2.aruco.CharucoBoard(
-        (DEFAULT_SQUARES_X, DEFAULT_SQUARES_Y),
-        float(DEFAULT_SQUARE_LENGTH_MM),
-        float(DEFAULT_MARKER_LENGTH_MM),
-        dictionary,
-    )
-
-
 def _set_head_charuco_detection_pose(head: WujiHeadClient) -> None:
     head.set_head_yaw(DEFAULT_HEAD_YAW_DEG)
     head.set_head_pitch(DEFAULT_HEAD_PITCH_DEG)
@@ -1578,40 +1566,29 @@ def _detect_current_camera_board_transform_m(head_channel: object) -> np.ndarray
     )
     try:
         _set_head_charuco_detection_pose(WujiHeadClient(head_channel))
-        intrinsics = client.get_head_camera_intrinsics(timeout_s=CHARUCO_DETECTION_CAMERA_TIMEOUT_S)
-        camera_matrix = np.asarray(
-            [
-                [float(intrinsics.fx), 0.0, float(intrinsics.cx)],
-                [0.0, float(intrinsics.fy), float(intrinsics.cy)],
-                [0.0, 0.0, 1.0],
-            ],
-            dtype=np.float64,
-        )
-        dist_coeffs = np.asarray(intrinsics.distortion, dtype=np.float64).reshape(-1, 1)
-        if dist_coeffs.size == 0:
-            dist_coeffs = np.zeros((5, 1), dtype=np.float64)
-        estimator = CharucoPoseEstimator(_build_charuco_board())
-        for frame_index, frame_packet in enumerate(client.subscribe_head_camera_color_frames(), start=1):
-            result = estimator.estimate_pose(
-                image_bgr=np.asarray(frame_packet.color_bgr, dtype=np.uint8),
-                camera_matrix=camera_matrix,
-                dist_coeffs=dist_coeffs,
+        response = client.detect_charuco(
+            CharucoDetectionRequest(
+                camera_name=CameraName(DEFAULT_HEAD_CAMERA_NAME),
+                dictionary_name=DEFAULT_DICTIONARY_NAME,
+                squares_x=DEFAULT_SQUARES_X,
+                squares_y=DEFAULT_SQUARES_Y,
+                square_length_mm=float(DEFAULT_SQUARE_LENGTH_MM),
+                marker_length_mm=float(DEFAULT_MARKER_LENGTH_MM),
                 min_charuco_corners=CHARUCO_DETECTION_MIN_CORNERS,
+                max_frames=CHARUCO_DETECTION_MAX_FRAME_COUNT,
+                stable_timeout_s=CHARUCO_DETECTION_CAMERA_TIMEOUT_S,
             )
-            if result.transform_se3 is not None:
-                matrix_m = np.asarray(result.transform_se3, dtype=np.float64).reshape(4, 4)
-                matrix_m = matrix_m.copy()
-                matrix_m[:3, 3] *= 0.001
-                logger.success(
-                    "头部 ChArUco 检测成功 frame_id={} frame_index={} corners={} reprojection_error_px={}",
-                    frame_packet.frame_id,
-                    frame_index,
-                    result.charuco_count,
-                    result.reprojection_error_px,
-                )
-                return matrix_m
-            if frame_index >= CHARUCO_DETECTION_MAX_FRAME_COUNT:
-                break
+        )
+        if response.status == "detected" and len(response.t_cam_board_mm) == 4:
+            matrix_m = np.asarray(response.t_cam_board_mm, dtype=np.float64).reshape(4, 4)
+            matrix_m = matrix_m.copy()
+            matrix_m[:3, 3] *= 0.001
+            logger.success(
+                "头部 ChArUco 检测成功 corners={} reprojection_error_px={}",
+                response.charuco_num,
+                response.error_px,
+            )
+            return matrix_m
     finally:
         client.close()
     raise RuntimeError(

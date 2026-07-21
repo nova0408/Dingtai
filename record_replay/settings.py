@@ -6,35 +6,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 
-# region 现场连接配置
-
-
-@dataclass(frozen=True, slots=True)
-class ReplayNetworkSettings:
-    """Orin 部署与本机调试共用的固定网络地址。"""
-
-    qmlinker_host: str = "192.168.100.60"
-    "Orin 上 qmlinker 服务地址。"
-    zmq_host: str = "192.168.100.60"
-    "Orin 上 ZMQ 球位姿服务地址。"
-    agv_host: str = "192.168.100.70"
-    "Orin 上 AGV qmlinker 服务地址。"
-    local_service_host: str = "127.0.0.1"
-    "本机 SSH 隧道和本地 service 使用的回环地址。"
-    qmlinker_port: int = 50062
-    "hand/body qmlinker 端口。"
-    gripper_port: int = 50066
-    "左夹爪 qmlinker 端口。"
-    zmq_port: int = 6200
-    "三球球位姿 ZMQ 服务端口。"
-
-    @property
-    def zmq_service_addr(self) -> str:
-        """返回默认三球 ZMQ service 地址。"""
-
-        return f"tcp://{self.zmq_host}:{self.zmq_port}"
-
-
 @dataclass(frozen=True, slots=True)
 class ReplayDeviceConnection:
     """一轮回放所需设备的现场连接参数。"""
@@ -49,9 +20,6 @@ class ReplayDeviceConnection:
     "手部与 body 使用的 qmlinker 端口。"
     gripper_port: int = 50066
     "左夹爪使用的 qmlinker 端口。"
-
-
-# endregion
 
 
 # region 设备动作配置
@@ -151,8 +119,6 @@ class OffsetConfig:
     "先验三球采集结果路径。"
     hand_eye_result_path: Path
     "手眼标定结果路径。"
-    service_addr: str = "tcp://192.168.100.60:6200"
-    "Orin 上默认球位姿 ZMQ 服务地址。"
     camera_name: str = "left_hand_camera"
     "球位姿检测相机名称。"
 
@@ -167,8 +133,6 @@ class ReplayServiceSettings:
     "手部与升降动作参数。"
     offset: ReplayOffsetSettings = field(default_factory=ReplayOffsetSettings)
     "三球 offset 参数。"
-    network: ReplayNetworkSettings = field(default_factory=ReplayNetworkSettings)
-    "Orin 部署与本机调试共用的网络地址。"
     agv_navigation_timeout_s: float = 600.0
     "AGV 单次导航到位等待超时，单位 s。"
     agv_navigation_poll_interval_s: float = 1.0

@@ -1,0 +1,9 @@
+{
+  "move_abs_j_end_linear_speed_mm_s": 1000.0,
+  "move_abs_j_zone_mm": 10.0,
+  "offset_trigger_speed_mm_s": 700.0,
+  "agv_navigation_timeout_s": 600.0,
+  "agv_navigation_poll_interval_s": 1.0,
+  "non_motion_retry_count": 3,
+  "non_motion_retry_delay_s": 0.5
+}

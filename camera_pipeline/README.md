@@ -28,7 +28,7 @@ Orin 本地业务服务 -> tcp://127.0.0.1:6200
 两者使用相同的公共客户端：
 
 ```python
-from camera_pipeline.client import CameraPipelineClient
+from camera_pipeline.client import CameraName, CameraPipelineClient
 ```
 
 ## 架构原则
@@ -83,7 +83,7 @@ CameraPipelineClient
 from camera_pipeline.client import CameraPipelineClient
 
 client = CameraPipelineClient()
-status = client.get_camera_status()
+status = client.get_camera_status(CameraName.LEFT_ARM)
 ```
 
 默认连接 `tcp://127.0.0.1:6200`。
@@ -101,18 +101,16 @@ client = CameraPipelineClient(
 
 ### 多相机订阅与内参
 
-主要调用入口使用明确安装位的方法名：
+所有相机入口显式使用 `CameraName`：
 
 ```python
-head_intrinsics = client.get_head_camera_intrinsics()
-chest_frames = client.subscribe_chest_camera_frames()
-left_color_frames = client.subscribe_left_arm_camera_color_frames()
+head_intrinsics = client.get_camera_intrinsics(CameraName.HEAD)
+chest_frames = client.subscribe_camera_frames(CameraName.CHEST)
+left_color_frames = client.subscribe_camera_color_frames(CameraName.LEFT_ARM)
 ```
 
-完整帧、彩色帧和深度帧均提供 `head/chest/left_arm/right_arm` 命名 API。
-右臂 API 已保留，但当前相机未连接，调用时会得到明确的 `RuntimeError`。
-`subscribe_camera_frames(camera_name)`、`subscribe_camera_color_frames(camera_name)`、
-`subscribe_camera_depth_frames(camera_name)` 等参数化 API 继续保留，用于通用工具与测试。
+完整帧、彩色帧和深度帧分别使用 `subscribe_camera_frames()`、
+`subscribe_camera_color_frames()` 和 `subscribe_camera_depth_frames()`；右臂相机当前未连接。
 
 ## 部署
 
@@ -143,7 +141,8 @@ Requires=camera-pipeline.service
 After=camera-pipeline.service
 ```
 
-`After` 只保证进程顺序，不保证相机首帧就绪。业务服务应调用 `get_camera_status()` 做明确可用性检查。
+`After` 只保证进程顺序，不保证相机首帧就绪。业务服务应调用
+`get_camera_status(camera_name)` 做明确可用性检查。
 
 ## 端口
 

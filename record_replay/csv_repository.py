@@ -13,7 +13,7 @@ def discover_csv_paths(record_dir: Path, max_files: int | None = None) -> list[P
     """发现并按文件名排序 CSV 路径。"""
 
     if not record_dir.is_dir():
-        raise FileNotFoundError(f"CSV 目录不存在: {record_dir}")
+        raise FileNotFoundError(f"CSV 目录不存在：{record_dir}")
     paths = sorted(path for path in record_dir.iterdir() if path.is_file() and path.suffix.lower() == ".csv")
     return paths if max_files is None else paths[:max_files]
 
@@ -29,10 +29,16 @@ def load_replay_rows(csv_path: Path) -> list[ReplayRow]:
             if not action_type:
                 raise ValueError(f"CSV 缺少 type: file={csv_path}, row={row_index}")
             rows.append(
-                ReplayRow(csv_path.name, row_index, action_type, str(row.get("joints", "")).strip(), str(row.get("pose", "")).strip())
+                ReplayRow(
+                    csv_path.name,
+                    row_index,
+                    action_type,
+                    str(row.get("joints", "")).strip(),
+                    str(row.get("pose", "")).strip(),
+                )
             )
     if not rows:
-        raise ValueError(f"CSV 没有可执行数据: {csv_path}")
+        raise ValueError(f"CSV 没有可执行数据：{csv_path}")
     return rows
 
 

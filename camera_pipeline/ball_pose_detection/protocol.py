@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import numpy as np
 
+from ..protocol import CameraName
+
 
 @dataclass(frozen=True, slots=True)
 class BallPosePriorInfo:
@@ -20,9 +22,9 @@ class BallPosePriorInfo:
 class BallPoseDetectionRequest:
     """球位姿检测请求。"""
 
-    request_id: int = 0
+    request_id: int
     "调用方请求编号，原样透传到响应。"
-    camera_name: str = "left_hand_camera"
+    camera_name: CameraName
     "逻辑相机名称。"
     frame_id: int = -1
     "请求帧号；正数表示精确缓存帧，非正数表示由业务层选择稳定帧。"

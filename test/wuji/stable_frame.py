@@ -14,7 +14,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from camera_pipeline.client import CameraPipelineClient
+from camera_pipeline.client import CameraName, CameraPipelineClient
 from camera_pipeline.protocol import CameraFramePacket
 from camera_pipeline.stable_frame import StableFrameConfig, StableFrameDetector
 
@@ -53,7 +53,7 @@ def main(
     metrics: list[dict[str, float | bool]] = []
     client = CameraPipelineClient(service_addr=service_addr, timeout_ms=timeout_ms)
     logger.info(
-        "稳定帧测试开始: service_addr={} camera_name={} 连续稳定要求 {} s",
+        "稳定帧测试开始：service_addr={} camera_name={} 连续稳定要求 {} s",
         service_addr,
         camera_name,
         test_stable_duration_s,
@@ -62,7 +62,8 @@ def main(
     previous: CameraFramePacket | None = None
     stable_frame_id: int | None = None
     try:
-        for frame in client.subscribe_camera_frames(camera_name=camera_name):
+        selected_camera = CameraName(camera_name)
+        for frame in client.subscribe_camera_frames(camera_name=selected_camera):
             if previous is not None:
                 metrics.append(_measure_pair(previous=previous, current=frame, config=config))
             previous = frame
@@ -74,18 +75,16 @@ def main(
 
         _print_metrics(metrics=metrics, config=config)
         if stable_frame_id is None:
-            raise RuntimeError(
-                f"画面未在 {test_timeout_s:.1f} s 内形成连续 {test_stable_duration_s:.1f} s 稳定窗口"
-            )
+            raise RuntimeError(f"画面未在 {test_timeout_s:.1f} s 内形成连续 {test_stable_duration_s:.1f} s 稳定窗口")
         logger.success(
-            "本地同算法稳定窗口通过: 连续稳定 {} s midpoint_frame_id={}",
+            "本地同算法稳定窗口通过：连续稳定 {} s midpoint_frame_id={}",
             test_stable_duration_s,
             stable_frame_id,
         )
 
-        service_result = client.get_stable_frame(timeout_s=service_stable_timeout_s)
+        service_result = client.get_stable_frame(selected_camera, timeout_s=service_stable_timeout_s)
         logger.success(
-            "远端生产稳定帧请求通过: 生产连续稳定要求 {} s frame_id={} timestamp_ms={} ms",
+            "远端生产稳定帧请求通过：生产连续稳定要求 {} s frame_id={} timestamp_ms={} ms",
             StableFrameConfig().stable_duration_s,
             service_result.frame_id,
             service_result.timestamp_ms,
@@ -113,9 +112,7 @@ def _measure_pair(
     gray_delta -= float(np.median(gray_delta))
     absolute_gray_delta = np.abs(gray_delta)
     color_mean_delta = float(np.mean(absolute_gray_delta))
-    color_changed_ratio = float(
-        np.mean(absolute_gray_delta > config.color_pixel_delta_threshold)
-    )
+    color_changed_ratio = float(np.mean(absolute_gray_delta > config.color_pixel_delta_threshold))
 
     valid_depth = (previous_depth > 0.0) & (current_depth > 0.0)
     valid_depth_ratio = float(np.mean(valid_depth))
@@ -125,9 +122,7 @@ def _measure_pair(
         depth_p75_delta_mm = float(np.percentile(depth_delta, 75.0))
         depth_p80_delta_mm = float(np.percentile(depth_delta, 80.0))
         depth_p85_delta_mm = float(np.percentile(depth_delta, 85.0))
-        depth_percentile_delta_mm = float(
-            np.percentile(depth_delta, config.depth_percentile)
-        )
+        depth_percentile_delta_mm = float(np.percentile(depth_delta, config.depth_percentile))
     else:
         depth_median_delta_mm = float("inf")
         depth_p75_delta_mm = float("inf")
@@ -142,8 +137,7 @@ def _measure_pair(
         and color_changed_ratio <= config.color_changed_ratio_threshold
         and valid_depth_ratio >= config.min_valid_depth_ratio
         and depth_median_delta_mm <= config.depth_median_delta_threshold_mm
-        and depth_percentile_delta_mm
-        <= config.depth_percentile_delta_threshold_mm
+        and depth_percentile_delta_mm <= config.depth_percentile_delta_threshold_mm
     )
     return {
         "frame_gap_ms": frame_gap_ms,

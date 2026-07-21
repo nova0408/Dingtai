@@ -21,7 +21,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from camera_pipeline.protocol import CameraColorFramePacket
-from camera_pipeline.client import CameraPipelineClient
+from camera_pipeline.client import CameraName, CameraPipelineClient
 from sdk.xcoresdk import xCoreSDK_python
 from src.calibration import CHARUCO_200_12_9, CharucoPoseEstimator
 
@@ -193,7 +193,7 @@ def _run_calibration_session(
     cv2.resizeWindow(DEFAULT_WINDOW_NAME, DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT)
 
     try:
-        for frame_packet in client.subscribe_camera_color_frames(camera_name):
+        for frame_packet in client.subscribe_camera_color_frames(CameraName(camera_name)):
             robot_snapshot = _read_left_arm_snapshot(left_arm)
             frame_bgr = np.asarray(frame_packet.color_bgr, dtype=np.uint8).copy()
             started = time.perf_counter()
@@ -751,7 +751,10 @@ def _print_sdk_result(action: str, ec: dict[str, object]) -> None:
 
 # region 相机与 ChArUco
 def _read_camera_calibration(client: CameraPipelineClient) -> CameraCalibration:
-    response = client.get_camera_intrinsics(timeout_s=DEFAULT_CAMERA_TIMEOUT_S)
+    response = client.get_camera_intrinsics(
+        CameraName(DEFAULT_CAMERA_NAME),
+        timeout_s=DEFAULT_CAMERA_TIMEOUT_S,
+    )
     distortion = np.asarray(response.distortion, dtype=np.float64).reshape(-1, 1)
     if distortion.size == 0:
         distortion = np.zeros((5, 1), dtype=np.float64)

@@ -21,7 +21,7 @@ from camera_pipeline.ball_pose_detection.protocol import (
     BallPoseDetectionResponse,
     BallPosePriorInfo,
 )
-from camera_pipeline.client import CameraPipelineClient
+from camera_pipeline.client import CameraName, CameraPipelineClient
 
 # region 默认常量
 
@@ -61,7 +61,8 @@ def main(
     logger.info("ball_pose_detection 冒烟开始：service_addr={} camera_name={}", service_addr, camera_name)
     client = CameraPipelineClient(service_addr=str(service_addr), timeout_ms=int(timeout_ms))
     try:
-        status = client.get_camera_status(timeout_s=float(stable_timeout_s))
+        selected_camera = CameraName(camera_name)
+        status = client.get_camera_status(selected_camera, timeout_s=float(stable_timeout_s))
         logger.info(
             "相机状态：camera_name={} online={} width={} px height={} px",
             status.camera_name,
@@ -71,12 +72,13 @@ def main(
         )
         target_frame_id = _resolve_target_frame_id(
             client=client,
+            camera_name=selected_camera,
             stable_timeout_s=float(stable_timeout_s),
         )
-        response = client.request_ball_pose_detection(
+        response = client.detect_ball(
             BallPoseDetectionRequest(
                 request_id=1,
-                camera_name=str(camera_name),
+                camera_name=selected_camera,
                 frame_id=int(target_frame_id),
                 enable_debug=bool(enable_debug),
                 priors=DEFAULT_PRIORS,
@@ -102,8 +104,12 @@ def main(
 # region 校验与输出
 
 
-def _resolve_target_frame_id(client: CameraPipelineClient, stable_timeout_s: float) -> int:
-    stable_frame = client.get_stable_frame(timeout_s=float(stable_timeout_s))
+def _resolve_target_frame_id(
+    client: CameraPipelineClient,
+    camera_name: CameraName,
+    stable_timeout_s: float,
+) -> int:
+    stable_frame = client.get_stable_frame(camera_name, timeout_s=float(stable_timeout_s))
     logger.info(
         "稳定帧获取成功：frame_id={} timestamp_ms={} ms",
         stable_frame.frame_id,

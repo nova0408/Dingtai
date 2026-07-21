@@ -25,7 +25,7 @@ DEFAULT_HEAD_CAMERA_NAME = "head_camera"
 DEFAULT_SERVICE_ADDR = "tcp://192.168.1.128:6200"
 DEFAULT_TIMEOUT_MS = 60_000
 DEFAULT_CAMERA_TIMEOUT_S = 10.0
-DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "test" / "wuji" / ".archive" / "prior_record"
+DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "record_replay" / "prior_data"
 DEFAULT_PRIOR_CAPTURE_PATH = (
     PROJECT_ROOT / "test" / "wuji" / ".archive" / "collect_ball_opening_relative_pose" / "summary.json"
 )
@@ -60,15 +60,6 @@ from test.wuji.xcoresdk_arm_cli_test import (
     _shutdown_robot,
 )
 
-from camera_pipeline.ball_pose_detection.protocol import (
-    BallDetectionInfo,
-    BallPoseDetectionDebugArtifacts,
-    BallPoseDetectionRequest,
-    BallPoseDetectionResponse,
-    BallPosePriorInfo,
-)
-from camera_pipeline.client import CameraPipelineClient
-from camera_pipeline.protocol import CameraColorFramePacket
 from common import (
     DEFAULT_PORT,
     SshTunnelGroup,
@@ -76,8 +67,19 @@ from common import (
     create_wuyou_channel,
     stop_ssh_process,
 )
+
+from camera_pipeline.ball_pose_detection.protocol import (
+    BallDetectionInfo,
+    BallPoseDetectionDebugArtifacts,
+    BallPoseDetectionRequest,
+    BallPoseDetectionResponse,
+    BallPosePriorInfo,
+)
+from camera_pipeline.client import CameraName, CameraPipelineClient
+from camera_pipeline.protocol import CameraColorFramePacket
+from camera_pipeline.service.protocol import CharucoDetectionRequest
 from sdk.xcoresdk import xCoreSDK_python
-from src.calibration import CharucoPoseEstimator, CharucoPoseResult
+from src.calibration import CharucoPoseResult
 from src.wuji.head_client import WujiHeadClient
 
 DEFAULT_ARM_IP = LEFT_ARM_IP
@@ -182,12 +184,12 @@ def _record_ball_prior(
         tcp_pose = robot.cartPosture(xCoreSDK_python.endInRef, ec)
         _print_sdk_result("cartPosture(endInRef)", ec)
         if ec.get("ec", 0) != 0:
-            raise RuntimeError(f"读取末端位姿失败: ip={arm_ip}")
+            raise RuntimeError(f"读取末端位姿失败：ip={arm_ip}")
         tcp_snapshot = _pose_snapshot_from_sdk_pose(tcp_pose)
-        response = client.request_ball_pose_detection(
+        response = client.detect_ball(
             BallPoseDetectionRequest(
                 request_id=1,
-                camera_name=str(camera_name),
+                camera_name=CameraName(camera_name),
                 frame_id=-1,
                 enable_debug=True,
                 priors=tuple(priors),
@@ -366,11 +368,11 @@ def _print_prior_comparison(
     local_pose_transform: np.ndarray,
 ) -> None:
     if not prior_compare_dir.is_dir():
-        logger.info("未找到先验对比目录，跳过对比: {}", prior_compare_dir)
+        logger.info("未找到先验对比目录，跳过对比：{}", prior_compare_dir)
         return
     prior_summary_path = prior_compare_dir / "summary.json"
     if not prior_summary_path.is_file():
-        logger.warning("先验对比目录缺少 summary.json，跳过对比: {}", prior_summary_path)
+        logger.warning("先验对比目录缺少 summary.json，跳过对比：{}", prior_summary_path)
         return
     prior_summary = json.loads(prior_summary_path.read_text(encoding="utf-8"))
     current_translation = _as_translation_vector(local_pose_transform[:3, 3])
@@ -427,11 +429,11 @@ def _draw_prior_comparison_overlay(
 ) -> None:
     current_overlay_path = output_dir / "ball_pose_overlay.jpg"
     if not current_overlay_path.is_file():
-        logger.info("当前输出目录缺少三球位姿图，跳过图像对比绘制: {}", current_overlay_path)
+        logger.info("当前输出目录缺少三球位姿图，跳过图像对比绘制：{}", current_overlay_path)
         return
     overlay_bgr = cv2.imread(str(current_overlay_path), cv2.IMREAD_COLOR)
     if overlay_bgr is None:
-        logger.warning("当前三球位姿图读取失败，跳过图像对比绘制: {}", current_overlay_path)
+        logger.warning("当前三球位姿图读取失败，跳过图像对比绘制：{}", current_overlay_path)
         return
     annotated = overlay_bgr.copy()
     _draw_pose_axes(
@@ -626,11 +628,7 @@ def _load_camera_intrinsics(
     response: BallPoseDetectionResponse,
 ) -> tuple[float, float, float, float] | None:
     prior_debug = prior_summary.get("debug")
-    prior_intrinsics = (
-        prior_debug.get("camera_intrinsics")
-        if isinstance(prior_debug, dict)
-        else None
-    )
+    prior_intrinsics = prior_debug.get("camera_intrinsics") if isinstance(prior_debug, dict) else None
     vector = np.asarray(prior_intrinsics, dtype=np.float64)
     if vector.shape == (4,) and np.all(np.isfinite(vector)):
         return (float(vector[0]), float(vector[1]), float(vector[2]), float(vector[3]))
@@ -730,51 +728,53 @@ def _capture_charuco_board_pose(
     output_dir: Path,
     min_charuco_corners: int,
 ) -> None:
-    client = CameraPipelineClient(
-        service_addr=service_addr,
-        timeout_ms=int(DEFAULT_CAMERA_TIMEOUT_S * 1000.0),
-    )
-    estimator = CharucoPoseEstimator(_build_charuco_board())
-    calibration = _read_head_camera_calibration(client)
-    window_name = "Head Camera ChArUco Prior Record"
-    cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
-    cv2.resizeWindow(window_name, DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT)
-    logger.info("请保持标定板位姿不变；检测有效后按 Space/Enter/P 保存，按 Q/Esc 取消。")
+    client = CameraPipelineClient(service_addr=service_addr, timeout_ms=DEFAULT_TIMEOUT_MS)
     try:
-        for frame_packet in client.subscribe_head_camera_color_frames():
-            frame_bgr = np.asarray(frame_packet.color_bgr, dtype=np.uint8).copy()
-            pose_result = estimator.estimate_pose(
-                image_bgr=frame_bgr,
-                camera_matrix=calibration.camera_matrix,
-                dist_coeffs=calibration.dist_coeffs,
+        response = client.detect_charuco(
+            CharucoDetectionRequest(
+                camera_name=CameraName(DEFAULT_HEAD_CAMERA_NAME),
+                dictionary_name=DEFAULT_DICTIONARY_NAME,
+                squares_x=DEFAULT_SQUARES_X,
+                squares_y=DEFAULT_SQUARES_Y,
+                square_length_mm=float(DEFAULT_SQUARE_LENGTH_MM),
+                marker_length_mm=float(DEFAULT_MARKER_LENGTH_MM),
                 min_charuco_corners=min_charuco_corners,
+                max_frames=300,
+                stable_timeout_s=DEFAULT_CAMERA_TIMEOUT_S,
             )
-            preview_bgr = _draw_charuco_preview(
-                frame_bgr=frame_bgr,
-                pose_result=pose_result,
-                calibration=calibration,
-            )
-            cv2.imshow(window_name, preview_bgr)
-            key = cv2.waitKey(1) & 0xFF
-            if key in (27, ord("q"), ord("Q")):
-                raise RuntimeError("用户取消记录 ChArUco 板先验")
-            if key in (13, 32, ord("p"), ord("P")):
-                if pose_result.transform_se3 is None or pose_result.reprojection_error_px is None:
-                    logger.warning("当前帧未获得有效 ChArUco 位姿，未保存。")
-                    continue
-                _save_charuco_board_prior(
-                    output_dir=output_dir,
-                    frame_packet=frame_packet,
-                    frame_bgr=frame_bgr,
-                    preview_bgr=preview_bgr,
-                    pose_result=pose_result,
-                )
-                return
-            if cv2.getWindowProperty(window_name, cv2.WND_PROP_VISIBLE) < 1:
-                raise RuntimeError("ChArUco 先验记录窗口已关闭，未保存结果")
+        )
     finally:
         client.close()
-        cv2.destroyAllWindows()
+    if response.status != "detected" or len(response.t_cam_board_mm) != 4:
+        raise RuntimeError(
+            "CameraPipeline 未检测到有效 ChArUco Board " f"markers={response.marker_num} charuco={response.charuco_num}"
+        )
+    transform_mm = np.asarray(response.t_cam_board_mm, dtype=np.float64).reshape(4, 4)
+    translation_mm = transform_mm[:3, 3]
+    rpy_deg = Rotation.from_matrix(transform_mm[:3, :3]).as_euler("xyz", degrees=True)
+    payload = {
+        "timestamp_iso": datetime.now().isoformat(timespec="milliseconds"),
+        "camera_name": response.camera_name,
+        "pose_semantics": "T_camera_board",
+        "translation_unit": "mm",
+        "rotation_convention": 'scipy Rotation.as_euler("xyz", degrees=True)',
+        "head_yaw_deg": DEFAULT_HEAD_YAW_DEG,
+        "head_pitch_deg": DEFAULT_HEAD_PITCH_DEG,
+        "dictionary": DEFAULT_DICTIONARY_NAME,
+        "squares_x": DEFAULT_SQUARES_X,
+        "squares_y": DEFAULT_SQUARES_Y,
+        "square_length_mm": DEFAULT_SQUARE_LENGTH_MM,
+        "marker_length_mm": DEFAULT_MARKER_LENGTH_MM,
+        "marker_count": response.marker_num,
+        "charuco_count": response.charuco_num,
+        "reprojection_error_px": response.error_px,
+        "camera_board_transform": transform_mm.tolist(),
+        "translation_mm": translation_mm.tolist(),
+        "rpy_deg": rpy_deg.tolist(),
+    }
+    result_path = output_dir / "charuco_board_prior.json"
+    result_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    logger.success("ChArUco Board 先验已由 CameraPipeline 检测并保存：{}", result_path)
 
 
 def _build_charuco_board() -> cv2.aruco.CharucoBoard:
@@ -790,7 +790,10 @@ def _build_charuco_board() -> cv2.aruco.CharucoBoard:
 
 
 def _read_head_camera_calibration(client: CameraPipelineClient) -> CameraCalibration:
-    response = client.get_head_camera_intrinsics(timeout_s=DEFAULT_CAMERA_TIMEOUT_S)
+    response = client.get_camera_intrinsics(
+        CameraName.HEAD,
+        timeout_s=DEFAULT_CAMERA_TIMEOUT_S,
+    )
     distortion = np.asarray(response.distortion, dtype=np.float64).reshape(-1, 1)
     if distortion.size == 0:
         distortion = np.zeros((5, 1), dtype=np.float64)
@@ -843,11 +846,7 @@ def _draw_charuco_preview(
             3,
         )
     status = "VALID" if pose_result.transform_se3 is not None else "INVALID"
-    reprojection = (
-        "NA"
-        if pose_result.reprojection_error_px is None
-        else f"{pose_result.reprojection_error_px:.3f}px"
-    )
+    reprojection = "NA" if pose_result.reprojection_error_px is None else f"{pose_result.reprojection_error_px:.3f}px"
     lines = (
         f"ChArUco prior | {status}",
         f"head yaw={DEFAULT_HEAD_YAW_DEG:.1f}deg pitch={DEFAULT_HEAD_PITCH_DEG:.1f}deg",

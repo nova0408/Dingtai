@@ -7,7 +7,6 @@ import time
 from dataclasses import dataclass
 
 from loguru import logger
-from qmlinker import create_channel
 from network_discovery import (
     DEFAULT_ORIN_FALLBACKS,
     DEFAULT_ORIN_SSH_ALIAS,
@@ -17,6 +16,7 @@ from network_discovery import (
     iter_candidate_hosts,
     remember_host,
 )
+from qmlinker import create_channel
 
 GRIPPER_PORT = 50066
 DEFAULT_PORT = 50062
@@ -193,7 +193,7 @@ def _spawn_ssh_tunnel(remote_port: int, remote_host: str, local_port: int, ssh_a
         ssh_alias,
     ]
     logger.info(
-        "启动 SSH 隧道-本地 127.0.0.1:{} | 远端 {}:{} | 跳板 {}",
+        "启动 SSH 隧道 - 本地 127.0.0.1:{} | 远端 {}:{} | 跳板 {}",
         int(local_port),
         remote_host,
         int(remote_port),
@@ -212,7 +212,7 @@ def _watch_ssh_tunnel(tunnel_group: SshTunnelGroup) -> None:
             return
         _read_early_exit_error(tunnel_group.process)
         logger.warning(
-            "检测到 SSH 隧道退出，准备重连: local=127.0.0.1:{} remote={}:{} alias={}",
+            "检测到 SSH 隧道退出，准备重连：local=127.0.0.1:{} remote={}:{} alias={}",
             tunnel_group.local_port,
             tunnel_group.remote_host,
             tunnel_group.remote_port,
@@ -234,13 +234,13 @@ def _watch_ssh_tunnel(tunnel_group: SshTunnelGroup) -> None:
                 return
             tunnel_group.process = restarted_process
             logger.success(
-                "SSH 隧道已重连: local=127.0.0.1:{} remote={}:{}",
+                "SSH 隧道已重连：local=127.0.0.1:{} remote={}:{}",
                 tunnel_group.local_port,
                 tunnel_group.remote_host,
                 tunnel_group.remote_port,
             )
         except Exception as exc:
-            logger.warning("SSH 隧道重连失败，稍后重试: {}", exc)
+            logger.warning("SSH 隧道重连失败，稍后重试：{}", exc)
 
 
 def _wait_for_local_tunnel_ready(local_port: int, timeout_s: float = TUNNEL_READY_TIMEOUT_S) -> None:
@@ -288,7 +288,7 @@ def _read_early_exit_error(process: subprocess.Popen[bytes]) -> None:
     except Exception:
         return
     if stderr_text:
-        logger.warning("SSH 隧道提前退出: {}", stderr_text)
+        logger.warning("SSH 隧道提前退出：{}", stderr_text)
 
 
 def _stop_single_ssh_process(process: subprocess.Popen[bytes]) -> None:
@@ -313,4 +313,4 @@ def _close_single_channel(channel: object) -> None:
     try:
         close_method()
     except Exception as exc:  # noqa: BLE001
-        logger.warning("关闭 qmlinker channel 失败: {}", exc)
+        logger.warning("关闭 qmlinker channel 失败：{}", exc)

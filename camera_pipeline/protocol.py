@@ -1,10 +1,20 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum
 from typing import Protocol
 
 import numpy as np
 import numpy.typing as npt
+
+
+class CameraName(str, Enum):
+    """CameraPipeline 支持的逻辑相机名称。"""
+
+    HEAD = "head_camera"
+    CHEST = "chest_camera"
+    LEFT_ARM = "left_hand_camera"
+    RIGHT_ARM = "right_hand_camera"
 
 
 class StableRgbdFrameProtocol(Protocol):

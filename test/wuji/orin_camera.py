@@ -15,7 +15,7 @@ PROJECT_ROOT = next(
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from camera_pipeline.client import CameraPipelineClient
+from camera_pipeline.client import CameraName, CameraPipelineClient
 from camera_pipeline.protocol import (
     CameraColorFramePacket,
     CameraDepthFramePacket,
@@ -76,9 +76,9 @@ def main() -> int:
 
 
 def _check_queries(client: CameraPipelineClient) -> None:
-    """验证默认相机摘要、状态与分相机内参。"""
+    """验证左臂相机摘要、状态与分相机内参。"""
 
-    summary = client.get_camera_summary(timeout_s=DEFAULT_TIMEOUT_S)
+    summary = client.get_camera_summary(CameraName.LEFT_ARM, timeout_s=DEFAULT_TIMEOUT_S)
     if summary.camera_name != "left_hand_camera":
         raise RuntimeError(f"unexpected summary camera: {summary.camera_name}")
     if summary.frame_id <= 0 or summary.color_shape[2] != 3:
@@ -91,7 +91,7 @@ def _check_queries(client: CameraPipelineClient) -> None:
         summary.depth_shape,
     )
 
-    status = client.get_camera_status(timeout_s=DEFAULT_TIMEOUT_S)
+    status = client.get_camera_status(CameraName.LEFT_ARM, timeout_s=DEFAULT_TIMEOUT_S)
     if status.camera_name != "left_hand_camera" or not status.online:
         raise RuntimeError(f"invalid camera status: {status!r}")
     logger.info(
@@ -103,26 +103,26 @@ def _check_queries(client: CameraPipelineClient) -> None:
     )
 
     _validate_intrinsics(
-        client.get_head_camera_intrinsics(timeout_s=DEFAULT_TIMEOUT_S),
+        client.get_camera_intrinsics(CameraName.HEAD, timeout_s=DEFAULT_TIMEOUT_S),
         "head_camera",
     )
     _validate_intrinsics(
-        client.get_chest_camera_intrinsics(timeout_s=DEFAULT_TIMEOUT_S),
+        client.get_camera_intrinsics(CameraName.CHEST, timeout_s=DEFAULT_TIMEOUT_S),
         "chest_camera",
     )
     _validate_intrinsics(
-        client.get_left_arm_camera_intrinsics(timeout_s=DEFAULT_TIMEOUT_S),
+        client.get_camera_intrinsics(CameraName.LEFT_ARM, timeout_s=DEFAULT_TIMEOUT_S),
         "left_hand_camera",
     )
     _validate_intrinsics(
         client.get_camera_intrinsics(
-            "chest_camera",
+            CameraName.CHEST,
             timeout_s=DEFAULT_TIMEOUT_S,
         ),
         "chest_camera",
     )
     try:
-        client.get_right_arm_camera_intrinsics(timeout_s=DEFAULT_TIMEOUT_S)
+        client.get_camera_intrinsics(CameraName.RIGHT_ARM, timeout_s=DEFAULT_TIMEOUT_S)
     except RuntimeError as exc:
         _validate_disconnected_error(exc, "右臂内参")
     else:
@@ -161,41 +161,41 @@ def _check_named_streams(client: CameraPipelineClient) -> None:
     """验证头部、胸腔和左臂的明确命名订阅 API。"""
 
     _validate_rgbd_frame(
-        _read_one(client.subscribe_head_camera_frames()),
+        _read_one(client.subscribe_camera_frames(CameraName.HEAD)),
         "head_camera",
     )
     _validate_rgbd_frame(
-        _read_one(client.subscribe_chest_camera_frames()),
+        _read_one(client.subscribe_camera_frames(CameraName.CHEST)),
         "chest_camera",
     )
     _validate_rgbd_frame(
-        _read_one(client.subscribe_left_arm_camera_frames()),
+        _read_one(client.subscribe_camera_frames(CameraName.LEFT_ARM)),
         "left_hand_camera",
     )
 
     _validate_color_frame(
-        _read_one(client.subscribe_head_camera_color_frames()),
+        _read_one(client.subscribe_camera_color_frames(CameraName.HEAD)),
         "head_camera",
     )
     _validate_color_frame(
-        _read_one(client.subscribe_chest_camera_color_frames()),
+        _read_one(client.subscribe_camera_color_frames(CameraName.CHEST)),
         "chest_camera",
     )
     _validate_color_frame(
-        _read_one(client.subscribe_left_arm_camera_color_frames()),
+        _read_one(client.subscribe_camera_color_frames(CameraName.LEFT_ARM)),
         "left_hand_camera",
     )
 
     _validate_depth_frame(
-        _read_one(client.subscribe_head_camera_depth_frames()),
+        _read_one(client.subscribe_camera_depth_frames(CameraName.HEAD)),
         "head_camera",
     )
     _validate_depth_frame(
-        _read_one(client.subscribe_chest_camera_depth_frames()),
+        _read_one(client.subscribe_camera_depth_frames(CameraName.CHEST)),
         "chest_camera",
     )
     _validate_depth_frame(
-        _read_one(client.subscribe_left_arm_camera_depth_frames()),
+        _read_one(client.subscribe_camera_depth_frames(CameraName.LEFT_ARM)),
         "left_hand_camera",
     )
 
@@ -204,15 +204,15 @@ def _check_parameterized_streams(client: CameraPipelineClient) -> None:
     """验证保留的参数化订阅 API。"""
 
     _validate_rgbd_frame(
-        _read_one(client.subscribe_camera_frames("left_hand_camera")),
+        _read_one(client.subscribe_camera_frames(CameraName.LEFT_ARM)),
         "left_hand_camera",
     )
     _validate_color_frame(
-        _read_one(client.subscribe_camera_color_frames("left_hand_camera")),
+        _read_one(client.subscribe_camera_color_frames(CameraName.LEFT_ARM)),
         "left_hand_camera",
     )
     _validate_depth_frame(
-        _read_one(client.subscribe_camera_depth_frames("left_hand_camera")),
+        _read_one(client.subscribe_camera_depth_frames(CameraName.LEFT_ARM)),
         "left_hand_camera",
     )
 
@@ -308,27 +308,27 @@ def _check_stable_frames(client: CameraPipelineClient) -> None:
     """在内参与帧数据验证完成后，最后验证分相机稳定帧 API。"""
 
     _validate_stable_frame(
-        client.get_head_camera_stable_frame(timeout_s=DEFAULT_TIMEOUT_S),
+        client.get_stable_frame(CameraName.HEAD, timeout_s=DEFAULT_TIMEOUT_S),
         "head_camera",
     )
     _validate_stable_frame(
-        client.get_chest_camera_stable_frame(timeout_s=DEFAULT_TIMEOUT_S),
+        client.get_stable_frame(CameraName.CHEST, timeout_s=DEFAULT_TIMEOUT_S),
         "chest_camera",
     )
     _validate_stable_frame(
-        client.get_left_arm_camera_stable_frame(timeout_s=DEFAULT_TIMEOUT_S),
+        client.get_stable_frame(CameraName.LEFT_ARM, timeout_s=DEFAULT_TIMEOUT_S),
         "left_hand_camera",
     )
     _validate_stable_frame(
         client.get_stable_frame(
-            "chest_camera",
+            CameraName.CHEST,
             timeout_s=DEFAULT_TIMEOUT_S,
         ),
         "chest_camera",
     )
 
     try:
-        client.get_right_arm_camera_stable_frame(timeout_s=DEFAULT_TIMEOUT_S)
+        client.get_stable_frame(CameraName.RIGHT_ARM, timeout_s=DEFAULT_TIMEOUT_S)
     except RuntimeError as exc:
         _validate_disconnected_error(exc, "右臂稳定帧")
     else:
@@ -364,13 +364,13 @@ def _validate_stable_frame(
 def _check_disconnected_right_arm_streams(client: CameraPipelineClient) -> None:
     """验证右臂帧 API 存在，且当前以明确错误表达未连接。"""
 
-    _expect_stream_disconnected(client.subscribe_right_arm_camera_frames(), "右臂 RGBD")
+    _expect_stream_disconnected(client.subscribe_camera_frames(CameraName.RIGHT_ARM), "右臂 RGBD")
     _expect_stream_disconnected(
-        client.subscribe_right_arm_camera_color_frames(),
+        client.subscribe_camera_color_frames(CameraName.RIGHT_ARM),
         "右臂彩色",
     )
     _expect_stream_disconnected(
-        client.subscribe_right_arm_camera_depth_frames(),
+        client.subscribe_camera_depth_frames(CameraName.RIGHT_ARM),
         "右臂深度",
     )
 

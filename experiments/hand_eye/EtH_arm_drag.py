@@ -28,7 +28,7 @@ for import_root in (PROJECT_ROOT, WUJI_TEST_ROOT):
     if str(import_root) not in sys.path:
         sys.path.insert(0, str(import_root))
 
-from camera_pipeline.client import CameraPipelineClient
+from camera_pipeline.client import CameraName, CameraPipelineClient
 from camera_pipeline.protocol import CameraColorFramePacket
 from common import (
     DEFAULT_PORT,
@@ -223,7 +223,7 @@ def _run_calibration_session(
     cv2.resizeWindow(window_name, DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT)
     logger.success("开始订阅头部相机。拖动{}，停稳后按 Space/Enter/P 采样。", ARM_LABELS[arm.arm_side])
     try:
-        for frame_packet in client.subscribe_head_camera_color_frames():
+        for frame_packet in client.subscribe_camera_color_frames(CameraName.HEAD):
             frame_bgr = np.asarray(frame_packet.color_bgr, dtype=np.uint8).copy()
             pose_result = estimator.estimate_pose(
                 image_bgr=frame_bgr,
@@ -656,7 +656,10 @@ def _camera_board_pose_mm_to_m(camera_board_pose_mm: np.ndarray) -> np.ndarray:
 
 
 def _read_head_camera_calibration(client: CameraPipelineClient) -> CameraCalibration:
-    response = client.get_head_camera_intrinsics(timeout_s=DEFAULT_CAMERA_TIMEOUT_S)
+    response = client.get_camera_intrinsics(
+        CameraName.HEAD,
+        timeout_s=DEFAULT_CAMERA_TIMEOUT_S,
+    )
     distortion = np.asarray(response.distortion, dtype=np.float64).reshape(-1, 1)
     if distortion.size == 0:
         distortion = np.zeros((5, 1), dtype=np.float64)

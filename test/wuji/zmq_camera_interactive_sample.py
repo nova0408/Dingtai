@@ -83,7 +83,7 @@ def main() -> None:
     try:
         _run_interactive_capture(client=client, camera_name=DEFAULT_CAMERA_NAME, session_dir=session_dir)
     except Exception as exc:  # noqa: BLE001
-        logger.error("相机交互采样失败: {}", exc)
+        logger.error("相机交互采样失败：{}", exc)
         raise
     finally:
         client.close()

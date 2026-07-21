@@ -15,24 +15,19 @@ from ..ball_pose_detection.protocol import (
     BallPoseDetectionResponse,
     BallPosePriorInfo,
 )
-from ..protocol import CameraColorFramePacket, CameraDepthFramePacket, CameraFramePacket
+from ..protocol import CameraColorFramePacket, CameraDepthFramePacket, CameraFramePacket, CameraName
 from .protocol import (
-    CameraColorFrameSubscribeRequest,
     CameraColorFrameSubscribeResponse,
-    CameraDepthFrameSubscribeRequest,
     CameraDepthFrameSubscribeResponse,
-    CameraFrameSubscribeRequest,
     CameraFrameSubscribeResponse,
-    CameraIntrinsicsRequest,
     CameraIntrinsicsResponse,
     CameraPipelineServiceRequest,
     CameraPipelineServiceResponse,
-    CameraStatusRequest,
     CameraStatusResponse,
-    CameraSummaryRequest,
     CameraSummaryResponse,
-    StableFrameRequest,
     StableFrameResponse,
+    CharucoDetectionRequest,
+    CharucoDetectionResponse,
 )
 
 _MAGIC = b"CPW1"
@@ -51,25 +46,21 @@ WireDataclass: TypeAlias = (
     | BallDetectionInfo
     | BallPoseDetectionDebugArtifacts
     | BallPoseDetectionResponse
-    | CameraSummaryRequest
     | CameraSummaryResponse
-    | CameraIntrinsicsRequest
     | CameraIntrinsicsResponse
-    | CameraStatusRequest
     | CameraStatusResponse
-    | StableFrameRequest
     | StableFrameResponse
-    | CameraFrameSubscribeRequest
     | CameraFrameSubscribeResponse
-    | CameraColorFrameSubscribeRequest
     | CameraColorFrameSubscribeResponse
-    | CameraDepthFrameSubscribeRequest
     | CameraDepthFrameSubscribeResponse
     | CameraPipelineServiceRequest
     | CameraPipelineServiceResponse
+    | CharucoDetectionRequest
+    | CharucoDetectionResponse
 )
 WireValue: TypeAlias = (
     JsonScalar
+    | CameraName
     | np.generic
     | np.ndarray
     | tuple["WireValue", ...]
@@ -79,6 +70,7 @@ WireValue: TypeAlias = (
 )
 DecodedValue: TypeAlias = (
     JsonScalar
+    | CameraName
     | np.ndarray
     | tuple["DecodedValue", ...]
     | list["DecodedValue"]
@@ -96,22 +88,17 @@ _DATACLASS_TYPES = (
     BallDetectionInfo,
     BallPoseDetectionDebugArtifacts,
     BallPoseDetectionResponse,
-    CameraSummaryRequest,
     CameraSummaryResponse,
-    CameraIntrinsicsRequest,
     CameraIntrinsicsResponse,
-    CameraStatusRequest,
     CameraStatusResponse,
-    StableFrameRequest,
     StableFrameResponse,
-    CameraFrameSubscribeRequest,
     CameraFrameSubscribeResponse,
-    CameraColorFrameSubscribeRequest,
     CameraColorFrameSubscribeResponse,
-    CameraDepthFrameSubscribeRequest,
     CameraDepthFrameSubscribeResponse,
     CameraPipelineServiceRequest,
     CameraPipelineServiceResponse,
+    CharucoDetectionRequest,
+    CharucoDetectionResponse,
 )
 _TYPE_TO_ID: dict[type[WireDataclass], str] = {
     item: item.__name__ for item in _DATACLASS_TYPES
@@ -169,6 +156,8 @@ def decode_wire(payload: bytes, expected_type: type[DecodedT]) -> DecodedT:
 
 
 def _encode_value(value: WireValue, blobs: list[bytes]) -> JsonValue:
+    if isinstance(value, CameraName):
+        return {"@camera_name": value.value}
     if value is None or isinstance(value, (bool, int, float, str)):
         return value
     if isinstance(value, np.generic):
@@ -218,6 +207,14 @@ def _decode_value(value: JsonValue, binary: memoryview) -> DecodedValue:
         raise WireCodecError(f"unsupported wire metadata type: {type(value).__name__}")
     if "@array" in value:
         return _decode_array(value["@array"], binary)
+    if "@camera_name" in value:
+        camera_name = value["@camera_name"]
+        if not isinstance(camera_name, str):
+            raise WireCodecError("camera name must be a string")
+        try:
+            return CameraName(camera_name)
+        except ValueError as exc:
+            raise WireCodecError(f"unsupported camera name: {camera_name}") from exc
     if "@tuple" in value:
         items = value["@tuple"]
         if not isinstance(items, list):

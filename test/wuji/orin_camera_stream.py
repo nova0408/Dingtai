@@ -11,7 +11,7 @@ from loguru import logger
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
-from camera_pipeline.client import CameraPipelineClient
+from camera_pipeline.client import CameraName, CameraPipelineClient
 
 DEFAULT_ORIN_SERVICE_ADDR = "tcp://192.168.1.128:6200"
 DEFAULT_CAMERA_NAME = "left_hand_camera"
@@ -25,8 +25,9 @@ def main() -> int:
     args = _parse_cli()
     client = CameraPipelineClient(service_addr=args.service_addr, timeout_ms=int(args.timeout_s * 1000.0))
     try:
-        status = client.get_camera_status(timeout_s=float(args.timeout_s))
-        intrinsics = client.get_camera_intrinsics(timeout_s=float(args.timeout_s))
+        camera_name = CameraName(args.camera_name)
+        status = client.get_camera_status(camera_name, timeout_s=float(args.timeout_s))
+        intrinsics = client.get_camera_intrinsics(camera_name, timeout_s=float(args.timeout_s))
         logger.success("相机状态与内参获取成功")
         print({
             "camera_name": status.camera_name,
@@ -45,7 +46,7 @@ def main() -> int:
         })
 
         frame_count = 0
-        for frame in client.subscribe_camera_frames(args.camera_name):
+        for frame in client.subscribe_camera_frames(camera_name):
             frame_count += 1
             color_bgr = np.asarray(frame.color_bgr, dtype=np.uint8)
             logger.info(

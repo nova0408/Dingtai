@@ -55,7 +55,7 @@ def _smoke_gui_session_path() -> None:
         logger.info("AGV GUI 路径运行信息 {}", runtime_info)
         logger.info("AGV GUI 路径使能状态 {}", client.get_enable())
         # client.navigate_to("3")
-        #raw_status 空闲为 idel，运动为busy
+        # raw_status 空闲为 idel，运动为 busy
         logger.success("AGV GUI 路径冒烟通过")
     finally:
         session.close()

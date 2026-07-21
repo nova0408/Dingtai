@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import cv2
 from loguru import logger
 
 from ..ball_pose_detection.protocol import BallPoseDetectionResponse
@@ -18,6 +19,7 @@ from .protocol import (
     CameraPipelineServiceResponse,
     CameraStatusResponse,
     CameraSummaryResponse,
+    CharucoDetectionResponse,
     StableFrameResponse,
 )
 
@@ -92,10 +94,15 @@ class CameraPipelineApplication:
                     request
                 ),
             )
-        if request.operation == "ball_pose_detection":
+        if request.operation == "detect_ball":
             return CameraPipelineServiceResponse(
                 operation=request.operation,
-                ball_pose_detection=self._handle_ball_pose_detection(request),
+                detect_ball=self._handle_ball_pose_detection(request),
+            )
+        if request.operation == "detect_charuco":
+            return CameraPipelineServiceResponse(
+                operation=request.operation,
+                detect_charuco=self._handle_charuco_detection(request),
             )
         raise RuntimeError(f"unsupported operation: {request.operation}")
 
@@ -106,10 +113,11 @@ class CameraPipelineApplication:
     def _handle_camera_summary(
         self, request: CameraPipelineServiceRequest
     ) -> CameraSummaryResponse:
-        payload = request.camera_summary
-        if payload is None:
-            raise RuntimeError("camera_summary payload missing")
-        frame = self._wait_for_latest_frame(payload.timeout_s, "camera first frame")
+        frame = self._wait_for_latest_frame(
+            request.timeout_s,
+            "camera first frame",
+            camera_name=request.camera_name,
+        )
         logger.info(
             "api camera_summary resolved camera_name={} frame_id={} color_shape={} depth_shape={}",
             frame.camera_name,
@@ -136,13 +144,10 @@ class CameraPipelineApplication:
     def _handle_camera_intrinsics(
         self, request: CameraPipelineServiceRequest
     ) -> CameraIntrinsicsResponse:
-        payload = request.camera_intrinsics
-        if payload is None:
-            raise RuntimeError("camera_intrinsics payload missing")
         frame = self._wait_for_latest_frame(
-            payload.timeout_s,
+            request.timeout_s,
             "camera intrinsics",
-            camera_name=payload.camera_name,
+            camera_name=request.camera_name,
         )
         logger.info(
             "api camera_intrinsics resolved camera_name={} frame_id={} size={}x{} distortion_count={}",
@@ -166,10 +171,11 @@ class CameraPipelineApplication:
     def _handle_camera_status(
         self, request: CameraPipelineServiceRequest
     ) -> CameraStatusResponse:
-        payload = request.camera_status
-        if payload is None:
-            raise RuntimeError("camera_status payload missing")
-        frame = self._wait_for_latest_frame(payload.timeout_s, "camera status")
+        frame = self._wait_for_latest_frame(
+            request.timeout_s,
+            "camera status",
+            camera_name=request.camera_name,
+        )
         logger.info(
             "api camera_status resolved camera_name={} frame_id={} online=True",
             frame.camera_name,
@@ -189,18 +195,15 @@ class CameraPipelineApplication:
     def _handle_stable_frame(
         self, request: CameraPipelineServiceRequest
     ) -> StableFrameResponse:
-        payload = request.stable_frame
-        if payload is None:
-            raise RuntimeError("stable_frame payload missing")
         frame = self._pipeline_context.wait_for_stable_frame(
-            timeout_s=payload.timeout_s,
-            camera_name=payload.camera_name,
+            timeout_s=request.timeout_s,
+            camera_name=request.camera_name,
         )
         logger.info(
             "api stable_frame resolved camera_name={} frame_id={} timeout_s={:.3f}",
             frame.camera_name,
             frame.frame_id,
-            payload.timeout_s,
+            request.timeout_s,
         )
         return StableFrameResponse(
             frame_id=frame.frame_id,
@@ -231,57 +234,48 @@ class CameraPipelineApplication:
     def _handle_frame_subscribe(
         self, request: CameraPipelineServiceRequest
     ) -> CameraFrameSubscribeResponse:
-        payload = request.camera_frame_subscribe
-        if payload is None:
-            raise RuntimeError("camera_frame_subscribe payload missing")
-        self._pipeline_context.get_camera_runtime(payload.camera_name)
+        self._pipeline_context.get_camera_runtime(request.camera_name)
         self._frame_publisher.start()
         logger.info(
             "api camera_frame_subscribe ready camera_name={} stream_addr={}",
-            payload.camera_name,
+            request.camera_name,
             self._frame_publisher.frame_bind_addr,
         )
         return CameraFrameSubscribeResponse(
             stream_addr=self._frame_publisher.frame_bind_addr,
-            camera_name=payload.camera_name,
+            camera_name=request.camera_name,
         )
 
     def _handle_color_frame_subscribe(
         self,
         request: CameraPipelineServiceRequest,
     ) -> CameraColorFrameSubscribeResponse:
-        payload = request.camera_color_frame_subscribe
-        if payload is None:
-            raise RuntimeError("camera_color_frame_subscribe payload missing")
-        self._pipeline_context.get_camera_runtime(payload.camera_name)
+        self._pipeline_context.get_camera_runtime(request.camera_name)
         self._frame_publisher.start()
         logger.info(
             "api camera_color_frame_subscribe ready camera_name={} stream_addr={}",
-            payload.camera_name,
+            request.camera_name,
             self._frame_publisher.color_bind_addr,
         )
         return CameraColorFrameSubscribeResponse(
             stream_addr=self._frame_publisher.color_bind_addr,
-            camera_name=payload.camera_name,
+            camera_name=request.camera_name,
         )
 
     def _handle_depth_frame_subscribe(
         self,
         request: CameraPipelineServiceRequest,
     ) -> CameraDepthFrameSubscribeResponse:
-        payload = request.camera_depth_frame_subscribe
-        if payload is None:
-            raise RuntimeError("camera_depth_frame_subscribe payload missing")
-        self._pipeline_context.get_camera_runtime(payload.camera_name)
+        self._pipeline_context.get_camera_runtime(request.camera_name)
         self._frame_publisher.start()
         logger.info(
             "api camera_depth_frame_subscribe ready camera_name={} stream_addr={}",
-            payload.camera_name,
+            request.camera_name,
             self._frame_publisher.depth_bind_addr,
         )
         return CameraDepthFrameSubscribeResponse(
             stream_addr=self._frame_publisher.depth_bind_addr,
-            camera_name=payload.camera_name,
+            camera_name=request.camera_name,
         )
 
     # endregion
@@ -291,9 +285,11 @@ class CameraPipelineApplication:
     def _handle_ball_pose_detection(
         self, request: CameraPipelineServiceRequest
     ) -> BallPoseDetectionResponse:
-        payload = request.ball_pose_detection
+        payload = request.detect_ball
         if payload is None:
-            raise RuntimeError("ball_pose_detection payload missing")
+            raise RuntimeError("detect_ball payload missing")
+        if payload.camera_name != request.camera_name:
+            raise ValueError("detect_ball camera_name mismatch")
         logger.info(
             "api ball_pose_detection requested request_id={} camera_name={} requested_frame_id={} prior_count={} debug_enabled={}",
             payload.request_id,
@@ -321,5 +317,69 @@ class CameraPipelineApplication:
 
             self._ball_service = BallPoseDetectionService()
         return self._ball_service
+
+    def _handle_charuco_detection(
+        self,
+        request: CameraPipelineServiceRequest,
+    ) -> CharucoDetectionResponse:
+        """在 CameraPipeline 内构造 Board、获取稳定帧并完成检测。"""
+
+        payload = request.detect_charuco
+        if payload is None:
+            raise RuntimeError("detect_charuco payload missing")
+        if payload.camera_name != request.camera_name:
+            raise ValueError("detect_charuco camera_name mismatch")
+        if payload.dictionary_name != "DICT_APRILTAG_16H5":
+            raise ValueError(f"unsupported dictionary: {payload.dictionary_name}")
+        if payload.squares_x < 2 or payload.squares_y < 2:
+            raise ValueError("charuco board squares_x and squares_y must be at least 2")
+        if payload.square_length_mm <= 0.0:
+            raise ValueError("charuco square_length_mm must be greater than zero")
+        if not 0.0 < payload.marker_length_mm < payload.square_length_mm:
+            raise ValueError("charuco marker_length_mm must be between zero and square_length_mm")
+        if payload.min_charuco_corners < 4:
+            raise ValueError("charuco min_charuco_corners must be at least 4")
+        if payload.max_frames <= 0 or payload.stable_timeout_s <= 0.0:
+            raise ValueError("charuco max_frames and stable_timeout_s must be greater than zero")
+        dictionary = cv2.aruco.getPredefinedDictionary(int(cv2.aruco.DICT_APRILTAG_16h5))
+        board = cv2.aruco.CharucoBoard(
+            (payload.squares_x, payload.squares_y),
+            payload.square_length_mm,
+            payload.marker_length_mm,
+            dictionary,
+        )
+        from ..charuco_detection import CharucoDetectionConfig
+
+        result = self._pipeline_context.detect_charuco(
+            board,
+            camera_name=request.camera_name,
+            config=CharucoDetectionConfig(min_charuco_corners=payload.min_charuco_corners),
+            enable_debug=False,
+            max_frames=payload.max_frames,
+            stable_timeout_s=payload.stable_timeout_s,
+        )
+        matrix_array = result.t_cam_board_mm
+        if matrix_array.size == 0:
+            matrix: tuple[tuple[float, float, float, float], ...] = ()
+        elif matrix_array.shape == (4, 4):
+            matrix = tuple(
+                (
+                    float(matrix_array[row_index, 0]),
+                    float(matrix_array[row_index, 1]),
+                    float(matrix_array[row_index, 2]),
+                    float(matrix_array[row_index, 3]),
+                )
+                for row_index in range(4)
+            )
+        else:
+            raise RuntimeError(f"unexpected charuco matrix shape: {matrix_array.shape}")
+        return CharucoDetectionResponse(
+            status=result.status,
+            camera_name=request.camera_name,
+            t_cam_board_mm=matrix,
+            error_px=result.error_px,
+            marker_num=result.marker_num,
+            charuco_num=result.charuco_num,
+        )
 
     # endregion

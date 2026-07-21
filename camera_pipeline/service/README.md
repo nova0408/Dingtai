@@ -93,7 +93,7 @@ client = CameraPipelineClient(service_addr="tcp://<orin-ip>:6200")
 `--stream-port/--camera-id/--camera-name` 指定默认算法相机的覆盖参数。
 头部、胸腔和左臂运行时仍按端点表同时启动。
 
-systemd 模板位于 `camera-pipeline.service`。Orin 本地其他业务服务应声明 `Requires=camera-pipeline.service` 和 `After=camera-pipeline.service`，并在启动后调用 `get_camera_status()` 判断首帧是否真正可用。
+systemd 模板位于 `camera-pipeline.service`。Orin 本地其他业务服务应声明 `Requires=camera-pipeline.service` 和 `After=camera-pipeline.service`，并在启动后调用 `get_camera_status(camera_name)` 判断指定相机首帧是否真正可用。
 
 ## 端口
 
@@ -149,3 +149,11 @@ Python pickle，不依赖 dataclass 的 Python 版本内存布局。Orin 服务�
 ## 测试边界
 
 无真实设备时可以验证协议、loopback RPC、请求路由、稳定帧和资源释放。真实相机连通性、模型性能、发布帧率和现场稳定阈值必须在 Orin 上另行验证。
+# Board 检测
+
+`charuco_detection` 由 CameraPipeline 完整负责相机稳定帧获取、Board 构造、角点融合和
+PnP 位姿计算。调用方必须传入字典、方格数量、方格边长、marker 边长及检测边界；服务端
+不保存默认板型。调用方不订阅相机帧，也不自行实现检测。
+
+成功时返回 `status="detected"` 和 `T_camera_board`，平移单位 mm；未形成有效位姿时返回
+`status="missing"` 和空矩阵。服务级输入、相机或算法异常仍通过统一 `error` 返回。

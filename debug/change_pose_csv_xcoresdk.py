@@ -28,7 +28,7 @@ from PySide6.QtWidgets import (
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SDK_ROOT = PROJECT_ROOT / "sdk"
-DEFAULT_RECORD_DIR = PROJECT_ROOT / "record_left"
+DEFAULT_RECORD_DIR = PROJECT_ROOT / "record_replay" / "records" / "left"
 DEFAULT_TOOL_NAME = "g_tool_0"
 DEFAULT_WOBJ_NAME = "g_wobj_0"
 MM_PER_M = 1000.0
@@ -107,9 +107,9 @@ def _infer_arm_side_from_csv_path(csv_path: Path) -> str:
     """根据 CSV 路径推断左右臂。"""
 
     lowered = str(csv_path).replace("\\", "/").lower()
-    if "record_left" in lowered or "_left_" in lowered:
+    if "records/left" in lowered or "_left_" in lowered:
         return "left"
-    if "record_right" in lowered or "_right_" in lowered:
+    if "records/right" in lowered or "_right_" in lowered:
         return "right"
     raise ValueError(f"无法从路径判断左右臂：{csv_path}")
 
@@ -374,7 +374,7 @@ class PoseCsvViewer(QMainWindow):
         self._recomputed_table.itemSelectionChanged.connect(self._sync_selection_from_recomputed)
 
     def _refresh_file_list(self) -> None:
-        """读取 record_left 下全部 CSV 到下拉框。"""
+        """读取 record_replay/records/left 下全部 CSV 到下拉框。"""
 
         self._csv_files = sorted(self._record_dir.glob("*.csv"))
         with QSignalBlocker(self._file_combo):

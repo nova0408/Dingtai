@@ -1,0 +1,16 @@
+[Unit]
+Description=Dingtai RecordReplay Service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=wuji-brain
+WorkingDirectory=/home/wuji-brain/workspace
+ExecStart=/home/wuji-brain/miniconda3/envs/wuji/bin/python -m record_replay.service --host 0.0.0.0 --port 6300
+Restart=on-failure
+RestartSec=2
+TimeoutStopSec=300
+
+[Install]
+WantedBy=multi-user.target

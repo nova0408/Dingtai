@@ -15,12 +15,12 @@ from camera_pipeline.ball_pose_detection.protocol import (
     BallPoseDetectionRequest,
     BallPosePriorInfo,
 )
-from camera_pipeline.protocol import CameraFramePacket
+from camera_pipeline.protocol import CameraFramePacket, CameraName
 from camera_pipeline.service.protocol import (
     CameraPipelineServiceRequest,
     CameraPipelineServiceResponse,
-    CameraStatusRequest,
     CameraStatusResponse,
+    CharucoDetectionRequest,
 )
 from camera_pipeline.service.transport import CameraPipelineRpcClient, CameraPipelineRpcServer
 from camera_pipeline.service.wire_codec import WireCodecError, decode_wire, encode_wire
@@ -28,9 +28,11 @@ from camera_pipeline.service.wire_codec import WireCodecError, decode_wire, enco
 
 def test_request_round_trip_preserves_nested_protocol_types() -> None:
     request = CameraPipelineServiceRequest(
-        operation="ball_pose_detection",
-        ball_pose_detection=BallPoseDetectionRequest(
+        operation="detect_ball",
+        camera_name=CameraName.LEFT_ARM,
+        detect_ball=BallPoseDetectionRequest(
             request_id=7,
+            camera_name=CameraName.LEFT_ARM,
             priors=(
                 BallPosePriorInfo(
                     color_hex="#ffff00",
@@ -44,6 +46,34 @@ def test_request_round_trip_preserves_nested_protocol_types() -> None:
     decoded = decode_wire(encode_wire(request), CameraPipelineServiceRequest)
 
     assert decoded == request
+    assert isinstance(decoded.camera_name, CameraName)
+    assert decoded.detect_ball is not None
+    assert isinstance(decoded.detect_ball.camera_name, CameraName)
+
+
+def test_charuco_request_round_trip_preserves_explicit_board_parameters() -> None:
+    request = CameraPipelineServiceRequest(
+        operation="detect_charuco",
+        camera_name=CameraName.HEAD,
+        detect_charuco=CharucoDetectionRequest(
+            camera_name=CameraName.HEAD,
+            dictionary_name="DICT_APRILTAG_16H5",
+            squares_x=4,
+            squares_y=4,
+            square_length_mm=20.0,
+            marker_length_mm=14.0,
+            min_charuco_corners=6,
+            max_frames=300,
+            stable_timeout_s=10.0,
+        ),
+    )
+
+    decoded = decode_wire(encode_wire(request), CameraPipelineServiceRequest)
+
+    assert decoded == request
+    assert isinstance(decoded.camera_name, CameraName)
+    assert decoded.detect_charuco is not None
+    assert isinstance(decoded.detect_charuco.camera_name, CameraName)
 
 
 def test_frame_round_trip_preserves_numpy_dtype_and_values() -> None:
@@ -112,7 +142,8 @@ def test_transport_round_trip_uses_explicit_wire_protocol() -> None:
         response = client.call(
             CameraPipelineServiceRequest(
                 operation="camera_status",
-                camera_status=CameraStatusRequest(timeout_s=1.0),
+                camera_name=CameraName.LEFT_ARM,
+                timeout_s=1.0,
             )
         )
         assert response.camera_status is not None
@@ -126,6 +157,7 @@ def test_transport_round_trip_uses_explicit_wire_protocol() -> None:
 
 def main() -> None:
     test_request_round_trip_preserves_nested_protocol_types()
+    test_charuco_request_round_trip_preserves_explicit_board_parameters()
     test_frame_round_trip_preserves_numpy_dtype_and_values()
     test_decoder_rejects_non_wire_payload()
     test_transport_round_trip_uses_explicit_wire_protocol()

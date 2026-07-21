@@ -15,7 +15,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from camera_pipeline.client import CameraPipelineClient
+from camera_pipeline.client import CameraName, CameraPipelineClient
 from camera_pipeline.camera_stream import CameraStreamRuntime
 from camera_pipeline.pipeline_context import PipelineContext
 from camera_pipeline.protocol import CameraFramePacket
@@ -101,7 +101,7 @@ def test_public_client_calls_in_process_service() -> None:
         service_addr=resources.address, timeout_ms=DEFAULT_TIMEOUT_MS
     )
     try:
-        summary = client.get_camera_summary(timeout_s=0.5)
+        summary = client.get_camera_summary(CameraName.LEFT_ARM, timeout_s=0.5)
         assert summary.frame_id >= 42
         assert summary.camera_name == "left_hand_camera"
         assert summary.depth_shape == (48, 64)
@@ -118,7 +118,7 @@ def test_named_head_subscription_filters_multiplexed_stream() -> None:
     )
     stream = cast(
         Generator[CameraFramePacket, None, None],
-        client.subscribe_head_camera_frames(),
+        client.subscribe_camera_frames(CameraName.HEAD),
     )
     try:
         frame = next(stream)
@@ -137,9 +137,9 @@ def test_named_camera_intrinsics_are_routed_to_requested_camera() -> None:
         timeout_ms=DEFAULT_TIMEOUT_MS,
     )
     try:
-        head = client.get_head_camera_intrinsics(timeout_s=0.5)
-        chest = client.get_chest_camera_intrinsics(timeout_s=0.5)
-        left = client.get_left_arm_camera_intrinsics(timeout_s=0.5)
+        head = client.get_camera_intrinsics(CameraName.HEAD, timeout_s=0.5)
+        chest = client.get_camera_intrinsics(CameraName.CHEST, timeout_s=0.5)
+        left = client.get_camera_intrinsics(CameraName.LEFT_ARM, timeout_s=0.5)
         assert (head.camera_name, head.fx) == ("head_camera", 500.0)
         assert (chest.camera_name, chest.fx) == ("chest_camera", 550.0)
         assert (left.camera_name, left.fx) == ("left_hand_camera", 600.0)
@@ -156,7 +156,7 @@ def test_right_arm_intrinsics_api_is_retained_but_reports_disconnected() -> None
     )
     try:
         try:
-            client.get_right_arm_camera_intrinsics(timeout_s=0.5)
+            client.get_camera_intrinsics(CameraName.RIGHT_ARM, timeout_s=0.5)
         except RuntimeError as exc:
             assert "not connected" in str(exc)
         else:
@@ -179,6 +179,7 @@ def test_protocol_version_mismatch_returns_error_response() -> None:
         response = client.call(
             CameraPipelineServiceRequest(
                 operation="camera_summary",
+                camera_name=CameraName.LEFT_ARM,
                 protocol_version=999,
             )
         )

@@ -14,7 +14,13 @@ from loguru import logger
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SDK_ROOT = PROJECT_ROOT / "sdk"
-DEFAULT_CSV_PATH = PROJECT_ROOT / "record_left" / "close_door_left_20260629_143547.csv"
+DEFAULT_CSV_PATH = (
+    PROJECT_ROOT
+    / "record_replay"
+    / "records"
+    / "left"
+    / "09_S03_close_door_left_20260629_143547.csv"
+)
 DEFAULT_ROW_INDEX = 8
 MM_PER_M = 1000.0
 DEFAULT_LOCAL_IP = os.environ.get("DINGTAI_XCORESDK_LOCAL_IP", "192.168.1.116").strip()
@@ -50,9 +56,9 @@ def _parse_list_field(raw_text: str) -> list[Any]:
 
 def _infer_arm_side_from_csv_path(csv_path: Path) -> str:
     lowered = str(csv_path).replace("\\", "/").lower()
-    if "record_left" in lowered or "_left_" in lowered:
+    if "records/left" in lowered or "_left_" in lowered:
         return "left"
-    if "record_right" in lowered or "_right_" in lowered:
+    if "records/right" in lowered or "_right_" in lowered:
         return "right"
     raise ValueError(f"无法从路径判断左右臂: {csv_path}")
 

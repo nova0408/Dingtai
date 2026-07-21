@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
 from .contracts import ReplayServiceState, ReplayStatusSnapshot
 from .settings import ReplayCycleConfig
+from .settings import ReplayServiceSettings
 
 if TYPE_CHECKING:
     from .runtime import ReplayRuntime
@@ -70,6 +71,14 @@ class ReplayContext:
 
         self.stop_event.clear()
         self.set_state(ReplayServiceState.WAITING)
+
+    def update_settings(self, settings: ReplayServiceSettings) -> None:
+        """仅在未执行硬件任务时替换后续轮次使用的运行参数。"""
+
+        with self._lock:
+            if self._snapshot.state not in (ReplayServiceState.WAITING, ReplayServiceState.FAILED):
+                raise RuntimeError("回放正在执行，不能修改运行参数")
+            self.config = replace(self.config, settings=settings)
 
     def attach_runtimes(self, left_runtime: ReplayRuntime, right_runtime: ReplayRuntime | None) -> None:
         """登记当前轮次已创建的左右运行时资源。"""

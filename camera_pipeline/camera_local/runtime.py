@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-# pyright: reportMissingImports=false
-
 import threading
 import time
 
@@ -13,6 +11,7 @@ from pyorbbecsdk import (
     Context,
     DepthFrame,
     Device,
+    DeviceList,
     OBAlignMode,
     OBFormat,
     OBFrameAggregateOutputMode,
@@ -24,6 +23,8 @@ from pyorbbecsdk import (
 
 from ..protocol import CameraFramePacket
 from .config import LocalCameraRuntimeConfig, LocalStreamProfileConfig
+
+# pyright: reportMissingImports=false
 
 
 _FORMAT_BY_NAME: dict[str, OBFormat] = {
@@ -58,8 +59,7 @@ class LocalCameraRuntime:
             raise ValueError("reconnect_initial_interval_s must be greater than zero")
         if config.reconnect_max_interval_s < config.reconnect_initial_interval_s:
             raise ValueError(
-                "reconnect_max_interval_s must be greater than or equal to "
-                "reconnect_initial_interval_s"
+                "reconnect_max_interval_s must be greater than or equal to " "reconnect_initial_interval_s"
             )
         self._config = config
         self._lock = threading.Lock()
@@ -103,9 +103,7 @@ class LocalCameraRuntime:
 
         self._stop_event.set()
         if self._thread is not None:
-            self._thread.join(
-                timeout=max(3.0, self._config.frame_timeout_ms / 1000.0 + 1.0)
-            )
+            self._thread.join(timeout=max(3.0, self._config.frame_timeout_ms / 1000.0 + 1.0))
             self._thread = None
         with self._lock:
             self._latest_frame = None
@@ -189,7 +187,7 @@ class LocalCameraRuntime:
         """建立一次 SDK pipeline 会话并持续读取帧，直到停止或发生错误。"""
 
         context = Context()
-        device = self._find_device(context)
+        device: Device = self._find_device(context)
         pipeline = Pipeline(device)
         stream_config, color_profile = self._build_stream_config(pipeline)
         started = False
@@ -265,24 +263,18 @@ class LocalCameraRuntime:
     def _find_device(self, context: Context) -> Device:
         """按配置 SN 查找设备，不使用枚举顺序代替身份。"""
 
-        device_list = context.query_devices()
+        device_list: DeviceList = context.query_devices()
         for index in range(device_list.get_count()):
-            device = device_list.get_device_by_index(index)
+            device: Device = device_list.get_device_by_index(index)
             if device.get_device_info().get_serial_number() == self._config.serial_number:
                 return device
         raise RuntimeError(f"USB camera not found: {self._config.serial_number}")
 
-    def _build_stream_config(
-        self, pipeline: Pipeline
-    ) -> tuple[Config, VideoStreamProfile]:
+    def _build_stream_config(self, pipeline: Pipeline) -> tuple[Config, VideoStreamProfile]:
         """按配置精确选择彩色和深度 profile，并启用 D2C 软件对齐。"""
 
-        color_profile = self._select_profile(
-            pipeline, OBSensorType.COLOR_SENSOR, self._config.color
-        )
-        depth_profile = self._select_profile(
-            pipeline, OBSensorType.DEPTH_SENSOR, self._config.depth
-        )
+        color_profile = self._select_profile(pipeline, OBSensorType.COLOR_SENSOR, self._config.color)
+        depth_profile = self._select_profile(pipeline, OBSensorType.DEPTH_SENSOR, self._config.depth)
         config = Config()
         config.enable_stream(color_profile)
         config.enable_stream(depth_profile)
@@ -357,9 +349,7 @@ def _color_frame_to_bgr(frame: VideoFrame) -> np.ndarray:
 def _depth_frame_to_mm(frame: DepthFrame) -> np.ndarray:
     """将 SDK 深度帧转换成 `(H, W)` 的 `uint16` 毫米深度图。"""
 
-    depth_raw = np.frombuffer(frame.get_data(), dtype=np.uint16).reshape(
-        (frame.get_height(), frame.get_width())
-    )
+    depth_raw = np.frombuffer(frame.get_data(), dtype=np.uint16).reshape((frame.get_height(), frame.get_width()))
     # SDK 原始深度乘 depth scale 后单位为 mm；饱和裁剪后收窄为协议要求的 uint16。
     depth_mm = depth_raw.astype(np.float32) * frame.get_depth_scale()
     return np.clip(depth_mm, 0.0, 65535.0).astype(np.uint16)

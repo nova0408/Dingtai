@@ -36,7 +36,13 @@ from PySide6.QtWidgets import (
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SDK_ROOT = PROJECT_ROOT / "sdk"
-DEFAULT_CSV_PATH = PROJECT_ROOT / "record_left" / "close_door_left_20260629_143547.csv"
+DEFAULT_CSV_PATH = (
+    PROJECT_ROOT
+    / "record_replay"
+    / "records"
+    / "left"
+    / "09_S03_close_door_left_20260629_143547.csv"
+)
 CSV_REFRESH_INTERVAL_MS = 500
 MM_PER_M = 1000.0
 DEFAULT_LOCAL_IP = os.environ.get("DINGTAI_XCORESDK_LOCAL_IP", "192.168.1.116").strip()
@@ -169,7 +175,7 @@ def _row_to_csv_text(row: dict[str, str], fieldnames: list[str]) -> str:
     buffer = io.StringIO()
     writer = csv.DictWriter(buffer, fieldnames=fieldnames)
     writer.writerow(row)
-    return buffer.getvalue().strip("\r\n")
+    return buffer.getvalue().rstrip()
 
 
 def _serialize_row(row: dict[str, str], fieldnames: list[str]) -> str:
@@ -370,9 +376,9 @@ def _infer_arm_side_from_csv_path(csv_path: Path) -> str | None:
     """根据 CSV 路径推断当前机械臂侧别。"""
 
     lowered = str(csv_path).replace("\\", "/").lower()
-    if "record_left" in lowered or "_left_" in lowered or lowered.endswith("_left.csv"):
+    if "records/left" in lowered or "_left_" in lowered or lowered.endswith("_left.csv"):
         return "left"
-    if "record_right" in lowered or "_right_" in lowered or lowered.endswith("_right.csv"):
+    if "records/right" in lowered or "_right_" in lowered or lowered.endswith("_right.csv"):
         return "right"
     return None
 

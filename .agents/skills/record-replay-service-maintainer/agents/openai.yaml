@@ -1,0 +1,4 @@
+interface:
+  display_name: "Record Replay Service Maintainer"
+  short_description: "安全维护、同步与部署 Orin 轨迹回放服务代码及测试"
+  default_prompt: "Use $record-replay-service-maintainer to safely update and deploy the record_replay service without automatically running hardware-motion tests."

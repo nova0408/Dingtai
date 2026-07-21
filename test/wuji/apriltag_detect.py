@@ -30,7 +30,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from camera_pipeline.client import CameraPipelineClient
+from camera_pipeline.client import CameraName, CameraPipelineClient
 
 # region 默认参数（优先在这里直接改）
 DEFAULT_WINDOW_NAME = "AprilTag Color Eval"
@@ -200,9 +200,11 @@ def main(config: AppConfig) -> None:
 
     client = CameraPipelineClient(service_addr=DEFAULT_ORIN_SERVICE_ADDR, timeout_ms=30_000)
     try:
-        summary_response = client.get_camera_summary(timeout_s=float(config.timeout_ms) / 1000.0)
-        status_response = client.get_camera_status(timeout_s=float(config.timeout_ms) / 1000.0)
-        intrinsics_response = client.get_camera_intrinsics(timeout_s=float(config.timeout_ms) / 1000.0)
+        timeout_s = float(config.timeout_ms) / 1000.0
+        camera_name = CameraName(DEFAULT_CAMERA_NAME)
+        summary_response = client.get_camera_summary(camera_name, timeout_s)
+        status_response = client.get_camera_status(camera_name, timeout_s)
+        intrinsics_response = client.get_camera_intrinsics(camera_name, timeout_s)
         calibration = _read_camera_calibration(intrinsics_response)
         if str(status_response.camera_name) != str(DEFAULT_CAMERA_NAME):
             logger.warning(
@@ -230,7 +232,7 @@ def main(config: AppConfig) -> None:
         )
         cv2.namedWindow(DEFAULT_WINDOW_NAME, cv2.WINDOW_NORMAL)
         frame_index = 0
-        for frame in client.subscribe_camera_frames(DEFAULT_CAMERA_NAME):
+        for frame in client.subscribe_camera_frames(CameraName(DEFAULT_CAMERA_NAME)):
             color_bgr = np.asarray(frame.color_bgr, dtype=np.uint8)
             if color_bgr.size == 0:
                 logger.warning("Orin camera_frame 返回空图像，跳过本帧")

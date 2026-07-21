@@ -14,7 +14,7 @@ from camera_pipeline.ball_pose_detection.protocol import (
     BallPoseDetectionRequest,
     BallPosePriorInfo,
 )
-from camera_pipeline.client import CameraPipelineClient
+from camera_pipeline.client import CameraName, CameraPipelineClient
 
 from .offset_detection import ordered_three_ball_centers
 from .settings import ReplayOffsetSettings
@@ -117,9 +117,7 @@ class ThreeBallDetector(Protocol):
 class CameraPipelineThreeBallDetector:
     """将 camera_pipeline 的球位姿 RPC 适配为业务三球样本。"""
 
-    service_addr: str
-    "camera_pipeline RPC 地址。"
-    camera_name: str
+    camera_name: CameraName
     "逻辑相机名称。"
     priors: tuple[BallPosePriorInfo, ...]
     "检测请求使用的三球先验。"
@@ -129,12 +127,12 @@ class CameraPipelineThreeBallDetector:
     def capture_samples(self, sample_count: int) -> list[tuple[tuple[float, float, float], ...]]:
         """连续请求三球检测并只返回完整有效的三球样本。"""
 
-        client = CameraPipelineClient(self.service_addr, timeout_ms=self.settings.detection_timeout_ms)
+        client = CameraPipelineClient(timeout_ms=self.settings.detection_timeout_ms)
         samples: list[tuple[tuple[float, float, float], ...]] = []
         try:
             for request_id in range(1, sample_count + 1):
                 try:
-                    response = client.request_ball_pose_detection(
+                    response = client.detect_ball(
                         BallPoseDetectionRequest(
                             request_id=request_id,
                             camera_name=self.camera_name,
