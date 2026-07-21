@@ -92,7 +92,7 @@ status = client.get_camera_status(CameraName.LEFT_ARM)
 
 ```python
 client = CameraPipelineClient(
-    service_addr="tcp://192.168.1.118:6200",
+    service_addr="tcp://192.168.1.128:6200",
     timeout_ms=30_000,
 )
 ```
@@ -116,12 +116,11 @@ left_color_frames = client.subscribe_camera_color_frames(CameraName.LEFT_ARM)
 
 ```bash
 /home/wuji-brain/miniconda3/envs/wuji/bin/python -m camera_pipeline.service \
-  --bind-addr tcp://0.0.0.0:6200 \
-  --control-port 5570 \
-  --stream-port 5562 \
-  --camera-id LEFT \
-  --camera-name left_hand_camera
+  --bind-addr tcp://0.0.0.0:6200
 ```
+
+相机源、上游控制端口、各相机流端口、相机名称与启用状态统一读取
+`camera_pipeline/config.json`，不再由服务命令行重复覆盖。
 
 服务默认同时写入 systemd/journald 控制台日志和
 `logs/camera_pipeline_service.log` 文件日志。文件按 `20 MB` 轮转、ZIP 压缩并保留
@@ -162,12 +161,27 @@ After=camera-pipeline.service
 
 ## 协议与安全
 
-统一请求包含 `protocol_version`。当前版本 4 已移除 tray/opening 请求和响应类型。
+统一请求包含 `protocol_version`。当前版本 6 已移除 tray/opening 请求和响应类型，
+并要求所有相机查询、订阅和算法请求显式携带 `camera_name`。
 网络数据采用白名单协议 dataclass 的 JSON 元数据与 NumPy 原始字节块，不使用
 Python pickle。服务端部署基线为 Python 3.12。解码器拒绝未知类型、非法数组范围和字段不匹配；端口仍只应开放在受控
 开发网络中。
 
 ## 测试
+
+Orin 真实相机 smoke test 是非镜像平铺部署，只维护下列映射：
+
+| 用途 | 本机源文件 | Orin 执行文件 |
+| --- | --- | --- |
+| 多相机查询/订阅 | `test/wuji/orin_camera.py` | `/home/wuji-brain/workspace/test/camera.py` |
+| 单相机帧流 | `test/wuji/orin_camera_stream.py` | `/home/wuji-brain/workspace/test/orin_camera_stream.py` |
+| 稳定帧 | `test/wuji/stable_frame.py` | `/home/wuji-brain/workspace/test/stable_frame.py` |
+| 三球检测 | `test/wuji/ball_pose_detection.py` | `/home/wuji-brain/workspace/test/ball_pose_detection.py` |
+
+这些脚本在 Windows 使用 `tcp://192.168.1.128:6200`，在 Orin 使用
+`tcp://127.0.0.1:6200`；脚本会通过 `camera_pipeline/client.py` 反向定位项目根目录，
+不得依赖本机 `test/wuji/` 层级。`tray/opening` operation 已从协议移除，
+禁止继续部署或运行旧版 `tray_detection.py`、`opening_detection.py` smoke test。
 
 无真实设备时允许执行：
 

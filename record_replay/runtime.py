@@ -94,7 +94,7 @@ def prepare_runtime(runtime: ReplayRuntime) -> None:
     )
     retry_non_motion_call(
         f"lift.set_enable({arm_side})",
-        lambda: runtime.hand_body.body.lift.set_enable(True),
+        lambda: runtime.hand_body.lift.set_enable(True),
         runtime.settings.non_motion_retry_count,
         runtime.settings.non_motion_retry_delay_s,
     )

@@ -8,12 +8,21 @@ import cv2
 import numpy as np
 from loguru import logger
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+PROJECT_ROOT = next(
+    parent
+    for parent in Path(__file__).resolve().parents
+    if (parent / "camera_pipeline" / "client.py").is_file()
+)
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 from camera_pipeline.client import CameraName, CameraPipelineClient
 
-DEFAULT_ORIN_SERVICE_ADDR = "tcp://192.168.1.128:6200"
+# Windows 开发机访问 Orin 管理网 IP；Orin 平铺部署脚本仅访问 localhost。
+DEFAULT_ORIN_SERVICE_ADDR = (
+    "tcp://192.168.1.128:6200"
+    if sys.platform == "win32"
+    else "tcp://127.0.0.1:6200"
+)
 DEFAULT_CAMERA_NAME = "left_hand_camera"
 DEFAULT_TIMEOUT_S = 10.0
 DEFAULT_MAX_FRAMES = 5
@@ -50,14 +59,13 @@ def main() -> int:
             frame_count += 1
             color_bgr = np.asarray(frame.color_bgr, dtype=np.uint8)
             logger.info(
-                "frame {}: id={} shape={}x{} dtype={} ts_ms={} source_meta={}",
+                "frame {}: id={} shape={}x{} dtype={} ts_ms={} ms",
                 frame_count,
                 int(frame.frame_id),
                 int(color_bgr.shape[1]),
                 int(color_bgr.shape[0]),
                 color_bgr.dtype,
                 float(frame.timestamp_ms),
-                frame.source_meta,
             )
             if args.preview:
                 cv2.imshow("Orin Camera Stream", color_bgr)

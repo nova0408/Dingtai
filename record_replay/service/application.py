@@ -8,6 +8,7 @@ from loguru import logger
 
 from ..context import ReplayContext
 from ..cycle_service import RecordReplayCycleService
+from ..device_status import DeviceStatusReader, DeviceStatusResponse
 from .config_store import RuntimeConfigStore
 from .protocol import RecordReplayResponse
 
@@ -20,14 +21,16 @@ class RecordReplayApplication:
         context: ReplayContext,
         cycle_service: RecordReplayCycleService,
         config_store: RuntimeConfigStore,
+        device_status_reader: DeviceStatusReader,
     ) -> None:
         self._context = context
         self._cycle_service = cycle_service
         self._config_store = config_store
+        self._device_status_reader = device_status_reader
         self._lock = threading.Lock()
         self._worker: threading.Thread | None = None
 
-    def start(self) -> RecordReplayResponse:
+    def start(self, enable_agv_navigation: bool) -> RecordReplayResponse:
         """启动唯一业务线程；已有任务运行时拒绝重复启动。"""
 
         with self._lock:
@@ -35,6 +38,7 @@ class RecordReplayApplication:
                 return self.status(accepted=False)
             self._worker = threading.Thread(
                 target=self._run_once,
+                args=(enable_agv_navigation,),
                 name="record-replay-worker",
                 daemon=False,
             )
@@ -76,6 +80,14 @@ class RecordReplayApplication:
             self._context.update_settings(parameters.to_service_settings())
         return self.get_parameters()
 
+    def get_device_status(self) -> DeviceStatusResponse:
+        """回放空闲时读取现场设备连接与当前状态。"""
+
+        with self._lock:
+            if self._worker is not None and self._worker.is_alive():
+                raise RuntimeError("回放正在执行，拒绝并发读取设备状态")
+            return self._device_status_reader.read()
+
     def join(self) -> None:
         """服务退出时等待正在运行的硬件业务完成。"""
 
@@ -83,11 +95,11 @@ class RecordReplayApplication:
         if worker is not None:
             worker.join()
 
-    def _run_once(self) -> None:
+    def _run_once(self, enable_agv_navigation: bool) -> None:
         """在唯一业务线程中执行一轮并保留失败快照。"""
 
         try:
-            self._cycle_service.run_once()
+            self._cycle_service.run_once(enable_agv_navigation=enable_agv_navigation)
         except Exception:
             logger.exception("record replay cycle failed")
 

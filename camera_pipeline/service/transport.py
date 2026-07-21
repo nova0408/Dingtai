@@ -62,22 +62,33 @@ class CameraPipelineRpcClient:
     ) -> None:
         self._context = zmq.Context.instance() if context is None else context
         self._options = ZmqSocketOptions() if options is None else options
-        self._socket = self._context.socket(zmq.REQ)
-        _configure_socket(self._socket, self._options)
-        self._socket.connect(connect_addr)
+        self._connect_addr = connect_addr
+        self._closed = False
 
     def close(self) -> None:
-        """立即关闭 REQ socket。"""
+        """禁止当前 transport 继续发起请求。"""
 
-        self._socket.close(linger=0)
+        self._closed = True
 
     def call(
         self, request: CameraPipelineServiceRequest
     ) -> CameraPipelineServiceResponse:
-        """同步发送请求并接收经过类型校验的响应。"""
+        """使用独立 REQ socket 完成一次请求响应并校验返回类型。
 
-        self._socket.send(encode_wire(request))
-        return decode_wire(self._socket.recv(), CameraPipelineServiceResponse)
+        每次 RPC 都关闭本次 socket，避免上一次超时或远端重启残留的 REQ 状态
+        污染后续调用；这也保证连续查询不会复用失效的 TCP pipe。
+        """
+
+        if self._closed:
+            raise RuntimeError("camera pipeline RPC client is closed")
+        socket = self._context.socket(zmq.REQ)
+        _configure_socket(socket, self._options)
+        socket.connect(self._connect_addr)
+        try:
+            socket.send(encode_wire(request))
+            return decode_wire(socket.recv(), CameraPipelineServiceResponse)
+        finally:
+            socket.close(linger=0)
 
 
 def _configure_socket(socket: zmq.Socket, options: ZmqSocketOptions) -> None:

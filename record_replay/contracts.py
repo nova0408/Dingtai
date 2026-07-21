@@ -3,14 +3,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import StrEnum
+from enum import Enum
 from pathlib import Path
 
 
 # region 状态枚举
 
 
-class ReplayServiceState(StrEnum):
+class ReplayServiceState(str, Enum):
     """常态化服务的可观测状态。"""
 
     WAITING = "waiting"
@@ -18,6 +18,11 @@ class ReplayServiceState(StrEnum):
     REPLAYING = "replaying"
     NAVIGATING_TO_FINISH = "navigating_to_finish"
     FAILED = "failed"
+
+    def __str__(self) -> str:
+        """保持 Python 3.11 ``StrEnum`` 的字符串表现。"""
+
+        return self.value
 
 
 # endregion

@@ -28,31 +28,33 @@ class RecordReplayCycleService:
         self._executor = executor if executor is not None else DualArmExecutor()
         self._offset_updater = offset_updater
 
-    def run_once(self) -> None:
-        """执行一轮 AGV 到位确认、双臂回放与返回流程。"""
+    def run_once(self, enable_agv_navigation: bool = True) -> None:
+        """执行一轮可选 AGV 导航、双臂回放与返回流程。"""
 
         try:
             config = self._context.config
-            self._context.set_state(ReplayServiceState.NAVIGATING_TO_START)
-            wait_until_arrived(
-                self._agv_client,
-                config.start_station,
-                timeout_s=config.settings.agv_navigation_timeout_s,
-                poll_s=config.settings.agv_navigation_poll_interval_s,
-            )
+            if enable_agv_navigation:
+                self._context.set_state(ReplayServiceState.NAVIGATING_TO_START)
+                wait_until_arrived(
+                    self._agv_client,
+                    config.start_station,
+                    timeout_s=config.settings.agv_navigation_timeout_s,
+                    poll_s=config.settings.agv_navigation_poll_interval_s,
+                )
             left_paths = discover_csv_paths(config.left_record_dir)
             if not left_paths:
                 raise RuntimeError(f"没有在目录中发现 CSV: {config.left_record_dir}")
             right_paths = discover_csv_paths(config.right_record_dir) if any(extract_sync_csv_sequence(item.name) is not None for item in left_paths) else []
             plans = build_execution_plans(left_paths, right_paths) if right_paths else [CsvExecutionPlan(item) for item in left_paths]
             self._executor.execute(self._context, plans, self._offset_updater)
-            self._context.set_state(ReplayServiceState.NAVIGATING_TO_FINISH)
-            wait_until_arrived(
-                self._agv_client,
-                config.finish_station,
-                timeout_s=config.settings.agv_navigation_timeout_s,
-                poll_s=config.settings.agv_navigation_poll_interval_s,
-            )
+            if enable_agv_navigation:
+                self._context.set_state(ReplayServiceState.NAVIGATING_TO_FINISH)
+                wait_until_arrived(
+                    self._agv_client,
+                    config.finish_station,
+                    timeout_s=config.settings.agv_navigation_timeout_s,
+                    poll_s=config.settings.agv_navigation_poll_interval_s,
+                )
             self._context.reset_for_next_cycle()
         except Exception as error:
             self._context.set_state(ReplayServiceState.FAILED, error_text=str(error))

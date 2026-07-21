@@ -34,7 +34,7 @@ DEFAULT_WINDOW_NAME = "Charuco Detect"
 DEFAULT_TIMEOUT_MS = 120
 DEFAULT_CAPTURE_FPS = 30
 DEFAULT_CAMERA_NAME = "left_hand_camera"
-DEFAULT_ORIN_SERVICE_ADDR = "tcp://192.168.1.118:6200"
+DEFAULT_ORIN_SERVICE_ADDR = "tcp://192.168.1.128:6200"
 DEFAULT_OUTPUT_ROOT = Path("test/wuji/.archive/charuco_detect_runs")
 DEFAULT_MIN_CHARUCO_CORNERS = 2
 DEFAULT_MAX_FRAMES = 0
@@ -123,6 +123,7 @@ def main(config: AppConfig) -> None:
         logger.info(
             "Charuco eval Orin stream target: "
             f"camera={DEFAULT_CAMERA_NAME}, "
+            f"summary_frame_id={summary_response.frame_id}, "
             f"calibration={calibration.width}x{calibration.height}, "
             f"status={status_response.camera_model}/{status_response.width}x{status_response.height}, "
         )

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Mapping
 from typing import Protocol
 
 from loguru import logger
@@ -11,13 +12,13 @@ from loguru import logger
 class AgvClient(Protocol):
     """循环服务所需的最小 AGV 客户端接口。"""
 
-    def navigate_to(self, target_name: str) -> object:
+    def navigate_to(self, target_name: str, /) -> object:
         """下发站点导航命令。"""
 
         ...
 
-    def get_runtime_info(self) -> dict[str, object]:
-        """读取包含 agv_navi_status 的运行时信息。"""
+    def get_base_status(self) -> object:
+        """读取 qmlinker AGV 底层状态。"""
 
         ...
 
@@ -51,7 +52,8 @@ def wait_until_arrived(client: AgvClient, target: str, timeout_s: float, poll_s:
     deadline = time.monotonic() + timeout_s
     observed_busy = False
     while time.monotonic() < deadline:
-        raw_status = str(client.get_runtime_info().get("agv_navi_status", "")).strip().lower()
+        payload = client.get_base_status()
+        raw_status = _read_navigation_status(payload)
         logger.info("AGV 导航状态 target={} raw_status={!r}", target, raw_status)
         if raw_status == "busy":
             observed_busy = True
@@ -60,3 +62,12 @@ def wait_until_arrived(client: AgvClient, target: str, timeout_s: float, poll_s:
             return
         time.sleep(poll_s)
     raise TimeoutError(f"AGV 导航到位超时：target={target}, observed_busy={observed_busy}")
+
+
+def _read_navigation_status(payload: object) -> str:
+    """从 qmlinker AGV 状态中读取导航状态。"""
+
+    if not isinstance(payload, Mapping):
+        logger.warning("AGV 状态返回无效 actual={}", type(payload).__name__)
+        return ""
+    return str(payload.get("navi_status", "")).strip().lower()

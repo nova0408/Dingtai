@@ -2,14 +2,21 @@
 
 from __future__ import annotations
 
+import math
 import time
+from collections.abc import Mapping
 
 from loguru import logger
+from qmlinker import QMGripper
 
 from .arm_gateway import retry_non_motion_call
 from .contracts import ReplayRow
 from .motion_parsing import parse_joint_values
 from .runtime import ReplayRuntime
+
+RIGHT_HAND_ACTUATOR_COUNT = 11
+RIGHT_HAND_SPEED_RATIO = 0.5
+RIGHT_HAND_FORCE_LIMIT = 0.5
 
 # region 左夹爪与右手
 
@@ -28,18 +35,20 @@ def execute_gripper_row(runtime: ReplayRuntime, row: ReplayRow) -> None:
         runtime.settings.non_motion_retry_delay_s,
     ):
         raise RuntimeError("夹爪 set_pos 下发失败")
-    status = retry_non_motion_call(
-        f"gripper.get_status({row.csv_name}:{row.row_index})",
-        gripper.get_status,
+    status_payload = retry_non_motion_call(
+        f"gripper.status({row.csv_name}:{row.row_index})",
+        lambda: gripper._send_control(QMGripper.STATUS),
         runtime.settings.non_motion_retry_count,
         runtime.settings.non_motion_retry_delay_s,
     )
+    if not isinstance(status_payload, Mapping):
+        raise RuntimeError(f"夹爪状态读取失败：{status_payload!r}")
     logger.info(
         "已下发夹爪目标 file={} row={} pos={} calibrated={}",
         row.csv_name,
         row.row_index,
         target_value,
-        bool(status.calibrated),
+        bool(status_payload.get("calibrated", False)),
     )
 
 
@@ -70,15 +79,32 @@ def execute_m11_row(runtime: ReplayRuntime, row: ReplayRow) -> None:
     if right_hand is None:
         raise RuntimeError("当前 runtime 未配置右手 M11 客户端")
     positions = _read_valid_m11_positions(runtime)
-    for actuator_id, target_value in enumerate(parse_joint_values(row.joints_text, expected_len=11)):
+    for actuator_id, target_value in enumerate(
+        parse_joint_values(row.joints_text, expected_len=RIGHT_HAND_ACTUATOR_COUNT)
+    ):
         positions[actuator_id] = target_value
+    commands = [_build_m11_command(actuator_id, value) for actuator_id, value in enumerate(positions)]
     if not retry_non_motion_call(
         f"right_hand.set_hand_state({row.csv_name}:{row.row_index})",
-        lambda: right_hand.set_hand_state(positions),
+        lambda: right_hand.set_hand_state(commands),
         runtime.settings.non_motion_retry_count,
         runtime.settings.non_motion_retry_delay_s,
     ):
         raise RuntimeError("右手 M11 下发失败")
+
+
+def _build_m11_command(actuator_id: int, value: float) -> dict[str, float | int]:
+    """构造 qmlinker 单个右手执行器命令。"""
+
+    position = float(value)
+    if not math.isfinite(position) or not 0.0 <= position <= 1.0:
+        raise ValueError(f"右手执行器 {actuator_id} 目标必须为 0-1 有限数，实际为 {value!r}")
+    return {
+        "actuator_id": actuator_id,
+        "position": position,
+        "speed_ratio": RIGHT_HAND_SPEED_RATIO,
+        "force_limit": RIGHT_HAND_FORCE_LIMIT,
+    }
 
 
 def _read_valid_m11_positions(runtime: ReplayRuntime) -> list[float]:
@@ -230,7 +256,7 @@ def _ensure_lift_enabled(runtime: ReplayRuntime, label: str) -> None:
     """
 
     hand_settings = runtime.settings.hand
-    lift = runtime.hand_body.body.lift
+    lift = runtime.hand_body.lift
     deadline = time.monotonic() + hand_settings.lift_enable_state_timeout_s
     attempt = 0
     last_enable_state: object = None
@@ -302,7 +328,7 @@ def wait_lift_until_near_target(runtime: ReplayRuntime, target_height_mm: int) -
     按配置周期轮询。函数没有次数上限，唯一终止边界是到位或总超时。
     """
 
-    lift = runtime.hand_body.body.lift
+    lift = runtime.hand_body.lift
     hand_settings = runtime.settings.hand
     deadline = time.monotonic() + hand_settings.lift_motion_timeout_s
     next_command_time = 0.0

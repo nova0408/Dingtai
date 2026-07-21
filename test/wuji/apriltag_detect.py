@@ -38,7 +38,7 @@ DEFAULT_WINDOW_MIN_LONG_SIDE = 1280
 DEFAULT_TIMEOUT_MS = 120
 DEFAULT_CAPTURE_FPS = 30
 DEFAULT_CAMERA_NAME = "left_hand_camera"
-DEFAULT_ORIN_SERVICE_ADDR = "tcp://192.168.1.118:6200"
+DEFAULT_ORIN_SERVICE_ADDR = "tcp://192.168.1.128:6200"
 DEFAULT_COLOR_WIDTH = 1280
 DEFAULT_COLOR_HEIGHT = 800
 DEFAULT_COLOR_FORMAT_NAME = "BGR"
@@ -228,7 +228,7 @@ def main(config: AppConfig) -> None:
             f"{DEFAULT_COLOR_WIDTH}x{DEFAULT_COLOR_HEIGHT} {DEFAULT_COLOR_FORMAT_NAME}, "
             f"actual calibration={calibration.width}x{calibration.height}, "
             f"camera_status={status_response.camera_model}/{status_response.width}x{status_response.height}, "
-            f"source_meta={summary_response.source_meta}"
+            f"frame_id={summary_response.frame_id}"
         )
         cv2.namedWindow(DEFAULT_WINDOW_NAME, cv2.WINDOW_NORMAL)
         frame_index = 0

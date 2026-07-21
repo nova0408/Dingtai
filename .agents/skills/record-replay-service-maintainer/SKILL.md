@@ -1,6 +1,6 @@
 ---
 name: record-replay-service-maintainer
-description: 安全维护、迁移、部署和评审 Dingtai 根目录 `record_replay/` 服务。用于修改回放业务、Orin API 服务、设备网关、systemd、部署同步、本机 SSH 测试入口或 Orin 直连测试入口；强制本机与 Orin 代码完全一致，并禁止 Codex、CI、hook 或无人值守流程直接运行任何 record_replay 测试或 start 指令，避免机械臂及其他设备意外运动。
+description: 安全维护、迁移、部署、版本管理和评审 Dingtai 根目录 `record_replay/` 服务。用于修改回放业务、Orin API、设备网关、功能、systemd、部署同步或本机/Orin 人工测试入口；强制维护 CHANGELOG 语义版本、区分两端连接与测试目录，并禁止无人值守运行任何 record_replay 测试或 start。
 ---
 
 # Record Replay Service Maintainer
@@ -11,7 +11,7 @@ description: 安全维护、迁移、部署和评审 Dingtai 根目录 `record_r
 2. 禁止 Codex、CI、hook、静态检查脚本或无人值守任务执行以下操作：
    - 运行文件名、模块名或测试名包含 `record_replay` 的测试、CLI、冒烟脚本。
    - 执行 `python -m record_replay.service` 做启动冒烟。
-   - 向服务发送 `{"operation":"start"}`。
+   - 向服务发送任何 `POST /start` 请求。
    - 调用 `RecordReplayCycleService.run_once()`、`run_forever()` 或等价硬件入口。
 3. 即使测试使用 fake，也不得自动执行，避免未来替身失效后静默触发真实设备。
 4. 只允许执行不会导入并运行业务入口的静态验证：UTF-8 扫描、ruff、pyright、`py_compile`、`compileall` 和 skill 结构校验。
@@ -27,7 +27,7 @@ description: 安全维护、迁移、部署和评审 Dingtai 根目录 `record_r
    - gateway 负责设备连接与协议收窄。
    - action/executor/cycle 模块负责业务动作与编排。
    - `service/` 只负责 API、进程生命周期和业务桥接，不复制运动逻辑。
-5. `record_replay` 可依赖明确的 `src.wuji` 硬件适配和 `camera_pipeline` 协议，但不得依赖 `test` 中的实现。
+5. `record_replay` 可依赖同级 `camera_pipeline` 公共协议与 Orin 已安装第三方包，运行时禁止导入仓库 `src` 或 `test`。
 6. 业务行为以 `test/wuji/record_replay_cli.py` 的最新人工验证语义为基准；迁移实现与 CLI 不一致时必须显式列出差异，禁止声称完全等价。
 7. 服务数据目录固定，不提供路径参数或环境变量覆盖：
    - `record_replay/prior_data/ball_pose_prior.json` 与 `charuco_board_prior.json` 保存 `test/wuji/prior_record.py` 的人工采集结果。
@@ -48,6 +48,20 @@ description: 安全维护、迁移、部署和评审 Dingtai 根目录 `record_r
 5. 同步后分别生成相对路径文件清单和 SHA-256；只有两端清单及每个文件哈希完全一致时才报告部署一致。
 6. 哈希不一致时停止服务启动与硬件测试，先重新同步并定位差异。
 
+### 测试脚本是非镜像部署
+
+不得根据本机目录层级推断 Orin 目标目录。仅按下列显式映射部署：
+
+| 用途 | 本机唯一源文件 | Orin 执行文件 |
+| --- | --- | --- |
+| 只读状态 | `test/record_replay/orin/record_replay_static_status.py` | `/home/wuji-brain/workspace/test/record_replay_static_status.py` |
+| 人工 start | `test/record_replay/orin/record_replay_start.py` | `/home/wuji-brain/workspace/test/record_replay_start.py` |
+
+1. 禁止创建或同步 `/home/wuji-brain/workspace/test/record_replay/orin/`。
+2. 禁止把 `test/record_replay/local/` 中任何文件部署到 Orin。
+3. 部署后对上表每一对文件单独比较 SHA-256；不对两端 `test/` 目录做同层级清单比较。
+4. 如果 Orin 上存在误创建的镜像目录，先为其文件在本机 `.archive/` 保留快照，再删除精确路径。
+
 推荐对两端同一集合进行校验：
 
 ```powershell
@@ -65,21 +79,36 @@ find /home/wuji-brain/workspace/record_replay -type f \
 
 Windows 与 Linux 输出路径不同，比较前只保留相对于 `record_replay/` 的路径和哈希。
 
+## 版本与变更日志
+
+1. `record_replay/CHANGELOG.md` 是服务功能版本号的唯一权威来源，当前基线版本为 `1.0.0`。
+2. 版本号必须使用 `a.b.c`：
+   - `a`：重大重构或重大更新。
+   - `b`：功能调整，包括新增、删除或改变 HTTP API、回放流程及设备行为。
+   - `c`：缺陷修复和不改变功能边界的优化。
+3. 修改公共 client、HTTP API、请求响应字段、回放功能、设备行为、配置语义或部署行为时，必须在同一批改动中升级版本号，并在 CHANGELOG 顶部追加带日期的记录。
+4. 同一批改动只升级一次；同时包含多类改动时按影响最大的版本位升级，不得为每个文件分别升级。
+5. CHANGELOG 属于 RecordReplay 部署源文件，必须同步到 Orin，并参与相对路径清单和 SHA-256 一致性校验。API 或功能已改变但版本号或日志未更新时，不得报告完成。
+
 ## 测试环境必须分离
 
 ### 本机人工测试
 
 1. 只使用 `test/record_replay/local/` 下明确标注为 local 的入口。
-2. 本机只建立 Orin 上 RecordReplay HTTP API 的 SSH 转发，不直接转发或连接机械臂、qmlinker、AGV、相机服务。
-3. 本机只允许读取状态、读取或修改持久化运行参数，以及在人工安全确认后发送 start。
-4. 运行必须由现场人员手动发起，并在触发动作前再次确认安全。
+2. 本机 RecordReplay HTTP API 固定使用 `http://192.168.1.128:6300`。
+3. 禁止把本机 API 改为 `127.0.0.1:6300`，禁止为 RecordReplay API 建立 SSH 端口转发。
+4. 本机不直接转发或连接机械臂、qmlinker、AGV 或相机服务。
+5. 本机只允许读取状态、读取或修改持久化运行参数，以及在人工安全确认后发送 start。
+6. 运行必须由现场人员手动发起，并在触发动作前再次确认安全。
 
 ### Orin 人工测试
 
-1. 只使用 `test/record_replay/orin/` 下明确标注为 Orin 的入口或已部署 API 客户端。
-2. Orin 直接访问机械臂、qmlinker、AGV 和 camera_pipeline，禁止创建 SSH 转发。
-3. 不复用本机测试入口，不通过平台判断在一个文件内切换两套连接方式。
-4. 运行必须由现场人员在 Orin 上手动发起；Codex 只能给出命令，不能执行命令。
+1. 本机维护源文件时只修改 `test/record_replay/orin/` 中上表指定的两个入口。
+2. Orin 上只从 `/home/wuji-brain/workspace/test/record_replay_static_status.py` 或 `record_replay_start.py` 执行。
+3. Orin 脚本 RecordReplay HTTP API 固定使用 `http://127.0.0.1:6300`，禁止使用 `192.168.1.128:6300`。
+4. Orin 直接访问已部署 API，禁止创建 SSH 转发。
+5. 不复用本机测试入口，不通过平台判断在一个文件内切换两套连接方式。
+6. 运行必须由现场人员在 Orin 上手动发起；Codex 只能给出命令，不能执行命令。
 
 ## 修改与验证流程
 
@@ -87,8 +116,13 @@ Windows 与 Linux 输出路径不同，比较前只保留相对于 `record_repla
 2. 修改前为已有文件生成 `.archive` 快照。
 3. 做最小范围修改，不添加旧 `src.business.record_replay` 兼容层。
 4. 更新 README，明确本机/Orin 连接差异、API 行为和硬件风险。
-5. 只运行 ruff、pyright、编码扫描、compile-only 验证。
-6. 最终明确报告：
+5. 按改动影响升级 `record_replay/CHANGELOG.md` 的版本号并追加版本记录。
+6. 只运行 ruff、pyright、编码扫描、compile-only 验证。
+7. 每次涉及测试脚本时，在报告完成前显式检查：
+   - local 源文件仅出现 `192.168.1.128:6300`；
+   - Orin 源文件仅出现 `127.0.0.1:6300`；
+   - Orin 远端两个文件位于 `/home/wuji-brain/workspace/test/` 根层。
+8. 最终明确报告：
    - 本机静态验证结果。
    - 是否完成 Orin 文件哈希一致性校验。
    - 未运行任何 record_replay 测试或 start API。

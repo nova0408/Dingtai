@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SERVICE_PATTERN="python3.12 -m camera_pipeline.service --bind-addr tcp://0.0.0.0:6200 --control-port 5570 --stream-port 5562 --camera-id LEFT --camera-name left_hand_camera"
-SERVICE_CMD="python3.12 -m camera_pipeline.service --bind-addr tcp://0.0.0.0:6200 --control-port 5570 --stream-port 5562 --camera-id LEFT --camera-name left_hand_camera"
+SERVICE_PYTHON="/home/wuji-brain/miniconda3/envs/wuji/bin/python"
+SERVICE_PATTERN="${SERVICE_PYTHON} -m camera_pipeline.service --bind-addr tcp://0.0.0.0:6200"
+SERVICE_CMD=("${SERVICE_PYTHON}" -m camera_pipeline.service --bind-addr tcp://0.0.0.0:6200)
 LOG_PATH="/tmp/camera_pipeline_service.log"
 WORKSPACE_DIR="/home/wuji-brain/workspace"
 
@@ -65,7 +66,7 @@ fi
 
 echo "[restart] starting service"
 rm -f "${LOG_PATH}"
-setsid ${SERVICE_CMD} >"${LOG_PATH}" 2>&1 < /dev/null &
+setsid "${SERVICE_CMD[@]}" >"${LOG_PATH}" 2>&1 < /dev/null &
 sleep 3
 
 echo "[restart] success summary"

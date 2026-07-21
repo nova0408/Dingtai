@@ -2,6 +2,8 @@
 Description=Dingtai RecordReplay Service
 After=network-online.target
 Wants=network-online.target
+Requires=camera-pipeline.service
+After=camera-pipeline.service
 
 [Service]
 Type=simple

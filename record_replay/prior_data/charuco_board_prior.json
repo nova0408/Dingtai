@@ -1,0 +1,55 @@
+{
+  "timestamp_iso": "2026-07-16T18:49:38.750",
+  "frame_id": 60677,
+  "camera_name": "head_camera",
+  "camera_timestamp_ms": 4336322.597,
+  "pose_semantics": "T_camera_board",
+  "translation_unit": "mm",
+  "rotation_convention": "scipy Rotation.as_euler(\"xyz\", degrees=True)",
+  "head_yaw_deg": 60.0,
+  "head_pitch_deg": 45.0,
+  "dictionary": "DICT_APRILTAG_16H5",
+  "squares_x": 4,
+  "squares_y": 4,
+  "square_length_mm": 20,
+  "marker_length_mm": 14,
+  "marker_count": 7,
+  "charuco_count": 7,
+  "reprojection_error_px": 0.14105396342834053,
+  "camera_board_transform": [
+    [
+      0.9991921307454702,
+      0.03773913869964083,
+      -0.013814603379629161,
+      -70.89478538914435
+    ],
+    [
+      -0.03746639798447066,
+      0.9991076838621707,
+      0.01949628348270085,
+      -116.75026182888169
+    ],
+    [
+      0.014538049332577,
+      -0.01896294960647876,
+      0.9997144850725259,
+      449.8749037514409
+    ],
+    [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ]
+  ],
+  "translation_mm": [
+    -70.89478538914435,
+    -116.75026182888169,
+    449.8749037514409
+  ],
+  "rpy_deg": [
+    -1.0866769633878381,
+    -0.8329982139063694,
+    -2.1473960688965636
+  ]
+}

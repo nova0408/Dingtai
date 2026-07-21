@@ -8,7 +8,10 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from .application import RecordReplayApplication
+from ..device_status import DeviceStatusResponse
 from .protocol import RecordReplayResponse
+
+ApiResponse = RecordReplayResponse | DeviceStatusResponse
 
 
 class RecordReplayServer:
@@ -43,6 +46,9 @@ class RecordReplayServer:
                     if self.path == "/config":
                         self._send(HTTPStatus.OK, application.get_parameters())
                         return
+                    if self.path == "/device-status":
+                        self._send(HTTPStatus.OK, application.get_device_status())
+                        return
                     self._send_error(HTTPStatus.NOT_FOUND, "unsupported path")
                 except Exception as exc:
                     self._send_error(HTTPStatus.BAD_REQUEST, f"{type(exc).__name__}: {exc}")
@@ -50,8 +56,11 @@ class RecordReplayServer:
             def do_POST(self) -> None:
                 try:
                     if self.path == "/start":
-                        self._require_empty_body()
-                        self._send(HTTPStatus.ACCEPTED, application.start())
+                        enable_agv_navigation = self._read_start_options()
+                        self._send(
+                            HTTPStatus.ACCEPTED,
+                            application.start(enable_agv_navigation),
+                        )
                         return
                     if self.path == "/config":
                         self._send(HTTPStatus.OK, application.update_parameters(self._read_changes()))
@@ -64,22 +73,36 @@ class RecordReplayServer:
                 del format, args
 
             def _read_changes(self) -> dict[str, float | int]:
-                length = int(self.headers.get("Content-Length", "0"))
-                payload = json.loads(self.rfile.read(length).decode("utf-8"))
-                if not isinstance(payload, dict):
-                    raise ValueError("配置请求必须是 JSON object")
+                payload = self._read_json_object()
                 changes: dict[str, float | int] = {}
                 for key, value in payload.items():
-                    if not isinstance(key, str) or not isinstance(value, int | float):
-                        raise ValueError("配置字段名必须是字符串，值必须是数字")
+                    if isinstance(value, bool) or not isinstance(value, int | float):
+                        raise ValueError("配置值必须是数字")
                     changes[key] = value
                 return changes
 
-            def _require_empty_body(self) -> None:
-                if int(self.headers.get("Content-Length", "0")) != 0:
-                    raise ValueError("start 请求不接受 body")
+            def _read_start_options(self) -> bool:
+                payload = self._read_json_object()
+                if set(payload) != {"enable_agv_navigation"}:
+                    raise ValueError("start 请求必须且只能包含 enable_agv_navigation")
+                enable_agv_navigation = payload["enable_agv_navigation"]
+                if not isinstance(enable_agv_navigation, bool):
+                    raise ValueError("enable_agv_navigation 必须是 bool")
+                return enable_agv_navigation
 
-            def _send(self, status: HTTPStatus, response: RecordReplayResponse) -> None:
+            def _read_json_object(self) -> dict[str, object]:
+                length = int(self.headers.get("Content-Length", "0"))
+                payload = json.loads(self.rfile.read(length).decode("utf-8"))
+                if not isinstance(payload, dict):
+                    raise ValueError("请求 body 必须是 JSON object")
+                result: dict[str, object] = {}
+                for key, value in payload.items():
+                    if not isinstance(key, str):
+                        raise ValueError("JSON object 字段名必须是字符串")
+                    result[key] = value
+                return result
+
+            def _send(self, status: HTTPStatus, response: ApiResponse) -> None:
                 payload = json.dumps(asdict(response), ensure_ascii=False).encode("utf-8")
                 self.send_response(status)
                 self.send_header("Content-Type", "application/json; charset=utf-8")

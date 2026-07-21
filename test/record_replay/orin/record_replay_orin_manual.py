@@ -9,7 +9,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[3]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from record_replay.service.client import RecordReplayClient
+from record_replay.client import RecordReplayClient
 
 SERVICE_ADDR = "http://127.0.0.1:6300"
 HARDWARE_CONFIRMATION = "我已确认现场安全并同意设备运动"

@@ -15,7 +15,7 @@ class ReplayDeviceConnection:
     right_arm_ip: str
     "右臂控制器 IPv4 地址。"
     qmlinker_host: str = "192.168.100.60"
-    "Orin 部署时直连的 qmlinker 地址；本机测试建隧道后覆盖为 127.0.0.1。"
+    "Orin 部署时直连的 qmlinker 地址；本机不直接访问设备网。"
     qmlinker_port: int = 50062
     "手部与 body 使用的 qmlinker 端口。"
     gripper_port: int = 50066

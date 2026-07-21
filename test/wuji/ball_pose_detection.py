@@ -10,7 +10,11 @@ import cv2
 import numpy as np
 from loguru import logger
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+PROJECT_ROOT = next(
+    parent
+    for parent in Path(__file__).resolve().parents
+    if (parent / "camera_pipeline" / "client.py").is_file()
+)
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
@@ -26,8 +30,12 @@ from camera_pipeline.client import CameraName, CameraPipelineClient
 # region 默认常量
 
 DEFAULT_CAMERA_NAME = "left_hand_camera"
-# 远端统一 camera_pipeline 服务地址；在 Orin 本机执行时建议覆盖为 tcp://127.0.0.1:6200
-DEFAULT_SERVICE_ADDR = "tcp://192.168.1.128:6200"
+# Windows 开发机访问 Orin 管理网 IP；Orin 平铺部署脚本仅访问 localhost。
+DEFAULT_SERVICE_ADDR = (
+    "tcp://192.168.1.128:6200"
+    if sys.platform == "win32"
+    else "tcp://127.0.0.1:6200"
+)
 # RPC 超时时间，单位 ms
 DEFAULT_TIMEOUT_MS = 60_000
 # 等待稳定帧超时时间，单位 s

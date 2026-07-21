@@ -9,13 +9,13 @@ from pathlib import Path
 from types import FrameType
 
 from loguru import logger
+from qmlinker import QMGripper, QMHead, QMLift, QMMoveBase, create_channel
 
 from camera_pipeline.client import CameraName
-from src.wuji import WujiAgvClient
-from src.wuji.qmlinker_session import create_qmlinker_channel
 
 from ..context import ReplayContext
 from ..cycle_service import RecordReplayCycleService
+from ..device_status import DeviceStatusReader
 from ..offset_detector_gateway import CameraPipelineThreeBallDetector, load_three_ball_priors
 from ..offset_updater import GlobalOffsetUpdater
 from ..settings import OffsetConfig, ReplayCycleConfig, ReplayDeviceConnection
@@ -38,6 +38,9 @@ RIGHT_RECORD_DIR = SERVICE_ROOT / "records" / "right"
 BALL_POSE_PRIOR_PATH = PRIOR_DATA_DIR / "ball_pose_prior.json"
 "prior_record.py 生成的三球先验固定路径。"
 
+HAND_EYE_RESULT_PATH = PRIOR_DATA_DIR / "hand_eye_result.txt"
+"当前现场手眼标定结果的固定路径。"
+
 RUNTIME_CONFIG_PATH = SERVICE_ROOT / "config.json"
 "本机 API 修改后持久化的运行参数路径。"
 
@@ -47,23 +50,6 @@ QMLINKER_HOST = "192.168.100.60"
 QMLINKER_PORT = 50062
 GRIPPER_PORT = 50066
 AGV_HOST = "192.168.100.70"
-
-
-class _OrinAgvGateway:
-    """收窄 WujiAgvClient 为回放服务需要的显式 AGV 协议。"""
-
-    def __init__(self, client: WujiAgvClient) -> None:
-        self._client = client
-
-    def navigate_to(self, target_name: str) -> object:
-        """下发目标站点名称。"""
-
-        return self._client.navigate_to(target_name)
-
-    def get_runtime_info(self) -> dict[str, object]:
-        """读取 AGV 导航状态。"""
-
-        return self._client.get_runtime_info()
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -89,11 +75,20 @@ def main(argv: Sequence[str] | None = None) -> int:
             finish_station=args.finish_station,
         )
     )
-    agv_channel = create_qmlinker_channel(f"{AGV_HOST}:{QMLINKER_PORT}")
-    agv_client = _OrinAgvGateway(WujiAgvClient(agv_channel))
+    agv_channel = create_channel(f"{AGV_HOST}:{QMLINKER_PORT}")
+    agv_client = QMMoveBase(agv_channel)
+    qmlinker_channel = create_channel(f"{QMLINKER_HOST}:{QMLINKER_PORT}")
+    gripper_channel = create_channel(f"{QMLINKER_HOST}:{GRIPPER_PORT}")
+    device_status_reader = DeviceStatusReader(
+        device_connection,
+        settings,
+        QMGripper(gripper_channel),
+        QMHead(qmlinker_channel),
+        QMLift(qmlinker_channel),
+    )
     offset_config = OffsetConfig(
         prior_capture_path=BALL_POSE_PRIOR_PATH,
-        hand_eye_result_path=args.hand_eye_result_path,
+        hand_eye_result_path=HAND_EYE_RESULT_PATH,
         camera_name=args.camera_name,
     )
     detector = CameraPipelineThreeBallDetector(
@@ -106,7 +101,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         agv_client,
         offset_updater=GlobalOffsetUpdater(offset_config, detector),
     )
-    application = RecordReplayApplication(context, cycle_service, config_store)
+    application = RecordReplayApplication(
+        context,
+        cycle_service,
+        config_store,
+        device_status_reader,
+    )
     server = RecordReplayServer(args.host, args.port, application)
 
     def handle_signal(signum: int, _frame: FrameType | None) -> None:
@@ -130,18 +130,12 @@ def main(argv: Sequence[str] | None = None) -> int:
 def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     """解析 Orin 现场路径与设备地址。"""
 
-    project_root = Path(__file__).resolve().parents[2]
     parser = argparse.ArgumentParser(description="Dingtai RecordReplay service")
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=6300)
     parser.add_argument("--start-station", default="3")
     parser.add_argument("--finish-station", default="1")
     parser.add_argument("--camera-name", default="left_hand_camera")
-    parser.add_argument(
-        "--hand-eye-result-path",
-        type=Path,
-        default=project_root / "experiments" / "hand_eye" / "runs" / "20260708_152829" / "hand_eye_result.txt",
-    )
     return parser.parse_args(argv)
 
 

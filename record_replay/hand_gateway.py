@@ -3,24 +3,22 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import cast
 
-from src.wuji.body_client import WujiBodyClient
-from src.wuji.dahuan_gripper_client import DahuanGripperClient
-from src.wuji.qmlinker_session import create_qmlinker_channel
-from src.wuji.right_hand_client import WujiRightHandClient
+from qmlinker import QMGripper, QMHand, QMLift, create_channel
 
 # region 数据结构
 
 
 @dataclass(slots=True)
 class HandBodyRuntime:
-    """一个机械臂侧别关联的手部与 body 客户端。"""
+    """一个机械臂侧别关联的 qmlinker 设备对象。"""
 
-    body: WujiBodyClient
-    "升降与腰部客户端，连接由 service 的本地 qmlinker 地址提供。"
-    gripper: DahuanGripperClient | None = None
+    lift: QMLift
+    "qmlinker 升降对象。"
+    gripper: QMGripper | None = None
     "左侧大寰夹爪，仅 left runtime 有效。"
-    right_hand: WujiRightHandClient | None = None
+    right_hand: QMHand | None = None
     "右侧 M11 灵巧手，仅 right runtime 有效。"
 
 
@@ -40,16 +38,16 @@ def create_hand_body_runtime(
 
     if arm_side not in {"left", "right"}:
         raise ValueError(f"不支持的机械臂侧别：{arm_side}")
-    body_channel = create_qmlinker_channel(f"{qmlinker_host}:{qmlinker_port}")
-    body = WujiBodyClient(body_channel)
+    body_channel = create_channel(f"{qmlinker_host}:{qmlinker_port}")
+    lift = QMLift(body_channel)
     if arm_side == "left":
-        gripper_channel = create_qmlinker_channel(f"{qmlinker_host}:{gripper_port}")
-        return HandBodyRuntime(body, gripper=DahuanGripperClient(gripper_channel))
-    return HandBodyRuntime(body, right_hand=WujiRightHandClient(body_channel))
+        gripper_channel = create_channel(f"{qmlinker_host}:{gripper_port}")
+        return HandBodyRuntime(lift, gripper=QMGripper(gripper_channel))
+    return HandBodyRuntime(lift, right_hand=QMHand(body_channel, cast(str, QMHand.HAND_RIGHT)))
 
 
 def close_hand_body_runtime(runtime: HandBodyRuntime | None) -> None:
-    """释放手部 runtime 引用；SSH 隧道由测试入口负责关闭。"""
+    """释放手部 runtime 引用；qmlinker channel 由对象自身管理。"""
 
     del runtime
 

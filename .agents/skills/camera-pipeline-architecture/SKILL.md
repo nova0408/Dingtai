@@ -1,6 +1,6 @@
 ---
 name: camera-pipeline-architecture
-description: Dingtai 项目 `camera_pipeline` 构造原则。用于远端 Linux 部署的 `camera_pipeline` 相关代码编写、重构与评审，强制 pipeline_context 负责数据交换与管理，其余子模块保持单一职责、协议入参/协议出参、禁止引入 `camera_pipeline` 之外依赖、禁止数据传输职责、禁止额外 IO，并要求每个模块具备准确 README 描述算法、输入输出与 debug 约定。
+description: Dingtai 项目 `camera_pipeline` 构造与版本维护原则。用于远端 Linux 部署的 `camera_pipeline` 相关代码编写、重构、API 或功能调整与评审，强制 pipeline_context 负责数据交换与管理，其余子模块保持单一职责、协议入参/协议出参，并同步维护 CHANGELOG 语义版本。
 ---
 
 # Camera Pipeline Architecture
@@ -84,6 +84,18 @@ description: Dingtai 项目 `camera_pipeline` 构造原则。用于远端 Linux 
    - 输入不合法、资源不可用、模型加载失败和算法无法计算时返回什么或抛出什么异常。
    - RPC 层统一错误与算法成功响应的边界必须写清楚。
 
+## 版本与变更日志
+
+1. `camera_pipeline/CHANGELOG.md` 是服务功能版本号的唯一权威来源，当前基线版本为 `1.0.0`。
+2. 版本号必须使用 `a.b.c`：
+   - `a`：重大重构或重大更新。
+   - `b`：功能调整，包括新增、删除或改变公共 API、协议能力及服务行为。
+   - `c`：缺陷修复和不改变功能边界的优化。
+3. 修改公共 client、RPC operation、协议字段、算法功能、配置语义或服务行为时，必须在同一批改动中升级版本号，并在 CHANGELOG 顶部追加带日期的记录。
+4. 同一批改动只升级一次；同时包含多类改动时按影响最大的版本位升级，不得为每个文件分别升级。
+5. CameraPipeline 功能版本与 `camera_pipeline.service.protocol.PROTOCOL_VERSION` 相互独立。线协议不兼容时应另外升级协议版本，但不得用协议版本代替功能版本。
+6. 部署到 Orin 时必须同步 CHANGELOG，并将其纳入文件清单和 SHA-256 一致性校验。API 或功能已改变但版本号或日志未更新时，不得报告完成。
+
 ## 评审检查点
 
 1. 该模块是否只做单一职责。
@@ -98,6 +110,7 @@ description: Dingtai 项目 `camera_pipeline` 构造原则。用于远端 Linux 
 10. 模型缓存路径、离线模式和首次下载方式是否在 README 中说明。
 11. 是否存在 `Any`、`object` 或无结构元数据字典绕过协议设计。
 12. 每个 `| None` 是否确实对应延迟初始化状态，而不是未设计清楚的结果语义。
+13. API 或功能变化是否按影响升级 `camera_pipeline/CHANGELOG.md` 的版本号并记录日期与内容。
 
 ## 工作方式
 
@@ -107,5 +120,6 @@ description: Dingtai 项目 `camera_pipeline` 构造原则。用于远端 Linux 
 2. 哪一层应该持有算法。
 3. 哪些数据应该通过协议表达。
 4. 是否需要补 README。
+5. 是否需要按影响升级功能版本并更新 CHANGELOG。
 
 如果发现新设计会打破上述边界，先修正边界，再写实现。

@@ -11,7 +11,8 @@ qmlinker、AGV 和 Orin 本机部署的 camera_pipeline，并由 HTTP API 触发
 服务的数据路径固定在包内，不允许通过启动参数覆盖：
 
 - `record_replay/prior_data/`：`test/wuji/prior_record.py` 记录的先验结果。
-  服务固定读取 `ball_pose_prior.json`；同目录同时保存 `charuco_board_prior.json`。
+  服务固定读取 `ball_pose_prior.json` 和 `hand_eye_result.txt`；同目录
+  同时保存 `charuco_board_prior.json`。
 - `record_replay/records/left/`：提前录制的左臂 CSV。
 - `record_replay/records/right/`：提前录制的右臂 CSV。
 
@@ -39,7 +40,7 @@ waiting
 | `settings.py` | 唯一配置页：现场连接、机械臂、手部、offset、AGV 与重试策略 dataclass。 |
 | `context.py` | 运行资源、停止事件和可查询状态快照的唯一跨模块边界。 |
 | `csv_repository.py` / `execution_plan.py` | CSV 文件发现、解析和左右臂阶段计划构建。 |
-| `arm_gateway.py` / `hand_gateway.py` | SDK/qmlinker 设备连接、准备和释放。 |
+| `arm_gateway.py` / `hand_gateway.py` | SDK/qmlinker 设备连接、准备和释放；直接持有 qmlinker 原生对象。 |
 | `arm_actions.py` / `hand_actions.py` | 单一设备动作语义与旧回放时序。 |
 | `dual_arm_executor.py` | 双臂阶段、并行、flush、offset 触发边界。 |
 | `offset_*.py` | 三球检测、手眼变换及全局纠偏数据流。 |
@@ -62,16 +63,27 @@ hook 或其他无人值守流程运行任何 record_replay 测试、启动 servi
 
 本机与 Orin 测试完全分离：
 
-- `test/record_replay/local/`：本机人工测试。硬件入口必须先建立并验证 SSH 转发。
-- `test/record_replay/orin/`：Orin 人工测试。直接连接现场设备或已部署 API，禁止建立 SSH 转发。
+- `test/record_replay/local/`：本机人工测试，固定访问 `http://192.168.1.128:6300`。
+- `test/record_replay/orin/`：Orin 脚本的本机源目录；部署时两个指定脚本平铺到
+  `/home/wuji-brain/workspace/test/`，不镜像该目录层级。
 
 任何真实运行都必须由现场人员确认设备运动区域安全后手动触发。
 
 ## 本机交互启动
 
-本机入口是 `test/record_replay/local/record_replay_local_manual.py`。它只建立 Orin 上
-RecordReplay HTTP API 的 SSH 转发，不连接或转发机械臂、qmlinker、AGV 与相机服务。
+本机入口是 `test/record_replay/local/record_replay_local_manual.py`。它直接访问 Orin 管理网地址
+`http://192.168.1.128:6300`，不连接或转发机械臂、qmlinker、AGV 与相机服务。
 入口支持读取状态、读取配置、修改运行参数，以及在完整人工安全确认后发送 start。
+
+HTTP 客户端的公共入口是 `record_replay.client.RecordReplayClient`。默认连接
+`http://192.168.1.128:6300`：
+
+```python
+from record_replay.client import RecordReplayClient
+
+client = RecordReplayClient()
+print(client.get_status())
+```
 
 ```powershell
 python test/record_replay/local/record_replay_local_manual.py
@@ -89,7 +101,7 @@ python test/record_replay/local/record_replay_local_manual.py
 - `gripper_port`。
 
 左右臂 IP、qmlinker、gripper 和 AGV 地址固定在 Orin 服务入口，不提供 CLI、配置文件或
-本机 API 覆盖。服务直接访问现场设备。本机只转发 `127.0.0.1:6300` 的 HTTP 管理 API。
+本机 API 覆盖。服务直接访问现场设备；本机只访问 `192.168.1.128:6300` HTTP API。
 
 ### 运行策略参数
 
@@ -113,12 +125,65 @@ python test/record_replay/local/record_replay_local_manual.py
 一轮既有的 AGV、CSV、双臂和 offset 流程；重复 `start` 会返回 `accepted=false`，
 不会并发控制同一组设备。`status` 可查询当前阶段、CSV 状态、计划下标和错误文本。
 
-HTTP API：`GET /status`、`GET /config`、`POST /config`、`POST /start`。配置更新 body
-是字段到数值的 JSON object；服务执行期间拒绝修改配置。
+HTTP API：`GET /status`、`GET /config`、`GET /device-status`、`POST /config`、`POST /start`。配置更新 body
+是字段到数值的 JSON object；服务执行期间拒绝修改配置。`POST /start` 必须提供
+`{"enable_agv_navigation": true|false}`；为 `false` 时同时跳过去起点与返回终点导航，
+双臂 CSV 回放仍会执行。
 
-systemd 模板位于 `record_replay/service/record-replay.service`。默认值按 Orin 的
-`/home/wuji-brain/workspace` 与现场网段解析。手眼标定结果可通过命令行覆盖；设备地址、
-CSV 与先验路径固定；服务不创建 SSH 隧道。
+Orin 人工测试的本机源文件与远端执行文件是非镜像映射：
+
+- `test/record_replay/orin/record_replay_static_status.py` →
+  `/home/wuji-brain/workspace/test/record_replay_static_status.py`；
+- `test/record_replay/orin/record_replay_start.py` →
+  `/home/wuji-brain/workspace/test/record_replay_start.py`。
+
+两个 Orin 脚本都固定访问 `http://127.0.0.1:6300`。状态脚本只读；start 脚本需完整
+安全确认，默认禁用 AGV，支持 `--agv` 或 `--no-agv`。禁止部署到
+`/home/wuji-brain/workspace/test/record_replay/orin/`。
+
+### 设备诊断接口
+
+`GET /device-status` 只读取设备，不调用任何上电、使能、标定或运动指令。回放任务
+运行期间拒绝诊断，避免同一设备被并发访问。响应包含：
+
+- `all_connected`：双臂、夹爪、Head 和 Lift 是否全部完成有效状态读取；
+- `left_arm` / `right_arm`：`connected`、`error`、IP、预期/实际机型、UID、
+  `operate_mode`、`operation_state`、`power_state` 和 `powered_on`；
+- `gripper`：`connected`、`online`、`calibrated`、`enabled`、`position` 和 `state`；
+- `head`：`connected`、`enabled`、`yaw_deg` 和 `pitch_deg`；
+- `lift`：`connected`、`enabled` 和 `height_mm`。
+
+每个设备独立返回 `connected/error`，单项断线不会遮蔽其他设备的诊断结果。双臂会对
+IP 上控制器实际上报机型与左右臂预期机型进行一致性校验。本机可直接调用：
+
+```python
+from record_replay.client import RecordReplayClient
+
+print(RecordReplayClient().get_device_status())  # 设备串行读取，该方法默认超时 30 s
+```
+
+systemd 模板位于 `record_replay/service/record-replay.service`，并声明依赖
+`camera-pipeline.service`。默认值按 Orin 的
+`/home/wuji-brain/workspace` 与现场网段解析。设备地址、CSV、先验与手眼标定路径均固定；
+服务不创建 SSH 隧道。
+
+`record_replay/` 是独立部署包，运行时代码禁止导入仓库 `src` 或 `test`。设备 gateway
+直接创建并持有 qmlinker 原生对象，不再添加二次客户端封装；姿态换算依赖 Orin `wuji`
+环境中已安装的 NumPy 与 SciPy。
+
+### Orin 人工重启
+
+现场人员确认设备运动区域安全后，可在 Orin 上交互执行：
+
+```bash
+bash scripts/restart_record_replay_service.sh
+```
+
+脚本显示 `我已确认现场安全并同意重启RecordReplay服务 [Y/n]`，输入 `Y`、`y` 或
+直接回车继续，输入 `n` 取消；非交互环境直接拒绝。它会先检查三球先验、左右臂 CSV，
+并在已有服务状态不是 `waiting` 或状态不可查询时拒绝停止进程。停止阶段只发送 SIGTERM；
+若服务不能干净退出则停止操作，不使用 SIGKILL。脚本只重启 HTTP API 服务，不发送
+`POST /start`，因此不会主动开始一轮回放。
 
 ## 本机与 Orin 文件一致性
 

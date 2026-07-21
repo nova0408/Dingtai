@@ -59,12 +59,11 @@ client = CameraPipelineClient(service_addr="tcp://<orin-ip>:6200")
 
 ```bash
 /home/wuji-brain/miniconda3/envs/wuji/bin/python -m camera_pipeline.service \
-  --bind-addr tcp://0.0.0.0:6200 \
-  --control-port 5570 \
-  --stream-port 5562 \
-  --camera-id LEFT \
-  --camera-name left_hand_camera
+  --bind-addr tcp://0.0.0.0:6200
 ```
+
+相机源、上游控制端口、各相机流端口、相机名称与启用状态统一来自
+`camera_pipeline/config.json`。
 
 可按部署环境覆盖日志参数：
 
@@ -90,8 +89,7 @@ client = CameraPipelineClient(service_addr="tcp://<orin-ip>:6200")
 运行时产生高频日志。日志只记录标量、状态和计数，不写图像、mask、点云数组或完整
 协议对象。日志目录无法创建或文件 sink 无法初始化时，服务启动失败。
 
-`--stream-port/--camera-id/--camera-name` 指定默认算法相机的覆盖参数。
-头部、胸腔和左臂运行时仍按端点表同时启动。
+头部、胸腔和左臂运行时按 `camera_pipeline/config.json` 中的启用状态与端点表启动。
 
 systemd 模板位于 `camera-pipeline.service`。Orin 本地其他业务服务应声明 `Requires=camera-pipeline.service` 和 `After=camera-pipeline.service`，并在启动后调用 `get_camera_status(camera_name)` 判断指定相机首帧是否真正可用。
 
@@ -120,8 +118,9 @@ systemd 模板位于 `camera-pipeline.service`。Orin 本地其他业务服务�
 
 ## 协议与安全边界
 
-请求包含 `protocol_version`，当前版本为 `4`。版本 4 移除了
-`tray_detection` 和 `opening_detection` operation 及其请求/响应载荷。客户端与服务端版本不一致时服务端明确拒绝。
+请求包含 `protocol_version`，当前版本为 `6`。版本 6 移除了
+`tray_detection` 和 `opening_detection` operation 及其请求/响应载荷，并要求
+相机相关请求显式携带 `camera_name`。客户端与服务端版本不一致时服务端明确拒绝。
 
 REQ/REP 和三路帧流使用同一显式二进制协议：固定头部携带 JSON 元数据长度，
 元数据只允许白名单中的协议 dataclass、基础类型和元组，NumPy 图像与 mask 以

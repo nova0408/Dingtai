@@ -7,7 +7,7 @@ Wants=network-online.target
 Type=simple
 User=wuji-brain
 WorkingDirectory=/home/wuji-brain/workspace
-ExecStart=/home/wuji-brain/miniconda3/envs/wuji/bin/python -m camera_pipeline.service --bind-addr tcp://0.0.0.0:6200 --control-port 5570 --stream-port 5562 --camera-id LEFT --camera-name left_hand_camera
+ExecStart=/home/wuji-brain/miniconda3/envs/wuji/bin/python -m camera_pipeline.service --bind-addr tcp://0.0.0.0:6200
 Restart=on-failure
 RestartSec=2
 
