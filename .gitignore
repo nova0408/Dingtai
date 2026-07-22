@@ -15,6 +15,7 @@ Logs/*
 *.png
 *.jpg
 *.bmp
+*.tmp/
 *.txt
 *.bak
 *.npy
