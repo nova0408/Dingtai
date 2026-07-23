@@ -1,16 +1,22 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SERVICE_PYTHON="/home/wuji-brain/miniconda3/envs/wuji/bin/python"
-SERVICE_PATTERN="${SERVICE_PYTHON} -m record_replay.service --host 0.0.0.0 --port 6300"
-SERVICE_CMD=("${SERVICE_PYTHON}" -m record_replay.service --host 0.0.0.0 --port 6300)
-SERVICE_URL="http://127.0.0.1:6300"
-LOG_PATH="/tmp/record_replay_service.log"
+SERVICE_UNIT="record-replay.service"
+SERVICE_PORT="6300"
+SERVICE_URL="http://127.0.0.1:${SERVICE_PORT}"
 WORKSPACE_DIR="/home/wuji-brain/workspace"
 PRIOR_PATH="${WORKSPACE_DIR}/record_replay/prior_data/ball_pose_prior.json"
+DEBUG_OVERLAY_PATH="${WORKSPACE_DIR}/record_replay/prior_data/ball_debug_overlay.jpg"
 HAND_EYE_PATH="${WORKSPACE_DIR}/record_replay/prior_data/hand_eye_result.txt"
 LEFT_RECORD_DIR="${WORKSPACE_DIR}/record_replay/records/left"
 RIGHT_RECORD_DIR="${WORKSPACE_DIR}/record_replay/records/right"
+WAIT_TIMEOUT_SECONDS=10
+restart_log_since="$(date '+%Y-%m-%d %H:%M:%S')"
+
+print_restart_logs() {
+  journalctl -u "${SERVICE_UNIT}" \
+    --since "${restart_log_since}" --no-pager -o short-precise || true
+}
 
 if [[ ! -t 0 ]]; then
   echo "[restart] refused: interactive terminal required"
@@ -30,6 +36,10 @@ if [[ ! -f "${PRIOR_PATH}" ]]; then
   echo "[restart] refused: missing ${PRIOR_PATH}"
   exit 1
 fi
+if [[ ! -f "${DEBUG_OVERLAY_PATH}" ]]; then
+  echo "[restart] refused: missing ${DEBUG_OVERLAY_PATH}"
+  exit 1
+fi
 if [[ ! -f "${HAND_EYE_PATH}" ]]; then
   echo "[restart] refused: missing ${HAND_EYE_PATH}"
   exit 1
@@ -43,16 +53,9 @@ if ! compgen -G "${RIGHT_RECORD_DIR}/*.csv" >/dev/null; then
   exit 1
 fi
 
-cd "${WORKSPACE_DIR}"
-service_pids="$(pgrep -f "${SERVICE_PATTERN}" || true)"
-port_is_listening=false
-if ss -ltn '( sport = :6300 )' | grep -q LISTEN; then
-  port_is_listening=true
-fi
-
-if [[ "${port_is_listening}" == true ]]; then
-  if [[ -z "${service_pids}" ]]; then
-    echo "[restart] refused: port 6300 is occupied by another process"
+if ss -ltn "( sport = :${SERVICE_PORT} )" | grep -q LISTEN; then
+  if ! systemctl is-active --quiet "${SERVICE_UNIT}"; then
+    echo "[restart] refused: port ${SERVICE_PORT} is not owned by active ${SERVICE_UNIT}"
     exit 1
   fi
   status_payload="$(curl -fsS --max-time 5 "${SERVICE_URL}/status")" || {
@@ -72,44 +75,26 @@ if [[ "${port_is_listening}" == true ]]; then
   fi
 fi
 
-if [[ -n "${service_pids}" ]]; then
-  echo "[restart] stopping pid list:"
-  echo "${service_pids}"
-  kill ${service_pids}
-  for _ in {1..30}; do
-    if ! pgrep -f "${SERVICE_PATTERN}" >/dev/null; then
-      break
-    fi
-    sleep 1
-  done
-  if pgrep -f "${SERVICE_PATTERN}" >/dev/null; then
-    echo "[restart] refused: service did not stop cleanly; no SIGKILL was sent"
-    exit 1
+echo "[restart] restarting ${SERVICE_UNIT} through systemd"
+sudo systemctl restart --no-block "${SERVICE_UNIT}"
+
+deadline=$((SECONDS + WAIT_TIMEOUT_SECONDS))
+while ((SECONDS < deadline)); do
+  if systemctl is-active --quiet "${SERVICE_UNIT}" &&
+     ss -ltn "( sport = :${SERVICE_PORT} )" | grep -q LISTEN; then
+    curl -fsS --max-time 5 "${SERVICE_URL}/status"
+    echo
+    echo "[restart] API service restarted; no replay start request was sent"
+    systemctl show "${SERVICE_UNIT}" \
+      -p ActiveState -p SubState -p MainPID \
+      -p TimeoutStartUSec -p TimeoutStopUSec --no-pager
+    print_restart_logs
+    exit 0
   fi
-fi
+  sleep 1
+done
 
-if ss -ltn '( sport = :6300 )' | grep -q LISTEN; then
-  echo "[restart] refused: port 6300 is occupied by another process"
-  exit 1
-fi
-
-echo "[restart] starting RecordReplay API service"
-setsid "${SERVICE_CMD[@]}" >"${LOG_PATH}" 2>&1 < /dev/null &
-sleep 3
-
-running_pids="$(pgrep -f "${SERVICE_PATTERN}" || true)"
-if [[ -z "${running_pids}" ]]; then
-  echo "[restart] failed: service process is not running"
-  tail -n 30 "${LOG_PATH}" || true
-  exit 1
-fi
-if ! ss -ltn '( sport = :6300 )' | grep -q LISTEN; then
-  echo "[restart] failed: service did not bind port 6300"
-  tail -n 30 "${LOG_PATH}" || true
-  exit 1
-fi
-
-echo "[restart] service pid(s): ${running_pids}"
-echo "[restart] API: ${SERVICE_URL}"
-echo "[restart] API service restarted; no replay start request was sent"
-tail -n 20 "${LOG_PATH}" || true
+echo "[restart] ${SERVICE_UNIT} was not ready within ${WAIT_TIMEOUT_SECONDS} seconds"
+systemctl status "${SERVICE_UNIT}" --no-pager -l || true
+print_restart_logs
+exit 1

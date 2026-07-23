@@ -27,9 +27,13 @@ class RecordReplayServer:
         self._server.serve_forever(poll_interval=0.5)
 
     def close(self) -> None:
-        """停止请求循环并关闭监听 socket。"""
+        """在 `serve_forever()` 已退出后关闭监听 socket。
 
-        self._server.shutdown()
+        `HTTPServer.shutdown()` 只能由运行 `serve_forever()` 之外的线程调用。服务入口
+        通过主线程信号异常退出请求循环，因此这里不得再次调用 `shutdown()`，否则主
+        线程会等待自身结束并形成停机死锁。
+        """
+
         self._server.server_close()
 
     def _build_handler(self) -> type[BaseHTTPRequestHandler]:

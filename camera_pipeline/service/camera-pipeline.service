@@ -10,6 +10,8 @@ WorkingDirectory=/home/wuji-brain/workspace
 ExecStart=/home/wuji-brain/miniconda3/envs/wuji/bin/python -m camera_pipeline.service --bind-addr tcp://0.0.0.0:6200
 Restart=on-failure
 RestartSec=2
+TimeoutStartSec=20
+TimeoutStopSec=15
 
 [Install]
 WantedBy=multi-user.target

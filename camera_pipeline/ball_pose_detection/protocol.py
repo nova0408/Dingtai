@@ -12,10 +12,14 @@ class BallPosePriorInfo:
 
     color_hex: str
     "目标球颜色，使用带 `#` 的六位 RGB 十六进制字符串。"
-    radius_mm: float
-    "模型先验半径，单位 mm。"
+    diameter_mm: float
+    "模型先验直径，单位 mm。"
     model_center_mm: tuple[float, float, float]
     "模型中心在业务参考坐标系中的位置，单位 mm，顺序为 `(x, y, z)`。"
+    hsv_ranges: tuple[tuple[int, int, int, int, int, int], ...] = field(
+        default_factory=tuple
+    )
+    "标定得到的专属 HSV 范围；为空时使用 `color_hex` 对应的参考宽范围。"
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,8 +50,8 @@ class BallDetectionInfo:
     "球心像素坐标 `(u, v)`；未检测到时为空元组，单位 pixel。"
     center_mm: tuple[float, ...]
     "球心相机坐标 `(x, y, z)`；深度不足时为空元组，单位 mm。"
-    radius_mm: float
-    "根据深度和投影估计的球半径，单位 mm。"
+    diameter_mm: float
+    "根据深度和投影估计的球直径，单位 mm。"
     radius_px: float
     "图像平面拟合半径，单位 pixel。"
     center_norm: tuple[float, ...]
@@ -58,6 +62,8 @@ class BallDetectionInfo:
     "参与深度估计的有效深度点数量。"
     status: str
     "检测状态文本，例如 `detected`、`depth_weak` 或 `missing`。"
+    observed_hsv: tuple[float, ...] = field(default_factory=tuple)
+    "候选颜色像素的实测 HSV 中心 `(H, S, V)`；未检测到或像素不足时为空元组。"
 
 
 @dataclass(frozen=True, slots=True)

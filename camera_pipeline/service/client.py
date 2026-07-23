@@ -11,6 +11,7 @@ from ..ball_pose_detection.protocol import (
 )
 from ..protocol import CameraColorFramePacket, CameraDepthFramePacket, CameraFramePacket, CameraName
 from .protocol import (
+    SERVICE_VERSION,
     CameraIntrinsicsResponse,
     CameraPipelineServiceRequest,
     CameraStatusResponse,
@@ -49,6 +50,12 @@ class CameraPipelineClient:
 
     def close(self) -> None:
         self._rpc_client.close()
+
+    @property
+    def expected_service_version(self) -> str:
+        """返回当前客户端代码要求的 CameraPipeline 功能版本。"""
+
+        return SERVICE_VERSION
 
     # region 相机查询
 

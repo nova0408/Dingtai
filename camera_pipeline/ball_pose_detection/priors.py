@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 
@@ -13,15 +13,20 @@ class BallPosePrior:
     ----------
     color_hex:
         颜色 HEX，例如 `#ff0000`。
-    radius_mm:
-        小球物理半径，单位为毫米。
+    diameter_mm:
+        小球物理直径，单位为毫米。
     model_center_mm:
         该小球在先验模型中的三维中心坐标，单位为毫米。
+    hsv_ranges:
+        标定得到的专属 HSV 范围；为空时由参考颜色选择全局宽范围。
     """
 
     color_hex: str
-    radius_mm: float
+    diameter_mm: float
     model_center_mm: np.ndarray
+    hsv_ranges: tuple[tuple[int, int, int, int, int, int], ...] = field(
+        default_factory=tuple
+    )
 
 
 @dataclass(frozen=True, slots=True)

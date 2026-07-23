@@ -91,7 +91,11 @@ client = CameraPipelineClient(service_addr="tcp://<orin-ip>:6200")
 
 头部、胸腔和左臂运行时按 `camera_pipeline/config.json` 中的启用状态与端点表启动。
 
-systemd 模板位于 `camera-pipeline.service`。Orin 本地其他业务服务应声明 `Requires=camera-pipeline.service` 和 `After=camera-pipeline.service`，并在启动后调用 `get_camera_status(camera_name)` 判断指定相机首帧是否真正可用。
+systemd 模板位于 `camera-pipeline.service`，进程启动、停止上限分别为 20 秒和
+15 秒。该 unit 使用 `Type=simple`，systemd 拉起进程不等于相机业务已经就绪；
+部署与重启脚本另外最多等待 20 秒，并调用 `get_camera_status(camera_name)` 确认
+目标相机首帧可用，不能只检查 6200 端口。本地其他业务服务应声明
+`Requires=camera-pipeline.service` 和 `After=camera-pipeline.service`。
 
 ## 端口
 
@@ -118,9 +122,14 @@ systemd 模板位于 `camera-pipeline.service`。Orin 本地其他业务服务�
 
 ## 协议与安全边界
 
-请求包含 `protocol_version`，当前版本为 `6`。版本 6 移除了
-`tray_detection` 和 `opening_detection` operation 及其请求/响应载荷，并要求
-相机相关请求显式携带 `camera_name`。客户端与服务端版本不一致时服务端明确拒绝。
+请求包含 `protocol_version`，当前版本为 `9`。版本 8 为三球先验增加每球专属
+`hsv_ranges`，并在检测结果中返回 `observed_hsv`。相机相关请求必须显式携带
+`camera_name`；版本 9 在 `CameraStatusResponse` 中增加必填 `service_version`，
+供客户端在连通性阶段核对远端功能版本。客户端与服务端线协议版本不一致时服务端
+明确拒绝。
+
+三球请求若携带球先验但不含有效毫米尺度相对位置关系，服务将其识别为先验采集，
+并强制要求 `enable_debug=True`；完全不带球先验的冒烟请求不属于先验采集。
 
 REQ/REP 和三路帧流使用同一显式二进制协议：固定头部携带 JSON 元数据长度，
 元数据只允许白名单中的协议 dataclass、基础类型和元组，NumPy 图像与 mask 以

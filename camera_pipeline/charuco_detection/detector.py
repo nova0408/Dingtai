@@ -61,8 +61,10 @@ class CharucoDetector:
         self._board = board
         self._config = CharucoDetectionConfig() if config is None else config
         self._validate_config()
-        self._detector = cv2.aruco.ArucoDetector(
-            board.getDictionary(), cv2.aruco.DetectorParameters()
+        self._detector = cv2.aruco.CharucoDetector(
+            board,
+            cv2.aruco.CharucoParameters(),
+            cv2.aruco.DetectorParameters(),
         )
 
     def detect(
@@ -102,9 +104,10 @@ class CharucoDetector:
         camera_matrix = self._camera_matrix(frame)
         dist_coeffs = np.asarray(frame.distortion, dtype=np.float64).reshape(-1, 1)
         self._validate_inputs(image_bgr, camera_matrix, dist_coeffs)
+        self._configure_detector(camera_matrix, dist_coeffs)
 
         gray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
-        raw = self._detect_corners(gray, camera_matrix, dist_coeffs)
+        raw = self._detect_corners(gray)
         raw_pose = self._solve_pose(raw, camera_matrix, dist_coeffs)
         if raw_pose is not None:
             return self._build_result(
@@ -113,8 +116,8 @@ class CharucoDetector:
 
         observations = (
             raw,
-            self._detect_corners(self._apply_clahe(gray), camera_matrix, dist_coeffs),
-            self._detect_corners(self._apply_unsharp(gray), camera_matrix, dist_coeffs),
+            self._detect_corners(self._apply_clahe(gray)),
+            self._detect_corners(self._apply_unsharp(gray)),
         )
         merged = self._merge_observations(observations)
         merged_pose = self._solve_pose(merged, camera_matrix, dist_coeffs)
@@ -128,22 +131,25 @@ class CharucoDetector:
         )
 
     # region 检测与融合
-    def _detect_corners(
+    def _configure_detector(
         self,
-        gray: np.ndarray,
         camera_matrix: np.ndarray,
         dist_coeffs: np.ndarray,
-    ) -> _CornerObservation:
+    ) -> None:
+        """将当前帧相机参数写入 OpenCV ChArUco 检测器。"""
+
+        parameters = self._detector.getCharucoParameters()
+        parameters.cameraMatrix = camera_matrix
+        parameters.distCoeffs = dist_coeffs
+        self._detector.setCharucoParameters(parameters)
+
+    def _detect_corners(self, gray: np.ndarray) -> _CornerObservation:
         """从一幅灰度图检测 marker 并插值 ChArUco 角点。
 
         Parameters
         ----------
         gray:
             灰度图，形状 `(H, W)`，dtype `uint8`。
-        camera_matrix:
-            相机内参矩阵，形状 `(3, 3)`，dtype `float64`。
-        dist_coeffs:
-            OpenCV 畸变系数，形状 `(D, 1)`，dtype `float64`。
 
         Returns
         -------
@@ -151,20 +157,17 @@ class CharucoDetector:
             当前预处理分支的规范化角点观测；未检测到时数组为空。
         """
 
-        marker_corners_raw, marker_ids_raw, _ = self._detector.detectMarkers(gray)
+        (
+            charuco_corners_raw,
+            charuco_ids_raw,
+            marker_corners_raw,
+            marker_ids_raw,
+        ) = self._detector.detectBoard(gray)
         marker_corners = self._normalize_marker_corners(marker_corners_raw)
         marker_ids = self._normalize_ids(marker_ids_raw)
         if not marker_corners or marker_ids.size == 0:
             return self._empty_observation()
 
-        _, charuco_corners_raw, charuco_ids_raw = cv2.aruco.interpolateCornersCharuco(
-            list(marker_corners),
-            marker_ids,
-            gray,
-            self._board,
-            camera_matrix,
-            dist_coeffs,
-        )
         charuco_corners = self._normalize_charuco_corners(charuco_corners_raw)
         charuco_ids = self._normalize_ids(charuco_ids_raw)
         return _CornerObservation(

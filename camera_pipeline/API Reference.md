@@ -14,7 +14,7 @@ finally:
     client.close()
 ```
 
-当前协议版本为 `6`。RPC 失败统一写入
+当前协议版本为 `9`。RPC 失败统一写入
 `CameraPipelineServiceResponse.error`，client 将其转换为 `RuntimeError`。
 网络超时、服务未启动、协议版本不匹配、相机未连接或目标 payload 缺失都不作为成功结果返回。
 
@@ -52,7 +52,7 @@ finally:
   `color_shape`、`depth_shape`、`fx`、`fy`、`cx`、`cy`。
 - `CameraIntrinsicsResponse`：`camera_name`、`fx`、`fy`、`cx`、`cy`、
   `distortion`、`width`、`height`。焦距和主点单位为像素。
-- `CameraStatusResponse`：`camera_name`、`camera_id`、`camera_model`、
+- `CameraStatusResponse`：`service_version`、`camera_name`、`camera_id`、`camera_model`、
   `width`、`height`、`color_enabled`、`depth_enabled`、`online`。
 - `StableFrameResponse`：`frame_id`、`camera_name`、`timestamp_ms`。
 
@@ -140,7 +140,7 @@ result = client.detect_charuco(request)
 
 ## 算法请求 API
 
-`request_tray_detection()` 和 `request_opening_detection()` 已暂时移除。协议版本 6
+`request_tray_detection()` 和 `request_opening_detection()` 已暂时移除。协议版本 8
 不再接受 `tray_detection`、`opening_detection` operation，也不再暴露对应的请求、
 响应字段或 wire codec 类型。调用方不得继续构造旧版 operation；需要恢复时应同步
 恢复子模块入口、服务编排、协议、codec、client API 和测试后再提升协议版本。
@@ -149,9 +149,12 @@ result = client.detect_charuco(request)
 
 请求类型为 `BallPoseDetectionRequest`，主要字段为 `request_id`、
 `camera_name`、`frame_id`、`enable_debug`、`priors`。每个 `BallPosePriorInfo` 包含
-`color_hex`、`radius_mm`、`model_center_mm`。成功响应包含 `matched_count`、
+`color_hex`、`diameter_mm`、`model_center_mm`、`hsv_ranges`。`color_hex` 是稳定
+身份和首次记录参考色；非空 `hsv_ranges` 是记录先验得到的专属窄范围，优先于参考色
+宽范围。`diameter_mm` 表示球的物理直径，单位 mm。成功响应包含 `matched_count`、
 `detections` 和可选 debug 产物。无先验时 `detections=()`；单球漏检时对应
-`BallDetectionInfo.detected=False`，坐标元组为空。
+`BallDetectionInfo.detected=False`，坐标元组为空；有效结果的 `observed_hsv` 是候选
+内部颜色像素的实测 HSV 中心。
 
 ## 统一响应边界
 

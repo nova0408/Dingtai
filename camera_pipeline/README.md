@@ -161,8 +161,9 @@ After=camera-pipeline.service
 
 ## 协议与安全
 
-统一请求包含 `protocol_version`。当前版本 6 已移除 tray/opening 请求和响应类型，
-并要求所有相机查询、订阅和算法请求显式携带 `camera_name`。
+统一请求包含 `protocol_version`。当前版本 8 为三球先验增加每球专属
+`hsv_ranges`，并在检测结果中返回 `observed_hsv`；所有相机查询、订阅和算法请求
+必须显式携带 `camera_name`。
 网络数据采用白名单协议 dataclass 的 JSON 元数据与 NumPy 原始字节块，不使用
 Python pickle。服务端部署基线为 Python 3.12。解码器拒绝未知类型、非法数组范围和字段不匹配；端口仍只应开放在受控
 开发网络中。
@@ -177,6 +178,7 @@ Orin 真实相机 smoke test 是非镜像平铺部署，只维护下列映射：
 | 单相机帧流 | `test/wuji/orin_camera_stream.py` | `/home/wuji-brain/workspace/test/orin_camera_stream.py` |
 | 稳定帧 | `test/wuji/stable_frame.py` | `/home/wuji-brain/workspace/test/stable_frame.py` |
 | 三球检测 | `test/wuji/ball_pose_detection.py` | `/home/wuji-brain/workspace/test/ball_pose_detection.py` |
+| ChArUco 检测 | `test/wuji/charuco_detection.py` | `/home/wuji-brain/workspace/test/charuco_detection.py` |
 
 这些脚本在 Windows 使用 `tcp://192.168.1.128:6200`，在 Orin 使用
 `tcp://127.0.0.1:6200`；脚本会通过 `camera_pipeline/client.py` 反向定位项目根目录，

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import signal
+import time
 from collections.abc import Sequence
 from pathlib import Path
 from types import FrameType
@@ -55,7 +56,15 @@ AGV_HOST = "192.168.100.70"
 def main(argv: Sequence[str] | None = None) -> int:
     """启动只由 API 触发动作的 Orin 常驻服务。"""
 
+    startup_started_at = time.perf_counter()
     args = _parse_args(argv)
+    logger.info(
+        "record replay service initializing host={} port={} prior_path={} config_path={}",
+        args.host,
+        args.port,
+        BALL_POSE_PRIOR_PATH,
+        RUNTIME_CONFIG_PATH,
+    )
     config_store = RuntimeConfigStore(RUNTIME_CONFIG_PATH)
     settings = config_store.load().to_service_settings()
     device_connection = ReplayDeviceConnection(
@@ -91,9 +100,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         hand_eye_result_path=HAND_EYE_RESULT_PATH,
         camera_name=args.camera_name,
     )
+    prior_load_started_at = time.perf_counter()
+    ball_priors = load_three_ball_priors(
+        offset_config.prior_capture_path,
+        settings.offset,
+    )
+    logger.info(
+        "record replay ball priors loaded count={} elapsed_ms={:.3f}",
+        len(ball_priors),
+        (time.perf_counter() - prior_load_started_at) * 1000.0,
+    )
     detector = CameraPipelineThreeBallDetector(
         CameraName(offset_config.camera_name),
-        load_three_ball_priors(offset_config.prior_capture_path, settings.offset),
+        ball_priors,
         settings.offset,
     )
     cycle_service = RecordReplayCycleService(
@@ -115,15 +134,26 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     signal.signal(signal.SIGINT, handle_signal)
     signal.signal(signal.SIGTERM, handle_signal)
-    logger.info("record replay service started http://{}:{}", args.host, args.port)
+    logger.info(
+        "record replay service started http://{}:{} startup_elapsed_ms={:.3f}",
+        args.host,
+        args.port,
+        (time.perf_counter() - startup_started_at) * 1000.0,
+    )
     try:
         server.serve()
     except KeyboardInterrupt:
         logger.info("record replay service stopping")
     finally:
+        shutdown_started_at = time.perf_counter()
         server.close()
+        logger.info("record replay HTTP server socket closed")
+        logger.info("record replay waiting for active worker to finish")
         application.join()
-        logger.info("record replay service stopped")
+        logger.info(
+            "record replay service stopped shutdown_elapsed_ms={:.3f}",
+            (time.perf_counter() - shutdown_started_at) * 1000.0,
+        )
     return 0
 
 

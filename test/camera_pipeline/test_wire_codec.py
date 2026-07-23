@@ -36,8 +36,9 @@ def test_request_round_trip_preserves_nested_protocol_types() -> None:
             priors=(
                 BallPosePriorInfo(
                     color_hex="#ffff00",
-                    radius_mm=20.0,
+                    diameter_mm=20.0,
                     model_center_mm=(1.0, 2.0, 3.0),
+                    hsv_ranges=((20, 120, 100, 28, 255, 255),),
                 ),
             ),
         ),
@@ -122,6 +123,7 @@ def test_transport_round_trip_uses_explicit_wire_protocol() -> None:
                 CameraPipelineServiceResponse(
                     operation=request.operation,
                     camera_status=CameraStatusResponse(
+                        service_version="1.4.0",
                         camera_name="test_camera",
                         camera_id="TEST",
                         camera_model="test",
@@ -147,6 +149,7 @@ def test_transport_round_trip_uses_explicit_wire_protocol() -> None:
             )
         )
         assert response.camera_status is not None
+        assert response.camera_status.service_version == "1.4.0"
         assert response.camera_status.camera_name == "test_camera"
     finally:
         client.close()

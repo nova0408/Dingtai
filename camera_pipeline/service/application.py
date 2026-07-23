@@ -11,6 +11,7 @@ from ..pipeline_context import PipelineContext
 from .frame_publisher import CameraFramePublisher
 from .protocol import (
     PROTOCOL_VERSION,
+    SERVICE_VERSION,
     CameraColorFrameSubscribeResponse,
     CameraDepthFrameSubscribeResponse,
     CameraFrameSubscribeResponse,
@@ -182,6 +183,7 @@ class CameraPipelineApplication:
             frame.frame_id,
         )
         return CameraStatusResponse(
+            service_version=SERVICE_VERSION,
             camera_name=frame.camera_name,
             camera_id=self._pipeline_context.get_camera_id(frame.camera_name),
             camera_model="unknown",

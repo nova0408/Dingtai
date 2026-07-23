@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import signal
 import threading
+import time
 from collections.abc import Sequence
 from pathlib import Path
 from types import FrameType
@@ -21,6 +22,7 @@ from .transport import CameraPipelineRpcServer, ZmqSocketOptions
 def main(argv: Sequence[str] | None = None) -> int:
     """启动 Orin 本地 CameraPipeline 统一服务。"""
 
+    startup_started_at = time.perf_counter()
     args = _parse_args(argv)
     log_path = configure_service_logging(
         args.log_path,
@@ -64,18 +66,26 @@ def main(argv: Sequence[str] | None = None) -> int:
     signal.signal(signal.SIGTERM, _handle_signal)
     try:
         pipeline_context.start()
-        logger.info("camera pipeline service started bind_addr={}", args.bind_addr)
+        logger.info(
+            "camera pipeline service started bind_addr={} startup_elapsed_ms={:.3f}",
+            args.bind_addr,
+            (time.perf_counter() - startup_started_at) * 1000.0,
+        )
         server.serve(stop_event)
     except Exception:
         logger.exception("camera pipeline service terminated by unhandled error")
         raise
     finally:
+        shutdown_started_at = time.perf_counter()
         logger.info("camera pipeline service stopping")
         try:
             frame_publisher.close()
             transport.close()
             pipeline_context.close()
-            logger.info("camera pipeline service stopped")
+            logger.info(
+                "camera pipeline service stopped shutdown_elapsed_ms={:.3f}",
+                (time.perf_counter() - shutdown_started_at) * 1000.0,
+            )
         finally:
             shutdown_service_logging()
     return 0

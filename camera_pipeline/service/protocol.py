@@ -8,7 +8,11 @@ from ..ball_pose_detection.protocol import (
     BallPoseDetectionResponse,
 )
 from ..protocol import CameraName
-PROTOCOL_VERSION = 6
+PROTOCOL_VERSION = 9
+"CameraPipeline 线协议版本。"
+
+SERVICE_VERSION = "1.4.2"
+"CameraPipeline 服务功能版本，必须与 CHANGELOG 当前版本一致。"
 
 CAMERA_STREAM_TOPIC_SEPARATOR = b"\x00"
 "相机名与帧协议载荷之间的 topic 分隔字节。"
@@ -100,6 +104,8 @@ class CameraIntrinsicsResponse:
 class CameraStatusResponse:
     """相机在线状态响应。"""
 
+    service_version: str
+    "远端 CameraPipeline 功能版本。"
     camera_name: str
     camera_id: str
     camera_model: str

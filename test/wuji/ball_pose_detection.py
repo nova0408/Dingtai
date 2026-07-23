@@ -26,6 +26,7 @@ from camera_pipeline.ball_pose_detection.protocol import (
     BallPosePriorInfo,
 )
 from camera_pipeline.client import CameraName, CameraPipelineClient
+from camera_pipeline.service.protocol import CameraStatusResponse
 
 # region 默认常量
 
@@ -40,13 +41,12 @@ DEFAULT_SERVICE_ADDR = (
 DEFAULT_TIMEOUT_MS = 60_000
 # 等待稳定帧超时时间，单位 s
 DEFAULT_STABLE_TIMEOUT_S = 15.0
-# 是否请求 debug 产物
-DEFAULT_ENABLE_DEBUG = True
 DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "test" / "wuji" / ".archive" / "ball_pose_detection_capture"
-DEFAULT_PRIORS = (
-    BallPosePriorInfo(color_hex="#ffff00", radius_mm=20.0, model_center_mm=(0.0, 0.0, 0.0)),
-    BallPosePriorInfo(color_hex="#ff0000", radius_mm=20.0, model_center_mm=(1.0, 0.0, 0.0)),
-    BallPosePriorInfo(color_hex="#ff00ff", radius_mm=20.0, model_center_mm=(0.0, 1.0, 0.0)),
+# 首次检测仅输入参考颜色和物理直径，占位中心不包含有效相对位置关系
+DEFAULT_REFERENCE_PRIORS = (
+    BallPosePriorInfo("#ffff00", 20.0, (0.0, 0.0, 0.0)),
+    BallPosePriorInfo("#ff0000", 20.0, (1.0, 0.0, 0.0)),
+    BallPosePriorInfo("#ff00ff", 20.0, (0.0, 1.0, 0.0)),
 )
 
 # endregion
@@ -61,47 +61,101 @@ def main(
     output_dir: Path = DEFAULT_OUTPUT_DIR,
     timeout_ms: int = DEFAULT_TIMEOUT_MS,
     stable_timeout_s: float = DEFAULT_STABLE_TIMEOUT_S,
-    enable_debug: bool = DEFAULT_ENABLE_DEBUG,
 ) -> int:
-    """执行一次当前 ball_pose_detection 服务冒烟测试。"""
+    """依次执行连通性、首次三球检测和相对位置先验复检。"""
 
     output_dir.mkdir(parents=True, exist_ok=True)
     logger.info("ball_pose_detection 冒烟开始：service_addr={} camera_name={}", service_addr, camera_name)
     client = CameraPipelineClient(service_addr=str(service_addr), timeout_ms=int(timeout_ms))
     try:
         selected_camera = CameraName(camera_name)
+        logger.info("阶段 1/3：检查服务连通性、相机状态和功能版本")
+        expected_service_version = client.expected_service_version
         status = client.get_camera_status(selected_camera, timeout_s=float(stable_timeout_s))
-        logger.info(
-            "相机状态：camera_name={} online={} width={} px height={} px",
+        _validate_connectivity(
+            status=status,
+            expected_service_version=expected_service_version,
+        )
+        logger.success(
+            "阶段 1/3 通过：service_version={} camera_name={} width={} px height={} px",
+            status.service_version,
             status.camera_name,
-            status.online,
             status.width,
             status.height,
         )
-        target_frame_id = _resolve_target_frame_id(
+
+        logger.info("阶段 2/3：使用参考颜色、物理直径和占位中心执行首次三球检测")
+        reference_frame_id = _resolve_target_frame_id(
             client=client,
             camera_name=selected_camera,
             stable_timeout_s=float(stable_timeout_s),
         )
-        response = client.detect_ball(
+        reference_response = client.detect_ball(
             BallPoseDetectionRequest(
-                request_id=1,
+                request_id=2,
                 camera_name=selected_camera,
-                frame_id=int(target_frame_id),
-                enable_debug=bool(enable_debug),
-                priors=DEFAULT_PRIORS,
+                frame_id=reference_frame_id,
+                enable_debug=True,
+                priors=DEFAULT_REFERENCE_PRIORS,
             )
+        )
+        _save_capture(
+            output_dir=output_dir / "02_reference_detection",
+            response=reference_response,
+            stage_name="reference_detection",
+        )
+        _validate_detection_response(
+            response=reference_response,
+            target_frame_id=reference_frame_id,
+            stage_name="首次三球检测",
+        )
+        logger.success(
+            "阶段 2/3 通过：frame_id={} matched_count={}",
+            reference_response.frame_id,
+            reference_response.matched_count,
+        )
+
+        metric_priors = _build_metric_priors(reference_response)
+        logger.info("阶段 3/3：使用首次检测得到的三球相对位置先验执行复检")
+        metric_frame_id = _resolve_target_frame_id(
+            client=client,
+            camera_name=selected_camera,
+            stable_timeout_s=float(stable_timeout_s),
+        )
+        metric_response = client.detect_ball(
+            BallPoseDetectionRequest(
+                request_id=3,
+                camera_name=selected_camera,
+                frame_id=metric_frame_id,
+                enable_debug=True,
+                priors=metric_priors,
+            )
+        )
+        _save_capture(
+            output_dir=output_dir / "03_metric_prior_detection",
+            response=metric_response,
+            stage_name="metric_prior_detection",
+        )
+        _validate_detection_response(
+            response=metric_response,
+            target_frame_id=metric_frame_id,
+            stage_name="相对位置先验复检",
         )
     finally:
         client.close()
 
-    _validate_response(response)
-    _save_capture(output_dir=output_dir, response=response)
-    _print_summary(response=response, service_addr=service_addr)
+    _print_summary(
+        service_addr=service_addr,
+        expected_service_version=expected_service_version,
+        status=status,
+        reference_response=reference_response,
+        metric_response=metric_response,
+    )
     logger.success(
-        "ball_pose_detection 冒烟通过：matched_count={} frame_id={}",
-        response.matched_count,
-        response.frame_id,
+        "阶段 3/3 通过，ball_pose_detection 三阶段冒烟完成："
+        "reference_frame_id={} metric_frame_id={}",
+        reference_response.frame_id,
+        metric_response.frame_id,
     )
     return 0
 
@@ -126,23 +180,97 @@ def _resolve_target_frame_id(
     return int(stable_frame.frame_id)
 
 
-def _validate_response(response: BallPoseDetectionResponse) -> None:
-    if len(response.detections) != len(DEFAULT_PRIORS):
+def _validate_connectivity(
+    status: CameraStatusResponse,
+    expected_service_version: str,
+) -> None:
+    """验证相机在线，并确认远端功能版本与本地客户端一致。"""
+
+    if not status.online:
+        raise RuntimeError(f"远端相机不在线：camera_name={status.camera_name}")
+    if status.service_version != expected_service_version:
         raise RuntimeError(
-            "ball pose detection 返回数量异常：" f"expected={len(DEFAULT_PRIORS)} actual={len(response.detections)}"
-        )
-    if response.matched_count <= 0:
-        raise RuntimeError("ball pose detection 未返回任何有效三维球心")
-    detected_count = sum(1 for item in response.detections if item.detected)
-    if detected_count != response.matched_count:
-        raise RuntimeError(
-            "matched_count 与 detected 数量不一致："
-            f"matched_count={response.matched_count} detected_count={detected_count}"
+            "CameraPipeline 功能版本不一致："
+            f"client={expected_service_version} service={status.service_version}"
         )
 
 
-def _save_capture(output_dir: Path, response: BallPoseDetectionResponse) -> None:
+def _validate_detection_response(
+    response: BallPoseDetectionResponse,
+    target_frame_id: int,
+    stage_name: str,
+) -> None:
+    if response.frame_id != target_frame_id:
+        raise RuntimeError(
+            f"{stage_name}返回帧与请求稳定帧不一致："
+            f"expected={target_frame_id} actual={response.frame_id}"
+        )
+    if len(response.detections) != len(DEFAULT_REFERENCE_PRIORS):
+        raise RuntimeError(
+            f"{stage_name}返回数量异常："
+            f"expected={len(DEFAULT_REFERENCE_PRIORS)} "
+            f"actual={len(response.detections)}"
+        )
+    if response.matched_count != len(DEFAULT_REFERENCE_PRIORS):
+        raise RuntimeError(
+            f"{stage_name}未完整检出三球：matched_count={response.matched_count}"
+        )
+    expected_colors = {prior.color_hex for prior in DEFAULT_REFERENCE_PRIORS}
+    actual_colors = {item.color_hex for item in response.detections}
+    if actual_colors != expected_colors:
+        raise RuntimeError(
+            f"{stage_name}颜色集合异常：expected={expected_colors} actual={actual_colors}"
+        )
+    for detection in response.detections:
+        if (
+            not detection.detected
+            or len(detection.center_mm) != 3
+            or detection.diameter_mm <= 0.0
+            or len(detection.observed_hsv) != 3
+        ):
+            raise RuntimeError(
+                f"{stage_name}包含无效检测："
+                f"color={detection.color_hex} status={detection.status}"
+            )
+    if len(response.debug_artifacts) != 1:
+        raise RuntimeError(
+            f"{stage_name}必须返回一份 debug 产物："
+            f"actual={len(response.debug_artifacts)}"
+        )
+
+
+def _build_metric_priors(
+    reference_response: BallPoseDetectionResponse,
+) -> tuple[BallPosePriorInfo, ...]:
+    """使用首次检测球心构造带实际毫米尺度相对位置的三球先验。"""
+
+    reference_diameters = {
+        prior.color_hex: prior.diameter_mm for prior in DEFAULT_REFERENCE_PRIORS
+    }
+    return tuple(
+        BallPosePriorInfo(
+            color_hex=item.color_hex,
+            diameter_mm=reference_diameters[item.color_hex],
+            model_center_mm=(
+                float(item.center_mm[0]),
+                float(item.center_mm[1]),
+                float(item.center_mm[2]),
+            ),
+        )
+        for item in reference_response.detections
+    )
+
+
+def _save_capture(
+    output_dir: Path,
+    response: BallPoseDetectionResponse,
+    stage_name: str,
+) -> None:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    debug_artifact = response.debug_artifacts[0]
+    _save_debug_artifacts(output_dir=output_dir, debug_artifact=debug_artifact)
     summary = {
+        "stage": stage_name,
         "request_id": response.request_id,
         "frame_id": response.frame_id,
         "camera_name": response.camera_name,
@@ -156,34 +284,64 @@ def _save_capture(output_dir: Path, response: BallPoseDetectionResponse) -> None
         json.dumps(summary, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
-    if not response.debug_artifacts:
-        logger.warning("当前请求未返回 debug_artifacts，跳过图像落盘")
-        return
-    debug_artifact = response.debug_artifacts[0]
-    _save_debug_artifacts(output_dir=output_dir, debug_artifact=debug_artifact)
+    logger.success("冒烟 debug 图像已保存：{}", output_dir)
 
 
-def _save_debug_artifacts(output_dir: Path, debug_artifact: BallPoseDetectionDebugArtifacts) -> None:
-    cv2.imwrite(str(output_dir / "color_bgr.jpg"), np.asarray(debug_artifact.color_bgr, dtype=np.uint8))
-    cv2.imwrite(str(output_dir / "depth.jpg"), _build_depth_view(np.asarray(debug_artifact.depth_mm)))
-    cv2.imwrite(str(output_dir / "overlay.jpg"), np.asarray(debug_artifact.overlay_bgr, dtype=np.uint8))
-    cv2.imwrite(
-        str(output_dir / "detection_overlay.jpg"),
+def _save_debug_artifacts(
+    output_dir: Path,
+    debug_artifact: BallPoseDetectionDebugArtifacts,
+) -> None:
+    _save_required_image(
+        output_dir / "last_frame_bgr.jpg",
+        np.asarray(debug_artifact.color_bgr, dtype=np.uint8),
+    )
+    _save_required_image(
+        output_dir / "last_frame_depth.jpg",
+        _build_depth_view(np.asarray(debug_artifact.depth_mm)),
+    )
+    _save_required_image(
+        output_dir / "overlay.jpg",
+        np.asarray(debug_artifact.overlay_bgr, dtype=np.uint8),
+    )
+    _save_required_image(
+        output_dir / "detection_overlay.jpg",
         np.asarray(debug_artifact.detection_overlay_bgr, dtype=np.uint8),
     )
 
 
-def _print_summary(response: BallPoseDetectionResponse, service_addr: str) -> None:
+def _save_required_image(path: Path, image: np.ndarray) -> None:
+    """保存冒烟核验图，写入失败时直接判定测试失败。"""
+
+    if image.size == 0 or not cv2.imwrite(str(path), image):
+        raise RuntimeError(f"冒烟核验图片保存失败：{path}")
+
+
+def _print_summary(
+    service_addr: str,
+    expected_service_version: str,
+    status: CameraStatusResponse,
+    reference_response: BallPoseDetectionResponse,
+    metric_response: BallPoseDetectionResponse,
+) -> None:
     payload = {
         "service_addr": service_addr,
+        "client_service_version": expected_service_version,
+        "remote_service_version": status.service_version,
+        "camera_name": status.camera_name,
+        "reference_detection": _serialize_response(reference_response),
+        "metric_prior_detection": _serialize_response(metric_response),
+    }
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+
+
+def _serialize_response(response: BallPoseDetectionResponse) -> dict[str, Any]:
+    return {
         "frame_id": response.frame_id,
-        "camera_name": response.camera_name,
         "timestamp_ms": response.timestamp_ms,
         "elapsed_ms": response.elapsed_ms,
         "matched_count": response.matched_count,
         "detections": [_serialize_detection(item) for item in response.detections],
     }
-    print(json.dumps(payload, ensure_ascii=False, indent=2))
 
 
 def _serialize_detection(item: BallDetectionInfo) -> dict[str, Any]:
@@ -192,12 +350,13 @@ def _serialize_detection(item: BallDetectionInfo) -> dict[str, Any]:
         "detected": item.detected,
         "center_px": list(item.center_px),
         "center_mm": list(item.center_mm),
-        "radius_mm": item.radius_mm,
+        "diameter_mm": item.diameter_mm,
         "radius_px": item.radius_px,
         "center_norm": list(item.center_norm),
         "radius_norm": item.radius_norm,
         "point_count": item.point_count,
         "status": item.status,
+        "observed_hsv": list(item.observed_hsv),
     }
 
 
@@ -228,7 +387,6 @@ def _parse_cli(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--timeout-ms", type=int, default=DEFAULT_TIMEOUT_MS)
     parser.add_argument("--stable-timeout-s", type=float, default=DEFAULT_STABLE_TIMEOUT_S)
-    parser.add_argument("--disable-debug", action="store_true")
     return parser.parse_args(argv)
 
 
@@ -241,7 +399,6 @@ if __name__ == "__main__":
             output_dir=Path(cli_args.output_dir),
             timeout_ms=int(cli_args.timeout_ms),
             stable_timeout_s=float(cli_args.stable_timeout_s),
-            enable_debug=not bool(cli_args.disable_debug),
         )
     )
 

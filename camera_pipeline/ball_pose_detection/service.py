@@ -44,15 +44,34 @@ class BallPoseDetectionService:
         priors = [
             BallPosePrior(
                 color_hex=prior.color_hex,
-                radius_mm=prior.radius_mm,
+                diameter_mm=prior.diameter_mm,
                 model_center_mm=np.asarray(prior.model_center_mm, dtype=np.float64),
+                hsv_ranges=prior.hsv_ranges,
             )
             for prior in request.priors
         ]
-        result = self._detector.detect(frame, priors)
-        detections = tuple(
-            _build_detection_info(frame, item) for item in result.detections
+        is_prior_capture = bool(priors) and not self._detector.has_metric_relative_prior(
+            priors
         )
+        if is_prior_capture and not request.enable_debug:
+            raise ValueError(
+                "ball prior capture requires enable_debug=True when no metric "
+                "relative-position prior is provided"
+            )
+        detection_mode = (
+            "prior_capture"
+            if is_prior_capture
+            else "relative_prior"
+            if priors
+            else "no_prior"
+        )
+        logger.info(
+            "ball pose detection mode resolved request_id={} mode={}",
+            request.request_id,
+            detection_mode,
+        )
+        result = self._detector.detect(frame, priors)
+        detections = tuple(_build_detection_info(item) for item in result.detections)
         debug_artifacts: tuple[BallPoseDetectionDebugArtifacts, ...] = ()
         if request.enable_debug:
             overlay = _build_detection_overlay(frame, result)
@@ -93,9 +112,7 @@ class BallPoseDetectionService:
         return response
 
 
-def _build_detection_info(
-    frame: RgbdFrameProtocol, item: BallObservation
-) -> BallDetectionInfo:
+def _build_detection_info(item: BallObservation) -> BallDetectionInfo:
     return BallDetectionInfo(
         color_hex=item.color_hex,
         detected=item.detected,
@@ -105,7 +122,7 @@ def _build_detection_info(
         center_mm=(
             () if item.center_mm is None else tuple(float(v) for v in item.center_mm)
         ),
-        radius_mm=_estimate_radius_mm(frame, item),
+        diameter_mm=item.diameter_mm,
         radius_px=item.radius_px,
         center_norm=(
             ()
@@ -115,6 +132,11 @@ def _build_detection_info(
         radius_norm=item.radius_norm,
         point_count=item.point_count,
         status=item.status,
+        observed_hsv=(
+            ()
+            if item.observed_hsv is None
+            else tuple(float(value) for value in item.observed_hsv)
+        ),
     )
 
 
@@ -147,16 +169,3 @@ def _build_detection_overlay(
             cv2.LINE_AA,
         )
     return overlay
-
-
-def _estimate_radius_mm(frame: RgbdFrameProtocol, item: BallObservation) -> float:
-    if item.center_mm is None:
-        return item.radius_mm
-    if item.center_mm.shape != (3,) or not np.all(np.isfinite(item.center_mm)):
-        return item.radius_mm
-    if not np.isfinite(item.radius_px) or item.radius_px <= 1e-6:
-        return item.radius_mm
-    focal = 0.5 * (frame.fx + frame.fy)
-    if focal <= 1e-6:
-        return item.radius_mm
-    return item.radius_px * float(item.center_mm[2]) / focal

@@ -1,81 +1,46 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SERVICE_UNIT="camera-pipeline.service"
+SERVICE_PORT="6200"
 SERVICE_PYTHON="/home/wuji-brain/miniconda3/envs/wuji/bin/python"
-SERVICE_PATTERN="${SERVICE_PYTHON} -m camera_pipeline.service --bind-addr tcp://0.0.0.0:6200"
-SERVICE_CMD=("${SERVICE_PYTHON}" -m camera_pipeline.service --bind-addr tcp://0.0.0.0:6200)
-LOG_PATH="/tmp/camera_pipeline_service.log"
 WORKSPACE_DIR="/home/wuji-brain/workspace"
+WAIT_TIMEOUT_SECONDS=20
+restart_log_since="$(date '+%Y-%m-%d %H:%M:%S')"
 
-echo "[restart] workspace=${WORKSPACE_DIR}"
-cd "${WORKSPACE_DIR}"
-
-collect_pids() {
-  local ports_output="$1"
-  local pids=""
-  while IFS= read -r line; do
-    if [[ "${line}" =~ pid=([0-9]+) ]]; then
-      pids+="${BASH_REMATCH[1]}"$'\n'
-    fi
-  done <<< "${ports_output}"
-  printf '%s' "${pids}" | sed '/^$/d' | sort -u
+print_restart_logs() {
+  journalctl -u "${SERVICE_UNIT}" \
+    --since "${restart_log_since}" --no-pager -o short-precise || true
 }
 
-echo "[restart] checking port usage"
-port_usage=""
-if command -v ss >/dev/null 2>&1; then
-  port_usage="$(ss -ltnp '( sport = :6200 or sport = :6201 or sport = :6202 or sport = :6203 )' 2>/dev/null || true)"
-  echo "${port_usage}"
-fi
+read_camera_status() {
+  (
+    cd "${WORKSPACE_DIR}"
+    timeout 2s "${SERVICE_PYTHON}" -c \
+      'from camera_pipeline.client import CameraName, CameraPipelineClient; client = CameraPipelineClient("tcp://127.0.0.1:6200", timeout_ms=1000); status = client.get_camera_status(CameraName.LEFT_ARM, timeout_s=0.5); client.close(); print(f"camera_name={status.camera_name} online={status.online} service_version={status.service_version}"); raise SystemExit(0 if status.online else 1)'
+  )
+}
 
-port_pids="$(collect_pids "${port_usage}")"
-service_pids="$(pgrep -f "${SERVICE_PATTERN}" || true)"
-all_pids="$(printf '%s\n%s\n' "${port_pids}" "${service_pids}" | sed '/^$/d' | sort -u)"
+echo "[restart] restarting ${SERVICE_UNIT} through systemd"
+sudo systemctl restart --no-block "${SERVICE_UNIT}"
 
-if [[ -n "${all_pids}" ]]; then
-  echo "[restart] stopping pid list:"
-  echo "${all_pids}"
-  echo "[restart] sending SIGTERM"
-  kill ${all_pids} || true
-  sleep 3
-fi
+deadline=$((SECONDS + WAIT_TIMEOUT_SECONDS))
+while ((SECONDS < deadline)); do
+  if systemctl is-active --quiet "${SERVICE_UNIT}" &&
+     ss -ltn "( sport = :${SERVICE_PORT} )" | grep -q LISTEN; then
+    if camera_status="$(read_camera_status 2>/dev/null)"; then
+      echo "[restart] ${SERVICE_UNIT} is ready: ${camera_status}"
+      systemctl show "${SERVICE_UNIT}" \
+        -p ActiveState -p SubState -p MainPID \
+        -p TimeoutStartUSec -p TimeoutStopUSec --no-pager
+      print_restart_logs
+      exit 0
+    fi
+  fi
+  sleep 1
+done
 
-port_usage_after_term=""
-if command -v ss >/dev/null 2>&1; then
-  port_usage_after_term="$(ss -ltnp '( sport = :6200 or sport = :6201 or sport = :6202 or sport = :6203 )' 2>/dev/null || true)"
-fi
-still_pids="$(collect_pids "${port_usage_after_term}")"
-if [[ -n "${still_pids}" ]]; then
-  echo "[restart] still busy after SIGTERM, sending SIGKILL"
-  echo "${still_pids}"
-  kill -9 ${still_pids} || true
-  sleep 3
-fi
-
-port_usage_final=""
-if command -v ss >/dev/null 2>&1; then
-  port_usage_final="$(ss -ltnp '( sport = :6200 or sport = :6201 or sport = :6202 or sport = :6203 )' 2>/dev/null || true)"
-fi
-final_pids="$(collect_pids "${port_usage_final}")"
-if [[ -n "${final_pids}" ]]; then
-  echo "[restart] failed to stop port owners:"
-  echo "${final_pids}"
-  echo "${port_usage_final}"
-  exit 1
-fi
-
-echo "[restart] starting service"
-rm -f "${LOG_PATH}"
-setsid "${SERVICE_CMD[@]}" >"${LOG_PATH}" 2>&1 < /dev/null &
-sleep 3
-
-echo "[restart] success summary"
-running_pids="$(pgrep -f "${SERVICE_PATTERN}" || true)"
-if [[ -n "${running_pids}" ]]; then
-  echo "[restart] service pid(s): ${running_pids}"
-else
-  echo "[restart] service pid(s): not found"
-fi
-echo "[restart] bind ports: 6200(service), 6201(frame), 6202(color), 6203(depth)"
-echo "[restart] last log lines:"
-tail -n 20 "${LOG_PATH}" || true
+echo "[restart] ${SERVICE_UNIT} was not ready within ${WAIT_TIMEOUT_SECONDS} seconds"
+systemctl status "${SERVICE_UNIT}" --no-pager -l || true
+print_restart_logs
+exit 1

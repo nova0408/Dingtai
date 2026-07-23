@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Iterable
 import json
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -43,13 +44,33 @@ DEFAULT_WINDOW_WIDTH = 1440
 DEFAULT_WINDOW_HEIGHT = 900
 BALL_ORDERED_COLORS = ("#ffff00", "#ff0000", "#ff00ff")
 BALL_COLOR_LABELS = ("yellow", "red", "purple")
-BALL_DEFAULT_RADIUS_MM = 20.0
+BALL_DEFAULT_DIAMETER_MM = 20.0
 BALL_DEFAULT_MODEL_CENTERS_MM = (
     (0.0, 0.0, 0.0),
     (1.0, 0.0, 0.0),
     (0.0, 1.0, 0.0),
 )
 BALL_POSE_AXIS_LENGTH_MM = 45.0
+BALL_PRIOR_SAMPLE_COUNT = 30
+"三球先验必须收集的完整且不同帧数量。"
+BALL_PRIOR_MAX_ATTEMPTS = 90
+"收集三球先验的最大请求次数，允许跳过未检出帧和重复帧。"
+BALL_PRIOR_MIN_INLIER_COUNT = 24
+"MAD 异常剔除后允许写入先验的最少帧数量。"
+BALL_PRIOR_OUTLIER_MAD_SCALE = 3.5
+"三球位置与直径联合异常距离的 MAD 倍数阈值。"
+BALL_PRIOR_OUTLIER_MIN_THRESHOLD_MM = 2.0
+"MAD 过小时使用的最小异常距离阈值，单位 mm。"
+BALL_HUE_TOLERANCE_RANGE = (3.0, 8.0)
+"标定 HSV Hue 半宽的最小值和最大值，OpenCV Hue 单位。"
+BALL_SATURATION_TOLERANCE_RANGE = (15.0, 45.0)
+"标定 HSV Saturation 半宽的最小值和最大值。"
+BALL_VALUE_TOLERANCE_RANGE = (20.0, 55.0)
+"标定 HSV Value 半宽的最小值和最大值。"
+BALL_COLOR_OUTLIER_MIN_THRESHOLDS = (2.0, 8.0, 8.0)
+"颜色帧异常剔除的 Hue、Saturation、Value 最小偏差阈值。"
+BALL_COLOR_MIN_INLIER_RATIO = 0.8
+"每个球生成精确颜色范围所需的最小颜色帧保留比例。"
 GEOMETRY_EPSILON = 1e-6
 DEPTH_VALID_MIN_MM = 1.0
 DEPTH_PERCENTILE_RANGE = (2.0, 98.0)
@@ -100,6 +121,25 @@ class CameraCalibration:
     height: int
     camera_matrix: np.ndarray
     dist_coeffs: np.ndarray
+
+
+HsvRange = tuple[int, int, int, int, int, int]
+
+
+@dataclass(frozen=True, slots=True)
+class BallPriorAggregation:
+    """30 帧三球先验鲁棒聚合结果。"""
+
+    response: BallPoseDetectionResponse
+    "使用保留帧均值重建的检测响应，debug 图像来自最后一个完整有效帧。"
+    hsv_ranges_by_color: dict[str, tuple[HsvRange, ...]]
+    "按参考颜色标签索引的标定 HSV 窄范围。"
+    observed_color_hex_by_color: dict[str, str]
+    "按参考颜色标签索引的实测平均 RGB 十六进制颜色。"
+    sample_count: int
+    "聚合前完整且不同的采样帧数量。"
+    inlier_count: int
+    "位置与直径 MAD 异常剔除后保留的帧数量。"
 
 
 def _ensure_fixed_toolset(
@@ -186,24 +226,25 @@ def _record_ball_prior(
         if ec.get("ec", 0) != 0:
             raise RuntimeError(f"读取末端位姿失败：ip={arm_ip}")
         tcp_snapshot = _pose_snapshot_from_sdk_pose(tcp_pose)
-        response = client.detect_ball(
-            BallPoseDetectionRequest(
-                request_id=1,
-                camera_name=CameraName(camera_name),
-                frame_id=-1,
-                enable_debug=True,
-                priors=tuple(priors),
-            )
+        samples, evidence_response = _capture_ball_prior_samples(
+            client=client,
+            camera_name=camera_name,
+            priors=tuple(priors),
         )
     finally:
         client.close()
         _shutdown_robot(robot, ec)
-    if response.matched_count < 3:
-        raise RuntimeError("ball pose detection returned insufficient pose result")
+    aggregation = _aggregate_ball_prior_samples(samples, evidence_response)
+    response = aggregation.response
     local_pose_transform = _build_three_ball_basis_transform(response.detections)
     if local_pose_transform is None:
         raise RuntimeError("failed to build local three-ball coordinate frame")
-    _save_ball_capture(output_dir, response, local_pose_transform, tcp_snapshot)
+    _save_ball_capture(
+        output_dir,
+        aggregation,
+        local_pose_transform,
+        tcp_snapshot,
+    )
     _print_prior_comparison(
         prior_compare_dir=prior_compare_dir,
         output_dir=output_dir,
@@ -211,18 +252,362 @@ def _record_ball_prior(
         local_pose_transform=local_pose_transform,
     )
     logger.success(
-        "三球先验已保存：frame_id={}，matched_count={}",
+        "三球先验已保存：frame_id={}，采样帧={}，保留帧={}",
         response.frame_id,
-        response.matched_count,
+        aggregation.sample_count,
+        aggregation.inlier_count,
     )
+
+
+def _capture_ball_prior_samples(
+    *,
+    client: CameraPipelineClient,
+    camera_name: str,
+    priors: tuple[BallPosePriorInfo, ...],
+) -> tuple[list[BallPoseDetectionResponse], BallPoseDetectionResponse]:
+    """收集 30 个不同且完整的三球检测帧。
+
+    采样阶段只使用参考颜色、物理直径和占位模型中心，不使用尚未形成的精确颜色与
+    相对位置先验。每个请求都必须携带 debug，完整帧的 debug overlay 用作采集证据；
+    样本列表立即去除图像载荷，避免同时持有 30 份 RGBD 图。
+    """
+
+    reference_priors = tuple(
+        replace(
+            prior,
+            model_center_mm=model_center_mm,
+            hsv_ranges=(),
+        )
+        for prior, model_center_mm in zip(
+            priors,
+            BALL_DEFAULT_MODEL_CENTERS_MM,
+            strict=True,
+        )
+    )
+    samples: list[BallPoseDetectionResponse] = []
+    seen_frame_ids: set[int] = set()
+    evidence_response: BallPoseDetectionResponse | None = None
+    for request_id in range(1, BALL_PRIOR_MAX_ATTEMPTS + 1):
+        response = client.detect_ball(
+            BallPoseDetectionRequest(
+                request_id=request_id,
+                camera_name=CameraName(camera_name),
+                frame_id=-1,
+                enable_debug=True,
+                priors=reference_priors,
+            )
+        )
+        if response.frame_id in seen_frame_ids:
+            logger.warning("三球先验跳过重复帧：frame_id={}", response.frame_id)
+            continue
+        if not _is_complete_ball_response(response):
+            logger.warning(
+                "三球先验跳过未完整检出帧：frame_id={} matched_count={}",
+                response.frame_id,
+                response.matched_count,
+            )
+            continue
+        seen_frame_ids.add(response.frame_id)
+        samples.append(replace(response, debug_artifacts=()))
+        evidence_response = response
+        logger.info(
+            "三球先验采样进度：有效帧={}/{} frame_id={}",
+            len(samples),
+            BALL_PRIOR_SAMPLE_COUNT,
+            response.frame_id,
+        )
+        if len(samples) == BALL_PRIOR_SAMPLE_COUNT:
+            break
+    if len(samples) != BALL_PRIOR_SAMPLE_COUNT or evidence_response is None:
+        raise RuntimeError(
+            "三球先验未收集到足够完整且不同的帧 "
+            f"samples={len(samples)}/{BALL_PRIOR_SAMPLE_COUNT} "
+            f"attempts={BALL_PRIOR_MAX_ATTEMPTS}"
+        )
+    return samples, evidence_response
+
+
+def _is_complete_ball_response(response: BallPoseDetectionResponse) -> bool:
+    """判断响应是否包含三球中心、直径、实测 HSV 和 debug overlay。"""
+
+    if response.matched_count != len(BALL_ORDERED_COLORS):
+        return False
+    if len(response.debug_artifacts) != 1:
+        return False
+    if np.asarray(response.debug_artifacts[0].overlay_bgr).size == 0:
+        return False
+    by_color = {item.color_hex: item for item in response.detections}
+    return all(
+        color in by_color
+        and by_color[color].detected
+        and len(by_color[color].center_mm) == 3
+        and len(by_color[color].observed_hsv) == 3
+        for color in BALL_ORDERED_COLORS
+    )
+
+
+def _aggregate_ball_prior_samples(
+    samples: list[BallPoseDetectionResponse],
+    evidence_response: BallPoseDetectionResponse,
+) -> BallPriorAggregation:
+    """对 30 帧三球位置、直径和颜色做异常剔除及均值聚合。"""
+
+    if len(samples) != BALL_PRIOR_SAMPLE_COUNT:
+        raise ValueError(
+            f"三球先验必须恰好包含 {BALL_PRIOR_SAMPLE_COUNT} 帧，实际 {len(samples)}"
+        )
+    ordered_samples = [
+        tuple(
+            next(item for item in response.detections if item.color_hex == color)
+            for color in BALL_ORDERED_COLORS
+        )
+        for response in samples
+    ]
+    features = np.asarray(
+        [
+            [
+                value
+                for detection in detections
+                for value in (*detection.center_mm, detection.diameter_mm)
+            ]
+            for detections in ordered_samples
+        ],
+        dtype=np.float64,
+    )
+    median = np.median(features, axis=0)
+    distances = np.linalg.norm(features - median.reshape(1, -1), axis=1)
+    median_distance = float(np.median(distances))
+    mad = float(np.median(np.abs(distances - median_distance)))
+    threshold = max(
+        BALL_PRIOR_OUTLIER_MIN_THRESHOLD_MM,
+        median_distance + BALL_PRIOR_OUTLIER_MAD_SCALE * mad,
+    )
+    keep_mask = distances <= threshold
+    inlier_count = int(np.count_nonzero(keep_mask))
+    if inlier_count < BALL_PRIOR_MIN_INLIER_COUNT:
+        raise RuntimeError(
+            "三球先验异常帧过多，拒绝写入 "
+            f"inliers={inlier_count}/{BALL_PRIOR_SAMPLE_COUNT} threshold_mm={threshold:.3f}"
+        )
+
+    kept_samples = [
+        detections
+        for detections, keep in zip(ordered_samples, keep_mask, strict=True)
+        if keep
+    ]
+    averaged_detections: list[BallDetectionInfo] = []
+    hsv_ranges_by_color: dict[str, tuple[HsvRange, ...]] = {}
+    observed_color_hex_by_color: dict[str, str] = {}
+    for color_index, color_hex in enumerate(BALL_ORDERED_COLORS):
+        detections = [items[color_index] for items in kept_samples]
+        hsv_values = np.asarray(
+            [item.observed_hsv for item in detections],
+            dtype=np.float64,
+        )
+        observed_hsv, hsv_ranges = _aggregate_hsv_prior(hsv_values)
+        template = detections[-1]
+        averaged_detections.append(
+            replace(
+                template,
+                center_px=_mean_tuple(item.center_px for item in detections),
+                center_mm=_mean_tuple(item.center_mm for item in detections),
+                diameter_mm=float(
+                    np.mean([item.diameter_mm for item in detections])
+                ),
+                radius_px=float(np.mean([item.radius_px for item in detections])),
+                center_norm=_mean_tuple(
+                    item.center_norm for item in detections
+                ),
+                radius_norm=float(
+                    np.mean([item.radius_norm for item in detections])
+                ),
+                point_count=int(
+                    round(np.mean([item.point_count for item in detections]))
+                ),
+                observed_hsv=observed_hsv,
+            )
+        )
+        hsv_ranges_by_color[color_hex] = hsv_ranges
+        observed_color_hex_by_color[color_hex] = _hsv_to_hex(observed_hsv)
+
+    averaged_tuple = tuple(averaged_detections)
+    debug_artifacts = evidence_response.debug_artifacts
+    if debug_artifacts:
+        debug_artifacts = (
+            replace(debug_artifacts[0], detections=averaged_tuple),
+        )
+    averaged_response = replace(
+        evidence_response,
+        elapsed_ms=float(np.mean([item.elapsed_ms for item in samples])),
+        matched_count=len(averaged_tuple),
+        detections=averaged_tuple,
+        debug_artifacts=debug_artifacts,
+    )
+    logger.info(
+        "三球先验异常剔除完成：采样帧={} 保留帧={} 剔除帧={} threshold_mm={:.3f}",
+        len(samples),
+        inlier_count,
+        len(samples) - inlier_count,
+        threshold,
+    )
+    return BallPriorAggregation(
+        response=averaged_response,
+        hsv_ranges_by_color=hsv_ranges_by_color,
+        observed_color_hex_by_color=observed_color_hex_by_color,
+        sample_count=len(samples),
+        inlier_count=inlier_count,
+    )
+
+
+def _mean_tuple(values: Iterable[tuple[float, ...]]) -> tuple[float, ...]:
+    """对等长数值元组求逐项均值。"""
+
+    array = np.asarray(list(values), dtype=np.float64)
+    return tuple(float(value) for value in np.mean(array, axis=0))
+
+
+def _aggregate_hsv_prior(
+    hsv_values: np.ndarray,
+) -> tuple[tuple[float, float, float], tuple[HsvRange, ...]]:
+    """聚合多帧 HSV 中心并生成支持 Hue 环绕的窄范围。"""
+
+    values = np.asarray(hsv_values, dtype=np.float64).reshape(-1, 3)
+    initial_hue = _circular_hue_mean(values[:, 0])
+    initial_center = np.asarray(
+        [
+            initial_hue,
+            float(np.median(values[:, 1])),
+            float(np.median(values[:, 2])),
+        ],
+        dtype=np.float64,
+    )
+    deviations = np.column_stack(
+        [
+            np.abs(
+                ((values[:, 0] - initial_center[0] + 90.0) % 180.0) - 90.0
+            ),
+            np.abs(values[:, 1] - initial_center[1]),
+            np.abs(values[:, 2] - initial_center[2]),
+        ]
+    )
+    median_deviations = np.median(deviations, axis=0)
+    deviation_mad = np.median(
+        np.abs(deviations - median_deviations.reshape(1, 3)),
+        axis=0,
+    )
+    thresholds = np.maximum(
+        np.asarray(BALL_COLOR_OUTLIER_MIN_THRESHOLDS, dtype=np.float64),
+        median_deviations + BALL_PRIOR_OUTLIER_MAD_SCALE * deviation_mad,
+    )
+    keep_mask = np.all(deviations <= thresholds.reshape(1, 3), axis=1)
+    color_inlier_count = int(np.count_nonzero(keep_mask))
+    minimum_color_inliers = int(
+        np.ceil(values.shape[0] * BALL_COLOR_MIN_INLIER_RATIO)
+    )
+    if color_inlier_count < minimum_color_inliers:
+        raise RuntimeError(
+            "小球颜色异常帧过多，拒绝生成精确 HSV 范围 "
+            f"inliers={color_inlier_count}/{values.shape[0]}"
+        )
+    values = values[keep_mask]
+    hue = _circular_hue_mean(values[:, 0])
+    saturation = float(np.mean(values[:, 1]))
+    value = float(np.mean(values[:, 2]))
+    hue_deviation = np.abs(((values[:, 0] - hue + 90.0) % 180.0) - 90.0)
+    hue_tolerance = float(
+        np.clip(
+            np.quantile(hue_deviation, 0.90) + 2.0,
+            *BALL_HUE_TOLERANCE_RANGE,
+        )
+    )
+    saturation_tolerance = float(
+        np.clip(
+            np.quantile(np.abs(values[:, 1] - saturation), 0.90) + 8.0,
+            *BALL_SATURATION_TOLERANCE_RANGE,
+        )
+    )
+    value_tolerance = float(
+        np.clip(
+            np.quantile(np.abs(values[:, 2] - value), 0.90) + 10.0,
+            *BALL_VALUE_TOLERANCE_RANGE,
+        )
+    )
+    hsv_center = (hue, saturation, value)
+    return hsv_center, _build_hsv_ranges(
+        hsv_center,
+        (hue_tolerance, saturation_tolerance, value_tolerance),
+    )
+
+
+def _circular_hue_mean(hue_values: np.ndarray) -> float:
+    """计算 OpenCV Hue 周期为 180 的圆均值。"""
+
+    hue_angles = np.asarray(hue_values, dtype=np.float64) * (
+        2.0 * np.pi / 180.0
+    )
+    hue_angle = np.arctan2(
+        np.mean(np.sin(hue_angles)),
+        np.mean(np.cos(hue_angles)),
+    )
+    return float(
+        (hue_angle % (2.0 * np.pi)) * 180.0 / (2.0 * np.pi)
+    )
+
+
+def _build_hsv_ranges(
+    hsv_center: tuple[float, float, float],
+    tolerances: tuple[float, float, float],
+) -> tuple[HsvRange, ...]:
+    """将 HSV 中心和半宽转换成 OpenCV 范围，必要时拆分 Hue 首尾。"""
+
+    hue, saturation, value = hsv_center
+    hue_tolerance, saturation_tolerance, value_tolerance = tolerances
+    saturation_min = int(np.clip(np.floor(saturation - saturation_tolerance), 0, 255))
+    saturation_max = int(np.clip(np.ceil(saturation + saturation_tolerance), 0, 255))
+    value_min = int(np.clip(np.floor(value - value_tolerance), 0, 255))
+    value_max = int(np.clip(np.ceil(value + value_tolerance), 0, 255))
+    hue_min = hue - hue_tolerance
+    hue_max = hue + hue_tolerance
+    if hue_min < 0.0:
+        return (
+            (0, saturation_min, value_min, int(np.ceil(hue_max)), saturation_max, value_max),
+            (int(np.floor(180.0 + hue_min)), saturation_min, value_min, 179, saturation_max, value_max),
+        )
+    if hue_max > 179.0:
+        return (
+            (0, saturation_min, value_min, int(np.ceil(hue_max - 180.0)), saturation_max, value_max),
+            (int(np.floor(hue_min)), saturation_min, value_min, 179, saturation_max, value_max),
+        )
+    return (
+        (
+            int(np.floor(hue_min)),
+            saturation_min,
+            value_min,
+            int(np.ceil(hue_max)),
+            saturation_max,
+            value_max,
+        ),
+    )
+
+
+def _hsv_to_hex(hsv: tuple[float, float, float]) -> str:
+    """将 OpenCV HSV 中心转换为便于人工查看的 RGB 十六进制颜色。"""
+
+    pixel_hsv = np.asarray(
+        [[[round(hsv[0]) % 180, round(hsv[1]), round(hsv[2])]]],
+        dtype=np.uint8,
+    )
+    blue, green, red = cv2.cvtColor(pixel_hsv, cv2.COLOR_HSV2BGR)[0, 0]
+    return f"#{int(red):02x}{int(green):02x}{int(blue):02x}"
 
 
 def _save_ball_capture(
     output_dir: Path,
-    response: BallPoseDetectionResponse,
+    aggregation: BallPriorAggregation,
     local_pose_transform: np.ndarray,
     tcp_snapshot: PoseSnapshot,
 ) -> None:
+    response = aggregation.response
     local_pose_xyzrpy = _matrix_to_xyzrpy(local_pose_transform)
     local_overlay_bgr = _build_local_pose_overlay(response, local_pose_transform, local_pose_xyzrpy)
     payload = {
@@ -241,7 +626,19 @@ def _save_ball_capture(
             "pitch_deg": float(local_pose_xyzrpy[4]),
             "yaw_deg": float(local_pose_xyzrpy[5]),
         },
-        "detections": [_serialize_detection(item) for item in response.detections],
+        "sample_count": aggregation.sample_count,
+        "inlier_count": aggregation.inlier_count,
+        "outlier_count": aggregation.sample_count - aggregation.inlier_count,
+        "detections": [
+            _serialize_detection(
+                item,
+                hsv_ranges=aggregation.hsv_ranges_by_color[item.color_hex],
+                observed_color_hex=aggregation.observed_color_hex_by_color[
+                    item.color_hex
+                ],
+            )
+            for item in response.detections
+        ],
         "tcp_pose_matrix": tcp_snapshot.pose_matrix.tolist(),
         "tcp_translation_mm": list(tcp_snapshot.translation_mm),
         "tcp_rpy_degrees": list(tcp_snapshot.rpy_deg),
@@ -252,36 +649,64 @@ def _save_ball_capture(
         },
         "debug": _serialize_debug(response.debug_artifacts),
     }
+    debug = _get_debug_artifact(response)
+    if debug is None:
+        raise RuntimeError("三球先验响应缺少 debug 产物，拒绝保存先验")
+    if local_overlay_bgr is None:
+        raise RuntimeError("三球先验无法构造本地坐标系 overlay，拒绝保存先验")
+    _save_required_image(
+        output_dir / "ball_color_bgr.jpg",
+        np.asarray(debug.color_bgr, dtype=np.uint8),
+    )
+    _save_required_image(
+        output_dir / "ball_depth.jpg",
+        _build_depth_view(np.asarray(debug.depth_mm)),
+    )
+    _save_required_image(
+        output_dir / "ball_debug_overlay.jpg",
+        np.asarray(debug.overlay_bgr, dtype=np.uint8),
+    )
+    _save_required_image(
+        output_dir / "ball_detection_overlay.jpg",
+        np.asarray(debug.detection_overlay_bgr, dtype=np.uint8),
+    )
+    _save_required_image(output_dir / "ball_pose_overlay.jpg", local_overlay_bgr)
     (output_dir / "ball_pose_prior.json").write_text(
         json.dumps(payload, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
-    debug = _get_debug_artifact(response)
-    if debug is not None:
-        cv2.imwrite(str(output_dir / "ball_color_bgr.jpg"), np.asarray(debug.color_bgr, dtype=np.uint8))
-        cv2.imwrite(str(output_dir / "ball_depth.jpg"), _build_depth_view(np.asarray(debug.depth_mm)))
-    if local_overlay_bgr is not None:
-        cv2.imwrite(str(output_dir / "ball_pose_overlay.jpg"), local_overlay_bgr)
-    if debug is not None:
-        cv2.imwrite(
-            str(output_dir / "ball_detection_overlay.jpg"),
-            np.asarray(debug.detection_overlay_bgr, dtype=np.uint8),
-        )
 
 
-def _serialize_detection(item: BallDetectionInfo) -> dict[str, Any]:
-    return {
+def _save_required_image(path: Path, image: np.ndarray) -> None:
+    """保存必须存在的先验核验图，失败时阻止先验 JSON 生效。"""
+
+    if image.size == 0 or not cv2.imwrite(str(path), image):
+        raise RuntimeError(f"先验核验图片保存失败：{path}")
+
+
+def _serialize_detection(
+    item: BallDetectionInfo,
+    *,
+    hsv_ranges: tuple[HsvRange, ...] = (),
+    observed_color_hex: str = "",
+) -> dict[str, Any]:
+    payload = {
         "color_hex": item.color_hex,
         "detected": item.detected,
         "center_px": list(item.center_px),
         "center_mm": list(item.center_mm),
-        "radius_mm": item.radius_mm,
+        "diameter_mm": item.diameter_mm,
         "radius_px": item.radius_px,
         "center_norm": list(item.center_norm),
         "radius_norm": item.radius_norm,
         "point_count": item.point_count,
         "status": item.status,
+        "observed_hsv": list(item.observed_hsv),
     }
+    if hsv_ranges:
+        payload["hsv_ranges"] = [list(item) for item in hsv_ranges]
+        payload["observed_color_hex"] = observed_color_hex
+    return payload
 
 
 def _serialize_debug(
@@ -304,55 +729,142 @@ def _get_debug_artifact(
     return response.debug_artifacts[0]
 
 
-def _build_priors_from_capture(captured: dict[str, Any]) -> list[BallPosePriorInfo]:
-    recorded_balls = captured.get("balls", {}).get("ballinfo", [])
+def _build_priors_from_capture(
+    captured: dict[str, Any],
+    *,
+    require_recorded_prior: bool = False,
+) -> list[BallPosePriorInfo]:
+    """从采集文件构造三球先验；业务检测可要求完整相对位置和精确颜色。"""
+
+    if require_recorded_prior:
+        sample_count = captured.get("sample_count")
+        inlier_count = captured.get("inlier_count")
+        if sample_count != BALL_PRIOR_SAMPLE_COUNT:
+            raise ValueError(
+                "三球先验不是完整 30 帧记录："
+                f"sample_count={sample_count!r}"
+            )
+        if not isinstance(inlier_count, int) or inlier_count < BALL_PRIOR_MIN_INLIER_COUNT:
+            raise ValueError(
+                "三球先验有效帧不足："
+                f"inlier_count={inlier_count!r} "
+                f"required={BALL_PRIOR_MIN_INLIER_COUNT}"
+            )
+    balls = captured.get("balls")
+    recorded_balls = balls.get("ballinfo", []) if isinstance(balls, dict) else []
     if not isinstance(recorded_balls, list) or len(recorded_balls) < 3:
-        return _default_priors()
+        recorded_balls = captured.get("detections", [])
+    if not isinstance(recorded_balls, list) or len(recorded_balls) < 3:
+        return _invalid_or_default_priors(
+            require_recorded_prior,
+            "三球先验缺少三个检测条目",
+        )
     lookup = {str(item.get("color_hex")): item for item in recorded_balls if isinstance(item, dict)}
     yellow_item = lookup.get(BALL_ORDERED_COLORS[0])
     red_item = lookup.get(BALL_ORDERED_COLORS[1])
     purple_item = lookup.get(BALL_ORDERED_COLORS[2])
     if yellow_item is None or red_item is None or purple_item is None:
-        return _default_priors()
+        return _invalid_or_default_priors(
+            require_recorded_prior,
+            "三球先验缺少黄、红、紫固定颜色条目",
+        )
     ordered = (yellow_item, red_item, purple_item)
-    origin = np.asarray(ordered[0].get("position_camera_mm"), dtype=np.float64)
-    second = np.asarray(ordered[1].get("position_camera_mm"), dtype=np.float64)
-    third = np.asarray(ordered[2].get("position_camera_mm"), dtype=np.float64)
+    origin = _prior_center_mm(ordered[0])
+    second = _prior_center_mm(ordered[1])
+    third = _prior_center_mm(ordered[2])
     if origin.shape != (3,) or second.shape != (3,) or third.shape != (3,):
-        return _default_priors()
+        return _invalid_or_default_priors(
+            require_recorded_prior,
+            "三球先验球心维度无效",
+        )
     if not np.all(np.isfinite(origin)) or not np.all(np.isfinite(second)) or not np.all(np.isfinite(third)):
-        return _default_priors()
+        return _invalid_or_default_priors(
+            require_recorded_prior,
+            "三球先验球心包含非有限值",
+        )
     x_axis = second - origin
     x_norm = float(np.linalg.norm(x_axis))
     if x_norm <= GEOMETRY_EPSILON:
-        return _default_priors()
+        return _invalid_or_default_priors(require_recorded_prior, "三球先验 X 轴退化")
     x_axis = x_axis / x_norm
     plane_hint = third - origin
     z_axis = np.cross(x_axis, plane_hint)
     z_norm = float(np.linalg.norm(z_axis))
     if z_norm <= GEOMETRY_EPSILON:
-        return _default_priors()
+        return _invalid_or_default_priors(require_recorded_prior, "三球先验平面退化")
     z_axis = z_axis / z_norm
     y_axis = np.cross(z_axis, x_axis)
     y_norm = float(np.linalg.norm(y_axis))
     if y_norm <= GEOMETRY_EPSILON:
-        return _default_priors()
+        return _invalid_or_default_priors(require_recorded_prior, "三球先验 Y 轴退化")
     y_axis = y_axis / y_norm
     basis = np.stack([x_axis, y_axis, z_axis], axis=1)
     priors: list[BallPosePriorInfo] = []
     for item, color_hex in zip(ordered, BALL_ORDERED_COLORS, strict=True):
-        position = np.asarray(item.get("position_camera_mm"), dtype=np.float64)
+        position = _prior_center_mm(item)
         if position.shape != (3,) or not np.all(np.isfinite(position)):
-            return _default_priors()
+            return _invalid_or_default_priors(
+                require_recorded_prior,
+                f"三球先验球心无效：color={color_hex}",
+            )
+        hsv_ranges = _parse_recorded_hsv_ranges(item.get("hsv_ranges"))
+        if require_recorded_prior and not hsv_ranges:
+            raise ValueError(f"三球先验缺少精确 HSV 范围：color={color_hex}")
         model_center = basis.T @ (position - origin)
         priors.append(
             BallPosePriorInfo(
                 color_hex=color_hex,
-                radius_mm=float(item.get("radius_mm", BALL_DEFAULT_RADIUS_MM)),
+                diameter_mm=float(
+                    item.get("diameter_mm", BALL_DEFAULT_DIAMETER_MM)
+                ),
                 model_center_mm=tuple(model_center.tolist()),
+                hsv_ranges=hsv_ranges,
             )
         )
     return priors
+
+
+def _prior_center_mm(item: dict[str, Any]) -> np.ndarray:
+    """读取旧采集摘要或当前先验文件中的相机系球心。"""
+
+    return np.asarray(
+        item.get("position_camera_mm", item.get("center_mm")),
+        dtype=np.float64,
+    )
+
+
+def _parse_recorded_hsv_ranges(value: object) -> tuple[HsvRange, ...]:
+    """读取先验文件中已经过聚合的每球 HSV 窄范围。"""
+
+    if not isinstance(value, list):
+        return ()
+    ranges: list[HsvRange] = []
+    for item in value:
+        if not isinstance(item, list) or len(item) != 6:
+            return ()
+        try:
+            hsv_range: HsvRange = tuple(int(number) for number in item)  # type: ignore[assignment]
+        except (TypeError, ValueError):
+            return ()
+        if not (
+            0 <= hsv_range[0] <= hsv_range[3] <= 179
+            and 0 <= hsv_range[1] <= hsv_range[4] <= 255
+            and 0 <= hsv_range[2] <= hsv_range[5] <= 255
+        ):
+            return ()
+        ranges.append(hsv_range)
+    return tuple(ranges)
+
+
+def _invalid_or_default_priors(
+    require_recorded_prior: bool,
+    message: str,
+) -> list[BallPosePriorInfo]:
+    """先验采集允许使用占位模型；业务检测必须显式暴露先验错误。"""
+
+    if require_recorded_prior:
+        raise ValueError(message)
+    return _default_priors()
 
 
 def _load_prior_capture(prior_capture_path: Path) -> dict[str, Any]:
@@ -460,7 +972,7 @@ def _default_priors() -> list[BallPosePriorInfo]:
     return [
         BallPosePriorInfo(
             color_hex=color_hex,
-            radius_mm=BALL_DEFAULT_RADIUS_MM,
+            diameter_mm=BALL_DEFAULT_DIAMETER_MM,
             model_center_mm=model_center_mm,
         )
         for color_hex, model_center_mm in zip(

@@ -29,7 +29,10 @@
 
 ## 算法流程
 
-1. BGR 转灰度，先按 OpenCV 标准流程执行 marker 检测和 ChArUco 插值。
+1. BGR 转灰度，将当前帧内参与畸变参数写入
+   `cv2.aruco.CharucoDetector`，再通过 `detectBoard()` 一次完成 marker 检测和
+   ChArUco 角点插值；不再调用已废弃且部分 Linux wheel 未导出的
+   `interpolateCornersCharuco()`。
 2. 原始灰度角点足够且 PnP 成功时直接返回，不运行增强分支。
 3. 位姿失败时，额外执行 CLAHE 和轻量 unsharp；原始分支结果不会重复计算。
 4. 汇总 none、CLAHE、unsharp 三条分支。相同 ID 的像素坐标逐维取中位数，

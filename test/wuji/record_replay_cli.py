@@ -15,6 +15,7 @@ from datetime import datetime
 from pathlib import Path
 
 import numpy as np
+import zmq
 from loguru import logger
 from qmlinker import create_channel
 from scipy.spatial.transform import Rotation
@@ -55,12 +56,15 @@ from test.wuji.prior_record import (
     _load_prior_capture,
 )
 from test.wuji.xcoresdk_arm_cli_test import (
+    ARM_SSH_FORWARD_PORTS,
     DEFAULT_JOINT_ZONE,
     DEFAULT_TOOL_NAME,
     DEFAULT_WOBJ_NAME,
+    LEFT_ARM_CONTROLLER_IP,
     LEFT_ARM_IP,
     M11_ROOT_ACTUATOR_IDS,
     M11_TIP_ACTUATOR_IDS,
+    RIGHT_ARM_CONTROLLER_IP,
     RIGHT_ARM_IP,
     ConnectedArm,
     DahuanGripperClient,
@@ -129,6 +133,15 @@ SHARED_TUNNEL_AGV_PORT = DEFAULT_PORT + 1
 
 SHARED_TUNNEL_READY_TIMEOUT_S = 5.0
 "等待共享 SSH 隧道全部本地端口就绪的超时时间，单位 s。"
+
+GRIPPER_CALIBRATION_WAIT_S = 3.0
+"夹爪校准命令发出后的固定等待时间，单位 s。"
+
+GRIPPER_ZERO_POSITION = 0
+"未校准夹爪完成校准后必须到达的初始位置。"
+
+GRIPPER_ZERO_POLL_INTERVAL_S = 0.2
+"等待夹爪运动到初始位置的状态轮询间隔，单位 s。"
 
 DEFAULT_MAX_FILES: int | None = None
 "默认加载的 CSV 文件数量；`None` 表示全部。"
@@ -240,13 +253,24 @@ CHARUCO_DETECTION_SERVICE_ADDR = DEFAULT_BALL_POSE_SERVICE_ADDR
 "头部 ChArUco 检测使用的 camera_pipeline 服务地址。"
 
 CHARUCO_DETECTION_CAMERA_TIMEOUT_S = 10.0
-"头部相机内参与彩色流请求超时时间，单位 s。"
+"头部相机每次等待稳定帧的超时时间，单位 s。"
 
-CHARUCO_DETECTION_MAX_FRAME_COUNT = 300
+CHARUCO_DETECTION_MAX_FRAME_COUNT = 5
 "单次 ChArUco offset 计算最多检查的头部相机帧数。"
 
 CHARUCO_DETECTION_MIN_CORNERS = DEFAULT_MIN_CHARUCO_CORNERS
 "目标板位姿检测要求的最少 ChArUco 角点数量。"
+
+CHARUCO_DETECTION_RPC_TIMEOUT_S = (
+    CHARUCO_DETECTION_CAMERA_TIMEOUT_S * CHARUCO_DETECTION_MAX_FRAME_COUNT + 5.0
+)
+"ChArUco RPC 接收超时时间，覆盖服务端完整稳定帧检测窗口，单位 s。"
+
+CHARUCO_DETECTION_TIMEOUT_RETRY_COUNT = 3
+"ChArUco RPC 发生 ZMQ 超时时的最大请求次数。"
+
+CHARUCO_DETECTION_TIMEOUT_RETRY_DELAY_S = 1.0
+"ChArUco RPC 超时后的重试间隔，单位 s。"
 
 OFFSET_BALL_OUTLIER_MAD_SCALE = 3.5
 "三球 9 维坐标鲁棒剔除的 MAD 倍数阈值。"
@@ -353,7 +377,7 @@ class ReplayRuntime:
 
 @dataclass(slots=True)
 class ReplaySharedTunnelGroup:
-    """持有 AGV、gripper、M11/body 共用的单一 SSH 隧道及三个 channel。"""
+    """持有双臂、AGV、gripper、M11/body 共用的单一 SSH 隧道及三个 channel。"""
 
     process: subprocess.Popen[bytes]
     gripper_channel: object
@@ -784,12 +808,20 @@ def _build_csv_execution_plans(
 
 
 def _create_replay_shared_tunnel_group() -> ReplaySharedTunnelGroup:
-    """创建同时承载 AGV、gripper 与 M11/body 的单一 SSH 隧道。"""
+    """创建同时承载双臂、AGV、gripper 与 M11/body 的单一 SSH 隧道。"""
 
     forwards = (
-        (SHARED_TUNNEL_BODY_PORT, WUYOU_QMLINKER_HOST, DEFAULT_PORT),
-        (SHARED_TUNNEL_GRIPPER_PORT, WUYOU_QMLINKER_HOST, GRIPPER_PORT),
-        (SHARED_TUNNEL_AGV_PORT, AGV_HOST, DEFAULT_PORT),
+        ("127.0.0.1", SHARED_TUNNEL_BODY_PORT, WUYOU_QMLINKER_HOST, DEFAULT_PORT),
+        ("127.0.0.1", SHARED_TUNNEL_GRIPPER_PORT, WUYOU_QMLINKER_HOST, GRIPPER_PORT),
+        ("127.0.0.1", SHARED_TUNNEL_AGV_PORT, AGV_HOST, DEFAULT_PORT),
+        *(
+            (local_ip, port, controller_ip, port)
+            for local_ip, controller_ip in (
+                (LEFT_ARM_IP, LEFT_ARM_CONTROLLER_IP),
+                (RIGHT_ARM_IP, RIGHT_ARM_CONTROLLER_IP),
+            )
+            for port in ARM_SSH_FORWARD_PORTS
+        ),
     )
     command = [
         "ssh",
@@ -803,11 +835,14 @@ def _create_replay_shared_tunnel_group() -> ReplaySharedTunnelGroup:
         "TCPKeepAlive=yes",
         "-N",
     ]
-    for local_port, remote_host, remote_port in forwards:
-        command.extend(("-L", f"127.0.0.1:{local_port}:{remote_host}:{remote_port}"))
+    for local_host, local_port, remote_host, remote_port in forwards:
+        command.extend(("-L", f"{local_host}:{local_port}:{remote_host}:{remote_port}"))
     command.append(SSH_ALIAS)
     logger.info(
-        "启动共享 SSH 隧道 body/m11={} gripper={} agv={} alias={}",
+        "启动共享 SSH 隧道 left_arm={} right_arm={} arm_ports={} body/m11={} gripper={} agv={} alias={}",
+        LEFT_ARM_CONTROLLER_IP,
+        RIGHT_ARM_CONTROLLER_IP,
+        ARM_SSH_FORWARD_PORTS,
         SHARED_TUNNEL_BODY_PORT,
         SHARED_TUNNEL_GRIPPER_PORT,
         SHARED_TUNNEL_AGV_PORT,
@@ -815,7 +850,10 @@ def _create_replay_shared_tunnel_group() -> ReplaySharedTunnelGroup:
     )
     process = subprocess.Popen(command, stderr=subprocess.PIPE)
     try:
-        _wait_for_replay_shared_tunnel(process, tuple(local_port for local_port, _, _ in forwards))
+        _wait_for_replay_shared_tunnel(
+            process,
+            tuple((local_host, local_port) for local_host, local_port, _, _ in forwards),
+        )
         return ReplaySharedTunnelGroup(
             process=process,
             gripper_channel=create_channel(f"127.0.0.1:{SHARED_TUNNEL_GRIPPER_PORT}"),
@@ -829,27 +867,27 @@ def _create_replay_shared_tunnel_group() -> ReplaySharedTunnelGroup:
 
 def _wait_for_replay_shared_tunnel(
     process: subprocess.Popen[bytes],
-    local_ports: tuple[int, ...],
+    local_endpoints: tuple[tuple[str, int], ...],
 ) -> None:
-    """等待共享 SSH 隧道的全部本地端口可连接。"""
+    """等待共享 SSH 隧道的全部本地地址与端口可连接。"""
 
     deadline = time.monotonic() + SHARED_TUNNEL_READY_TIMEOUT_S
-    pending_ports = set(local_ports)
-    while pending_ports and time.monotonic() < deadline:
+    pending_endpoints = set(local_endpoints)
+    while pending_endpoints and time.monotonic() < deadline:
         if process.poll() is not None:
             stderr = b"" if process.stderr is None else process.stderr.read()
             error_text = stderr.decode("utf-8", errors="replace").strip()
             raise RuntimeError(f"共享 SSH 隧道提前退出：{error_text or '无错误信息'}")
-        for local_port in tuple(pending_ports):
+        for local_host, local_port in tuple(pending_endpoints):
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
                 sock.settimeout(0.2)
-                if sock.connect_ex(("127.0.0.1", local_port)) == 0:
-                    pending_ports.remove(local_port)
-        if pending_ports:
+                if sock.connect_ex((local_host, local_port)) == 0:
+                    pending_endpoints.remove((local_host, local_port))
+        if pending_endpoints:
             time.sleep(0.1)
-    if pending_ports:
-        ports_text = ", ".join(str(port) for port in sorted(pending_ports))
-        raise RuntimeError(f"共享 SSH 隧道端口未就绪：127.0.0.1:{ports_text}")
+    if pending_endpoints:
+        endpoints_text = ", ".join(f"{host}:{port}" for host, port in sorted(pending_endpoints))
+        raise RuntimeError(f"共享 SSH 隧道地址未就绪：{endpoints_text}")
 
 
 def _navigate_agv_before_replay(tunnel_group: ReplaySharedTunnelGroup) -> None:
@@ -935,6 +973,51 @@ def _create_runtime(arm_side: str, tunnel_group: ReplaySharedTunnelGroup) -> Rep
     else:
         runtime.right_hand = WujiRightHandClient(hand_channel)
     return runtime
+
+
+def _prepare_gripper_before_replay(gripper: DahuanGripperClient) -> None:
+    """检查夹爪校准状态，必要时校准并回到初始位置。"""
+
+    status = gripper.get_status()
+    logger.info(
+        "回放前夹爪状态 calibrated={} position={}",
+        bool(status.calibrated),
+        status.position,
+    )
+    ready_status = status
+    if bool(status.calibrated):
+        logger.success("夹爪已校准，继续确认回放前位置")
+    else:
+        logger.warning("夹爪尚未校准，开始执行回放前校准")
+        if not gripper.calibrate():
+            raise RuntimeError("回放前夹爪校准命令下发失败")
+        logger.info("夹爪校准命令已发出，等待 {:.1f} s", GRIPPER_CALIBRATION_WAIT_S)
+        time.sleep(GRIPPER_CALIBRATION_WAIT_S)
+
+        ready_status = gripper.get_status()
+        if not bool(ready_status.calibrated):
+            raise RuntimeError("夹爪校准命令发出并等待 3 s 后仍未进入已校准状态")
+
+    current_position = int(ready_status.position or 0)
+    command_count = 0
+    while current_position != GRIPPER_ZERO_POSITION:
+        command_count += 1
+        if not gripper.set_pos(GRIPPER_ZERO_POSITION):
+            raise RuntimeError("回放前夹爪运动到位置 0 的命令下发失败")
+        logger.info(
+            "持续下发夹爪回零命令 count={} current_position={} target_position={}",
+            command_count,
+            current_position,
+            GRIPPER_ZERO_POSITION,
+        )
+        time.sleep(GRIPPER_ZERO_POLL_INTERVAL_S)
+        current_status = gripper.get_status()
+        current_position = int(current_status.position or 0)
+    logger.success(
+        "夹爪回放前状态已就绪 calibrated=True position={} command_count={}",
+        GRIPPER_ZERO_POSITION,
+        command_count,
+    )
 
 
 def _prepare_runtime(runtime: ReplayRuntime) -> None:
@@ -1261,8 +1344,14 @@ def _detect_current_three_ball_basis_transform(
     检测服务返回的 `center_mm` 单位是 `mm`；本函数最终返回矩阵平移统一为 `m`。
     """
 
+    debug_overlay_path = prior_capture_path.with_name("ball_debug_overlay.jpg")
+    if not debug_overlay_path.is_file():
+        raise FileNotFoundError(f"三球先验缺少 debug overlay：{debug_overlay_path}")
     prior_capture = _load_prior_capture(prior_capture_path)
-    priors = _build_priors_from_capture(prior_capture)
+    priors = _build_priors_from_capture(
+        prior_capture,
+        require_recorded_prior=True,
+    )
     samples_mm: list[np.ndarray] = []
     frame_ids: list[int] = []
     client = CameraPipelineClient(
@@ -1562,23 +1651,46 @@ def _set_head_charuco_detection_pose(head: WujiHeadClient) -> None:
 def _detect_current_camera_board_transform_m(head_channel: object) -> np.ndarray:
     client = CameraPipelineClient(
         service_addr=CHARUCO_DETECTION_SERVICE_ADDR,
-        timeout_ms=int(CHARUCO_DETECTION_CAMERA_TIMEOUT_S * 1000.0),
+        timeout_ms=int(CHARUCO_DETECTION_RPC_TIMEOUT_S * 1000.0),
     )
     try:
         _set_head_charuco_detection_pose(WujiHeadClient(head_channel))
-        response = client.detect_charuco(
-            CharucoDetectionRequest(
-                camera_name=CameraName(DEFAULT_HEAD_CAMERA_NAME),
-                dictionary_name=DEFAULT_DICTIONARY_NAME,
-                squares_x=DEFAULT_SQUARES_X,
-                squares_y=DEFAULT_SQUARES_Y,
-                square_length_mm=float(DEFAULT_SQUARE_LENGTH_MM),
-                marker_length_mm=float(DEFAULT_MARKER_LENGTH_MM),
-                min_charuco_corners=CHARUCO_DETECTION_MIN_CORNERS,
-                max_frames=CHARUCO_DETECTION_MAX_FRAME_COUNT,
-                stable_timeout_s=CHARUCO_DETECTION_CAMERA_TIMEOUT_S,
-            )
+        request = CharucoDetectionRequest(
+            camera_name=CameraName(DEFAULT_HEAD_CAMERA_NAME),
+            dictionary_name=DEFAULT_DICTIONARY_NAME,
+            squares_x=DEFAULT_SQUARES_X,
+            squares_y=DEFAULT_SQUARES_Y,
+            square_length_mm=float(DEFAULT_SQUARE_LENGTH_MM),
+            marker_length_mm=float(DEFAULT_MARKER_LENGTH_MM),
+            min_charuco_corners=CHARUCO_DETECTION_MIN_CORNERS,
+            max_frames=CHARUCO_DETECTION_MAX_FRAME_COUNT,
+            stable_timeout_s=CHARUCO_DETECTION_CAMERA_TIMEOUT_S,
         )
+        response = None
+        last_timeout: zmq.Again | None = None
+        for attempt in range(1, CHARUCO_DETECTION_TIMEOUT_RETRY_COUNT + 1):
+            try:
+                response = client.detect_charuco(request)
+                break
+            except zmq.Again as exc:
+                last_timeout = exc
+                if attempt == CHARUCO_DETECTION_TIMEOUT_RETRY_COUNT:
+                    break
+                logger.warning(
+                    "ChArUco RPC 接收超时，等待后重试 attempt={}/{} "
+                    "rpc_timeout={:.1f}s delay={:.1f}s",
+                    attempt,
+                    CHARUCO_DETECTION_TIMEOUT_RETRY_COUNT,
+                    CHARUCO_DETECTION_RPC_TIMEOUT_S,
+                    CHARUCO_DETECTION_TIMEOUT_RETRY_DELAY_S,
+                )
+                time.sleep(CHARUCO_DETECTION_TIMEOUT_RETRY_DELAY_S)
+        if response is None:
+            raise TimeoutError(
+                "ChArUco RPC 连续超时 "
+                f"attempts={CHARUCO_DETECTION_TIMEOUT_RETRY_COUNT} "
+                f"timeout={CHARUCO_DETECTION_RPC_TIMEOUT_S:.1f}s"
+            ) from last_timeout
         if response.status == "detected" and len(response.t_cam_board_mm) == 4:
             matrix_m = np.asarray(response.t_cam_board_mm, dtype=np.float64).reshape(4, 4)
             matrix_m = matrix_m.copy()
@@ -1598,12 +1710,14 @@ def _detect_current_camera_board_transform_m(head_channel: object) -> np.ndarray
 
 def _calculate_charuco_cartesian_offset(
     runtime: ReplayRuntime,
+    current_camera_board_m: np.ndarray,
     context_label: str,
 ) -> tuple[tuple[float, float, float, float], ...]:
+    if runtime.charuco_cartesian_offset is not None:
+        raise RuntimeError(f"{runtime.connected_arm.arm_side} 臂本轮 ChArUco offset 已计算，拒绝重复覆盖")
     arm_side = runtime.connected_arm.arm_side
     base_camera_m = _load_head_base_camera_transform_m(arm_side)
     prior_camera_board_m = _load_prior_camera_board_transform_m()
-    current_camera_board_m = _detect_current_camera_board_transform_m(runtime.body_channel)
     prior_base_board_m = base_camera_m @ prior_camera_board_m
     current_base_board_m = base_camera_m @ current_camera_board_m
     offset_matrix_m = current_base_board_m @ np.linalg.inv(prior_base_board_m)
@@ -1623,6 +1737,27 @@ def _calculate_charuco_cartesian_offset(
     logger.info("{}", _format_matrix_xyzrpy_mm_deg("T_prior_base_board", prior_base_board_m))
     logger.info("{}", _format_matrix_xyzrpy_mm_deg("T_current_base_board", current_base_board_m))
     return runtime_offset
+
+
+def _initialize_charuco_cartesian_offsets(runtimes: list[ReplayRuntime]) -> None:
+    """本轮只检测一次目标板，并为所有活动机械臂初始化 offset。"""
+
+    if not runtimes:
+        raise ValueError("初始化 ChArUco offset 时缺少活动 runtime")
+    if any(runtime.charuco_cartesian_offset is not None for runtime in runtimes):
+        raise RuntimeError("本轮 ChArUco offset 已初始化，拒绝重复检测目标板")
+    logger.info(
+        "开始本轮唯一一次 ChArUco 目标板检测 active_arms={}",
+        [runtime.connected_arm.arm_side for runtime in runtimes],
+    )
+    current_camera_board_m = _detect_current_camera_board_transform_m(runtimes[0].body_channel)
+    for runtime in runtimes:
+        _calculate_charuco_cartesian_offset(
+            runtime,
+            current_camera_board_m,
+            "replay-cycle-initialization",
+        )
+    logger.success("本轮 ChArUco offset 已完成初始化，后续 CSV 仅使用缓存结果")
 
 
 def _create_offset_record(
@@ -2061,10 +2196,6 @@ def _execute_single_csv(
     flush_at_end: bool = False,
 ) -> None:
     is_offset_trigger_csv = _should_trigger_offset_calculation(runtime, csv_path.name)
-    is_charuco_offset_csv = _should_apply_charuco_cartesian_offset(runtime, csv_path.name)
-    if is_charuco_offset_csv:
-        _flush_pending_arm_segment(runtime)
-        _calculate_charuco_cartesian_offset(runtime, f"csv:{csv_path.name}")
     rows = runtime.preloaded_rows_by_path.get(csv_path)
     if rows is None:
         raise RuntimeError(f"CSV 未在启动阶段预加载，拒绝在执行期读取文件：{csv_path}")
@@ -2463,6 +2594,8 @@ def main(
         runtime.offset_camera_name = str(offset_camera_name)
         runtime.offset_prior_capture_path = Path(offset_prior_capture_path)
         runtime.hand_eye_result_path = Path(hand_eye_result_path)
+        if runtime.gripper is not None:
+            _prepare_gripper_before_replay(runtime.gripper)
         _prepare_runtime(runtime)
         if selected_execution_mode == "parallel" and any(
             plan.right_start_csv_path is not None
@@ -2478,6 +2611,7 @@ def main(
         runtimes = [runtime] if right_runtime is None else [runtime, right_runtime]
         for configured_runtime in runtimes:
             configured_runtime.move_abs_j_end_linear_speed_mm_s = selected_move_abs_j_end_linear_speed_mm_s
+        _initialize_charuco_cartesian_offsets(runtimes)
         for plan in execution_plans:
             _execute_csv_execution_plan(
                 runtime,

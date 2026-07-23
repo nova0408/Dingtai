@@ -12,7 +12,11 @@ qmlinker、AGV 和 Orin 本机部署的 camera_pipeline，并由 HTTP API 触发
 
 - `record_replay/prior_data/`：`test/wuji/prior_record.py` 记录的先验结果。
   服务固定读取 `ball_pose_prior.json` 和 `hand_eye_result.txt`；同目录
-  同时保存 `charuco_board_prior.json`。
+  同时保存 `charuco_board_prior.json`。三球尺寸字段统一为 `diameter_mm`，单位 mm；
+  不再接受旧的 `radius_mm` 先验文件。重新记录的三球条目还包含 `hsv_ranges` 和
+  `observed_color_hex`；服务启动时要求三球相对位置有效且每球都包含 30 帧标定的
+  `hsv_ranges`，并要求同目录存在 `ball_debug_overlay.jpg` 核验图。无效或证据不完整
+  的文件会阻止服务启动，不再回退到占位球心。
 - `record_replay/records/left/`：提前录制的左臂 CSV。
 - `record_replay/records/right/`：提前录制的右臂 CSV。
 
@@ -165,6 +169,9 @@ print(RecordReplayClient().get_device_status())  # 设备串行读取，该方�
 systemd 模板位于 `record_replay/service/record-replay.service`，并声明依赖
 `camera-pipeline.service`。默认值按 Orin 的
 `/home/wuji-brain/workspace` 与现场网段解析。设备地址、CSV、先验与手眼标定路径均固定；
+systemd 进程启动、停止上限均为 10 秒；服务使用 `Type=simple`，重启脚本另外在
+10 秒内等待 HTTP `/status` 真正可用。独立重启脚本只重启
+`record-replay.service`，不会发送回放 `/start` 请求，且必须由现场人员交互确认安全；
 服务不创建 SSH 隧道。
 
 `record_replay/` 是独立部署包，运行时代码禁止导入仓库 `src` 或 `test`。设备 gateway
