@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .contracts import CsvExecutionPlan
+from .contracts import CsvExecutionPlan, ReplayExecutionTaskStatus
 from .csv_repository import extract_csv_sequence, extract_sync_csv_sequence
 
 
@@ -57,3 +57,36 @@ def build_execution_plans(left_csv_paths: list[Path], right_csv_paths: list[Path
         CsvExecutionPlan(left, start, pre, sync, trailing if index == len(specs) - 1 else (), together)
         for index, (left, start, pre, sync, together) in enumerate(specs)
     ]
+
+
+def build_execution_task_statuses(
+    plans: list[CsvExecutionPlan],
+) -> tuple[ReplayExecutionTaskStatus, ...]:
+    """将内部计划展开为与实际执行顺序一致的左右臂对齐任务。"""
+
+    task_pairs: list[tuple[str | None, str | None, bool]] = []
+    for plan in plans:
+        left_executed = False
+        if plan.start_together and plan.right_start_csv_path is not None:
+            task_pairs.append(
+                (plan.left_csv_path.name, plan.right_start_csv_path.name, True)
+            )
+            left_executed = True
+        task_pairs.extend((None, path.name, False) for path in plan.right_pre_stage_csv_paths)
+        if plan.right_sync_csv_path is not None:
+            task_pairs.append(
+                (plan.left_csv_path.name, plan.right_sync_csv_path.name, True)
+            )
+            left_executed = True
+        if not left_executed:
+            task_pairs.append((plan.left_csv_path.name, None, False))
+        task_pairs.extend((None, path.name, False) for path in plan.right_post_stage_csv_paths)
+    return tuple(
+        ReplayExecutionTaskStatus(
+            sequence=index,
+            left_csv=left_csv,
+            right_csv=right_csv,
+            synchronized=synchronized,
+        )
+        for index, (left_csv, right_csv, synchronized) in enumerate(task_pairs, start=1)
+    )

@@ -13,7 +13,8 @@ if str(PROJECT_ROOT) not in sys.path:
 from common import DEFAULT_PORT, create_wuyou_channel, stop_ssh_process
 from src.wuji.head_client import WujiHeadClient
 
-DEFAULT_STEP_DEG = 5.0
+DEFAULT_STEP_DEG = 5.0  # 直接回车时的头部单步角度，单位 deg。
+COMMAND_WAIT_S = 1.0  # 头部命令执行后的等待时间，单位 s。
 
 
 def _prompt(text: str) -> str:
@@ -21,9 +22,9 @@ def _prompt(text: str) -> str:
 
 
 def _read_state(head: WujiHeadClient) -> tuple[bool, float, float]:
-    enabled = bool(head.get_enable())
-    yaw_deg = float(head.get_head_yaw() or 0.0)
-    pitch_deg = float(head.get_head_pitch() or 0.0)
+    enabled = head.get_enable()
+    yaw_deg = head.get_head_yaw()
+    pitch_deg = head.get_head_pitch()
     return enabled, yaw_deg, pitch_deg
 
 
@@ -51,7 +52,7 @@ def _control_axis(head: WujiHeadClient, axis: str) -> None:
             try:
                 target_deg = float(value_text)
             except ValueError:
-                print("目标值不是有效数字。")
+                logger.warning("目标值不是有效数字：{}", value_text)
                 continue
 
         logger.info("{} 当前 {:.1f} deg，目标 {:.1f} deg", axis, current_value, target_deg)
@@ -59,7 +60,7 @@ def _control_axis(head: WujiHeadClient, axis: str) -> None:
             head.set_head_yaw(target_deg)
         else:
             head.set_head_pitch(target_deg)
-        time.sleep(1.0)
+        time.sleep(COMMAND_WAIT_S)
         _print_state(head)
 
 
@@ -79,6 +80,9 @@ def main() -> None:
     ssh_process, qmlinker_channel = create_wuyou_channel(DEFAULT_PORT)
     head_client = WujiHeadClient(qmlinker_channel)
     try:
+        head_client.set_enable(True)
+        if not head_client.get_enable():
+            raise RuntimeError("头部使能失败")
         _print_state(head_client)
         while True:
             _print_menu()
@@ -93,7 +97,8 @@ def main() -> None:
                 continue
             if command == "":
                 continue
-            print(f"未知命令：{command}")
+            logger.warning("未知命令：{}", command)
+        logger.success("无际头部交互式控制结束")
     finally:
         stop_ssh_process(ssh_process)
 

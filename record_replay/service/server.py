@@ -122,6 +122,18 @@ class RecordReplayServer:
                     left_csv_state=response.left_csv_state,
                     plan_index=response.plan_index,
                     error_text=message,
+                    left_csv_files=response.left_csv_files,
+                    right_csv_files=response.right_csv_files,
+                    execution_tasks=response.execution_tasks,
+                    current_task_sequence=response.current_task_sequence,
+                    current_task_active=response.current_task_active,
+                    total_execution_count=response.total_execution_count,
+                    current_left_csv=response.current_left_csv,
+                    current_right_csv=response.current_right_csv,
+                    current_left_row=response.current_left_row,
+                    current_right_row=response.current_right_row,
+                    current_left_total_rows=response.current_left_total_rows,
+                    current_right_total_rows=response.current_right_total_rows,
                 )
                 self._send(status, payload)
 

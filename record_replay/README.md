@@ -14,7 +14,8 @@ qmlinker、AGV 和 Orin 本机部署的 camera_pipeline，并由 HTTP API 触发
   服务固定读取 `ball_pose_prior.json` 和 `hand_eye_result.txt`；同目录
   同时保存 `charuco_board_prior.json`。三球尺寸字段统一为 `diameter_mm`，单位 mm；
   不再接受旧的 `radius_mm` 先验文件。重新记录的三球条目还包含 `hsv_ranges` 和
-  `observed_color_hex`；服务启动时要求三球相对位置有效且每球都包含 30 帧标定的
+  `observed_color_hex`；颜色和坐标语义从先验文件的 `local_coordinate_frame`
+  读取，服务端不维护固定球色。服务启动时要求三球相对位置有效且每球都包含 30 帧标定的
   `hsv_ranges`，并要求同目录存在 `ball_debug_overlay.jpg` 核验图。无效或证据不完整
   的文件会阻止服务启动，不再回退到占位球心。
 - `record_replay/records/left/`：提前录制的左臂 CSV。
@@ -57,13 +58,27 @@ waiting
 - `state`：当前服务阶段；
 - `left_csv_state`：当前左臂 CSV 去除 `state_prefix` 后的文件名；
 - `plan_index`：当前左臂计划下标；
-- `error_text`：失败原因。
+- `error_text`：失败原因；
+- `left_csv_files` / `right_csv_files`：左右臂部署目录中的 CSV 文件名与数据行数；
+- `execution_tasks`：按实际执行顺序展开的任务清单；每个一级任务同时给出
+  `left_csv`、`right_csv` 和 `synchronized`，单臂阶段另一侧为空；
+- `current_task_sequence`：当前执行任务在 `execution_tasks` 中的序号，从 1 开始；
+- `current_task_active`：当前任务序号对应的任务是否仍在执行；任务完成后到下一任务开始前
+  为 `false`，避免界面把 AGV 返航等阶段误显示为仍在执行最后一个 CSV；
+- `total_execution_count`：服务进程本次启动以来累计接受的执行请求次数；服务重启后从
+  0 重新计数，不代表任务清单长度；
+- `current_left_csv` / `current_right_csv`：左右臂当前正在处理的 CSV；
+- `current_left_row` / `current_right_row`：左右臂当前处理的 CSV 源数据行；
+- `current_left_total_rows` / `current_right_total_rows`：当前 CSV 总数据行数。
+
+部署清单在服务启动和每轮开始前刷新。当前行用于界面定位服务正在调度或处理的源数据行；
+连续机械臂轨迹会批量提交给控制器，因此该值不表示控制器已经物理到达对应轨迹点。
 
 ## 测试安全红线
 
 `record_replay` 会直接控制机械臂、AGV、夹爪、M11 和升降机构。禁止 Codex、CI、
 hook 或其他无人值守流程运行任何 record_replay 测试、启动 service 冒烟，或发送
-`{"operation":"start"}`。即使测试当前使用 fake，也只能做静态检查，不能自动执行。
+`POST /start`。即使测试当前使用 fake，也只能做静态检查，不能自动执行。
 
 本机与 Orin 测试完全分离：
 
@@ -127,7 +142,11 @@ python test/record_replay/local/record_replay_local_manual.py
 服务入口为 `python -m record_replay.service`，默认监听 `http://0.0.0.0:6300`。
 进程启动只建立 API 监听，不会自动执行机械臂动作。调用 `start` 后，业务线程执行
 一轮既有的 AGV、CSV、双臂和 offset 流程；重复 `start` 会返回 `accepted=false`，
-不会并发控制同一组设备。`status` 可查询当前阶段、CSV 状态、计划下标和错误文本。
+不会并发控制同一组设备。`status` 可查询当前阶段、部署的左右臂 CSV、左右臂对齐的
+实际执行任务、当前任务序号、服务累计执行次数、各臂当前 CSV、源数据行进度、计划下标
+和错误文本。
+GUI 可按 1 秒周期轮询该只读接口；不需要维持 SSE/WebSocket 长连接，短暂断网后下一次
+轮询会自然恢复。
 
 HTTP API：`GET /status`、`GET /config`、`GET /device-status`、`POST /config`、`POST /start`。配置更新 body
 是字段到数值的 JSON object；服务执行期间拒绝修改配置。`POST /start` 必须提供

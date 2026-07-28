@@ -103,7 +103,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     prior_load_started_at = time.perf_counter()
     ball_priors = load_three_ball_priors(
         offset_config.prior_capture_path,
-        settings.offset,
     )
     logger.info(
         "record replay ball priors loaded count={} elapsed_ms={:.3f}",

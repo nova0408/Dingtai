@@ -30,9 +30,8 @@ PRIOR_MIN_INLIER_COUNT = 24
 
 def load_three_ball_priors(
     prior_capture_path: Path,
-    settings: ReplayOffsetSettings,
 ) -> tuple[BallPosePriorInfo, ...]:
-    """从已完成的 30 帧记录结果重建黄、红、紫三球模型先验。"""
+    """从 30 帧记录结果及其坐标语义重建三球模型先验。"""
 
     debug_overlay_path = prior_capture_path.with_name("ball_debug_overlay.jpg")
     if not debug_overlay_path.is_file():
@@ -54,7 +53,7 @@ def load_three_ball_priors(
         )
     recorded_balls = _extract_recorded_balls(payload)
     values = _extract_ball_values(recorded_balls)
-    required_colors = ("#ffff00", "#ff0000", "#ff00ff")
+    required_colors = _extract_coordinate_colors(payload)
     missing_colors = [color for color in required_colors if color not in values]
     if missing_colors:
         raise ValueError(
@@ -68,7 +67,7 @@ def load_three_ball_priors(
         )
     ordered = ordered_three_ball_centers(
         tuple((color, values[color][1]) for color in values),
-        settings,
+        required_colors,
     )
     if ordered is None:
         raise ValueError(f"三球先验坐标无效：{prior_capture_path}")
@@ -100,6 +99,29 @@ def load_three_ball_priors(
         )
         for index, color in enumerate(required_colors)
     )
+
+
+def _extract_coordinate_colors(
+    payload: dict[str, object],
+) -> tuple[str, str, str]:
+    """读取先验文件声明的原点、X 轴和平面提示球颜色。"""
+
+    frame = payload.get("local_coordinate_frame")
+    if not isinstance(frame, dict):
+        raise ValueError("三球先验缺少 local_coordinate_frame")
+    origin = frame.get("origin_color")
+    x_axis = frame.get("x_axis_color")
+    plane = frame.get("xoy_plane_color")
+    if (
+        not isinstance(origin, str)
+        or not isinstance(x_axis, str)
+        or not isinstance(plane, str)
+    ):
+        raise ValueError("三球先验坐标语义必须提供三个 HEX 颜色")
+    colors = (origin, x_axis, plane)
+    if len(set(colors)) != 3:
+        raise ValueError("三球先验坐标语义中的颜色不能重复")
+    return colors
 
 
 def _extract_recorded_balls(payload: dict[str, object]) -> list[object]:
@@ -181,7 +203,7 @@ class ThreeBallDetector(Protocol):
     """为 offset 计算提供三球 `(3, 3)` mm 样本的检测接口。"""
 
     def capture_samples(self, sample_count: int) -> list[tuple[tuple[float, float, float], ...]]:
-        """采集多个按黄、红、紫排序的三球坐标样本。"""
+        """采集多个按先验坐标语义排序的三球坐标样本。"""
 
         ...
 
@@ -222,7 +244,19 @@ class CameraPipelineThreeBallDetector:
                     for item in response.detections
                     if item.detected and len(item.center_mm) == 3
                 )
-                centers = ordered_three_ball_centers(detections, self.settings)
+                ordered_colors = tuple(
+                    prior.color_hex for prior in self.priors
+                )
+                if len(ordered_colors) != 3:
+                    raise RuntimeError("三球检测先验必须恰好包含三个颜色")
+                centers = ordered_three_ball_centers(
+                    detections,
+                    (
+                        ordered_colors[0],
+                        ordered_colors[1],
+                        ordered_colors[2],
+                    ),
+                )
                 if centers is not None:
                     samples.append(
                         (

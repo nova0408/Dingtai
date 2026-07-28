@@ -66,17 +66,63 @@ class CsvExecutionPlan:
 
 
 @dataclass(frozen=True, slots=True)
+class ReplayCsvFileStatus:
+    """一个已部署回放 CSV 的只读摘要。"""
+
+    name: str
+    "CSV 文件名。"
+    row_count: int
+    "CSV 可执行数据行数。"
+
+
+@dataclass(frozen=True, slots=True)
+class ReplayExecutionTaskStatus:
+    """一个按实际执行顺序对齐的左右臂任务。"""
+
+    sequence: int
+    "执行序号，从 1 开始。"
+    left_csv: str | None
+    "该阶段执行的左臂 CSV；右臂单独运动时为空。"
+    right_csv: str | None
+    "该阶段执行的右臂 CSV；左臂单独运动时为空。"
+    synchronized: bool
+    "左右臂是否在该阶段同步启动。"
+
+
+@dataclass(frozen=True, slots=True)
 class ReplayStatusSnapshot:
     """可跨线程读取的当前执行状态快照。"""
 
     state: ReplayServiceState
     "服务阶段。"
-    left_csv_state: str | None
+    left_csv_state: str | None = None
     "当前左臂 CSV 去前缀后的状态名。"
-    plan_index: int | None
+    plan_index: int | None = None
     "当前执行计划索引，从 0 开始。"
-    error_text: str | None
+    error_text: str | None = None
     "失败时的错误文本。"
+    left_csv_files: tuple[ReplayCsvFileStatus, ...] = ()
+    "左臂目录中已部署的 CSV 及其数据行数。"
+    right_csv_files: tuple[ReplayCsvFileStatus, ...] = ()
+    "右臂目录中已部署的 CSV 及其数据行数。"
+    execution_tasks: tuple[ReplayExecutionTaskStatus, ...] = ()
+    "按实际执行顺序排列、左右臂对齐的任务清单。"
+    current_task_index: int | None = None
+    "当前任务在 execution_tasks 中的下标，从 0 开始。"
+    current_task_active: bool = False
+    "current_task_index 对应任务是否仍在执行。"
+    current_left_csv: str | None = None
+    "左臂当前正在处理的 CSV 文件名。"
+    current_right_csv: str | None = None
+    "右臂当前正在处理的 CSV 文件名。"
+    current_left_row: int | None = None
+    "左臂当前处理到的 CSV 数据行，从 1 开始。"
+    current_right_row: int | None = None
+    "右臂当前处理到的 CSV 数据行，从 1 开始。"
+    current_left_total_rows: int | None = None
+    "左臂当前 CSV 的总数据行数。"
+    current_right_total_rows: int | None = None
+    "右臂当前 CSV 的总数据行数。"
 
 
 # endregion

@@ -14,13 +14,13 @@ from .settings import ReplayOffsetSettings
 
 def ordered_three_ball_centers(
     detections: tuple[tuple[str, tuple[float, float, float]], ...],
-    settings: ReplayOffsetSettings,
+    ordered_colors: tuple[str, str, str],
 ) -> npt.NDArray[np.float64] | None:
-    """将检测结果按黄、红、紫排序为 `(3, 3)` mm 坐标数组。"""
+    """将检测结果按调用方给定的坐标语义顺序排列为 `(3, 3)` mm 数组。"""
 
     by_color = {color: np.asarray(center, dtype=np.float64) for color, center in detections}
     centers: list[npt.NDArray[np.float64]] = []
-    for color in settings.ordered_ball_colors:
+    for color in ordered_colors:
         center = by_color.get(color)
         if center is None or center.shape != (3,) or not np.all(np.isfinite(center)):
             return None
@@ -29,18 +29,18 @@ def ordered_three_ball_centers(
 
 
 def build_three_ball_basis_transform(centers_mm: npt.ArrayLike) -> npt.NDArray[np.float64] | None:
-    """以黄球为原点、红球为 X 轴、紫球为平面提示构造 4x4 变换。"""
+    """以第 1/2/3 个球作为原点、X 轴、平面提示构造 4x4 变换。"""
 
     centers = np.asarray(centers_mm, dtype=np.float64)
     if centers.shape != (3, 3) or not np.all(np.isfinite(centers)):
         return None
-    origin, red, purple = centers
-    x_axis = red - origin
+    origin, x_axis_point, plane_point = centers
+    x_axis = x_axis_point - origin
     x_norm = float(np.linalg.norm(x_axis))
     if x_norm <= 1e-6:
         return None
     x_axis /= x_norm
-    z_axis = np.cross(x_axis, purple - origin)
+    z_axis = np.cross(x_axis, plane_point - origin)
     z_norm = float(np.linalg.norm(z_axis))
     if z_norm <= 1e-6:
         return None

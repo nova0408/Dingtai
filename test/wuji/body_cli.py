@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 # region 依赖导入
-import argparse
 import sys
-from pathlib import Path
 import time
+from pathlib import Path
+
 from loguru import logger
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -12,14 +12,14 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from common import DEFAULT_PORT, create_wuyou_channel, stop_ssh_process
-from src.wuji.body_client import WujiBodyClient
+from src.wuji.body_client import WujiBodyClient, WujiLiftClient
 
 # endregion
 
 
 # region 默认参数
 
-DEFAULT_REQUEST_TIMEOUT_S = 3.0
+LIFT_WAIT_S = 3.0  # 升降柱命令执行后的等待时间，单位 s。
 
 # endregion
 
@@ -27,16 +27,16 @@ DEFAULT_REQUEST_TIMEOUT_S = 3.0
 # region 主入口
 
 
-def main(request_timeout_s: float = DEFAULT_REQUEST_TIMEOUT_S) -> None:
+def main() -> None:
     """交互式控制 body 的 lift 和 waist。"""
 
     logger.info("身体控制脚本启动，请先确认 Orin 连接正常。")
-    logger.info("请求超时 {} s", request_timeout_s)
 
     ssh_process, qmlinker_channel = create_wuyou_channel(DEFAULT_PORT)
     body_client = WujiBodyClient(qmlinker_channel)
     try:
         _interactive_loop(body_client=body_client)
+        logger.success("无际身体交互式控制结束")
     finally:
         stop_ssh_process(ssh_process)
 
@@ -72,24 +72,29 @@ def _control_lift(body_client: WujiBodyClient) -> None:
 
     lift = body_client.lift
     lift.set_enable(True)
-    logger.info("lift 当前使能 {}", lift.get_enable())
-    physical_height_mm = _read_lift_height_mm(lift.get_lift_physical_height())
-    logger.info("lift 当前物理高度 {:.1f} mm", physical_height_mm)
-    logger.info("lift 当前目标高度 {}", lift.get_lift_height()[0])
+    if not lift.get_enable():
+        raise RuntimeError("升降柱使能失败")
+    logger.info("升降柱当前使能 {}", lift.get_enable())
+    _log_lift_height(lift)
+
     value = input("请输入升降高度（mm），输入 q 返回: ").strip().lower()
     if value == "q":
         return
-    target_height = _parse_float(value, "升降高度")
+    try:
+        target_height = _parse_float(value, "升降高度")
+    except ValueError as exc:
+        logger.warning("{}", exc)
+        return
     if target_height < 0.0:
-        raise ValueError(f"升降高度超出范围: {target_height} mm，合法范围 [0, +inf) mm")
+        logger.warning("升降高度超出范围：{} mm，合法范围 [0, +inf) mm", target_height)
+        return
     target_height_mm = int(round(target_height))
-    lift.set_lift_physical_height(target_height_mm)
-    logger.info("已下发 lift 目标高度 {} mm", target_height_mm)
-    logger.info("等待执行结果...")
-    time.sleep(3.0)
-    physical_height_mm = _read_lift_height_mm(lift.get_lift_physical_height())
-    logger.info("lift 当前物理高度 {:.1f} mm", physical_height_mm)
-    logger.info("lift 当前目标高度 {}", lift.get_lift_height()[0])
+    set_result = lift.set_lift_physical_height(target_height_mm)
+    if set_result is None or not set_result[0]:
+        raise RuntimeError(f"升降柱目标高度设置失败：{set_result!r}")
+    logger.info("已下发升降柱目标高度 {} mm", target_height_mm)
+    time.sleep(LIFT_WAIT_S)
+    _log_lift_height(lift)
 
 
 def _control_waist(body_client: WujiBodyClient) -> None:
@@ -97,15 +102,30 @@ def _control_waist(body_client: WujiBodyClient) -> None:
 
     waist = body_client.waist
     waist.set_enable(True)
-    logger.info("waist 当前使能 {}", waist.get_enable())
-    logger.info("waist 当前俯仰 {} deg", waist.get_waist_pitch())
+    if not waist.get_enable():
+        raise RuntimeError("腰部使能失败")
+    waist_pitch_deg = waist.get_waist_pitch()
+    if waist_pitch_deg is None:
+        raise RuntimeError("腰部俯仰角读取失败")
+    logger.info("腰部当前使能 {}", waist.get_enable())
+    logger.info("腰部当前俯仰角 {:.1f} deg", waist_pitch_deg)
+
     value = input("请输入腰部俯仰角度（deg），输入 q 返回: ").strip().lower()
     if value == "q":
         return
-    target_pitch = _parse_float(value, "腰部俯仰角度")
-    waist.set_waist_pitch(target_pitch)
-    logger.info("已下发 waist 目标俯仰 {} deg", target_pitch)
-    logger.info("waist 当前俯仰 {} deg", waist.get_waist_pitch())
+    try:
+        target_pitch_deg = _parse_float(value, "腰部俯仰角度")
+    except ValueError as exc:
+        logger.warning("{}", exc)
+        return
+    if not waist.set_waist_pitch(target_pitch_deg):
+        raise RuntimeError("腰部目标俯仰角设置失败")
+    logger.info("已下发腰部目标俯仰角 {:.1f} deg", target_pitch_deg)
+
+    waist_pitch_deg = waist.get_waist_pitch()
+    if waist_pitch_deg is None:
+        raise RuntimeError("腰部俯仰角读取失败")
+    logger.info("腰部当前俯仰角 {:.1f} deg", waist_pitch_deg)
 
 
 # endregion
@@ -123,28 +143,24 @@ def _parse_float(value: str, label: str) -> float:
         raise ValueError(f"{label} 输入不是有效数字: {value}") from exc
 
 
-def _read_lift_height_mm(result: object) -> float:
-    """将 lift 读取结果转换成毫米。"""
+def _log_lift_height(lift: WujiLiftClient) -> None:
+    """读取并记录升降柱的物理高度与比例。"""
 
-    if isinstance(result, tuple) and len(result) == 2:
-        return float(result[0])
-    return float(result)
+    physical_height_result = lift.get_lift_physical_height()
+    if physical_height_result is None:
+        raise RuntimeError("升降柱物理高度读取失败")
+    physical_height_mm, _ = physical_height_result
 
-
-def _parse_cli() -> float:
-    """解析 CLI 覆盖参数。"""
-
-    parser = argparse.ArgumentParser(description="控制无际身体 lift 和 waist")
-    parser.add_argument("--request-timeout-s", type=float, default=DEFAULT_REQUEST_TIMEOUT_S)
-    args = parser.parse_args()
-    return float(args.request_timeout_s)
+    scale_result = lift.get_lift_height()
+    if scale_result is None:
+        raise RuntimeError("升降柱比例读取失败")
+    scale, _ = scale_result
+    logger.info("升降柱当前物理高度 {:.1f} mm", physical_height_mm)
+    logger.info("升降柱当前高度比例 {:.3f}", scale)
 
 
 # endregion
 
 
 if __name__ == "__main__":
-    if len(sys.argv) > 1:
-        main(request_timeout_s=_parse_cli())
-    else:
-        main()
+    main()

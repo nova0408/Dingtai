@@ -96,16 +96,28 @@
 - 当前实现不再生成项目内 gRPC stub，而是直接使用文档提供的 qmlinker wheel。
 - 网络地址配置放在 `config/robot_network.toml`：
   - `192.168.100.60`：基础控制工控机，qmlinker 二次开发接口连接该地址。
-  - `192.168.100.70`：Orin 模组，用于 SSH 登录和边缘计算链路。
-- GUI 机械臂调试页默认使用 `config/robot_network.toml` 中的 qmlinker 地址创建 gRPC channel。
-- 当前 GUI 已接入 qmlinker 的臂、身体和头部控制：
+  - `192.168.100.50`：Orin 模组固定地址，用于平板直连与边缘计算链路。
+- GUI 会先 ping 用户输入的 Orin 接入 IP，再探测 `192.168.100.60`：
+  - 控制地址可达时按平板部署方式直连，不创建 SSH 转发。
+  - 控制地址不可达时按本机测试方式，通过输入的 DHCP 地址建立 SSH 转发。
+  - 成功输入会保存在本机 Qt 设置中，并作为下次启动默认值。
+- 当前 GUI 已接入官方 xCoreSDK AR5、qmlinker 身体和头部控制：
+  - AR5：左右臂实时状态、七关节 MoveAbsJ、带 elbow 的 MoveL、关节/笛卡尔 Jog、
+    自由拖动和保持 TCP 的独立 elbow 调整；左右臂控制器 IP 分别在对应 AR5 页设置。
   - 身体：`body_z` 升降轴、`body_ry` 俯仰旋转轴。
   - 头部：`head_yaw` 可动旋转轴。
-- AGV 底盘暂不接入当前 qmlinker 调试页；底盘使用另一套 SDK，后续有开发计划时再单独接入。
+- AGV、夹爪和相机沿用现有控制接口；M11 手页及 GUI 连接暂时取消。
 
-## xCoreSDK 机械臂 SSH 转发
+## xCoreSDK 机械臂直连与 SSH 转发
 
-两台机械臂现已接入机器人本体的交换机，本机无法直接访问控制器，需要通过 `orin` 建立 SSH 本地转发：
+两台机械臂已接入机器人本体交换机。平板位于现场固定网段时直接访问控制器；本机不在
+该网段时，由 GUI 通过用户输入的 Orin DHCP 地址建立共享 SSH 本地转发：
+
+- GUI 的 qmlinker、相机和夹爪共享转发使用 Paramiko 完成非交互认证；AR5 严格复用
+  `test/wuji/xcoresdk_arm_cli_test.py` 已验证的系统 OpenSSH `ssh -N -L` 路径。
+- AR5 OpenSSH 通过 `SSH_ASKPASS` 和代码库内固定凭据自动认证，不再弹出密码窗口，
+  密码不会出现在 SSH 进程命令行。
+- 固定密码仅用于本机测试模式；平板直连模式不会创建 SSH 连接。
 
 - 左臂控制器：`192.168.100.161`
 - 右臂控制器：`192.168.100.160`
@@ -124,7 +136,8 @@
 ssh -N -L 5050:192.168.100.160:5050 -L 4567:192.168.100.160:4567 orin
 ```
 
-当前正式测试入口为 `test/wuji/xcoresdk_arm_cli_test.py`。它会自动建立双臂转发，并为两台机械臂分配不同的本机 loopback 地址，使两边可以同时复用相同的固定端口：
+当前正式测试入口为 `test/wuji/xcoresdk_arm_cli_test.py`。本机模式会为两台机械臂分配
+不同的 loopback 地址，使两边可以同时复用相同的固定端口：
 
 | 机械臂 | SDK 本地地址 | 控制器地址 | 转发端口 |
 | --- | --- | --- | --- |
@@ -146,7 +159,9 @@ ssh -N `
   orin
 ```
 
-单独排查连接时，可运行 `test/wuji/xcoresdk_ssh_smoke_test.py`。默认地址 `127.0.0.1` 适用于单臂转发；双臂模式应分别使用 `127.0.0.2` 和 `127.0.0.3`。2026-07-20 已实测两台控制器均可成功创建对象并读取 `robotInfo()`。
+单独排查连接时，可运行 `test/wuji/xcoresdk_ssh.py`。默认地址 `127.0.0.1` 适用于单臂
+转发；双臂模式应分别使用 `127.0.0.2` 和 `127.0.0.3`。2026-07-20 已实测两台控制器
+均可成功创建对象并读取 `robotInfo()`。
 
 ## 相机链路现状
 
@@ -237,8 +252,8 @@ ssh -N `
 | `chest_camera`      | `Orbbec Gemini 336`                                               | `wuyou`  | 对应序列号 `CP9365300011`；当前已进入 ZMQ 相机服务并在线。                           |
 | `left_hand_camera`  | `Orbbec Gemini 305`                                               | `wuyou`  | 对应序列号 `CV2R161000B1`；2026-06-05 已补入 `LEFT` 并在 GUI 中可见。                |
 | `right_hand_camera` | 当前服务端槽位为空，保留为离线占位                               | `wuyou`  | 旧 `RIGHT` 物理设备已拆除，当前应按离线状态理解。                                   |
-| `left_arm`          | qmlinker 机械臂服务                                              | `wuyou`  | 机械臂通过 qmlinker 服务暴露，不以单独 USB 设备形式出现在当前检查里。               |
-| `right_arm`         | qmlinker 机械臂服务                                              | `wuyou`  | 同上。                                                                              |
+| `left_arm`          | AR5 左臂控制器 `192.168.100.161`                                 | 交换机   | GUI 通过官方 xCoreSDK 直连，或经 Orin 转发 SDK 固定端口。                           |
+| `right_arm`         | AR5 右臂控制器 `192.168.100.160`                                 | 交换机   | GUI 通过官方 xCoreSDK 直连，或经 Orin 转发 SDK 固定端口。                           |
 | `body`              | qmlinker 本体服务                                                | `wuyou`  | 目前可见到 `body_z` 与 `body_ry` 控制链路。                                         |
 | `head`              | qmlinker 头部服务                                                | `wuyou`  | 目前可见到 `head_yaw` 控制链路。                                                    |
 | `hand`              | qmlinker 手部服务                                                | `wuyou`  | 左右手当前以逻辑执行器形式出现，仓库未找到独立 USB 枚举映射。                       |
@@ -247,7 +262,10 @@ ssh -N `
 补充说明：
 
 1. `wuyou` 上的相机设备都挂在 USB 拓展坞之后，实际排查时要看 `lsusb -t` 的树状层级，而不是只看顶层 `lsusb`。
-2. 当前仓库里，`arm`、`body`、`head`、`hand`、`agv` 更多是协议/服务层逻辑模块，不都对应单独的 USB 物理件。
-3. 当前相机链路需要分开理解：机械臂/本体/手部/AGV 仍主要通过 qmlinker；相机则应优先按 `sensors_depthcamera_ob_zmq_v2` 的 ZMQ 服务处理。
+2. 当前 AR5 通过官方 xCoreSDK 控制；`body`、`head`、`hand`、`agv` 仍是协议/服务层逻辑模块。
+3. 当前相机链路应按 `sensors_depthcamera_ob_zmq_v2` 的 ZMQ 服务处理，不复用 AR5 SDK 链路。
 4. `DECXIN Camera` 当前仍作为独立的头部全景相机理解，但它不属于当前 Orbbec ZMQ 深度相机四槽位中的任何一路。
 5. 截至 2026-06-05，`HEAD / CHEST / LEFT` 三路 Orbbec 的型号与序列号已经完成固化；当前未完成确认的只剩 `RIGHT`。
+
+## 手部夹爪负载参数
+ 1.51 kg 重心：（-21.83，1.56，65.10）

@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import time
+from pathlib import Path
 
 from .agv_navigation import AgvClient, wait_until_arrived
 from .context import ReplayContext
-from .contracts import CsvExecutionPlan, ReplayServiceState
-from .csv_repository import discover_csv_paths, extract_sync_csv_sequence
+from .contracts import CsvExecutionPlan, ReplayCsvFileStatus, ReplayServiceState
+from .csv_repository import discover_csv_paths, extract_sync_csv_sequence, load_replay_rows
 from .dual_arm_executor import DualArmExecutor
-from .execution_plan import build_execution_plans
+from .execution_plan import build_execution_plans, build_execution_task_statuses
 from .offset_updater import GlobalOffsetUpdater
 
 
@@ -33,6 +34,8 @@ class RecordReplayCycleService:
 
         try:
             config = self._context.config
+            self._context.reset_run_progress()
+            left_paths, plans = self.refresh_deployment_status()
             if enable_agv_navigation:
                 self._context.set_state(ReplayServiceState.NAVIGATING_TO_START)
                 wait_until_arrived(
@@ -41,11 +44,8 @@ class RecordReplayCycleService:
                     timeout_s=config.settings.agv_navigation_timeout_s,
                     poll_s=config.settings.agv_navigation_poll_interval_s,
                 )
-            left_paths = discover_csv_paths(config.left_record_dir)
             if not left_paths:
                 raise RuntimeError(f"没有在目录中发现 CSV: {config.left_record_dir}")
-            right_paths = discover_csv_paths(config.right_record_dir) if any(extract_sync_csv_sequence(item.name) is not None for item in left_paths) else []
-            plans = build_execution_plans(left_paths, right_paths) if right_paths else [CsvExecutionPlan(item) for item in left_paths]
             self._executor.execute(self._context, plans, self._offset_updater)
             if enable_agv_navigation:
                 self._context.set_state(ReplayServiceState.NAVIGATING_TO_FINISH)
@@ -59,6 +59,39 @@ class RecordReplayCycleService:
         except Exception as error:
             self._context.set_state(ReplayServiceState.FAILED, error_text=str(error))
             raise
+
+    def refresh_deployment_status(
+        self,
+    ) -> tuple[list[Path], list[CsvExecutionPlan]]:
+        """重新读取部署目录并发布 CSV、对齐任务和执行顺序。"""
+
+        config = self._context.config
+        left_paths = discover_csv_paths(config.left_record_dir)
+        right_paths = discover_csv_paths(config.right_record_dir)
+        left_files = tuple(
+            ReplayCsvFileStatus(path.name, len(load_replay_rows(path)))
+            for path in left_paths
+        )
+        right_files = tuple(
+            ReplayCsvFileStatus(path.name, len(load_replay_rows(path)))
+            for path in right_paths
+        )
+        execution_right_paths = (
+            right_paths
+            if any(extract_sync_csv_sequence(item.name) is not None for item in left_paths)
+            else []
+        )
+        plans = (
+            build_execution_plans(left_paths, execution_right_paths)
+            if execution_right_paths
+            else [CsvExecutionPlan(item) for item in left_paths]
+        )
+        self._context.set_deployment_status(
+            left_files,
+            right_files,
+            build_execution_task_statuses(plans),
+        )
+        return left_paths, plans
 
     def run_forever(self) -> None:
         """等待触发文件存在后执行下一轮。"""

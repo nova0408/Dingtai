@@ -11,7 +11,7 @@ from ..protocol import CameraName
 PROTOCOL_VERSION = 9
 "CameraPipeline 线协议版本。"
 
-SERVICE_VERSION = "1.4.2"
+SERVICE_VERSION = "1.5.0"
 "CameraPipeline 服务功能版本，必须与 CHANGELOG 当前版本一致。"
 
 CAMERA_STREAM_TOPIC_SEPARATOR = b"\x00"

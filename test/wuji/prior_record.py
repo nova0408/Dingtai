@@ -42,12 +42,15 @@ DEFAULT_MARKER_LENGTH_MM = 14
 DEFAULT_MIN_CHARUCO_CORNERS = 6
 DEFAULT_WINDOW_WIDTH = 1440
 DEFAULT_WINDOW_HEIGHT = 900
-BALL_ORDERED_COLORS = ("#ffff00", "#ff0000", "#ff00ff")
-BALL_COLOR_LABELS = ("yellow", "red", "purple")
+BALL_ORDERED_COLORS = ("#ffff00", "#ff0000", "#00ff00")
+BALL_COLOR_LABELS = ("yellow", "red", "green")
+BALL_X_AXIS_INDEX = 0
+BALL_ORIGIN_INDEX = 1
+BALL_PLANE_INDEX = 2
 BALL_DEFAULT_DIAMETER_MM = 20.0
 BALL_DEFAULT_MODEL_CENTERS_MM = (
-    (0.0, 0.0, 0.0),
     (1.0, 0.0, 0.0),
+    (0.0, 0.0, 0.0),
     (0.0, 1.0, 0.0),
 )
 BALL_POSE_AXIS_LENGTH_MM = 45.0
@@ -629,6 +632,7 @@ def _save_ball_capture(
         "sample_count": aggregation.sample_count,
         "inlier_count": aggregation.inlier_count,
         "outlier_count": aggregation.sample_count - aggregation.inlier_count,
+        "ball_color_order": list(BALL_ORDERED_COLORS),
         "detections": [
             _serialize_detection(
                 item,
@@ -643,9 +647,12 @@ def _save_ball_capture(
         "tcp_translation_mm": list(tcp_snapshot.translation_mm),
         "tcp_rpy_degrees": list(tcp_snapshot.rpy_deg),
         "local_coordinate_frame": {
-            "origin_ball": BALL_COLOR_LABELS[0],
-            "x_axis_ball": BALL_COLOR_LABELS[1],
-            "xoy_plane_ball": BALL_COLOR_LABELS[2],
+            "origin_ball": BALL_COLOR_LABELS[BALL_ORIGIN_INDEX],
+            "x_axis_ball": BALL_COLOR_LABELS[BALL_X_AXIS_INDEX],
+            "xoy_plane_ball": BALL_COLOR_LABELS[BALL_PLANE_INDEX],
+            "origin_color": BALL_ORDERED_COLORS[BALL_ORIGIN_INDEX],
+            "x_axis_color": BALL_ORDERED_COLORS[BALL_X_AXIS_INDEX],
+            "xoy_plane_color": BALL_ORDERED_COLORS[BALL_PLANE_INDEX],
         },
         "debug": _serialize_debug(response.debug_artifacts),
     }
@@ -760,18 +767,18 @@ def _build_priors_from_capture(
             "三球先验缺少三个检测条目",
         )
     lookup = {str(item.get("color_hex")): item for item in recorded_balls if isinstance(item, dict)}
-    yellow_item = lookup.get(BALL_ORDERED_COLORS[0])
-    red_item = lookup.get(BALL_ORDERED_COLORS[1])
-    purple_item = lookup.get(BALL_ORDERED_COLORS[2])
-    if yellow_item is None or red_item is None or purple_item is None:
+    yellow_item = lookup.get(BALL_ORDERED_COLORS[BALL_X_AXIS_INDEX])
+    red_item = lookup.get(BALL_ORDERED_COLORS[BALL_ORIGIN_INDEX])
+    green_item = lookup.get(BALL_ORDERED_COLORS[BALL_PLANE_INDEX])
+    if yellow_item is None or red_item is None or green_item is None:
         return _invalid_or_default_priors(
             require_recorded_prior,
-            "三球先验缺少黄、红、紫固定颜色条目",
+            "三球先验缺少黄、红、绿固定颜色条目",
         )
-    ordered = (yellow_item, red_item, purple_item)
-    origin = _prior_center_mm(ordered[0])
-    second = _prior_center_mm(ordered[1])
-    third = _prior_center_mm(ordered[2])
+    ordered = (yellow_item, red_item, green_item)
+    origin = _prior_center_mm(ordered[BALL_ORIGIN_INDEX])
+    second = _prior_center_mm(ordered[BALL_X_AXIS_INDEX])
+    third = _prior_center_mm(ordered[BALL_PLANE_INDEX])
     if origin.shape != (3,) or second.shape != (3,) or third.shape != (3,):
         return _invalid_or_default_priors(
             require_recorded_prior,
@@ -1038,7 +1045,7 @@ def _build_local_pose_overlay(
         "local xyzrpy",
         f"x={x_mm:.2f} mm  y={y_mm:.2f} mm  z={z_mm:.2f} mm",
         f"roll={roll_deg:.2f} deg  pitch={pitch_deg:.2f} deg  yaw={yaw_deg:.2f} deg",
-        "frame: yellow origin, red x-axis, purple xoy plane",
+        "frame: red origin, yellow x-axis, green xoy plane",
     )
     _draw_text_block(overlay, lines)
     return overlay
@@ -1089,17 +1096,17 @@ def _build_three_ball_basis_transform(detections: Any) -> np.ndarray | None:
         if center.shape != (3,) or not np.all(np.isfinite(center)):
             continue
         by_color[color_hex] = center
-    origin = by_color.get(BALL_ORDERED_COLORS[0])
-    red = by_color.get(BALL_ORDERED_COLORS[1])
-    purple = by_color.get(BALL_ORDERED_COLORS[2])
-    if origin is None or red is None or purple is None:
+    origin = by_color.get(BALL_ORDERED_COLORS[BALL_ORIGIN_INDEX])
+    x_axis_point = by_color.get(BALL_ORDERED_COLORS[BALL_X_AXIS_INDEX])
+    plane_point = by_color.get(BALL_ORDERED_COLORS[BALL_PLANE_INDEX])
+    if origin is None or x_axis_point is None or plane_point is None:
         return None
-    x_axis = red - origin
+    x_axis = x_axis_point - origin
     x_norm = float(np.linalg.norm(x_axis))
     if x_norm <= GEOMETRY_EPSILON:
         return None
     x_axis = x_axis / x_norm
-    plane_hint = purple - origin
+    plane_hint = plane_point - origin
     z_axis = np.cross(x_axis, plane_hint)
     z_norm = float(np.linalg.norm(z_axis))
     if z_norm <= GEOMETRY_EPSILON:

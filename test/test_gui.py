@@ -48,8 +48,7 @@ def main() -> int:
 
     app = QApplication.instance() or QApplication(sys.argv)
     window = TestGuiMainWindow()
-    window.resize(1388, 894)
-    window.show()
+    window.showMaximized()
     return int(app.exec())
 
 

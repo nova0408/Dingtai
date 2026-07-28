@@ -42,7 +42,14 @@ class DualArmExecutor:
                     left_csv_state=state_name_from_left_csv(plan.left_csv_path.name, context.config.state_prefix),
                     plan_index=index,
                 )
-                self._execute_plan(left_runtime, right_runtime, plan, stop_event, offset_updater)
+                self._execute_plan(
+                    context,
+                    left_runtime,
+                    right_runtime,
+                    plan,
+                    stop_event,
+                    offset_updater,
+                )
             flush_pending_arm_segment(left_runtime)
             if right_runtime is not None:
                 flush_pending_arm_segment(right_runtime)
@@ -55,12 +62,33 @@ class DualArmExecutor:
 
     # region 阶段编排
 
-    def _execute_plan(self, left: ReplayRuntime, right: ReplayRuntime | None, plan: CsvExecutionPlan, stop_event: threading.Event, offset_updater: GlobalOffsetUpdater | None) -> None:
+    def _execute_plan(
+        self,
+        context: ReplayContext,
+        left: ReplayRuntime,
+        right: ReplayRuntime | None,
+        plan: CsvExecutionPlan,
+        stop_event: threading.Event,
+        offset_updater: GlobalOffsetUpdater | None,
+    ) -> None:
         left_executed = False
         if plan.start_together:
             if right is None or plan.right_start_csv_path is None:
                 raise RuntimeError("启动并行阶段缺少右臂 runtime 或 CSV")
-            self._execute_parallel(left, plan.left_csv_path, right, plan.right_start_csv_path, stop_event, offset_updater)
+            context.advance_execution_task(
+                plan.left_csv_path.name,
+                plan.right_start_csv_path.name,
+            )
+            self._execute_parallel(
+                context,
+                left,
+                plan.left_csv_path,
+                right,
+                plan.right_start_csv_path,
+                stop_event,
+                offset_updater,
+            )
+            context.complete_execution_task()
             left_executed = True
         if plan.right_pre_stage_csv_paths:
             flush_pending_arm_segment(left)
@@ -69,25 +97,51 @@ class DualArmExecutor:
                 raise RuntimeError("右臂预阶段缺少 runtime")
             if stop_event.is_set():
                 raise RuntimeError("检测到并行执行已请求停止，终止右臂预阶段")
-            self._execute_csv(right, path)
+            context.advance_execution_task(None, path.name)
+            self._execute_csv(context, right, path)
+            context.complete_execution_task()
         if plan.right_sync_csv_path is not None:
             if right is None:
                 raise RuntimeError("同步阶段缺少右臂 runtime")
-            self._execute_parallel(left, plan.left_csv_path, right, plan.right_sync_csv_path, stop_event, offset_updater)
+            context.advance_execution_task(
+                plan.left_csv_path.name,
+                plan.right_sync_csv_path.name,
+            )
+            self._execute_parallel(
+                context,
+                left,
+                plan.left_csv_path,
+                right,
+                plan.right_sync_csv_path,
+                stop_event,
+                offset_updater,
+            )
+            context.complete_execution_task()
             left_executed = True
         if not left_executed:
             if right is not None:
                 flush_pending_arm_segment(right)
-            self._execute_csv(left, plan.left_csv_path, offset_updater=offset_updater)
+            context.advance_execution_task(plan.left_csv_path.name, None)
+            self._execute_csv(
+                context,
+                left,
+                plan.left_csv_path,
+                offset_updater=offset_updater,
+            )
+            context.complete_execution_task()
         if right is not None:
             if plan.right_post_stage_csv_paths:
                 flush_pending_arm_segment(left)
             for path in plan.right_post_stage_csv_paths:
                 if stop_event.is_set():
                     raise RuntimeError("检测到并行执行已请求停止，终止右臂后阶段")
-                self._execute_csv(right, path)
+                context.advance_execution_task(None, path.name)
+                self._execute_csv(context, right, path)
+                context.complete_execution_task()
+
     def _execute_parallel(
         self,
+        context: ReplayContext,
         left: ReplayRuntime,
         left_path: Path,
         right: ReplayRuntime,
@@ -102,6 +156,7 @@ class DualArmExecutor:
         def worker(runtime: ReplayRuntime, csv_path: Path, is_left: bool) -> None:
             try:
                 self._execute_csv(
+                    context,
                     runtime,
                     csv_path,
                     flush_at_end=True,
@@ -127,6 +182,7 @@ class DualArmExecutor:
 
     def _execute_csv(
         self,
+        context: ReplayContext,
         runtime: ReplayRuntime,
         csv_path: Path,
         flush_at_end: bool = False,
@@ -142,6 +198,12 @@ class DualArmExecutor:
             runtime.move_abs_j_end_linear_speed_mm_s = runtime.settings.offset.trigger_move_abs_j_end_linear_speed_mm_s
         try:
             for row in rows:
+                context.set_csv_progress(
+                    runtime.connected_arm.arm_side,
+                    csv_path.name,
+                    row.row_index,
+                    len(rows),
+                )
                 self._execute_row(runtime, row)
             if is_offset_trigger or flush_at_end:
                 flush_pending_arm_segment(runtime)
@@ -151,6 +213,7 @@ class DualArmExecutor:
         finally:
             if is_offset_trigger:
                 runtime.move_abs_j_end_linear_speed_mm_s = original_speed
+        context.clear_csv_progress(runtime.connected_arm.arm_side)
 
     def _execute_row(self, runtime: ReplayRuntime, row: ReplayRow) -> None:
         if runtime.stop_event.is_set():

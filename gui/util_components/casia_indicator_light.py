@@ -1,10 +1,11 @@
 import math
 import sys
 import textwrap
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from PySide6.QtCore import Property, QEvent, QRect, Qt, Signal
+from PySide6.QtCore import Property, QEvent, QRect, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QMouseEvent, QPainter
 from PySide6.QtWidgets import (
     QApplication,
@@ -28,6 +29,16 @@ class IndicatorStatus:
     FALSE: str
 
 
+@dataclass(frozen=True, slots=True)
+class IndicatorState:
+    """多模式指示灯的单个可视状态。"""
+
+    key: str
+    text: str
+    color: str
+    text_color: str = "#ffffff"
+
+
 def _asIndicatorStatus(text: IndicatorStatus | tuple | list) -> IndicatorStatus:
     true_value, false_value = "真", "假"
     if isinstance(text, IndicatorStatus):
@@ -39,6 +50,8 @@ def _asIndicatorStatus(text: IndicatorStatus | tuple | list) -> IndicatorStatus:
 
 
 class CasiaIndicatorLight(QWidget):
+    _TEXT_FILL_RATIO = 0.8
+
     # 增加点击信号
     statusChanged = Signal(bool)
     clicked = Signal()
@@ -74,6 +87,7 @@ class CasiaIndicatorLight(QWidget):
         text_color: tuple[QColor | Any, QColor | Any] = (Qt.GlobalColor.black, Qt.GlobalColor.white),
         default_status: bool = False,
         font_size: int = 14,
+        minimum_font_size: int = 8,
     ):
         super().__init__(parent=parent)
 
@@ -81,7 +95,8 @@ class CasiaIndicatorLight(QWidget):
         self._text_obj = _asIndicatorStatus(text)
         self._status_colors = list(status_color)  # 转为 list 以便修改
         self._text_colors = list(text_color)
-        self._font_size = font_size
+        self._minimum_font_size = max(1, minimum_font_size)
+        self._font_size = max(self._minimum_font_size, font_size)
         self._margin = 4
 
         # 交互状态
@@ -94,7 +109,7 @@ class CasiaIndicatorLight(QWidget):
         # 初始化
         self.setContentsMargins(self._margin, self._margin, self._margin, self._margin)
         self._update_formatted_text_and_size()
-        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        self.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Maximum)
 
         # 开启鼠标追踪以便做 Hover 效果（可选，如果不需要 hover 变色可去掉）
         self.setMouseTracking(True)
@@ -112,12 +127,10 @@ class CasiaIndicatorLight(QWidget):
         if not text:
             return ""
         limit = 15 if self._is_mostly_english(text) else 16
-        if len(text) > limit:
-            text = text[:limit]
         length = len(text)
 
         if self._is_mostly_english(text):
-            width = max(4, int(math.sqrt(length * 2.5)))
+            width = min(limit, max(4, int(math.sqrt(length * 2.5))))
             return "\n".join(textwrap.wrap(text, width=width))
         else:
             if length <= 3:
@@ -129,43 +142,71 @@ class CasiaIndicatorLight(QWidget):
                 lines = [text[i : i + cols] for i in range(0, length, cols)]
                 return "\n".join(lines)
 
+    def _font_with_point_size(self, point_size: int) -> QFont:
+        font = QFont(self.font())
+        font.setPointSize(point_size)
+        font.setBold(True)
+        return font
+
+    def _required_content_side(self, point_size: int) -> int:
+        font_metrics = QFontMetrics(self._font_with_point_size(point_size))
+        required_side = 0
+        for text in (self._formatted_true, self._formatted_false):
+            if not text:
+                continue
+            text_rect = font_metrics.boundingRect(
+                QRect(0, 0, 10000, 10000),
+                Qt.AlignmentFlag.AlignCenter,
+                text,
+            )
+            required_side = max(required_side, text_rect.width(), text_rect.height())
+        return math.ceil(required_side / self._TEXT_FILL_RATIO)
+
+    def _outer_size_for_font(self, point_size: int) -> QSize:
+        content_side = self._required_content_side(point_size)
+        outer_side = content_side + self._margin * 2
+        return QSize(outer_side, outer_side)
+
+    def _fitted_font_size(self, content_side: int) -> int:
+        low = self._minimum_font_size
+        high = self._font_size
+        while low < high:
+            candidate = (low + high + 1) // 2
+            if self._required_content_side(candidate) <= content_side:
+                low = candidate
+            else:
+                high = candidate - 1
+        return low
+
     def _update_formatted_text_and_size(self):
-        """核心尺寸计算"""
+        """更新文字排版，以及预设字号和最小字号对应的尺寸约束。"""
         self._formatted_true = self._smart_wrap_text(self._text_obj.TRUE)
         self._formatted_false = self._smart_wrap_text(self._text_obj.FALSE)
-
-        font = QFont()
-        font.setPointSize(self._font_size)
-        font.setBold(True)
-        fm = QFontMetrics(font)
-
-        max_diagonal = 0
-        for txt in [self._formatted_true, self._formatted_false]:
-            if not txt:
-                continue
-            rect = fm.boundingRect(QRect(0, 0, 1000, 1000), 0, txt)
-            diag = math.sqrt(rect.width() ** 2 + rect.height() ** 2)
-            if diag > max_diagonal:
-                max_diagonal = diag
-
-        diameter = int(max_diagonal / 0.85)
-        min_d = self._font_size * 2.5
-        diameter = max(int(diameter), int(min_d))
-
-        outer_size = diameter + self._margin * 2
-        self.setFixedSize(outer_size, outer_size)
+        self.setMinimumSize(self.minimumSizeHint())
+        self.updateGeometry()
         self.update()
+
+    def sizeHint(self) -> QSize:
+        return self._outer_size_for_font(self._font_size)
+
+    def minimumSizeHint(self) -> QSize:
+        return self._outer_size_for_font(self._minimum_font_size)
 
     # --- 增强：覆盖标准 setFont 方法 ---
     # 这样如果父控件调用了 setFont，我们也能响应
-    def setFont(self, font: QFont):
+    def setFont(self, font: QFont | str | Sequence[str]):
+        if isinstance(font, QFont) and font.pointSize() <= 0 and font.pixelSize() <= 0:
+            normalized_font = QFont(font)
+            normalized_font.setPointSize(self._minimum_font_size)
+            font = normalized_font
         super().setFont(font)
+        effective_font = self.font()
         # 提取字号并更新
-        if font.pointSize() > 0:
-            self._font_size = font.pointSize()
-        elif font.pixelSize() > 0:
+        if effective_font.pointSize() > 0:
+            self._font_size = max(self._minimum_font_size, effective_font.pointSize())
+        elif effective_font.pixelSize() > 0:
             # 简单粗暴的转换，实际可能需要 DPI 计算
-            self._font_size = int(font.pixelSize() * 0.75)
+            self._font_size = max(self._minimum_font_size, int(effective_font.pixelSize() * 0.75))
         self._update_formatted_text_and_size()
 
     # --- 增强：鼠标交互事件 ---
@@ -202,45 +243,55 @@ class CasiaIndicatorLight(QWidget):
 
     # --- 属性接口 ---
 
-    @Property(bool)
-    def status(self):
+    def _get_status(self) -> bool:
         return self._status
 
-    @status.setter
-    def status(self, value: bool):
+    def _set_status(self, value: bool) -> None:
         if self._status != value:
             self._status = value
             self.statusChanged.emit(value)
             self.update()
 
-    def set_status(self, value: bool):
+    status = Property(bool, _get_status, _set_status)
+
+    def set_status(self, value: bool) -> None:
         if self._status != value:
             self._status = value
             self.statusChanged.emit(value)
             self.update()
 
-    @Property(int)
-    def fontSize(self):
+    def _get_font_size(self) -> int:
         return self._font_size
 
-    @fontSize.setter
-    def fontSize(self, size: int):
-        self._font_size = size
+    def _set_font_size(self, size: int) -> None:
+        self._font_size = max(self._minimum_font_size, size)
         self._update_formatted_text_and_size()
 
+    fontSize = Property(int, _get_font_size, _set_font_size)
+
+    def _get_minimum_font_size(self) -> int:
+        return self._minimum_font_size
+
+    def _set_minimum_font_size(self, size: int) -> None:
+        self._minimum_font_size = max(1, size)
+        self._font_size = max(self._minimum_font_size, self._font_size)
+        self._update_formatted_text_and_size()
+
+    minimumFontSize = Property(int, _get_minimum_font_size, _set_minimum_font_size)
+
     # 支持 QSS: qproperty-margin: 8;
-    @Property(int)
-    def margin(self):
+    def _get_margin(self) -> int:
         return self._margin
 
-    @margin.setter
-    def margin(self, value: int):
+    def _set_margin(self, value: int) -> None:
         new_margin = max(0, int(value))
         if self._margin == new_margin:
             return
         self._margin = new_margin
         self.setContentsMargins(self._margin, self._margin, self._margin, self._margin)
         self._update_formatted_text_and_size()
+
+    margin = Property(int, _get_margin, _set_margin)
 
     # 为了方便外部修改颜色，提供专门的方法
     def setStatusColors(self, true_color: QColor, false_color: QColor):
@@ -277,20 +328,236 @@ class CasiaIndicatorLight(QWidget):
 
         # 3. 绘制文字
         painter.setPen(self._text_colors[idx])
-        font = QFont()
-        font.setPointSize(self._font_size)
-        font.setBold(True)
+        font = self._font_with_point_size(self._fitted_font_size(side))
         painter.setFont(font)
 
         display_text = self._formatted_true if self._status else self._formatted_false
 
-        scale_factor = 0.85
-        target_w = int(side * scale_factor)
-        target_h = int(side * scale_factor)
+        target_w = int(side * self._TEXT_FILL_RATIO)
+        target_h = int(side * self._TEXT_FILL_RATIO)
         draw_rect = QRect(0, 0, target_w, target_h)
         draw_rect.moveCenter(rect.center())
 
         painter.drawText(draw_rect, Qt.AlignmentFlag.AlignCenter, display_text)
+
+
+class CasiaMultiStateIndicator(QWidget):
+    """可点击的多模式状态指示灯。
+
+    控件只负责按状态键显示文字和颜色，不在内部推断业务状态，也不会自行切换状态。
+    点击后由页面决定是否允许切换并调用硬件接口，因此同一控件既可用于可交互的模式、
+    电机状态，也可用于只读的机器人运行状态。
+    """
+
+    clicked = Signal()
+    stateChanged = Signal(str)
+
+    def __init__(
+        self,
+        caption: str,
+        states: Sequence[IndicatorState],
+        parent: QWidget | None = None,
+        default_state: str = "unknown",
+        interactive: bool = True,
+    ) -> None:
+        super().__init__(parent)
+        if not states:
+            raise ValueError("多模式指示灯至少需要一个状态")
+        self._caption = caption
+        self._states = {state.key: state for state in states}
+        self._unknown_state = IndicatorState("unknown", "未知", "#607d8b")
+        self._state_key = default_state
+        self._interactive = interactive
+        self._is_pressed = False
+        self.setFixedSize(72, 72)
+        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        self.setCursor(
+            Qt.CursorShape.PointingHandCursor
+            if interactive
+            else Qt.CursorShape.ArrowCursor
+        )
+        self._update_tooltip()
+
+    @property
+    def state(self) -> str:
+        """返回当前原始状态键。"""
+
+        return self._state_key
+
+    def set_state(self, state_key: str) -> None:
+        """按原始状态键刷新显示；未注册状态统一显示为未知。"""
+
+        if self._state_key == state_key:
+            return
+        self._state_key = state_key
+        self._update_tooltip()
+        self.stateChanged.emit(state_key)
+        self.update()
+
+    def sizeHint(self) -> QSize:
+        return QSize(72, 72)
+
+    def _update_tooltip(self) -> None:
+        state = self._states.get(self._state_key, self._unknown_state)
+        self.setToolTip(f"{self._caption}：{state.text}")
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:
+        if (
+            self._interactive
+            and self.isEnabled()
+            and event.button() == Qt.MouseButton.LeftButton
+        ):
+            self._is_pressed = True
+            self.update()
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+        if not self._interactive or not self.isEnabled():
+            return
+        if event.button() == Qt.MouseButton.LeftButton:
+            was_pressed = self._is_pressed
+            self._is_pressed = False
+            self.update()
+            if was_pressed and self.rect().contains(event.pos()):
+                self.clicked.emit()
+        super().mouseReleaseEvent(event)
+
+    def changeEvent(self, event: QEvent) -> None:
+        if event.type() == QEvent.Type.EnabledChange:
+            self._is_pressed = False
+            self.setCursor(
+                Qt.CursorShape.PointingHandCursor
+                if self._interactive and self.isEnabled()
+                else Qt.CursorShape.ArrowCursor
+            )
+            self.update()
+        super().changeEvent(event)
+
+    def paintEvent(self, event: QEvent) -> None:
+        _ = event
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        state = self._states.get(self._state_key, self._unknown_state)
+        background = QColor(state.color)
+        if not self.isEnabled():
+            background = QColor("#9e9e9e")
+        elif self._is_pressed:
+            background = background.darker(115)
+
+        body = self.rect().adjusted(2, 2, -2, -2)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(background)
+        painter.drawEllipse(body)
+
+        painter.setPen(QColor(state.text_color))
+        font = QFont(self.font())
+        point_size = font.pointSize()
+        font.setPointSize(max(9, point_size if point_size > 0 else 11))
+        font.setBold(True)
+        painter.setFont(font)
+        display_text = state.text
+        if len(display_text) == 4:
+            display_text = f"{display_text[:2]}\n{display_text[2:]}"
+        painter.drawText(
+            body.adjusted(6, 6, -6, -6),
+            Qt.AlignmentFlag.AlignCenter,
+            display_text,
+        )
+
+
+class CasiaToggleSwitch(QWidget):
+    """适合触摸操作的开关控件。"""
+
+    toggled = Signal(bool)
+
+    def __init__(
+        self,
+        parent: QWidget | None = None,
+        *,
+        checked: bool = False,
+        tooltip_prefix: str = "",
+    ) -> None:
+        super().__init__(parent)
+        self._checked = checked
+        self._pressed = False
+        self._tooltip_prefix = tooltip_prefix
+        self.setFixedSize(76, 42)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._update_tooltip()
+
+    @property
+    def checked(self) -> bool:
+        return self._checked
+
+    def set_checked(self, checked: bool) -> None:
+        if self._checked == checked:
+            return
+        self._checked = checked
+        self._update_tooltip()
+        self.update()
+
+    def _update_tooltip(self) -> None:
+        state_text = "开启" if self._checked else "关闭"
+        prefix = f"{self._tooltip_prefix}：" if self._tooltip_prefix else ""
+        self.setToolTip(f"{prefix}{state_text}")
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:
+        if self.isEnabled() and event.button() == Qt.MouseButton.LeftButton:
+            self._pressed = True
+            self.update()
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+        if not self.isEnabled():
+            return
+        if event.button() == Qt.MouseButton.LeftButton:
+            was_pressed = self._pressed
+            self._pressed = False
+            if was_pressed and self.rect().contains(event.pos()):
+                self._checked = not self._checked
+                self._update_tooltip()
+                self.toggled.emit(self._checked)
+            self.update()
+        super().mouseReleaseEvent(event)
+
+    def changeEvent(self, event: QEvent) -> None:
+        if event.type() == QEvent.Type.EnabledChange:
+            self._pressed = False
+            self.setCursor(
+                Qt.CursorShape.PointingHandCursor
+                if self.isEnabled()
+                else Qt.CursorShape.ArrowCursor
+            )
+            self.update()
+        super().changeEvent(event)
+
+    def paintEvent(self, event: QEvent) -> None:
+        _ = event
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        track = self.rect().adjusted(2, 5, -2, -5)
+        if not self.isEnabled():
+            track_color = QColor("#bdbdbd")
+        elif self._checked:
+            track_color = QColor("#2e7d32")
+        else:
+            track_color = QColor("#78909c")
+        if self._pressed:
+            track_color = track_color.darker(115)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(track_color)
+        radius = track.height() / 2
+        painter.drawRoundedRect(track, radius, radius)
+
+        knob_size = track.height() - 6
+        knob_left = (
+            track.right() - knob_size - 3
+            if self._checked
+            else track.left() + 3
+        )
+        knob = QRect(knob_left, track.top() + 3, knob_size, knob_size)
+        painter.setBrush(QColor("#ffffff"))
+        painter.drawEllipse(knob)
 
 
 # ==========================================
@@ -321,7 +588,7 @@ class DemoWindow(QWidget):
         )
         self.ind_interactive.clicked.connect(lambda: self.log("指示灯 1 被点击"))
         # 模拟按钮行为：点击反转状态
-        self.ind_interactive.clicked.connect(lambda: self.ind_interactive.setStatus(not self.ind_interactive.status))
+        self.ind_interactive.clicked.connect(lambda: self.ind_interactive.set_status(not self.ind_interactive.status))
         self.add_indicator_row("1. 交互式开关 (点击我):", self.ind_interactive)
 
         # 2. 4 字排版测试
@@ -416,7 +683,7 @@ class DemoWindow(QWidget):
                 # 修改 ind_long_text 的 True 状态文字色
                 current_colors = self.ind_long_text._text_colors
                 self.ind_long_text.setTextColors(color, current_colors[1])
-            self.ind_long_text.status = True  # 强制切到 True 看效果
+            self.ind_long_text.set_status(True)  # 强制切到 True 看效果
             self.log(f"颜色已修改：{target}")
 
 

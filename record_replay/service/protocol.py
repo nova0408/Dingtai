@@ -4,7 +4,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from ..contracts import ReplayServiceState
+from ..contracts import (
+    ReplayCsvFileStatus,
+    ReplayExecutionTaskStatus,
+    ReplayServiceState,
+)
 from .config_store import RuntimeParameters
 
 
@@ -17,5 +21,17 @@ class RecordReplayResponse:
     left_csv_state: str | None = None
     plan_index: int | None = None
     error_text: str | None = None
+    left_csv_files: tuple[ReplayCsvFileStatus, ...] = ()
+    right_csv_files: tuple[ReplayCsvFileStatus, ...] = ()
+    execution_tasks: tuple[ReplayExecutionTaskStatus, ...] = ()
+    current_task_sequence: int = 0
+    current_task_active: bool = False
+    total_execution_count: int = 0
+    current_left_csv: str | None = None
+    current_right_csv: str | None = None
+    current_left_row: int | None = None
+    current_right_row: int | None = None
+    current_left_total_rows: int | None = None
+    current_right_total_rows: int | None = None
     parameters: RuntimeParameters | None = None
 

@@ -103,8 +103,6 @@ class ReplayOffsetSettings:
     "纠偏触发 CSV 临时使用的末端线速度，单位 mm/s。"
     capture_settle_delay_s: float = 0.0
     "纠偏触发 CSV 完成后、采集三球前的等待时间，单位 s。"
-    ordered_ball_colors: tuple[str, str, str] = ("#ffff00", "#ff0000", "#ff00ff")
-    "三球排序：黄球原点、红球 X 轴、紫球平面提示。"
     mad_scale: float = 3.5
     "三球样本 MAD 异常剔除倍数。"
     min_outlier_threshold_mm: float = 2.0

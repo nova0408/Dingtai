@@ -29,6 +29,8 @@ class RecordReplayApplication:
         self._device_status_reader = device_status_reader
         self._lock = threading.Lock()
         self._worker: threading.Thread | None = None
+        self._total_execution_count = 0
+        self._cycle_service.refresh_deployment_status()
 
     def start(self, enable_agv_navigation: bool) -> RecordReplayResponse:
         """启动唯一业务线程；已有任务运行时拒绝重复启动。"""
@@ -42,6 +44,7 @@ class RecordReplayApplication:
                 name="record-replay-worker",
                 daemon=False,
             )
+            self._total_execution_count += 1
             self._worker.start()
         return self.status()
 
@@ -49,12 +52,29 @@ class RecordReplayApplication:
         """返回当前原子状态快照。"""
 
         snapshot = self._context.snapshot()
+        current_task_sequence = (
+            0
+            if snapshot.current_task_index is None
+            else snapshot.current_task_index + 1
+        )
         return RecordReplayResponse(
             state=snapshot.state,
             accepted=accepted,
             left_csv_state=snapshot.left_csv_state,
             plan_index=snapshot.plan_index,
             error_text=snapshot.error_text,
+            left_csv_files=snapshot.left_csv_files,
+            right_csv_files=snapshot.right_csv_files,
+            execution_tasks=snapshot.execution_tasks,
+            current_task_sequence=current_task_sequence,
+            current_task_active=snapshot.current_task_active,
+            total_execution_count=self._total_execution_count,
+            current_left_csv=snapshot.current_left_csv,
+            current_right_csv=snapshot.current_right_csv,
+            current_left_row=snapshot.current_left_row,
+            current_right_row=snapshot.current_right_row,
+            current_left_total_rows=snapshot.current_left_total_rows,
+            current_right_total_rows=snapshot.current_right_total_rows,
         )
 
     def get_parameters(self) -> RecordReplayResponse:
@@ -67,6 +87,18 @@ class RecordReplayApplication:
             left_csv_state=response.left_csv_state,
             plan_index=response.plan_index,
             error_text=response.error_text,
+            left_csv_files=response.left_csv_files,
+            right_csv_files=response.right_csv_files,
+            execution_tasks=response.execution_tasks,
+            current_task_sequence=response.current_task_sequence,
+            current_task_active=response.current_task_active,
+            total_execution_count=response.total_execution_count,
+            current_left_csv=response.current_left_csv,
+            current_right_csv=response.current_right_csv,
+            current_left_row=response.current_left_row,
+            current_right_row=response.current_right_row,
+            current_left_total_rows=response.current_left_total_rows,
+            current_right_total_rows=response.current_right_total_rows,
             parameters=self._config_store.load(),
         )
 

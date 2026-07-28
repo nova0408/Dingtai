@@ -75,13 +75,8 @@ class BallPoseDetector:
             ranges = (
                 prior.hsv_ranges
                 if prior.hsv_ranges
-                else self._config.color_ranges.get(prior.color_hex, ())
+                else _reference_hsv_ranges(prior.color_hex, self._config)
             )
-            if not ranges:
-                ranked[prior.color_hex] = [
-                    self._missing_detection(prior, "missing_color_range")
-                ]
-                continue
             mask = self._build_color_mask(hsv, ranges)
             candidates = self._collect_color_candidates(
                 prior.color_hex,
@@ -719,3 +714,38 @@ def _hex_to_bgr(color_hex: str) -> np.ndarray:
     g = int(hex_text[2:4], 16)
     b = int(hex_text[4:6], 16)
     return np.asarray([b, g, r], dtype=np.uint8)
+
+
+def _reference_hsv_ranges(
+    color_hex: str,
+    config: BallPoseDetectionConfig,
+) -> tuple[tuple[int, int, int, int, int, int], ...]:
+    """根据请求传入的 RGB HEX 颜色生成首次检测使用的 HSV 宽范围。
+
+    算法不维护任何具名球色表。Hue 在 OpenCV 的 0/179 边界处自动拆成两个范围，
+    因此红色与任意用户选择的颜色都走同一条计算路径。
+    """
+
+    bgr = _hex_to_bgr(color_hex).reshape(1, 1, 3)
+    hue, saturation, value = (
+        int(component)
+        for component in cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)[0, 0]
+    )
+    hue_min = hue - config.reference_hue_tolerance
+    hue_max = hue + config.reference_hue_tolerance
+    saturation_min = max(
+        0,
+        saturation - config.reference_saturation_tolerance,
+    )
+    value_min = max(0, value - config.reference_value_tolerance)
+    if hue_min < 0:
+        return (
+            (0, saturation_min, value_min, hue_max, 255, 255),
+            (180 + hue_min, saturation_min, value_min, 179, 255, 255),
+        )
+    if hue_max > 179:
+        return (
+            (hue_min, saturation_min, value_min, 179, 255, 255),
+            (0, saturation_min, value_min, hue_max - 180, 255, 255),
+        )
+    return ((hue_min, saturation_min, value_min, hue_max, 255, 255),)

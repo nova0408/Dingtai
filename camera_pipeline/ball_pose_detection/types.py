@@ -84,12 +84,9 @@ class BallPoseDetectionConfig:
     "估计直径相对先验直径的最大允许误差，超过时判定该候选未检出。"
     max_relative_distance_error_ratio: float = 0.30
     "检测球间距相对模型球间距的最大允许误差，超过时整组三球判定未检出。"
-    color_ranges: dict[str, tuple[tuple[int, int, int, int, int, int], ...]] = field(
-        default_factory=lambda: {
-            "#ff0000": ((0, 75, 55, 10, 255, 255), (170, 75, 55, 179, 255, 255)),
-            "#0000ff": ((90, 55, 35, 130, 255, 255),),
-            "#ffff00": ((20, 140, 120, 40, 255, 255),),
-            "#ff00ff": ((130, 90, 100, 170, 255, 255),),
-        }
-    )
-    "按 HEX 颜色索引的 HSV 阈值范围，每项顺序为 `(h_min, s_min, v_min, h_max, s_max, v_max)`。"
+    reference_hue_tolerance: int = 10
+    "未提供标定 HSV 时，由输入 HEX 颜色生成的 Hue 半宽，OpenCV Hue 单位。"
+    reference_saturation_tolerance: int = 115
+    "未提供标定 HSV 时，相对输入 HEX 饱和度向下放宽的幅度。"
+    reference_value_tolerance: int = 135
+    "未提供标定 HSV 时，相对输入 HEX 明度向下放宽的幅度。"
