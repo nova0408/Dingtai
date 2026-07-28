@@ -44,9 +44,9 @@ DEFAULT_STABLE_TIMEOUT_S = 15.0
 DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "test" / "wuji" / ".archive" / "ball_pose_detection_capture"
 # 首次检测仅输入参考颜色和物理直径，占位中心不包含有效相对位置关系
 DEFAULT_REFERENCE_PRIORS = (
-    BallPosePriorInfo("#ffff00", 20.0, (0.0, 0.0, 0.0)),
-    BallPosePriorInfo("#ff0000", 20.0, (1.0, 0.0, 0.0)),
-    BallPosePriorInfo("#ff00ff", 20.0, (0.0, 1.0, 0.0)),
+    BallPosePriorInfo("#ffff00", 20.0, (1.0, 0.0, 0.0)),
+    BallPosePriorInfo("#ff0000", 20.0, (0.0, 0.0, 0.0)),
+    BallPosePriorInfo("#00b3ff", 20.0, (0.0, 1.0, 0.0)),
 )
 
 # endregion

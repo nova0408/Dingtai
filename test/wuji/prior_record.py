@@ -42,8 +42,8 @@ DEFAULT_MARKER_LENGTH_MM = 14
 DEFAULT_MIN_CHARUCO_CORNERS = 6
 DEFAULT_WINDOW_WIDTH = 1440
 DEFAULT_WINDOW_HEIGHT = 900
-BALL_ORDERED_COLORS = ("#ffff00", "#ff0000", "#00ff00")
-BALL_COLOR_LABELS = ("yellow", "red", "green")
+BALL_ORDERED_COLORS = ("#ffff00", "#ff0000", "#00b3ff")
+BALL_COLOR_LABELS = ("yellow", "red", "blue")
 BALL_X_AXIS_INDEX = 0
 BALL_ORIGIN_INDEX = 1
 BALL_PLANE_INDEX = 2
@@ -769,13 +769,13 @@ def _build_priors_from_capture(
     lookup = {str(item.get("color_hex")): item for item in recorded_balls if isinstance(item, dict)}
     yellow_item = lookup.get(BALL_ORDERED_COLORS[BALL_X_AXIS_INDEX])
     red_item = lookup.get(BALL_ORDERED_COLORS[BALL_ORIGIN_INDEX])
-    green_item = lookup.get(BALL_ORDERED_COLORS[BALL_PLANE_INDEX])
-    if yellow_item is None or red_item is None or green_item is None:
+    blue_item = lookup.get(BALL_ORDERED_COLORS[BALL_PLANE_INDEX])
+    if yellow_item is None or red_item is None or blue_item is None:
         return _invalid_or_default_priors(
             require_recorded_prior,
-            "三球先验缺少黄、红、绿固定颜色条目",
+            "三球先验缺少黄、红、蓝固定颜色条目",
         )
-    ordered = (yellow_item, red_item, green_item)
+    ordered = (yellow_item, red_item, blue_item)
     origin = _prior_center_mm(ordered[BALL_ORIGIN_INDEX])
     second = _prior_center_mm(ordered[BALL_X_AXIS_INDEX])
     third = _prior_center_mm(ordered[BALL_PLANE_INDEX])
@@ -1045,7 +1045,7 @@ def _build_local_pose_overlay(
         "local xyzrpy",
         f"x={x_mm:.2f} mm  y={y_mm:.2f} mm  z={z_mm:.2f} mm",
         f"roll={roll_deg:.2f} deg  pitch={pitch_deg:.2f} deg  yaw={yaw_deg:.2f} deg",
-        "frame: red origin, yellow x-axis, green xoy plane",
+        "frame: red origin, yellow x-axis, blue xoy plane",
     )
     _draw_text_block(overlay, lines)
     return overlay

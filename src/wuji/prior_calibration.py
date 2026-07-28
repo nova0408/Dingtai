@@ -90,8 +90,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_PRIOR_OUTPUT_DIR = PROJECT_ROOT / "record_replay" / "prior_data"
 BALL_CAMERA_NAME = "left_hand_camera"
 HEAD_CAMERA_NAME = "head_camera"
-DEFAULT_BALL_COLORS = ("#ffff00", "#ff0000", "#00ff00")
-"GUI 与独立记录脚本共用的默认顺序：黄球、红球、绿球。"
+DEFAULT_BALL_COLORS = ("#ffff00", "#ff0000", "#00b3ff")
+"GUI 与独立记录脚本共用的默认顺序：黄球、红球、蓝球。"
 BALL_X_AXIS_INDEX = 0
 "颜色顺序中用于指示坐标系 X 轴的球索引。"
 BALL_ORIGIN_INDEX = 1

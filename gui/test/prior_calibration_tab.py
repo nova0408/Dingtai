@@ -232,7 +232,7 @@ class PriorCalibrationTabWidget(QWidget, ActivatableTab):
         color_specs = (
             ("球 1 · X 轴", "默认黄色"),
             ("球 2 · 原点", "默认红色"),
-            ("球 3 · XOY 平面", "默认绿色"),
+            ("球 3 · XOY 平面", "默认蓝色"),
         )
         for index, (caption, tooltip) in enumerate(color_specs):
             button = QPushButton(group)
