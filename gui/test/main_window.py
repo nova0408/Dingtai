@@ -60,6 +60,7 @@ DEFAULT_AGV_IP = "192.168.100.70"
 DEFAULT_QMLINKER_PORT = 50062
 DEFAULT_CAMERA_CONTROL_PORT = 5570
 DEFAULT_CAMERA_PIPELINE_PORT = 6200
+DEFAULT_CAMERA_PIPELINE_SSH_HOST = "127.0.0.1"
 DEFAULT_GRIPPER_PORT = 50066
 DEFAULT_CAMERA_STREAM_TIMEOUT_MS = 2000
 SETTINGS_ORGANIZATION = "DingTai"
@@ -477,8 +478,13 @@ class TestGuiMainWindow(QMainWindow):
 
             stage = "CameraPipeline 客户端创建"
             logger.info("GUI connection stage begin: {}", stage)
+            pipeline_remote_host = (
+                DEFAULT_ORIN_IP
+                if direct
+                else DEFAULT_CAMERA_PIPELINE_SSH_HOST
+            )
             pipeline_target = session.resolve_target(
-                DEFAULT_CONTROL_IP,
+                pipeline_remote_host,
                 DEFAULT_CAMERA_PIPELINE_PORT,
             )
             camera_pipeline_client = CameraPipelineClient(
@@ -568,7 +574,7 @@ class TestGuiMainWindow(QMainWindow):
             WujiSshForward(
                 local_host="127.0.0.1",
                 local_port=DEFAULT_CAMERA_PIPELINE_PORT - 1,
-                remote_host=DEFAULT_CONTROL_IP,
+                remote_host=DEFAULT_CAMERA_PIPELINE_SSH_HOST,
                 remote_port=DEFAULT_CAMERA_PIPELINE_PORT,
             ),
         ]

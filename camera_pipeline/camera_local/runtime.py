@@ -144,6 +144,16 @@ class LocalCameraRuntime:
                 return None
             return self._latest_frame
 
+    def get_latest_color_frame(self) -> CameraFramePacket | None:
+        """返回当前最新彩色帧；本机 RGBD 包同时满足彩色帧协议。"""
+
+        return self.get_latest_frame()
+
+    def get_color_frame_by_id(self, frame_id: int) -> CameraFramePacket | None:
+        """按帧号返回当前彩色帧；本机模式不维护历史缓存。"""
+
+        return self.get_frame_by_id(frame_id)
+
     def _run(self) -> None:
         """循环执行连接、采集、释放和低频指数退避重试。"""
 

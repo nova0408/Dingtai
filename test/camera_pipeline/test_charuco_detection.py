@@ -35,7 +35,7 @@ class _MemoryCharucoContext(PipelineContext):
         self._index = 0
         self.wait_count = 0
 
-    def wait_for_stable_frame(
+    def wait_for_stable_color_frame(
         self,
         timeout_s: float = 10.0,
         camera_name: str | None = None,

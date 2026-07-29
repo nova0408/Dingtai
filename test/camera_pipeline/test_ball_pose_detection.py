@@ -16,6 +16,7 @@ from camera_pipeline.ball_pose_detection.detector import (
     BallPoseDetector,
     _BallDetection,
     _ColorCandidate,
+    _reference_hsv_ranges,
 )
 from camera_pipeline.ball_pose_detection.priors import BallPosePrior
 from camera_pipeline.ball_pose_detection.protocol import (
@@ -156,7 +157,7 @@ def test_calibrated_hsv_range_excludes_reference_color_false_block() -> None:
     ("color_hex", "true_hsv", "background_hsv"),
     [
         ("#ffff00", (30, 220, 250), (20, 105, 180)),
-        ("#ff00ff", (140, 135, 215), (140, 70, 45)),
+        ("#ff00ff", (150, 220, 250), (150, 70, 45)),
     ],
 )
 def test_reference_range_rejects_scene_block_but_keeps_ball(
@@ -175,7 +176,7 @@ def test_reference_range_rejects_scene_block_but_keeps_ball(
 
     mask = detector._build_color_mask(
         converted,
-        detector._config.color_ranges[color_hex],
+        _reference_hsv_ranges(color_hex, detector._config),
     )
 
     assert int(np.count_nonzero(mask[:, :70])) == 0

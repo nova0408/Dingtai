@@ -18,7 +18,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from camera_pipeline.client import CameraName, CameraPipelineClient
 from camera_pipeline.camera_stream import CameraStreamRuntime
 from camera_pipeline.pipeline_context import PipelineContext
-from camera_pipeline.protocol import CameraFramePacket
+from camera_pipeline.protocol import CameraColorFramePacket, CameraFramePacket
 from camera_pipeline.service.application import CameraPipelineApplication
 from camera_pipeline.service.frame_publisher import CameraFramePublisher
 from camera_pipeline.service.protocol import CameraPipelineServiceRequest
@@ -38,6 +38,7 @@ class _TestPipelineContext(PipelineContext):
 
     def __init__(self) -> None:
         self._frame_id = 41
+        self.rgbd_available = True
         self._test_frames = {
             "head_camera": self._build_frame("head_camera", 500.0),
             "chest_camera": self._build_frame("chest_camera", 550.0),
@@ -55,10 +56,30 @@ class _TestPipelineContext(PipelineContext):
     def get_latest_frame(
         self,
         camera_name: str | None = None,
-    ) -> CameraFramePacket:
+    ) -> CameraFramePacket | None:
+        if not self.rgbd_available:
+            return None
         self._frame_id += 1
         frame = self._test_frames[self._resolve_camera_name(camera_name)]
         return replace(frame, frame_id=self._frame_id)
+
+    def get_latest_color_frame(
+        self,
+        camera_name: str | None = None,
+    ) -> CameraColorFramePacket:
+        self._frame_id += 1
+        frame = self._test_frames[self._resolve_camera_name(camera_name)]
+        return CameraColorFramePacket(
+            frame_id=self._frame_id,
+            camera_name=frame.camera_name,
+            timestamp_ms=frame.timestamp_ms,
+            color_bgr=frame.color_bgr,
+            fx=frame.fx,
+            fy=frame.fy,
+            cx=frame.cx,
+            cy=frame.cy,
+            distortion=frame.distortion,
+        )
 
     def get_camera_id(self, camera_name: str | None = None) -> str:
         return self._resolve_camera_name(camera_name).upper()
@@ -124,6 +145,27 @@ def test_named_head_subscription_filters_multiplexed_stream() -> None:
         frame = next(stream)
         assert frame.camera_name == "head_camera"
         assert frame.fx == 500.0
+    finally:
+        stream.close()
+        client.close()
+        resources.close()
+
+
+def test_color_subscription_remains_available_without_rgbd_frames() -> None:
+    resources = _start_service()
+    resources.pipeline_context.rgbd_available = False
+    client = CameraPipelineClient(
+        service_addr=resources.address,
+        timeout_ms=DEFAULT_TIMEOUT_MS,
+    )
+    stream = cast(
+        Generator[CameraColorFramePacket, None, None],
+        client.subscribe_camera_color_frames(CameraName.LEFT_ARM),
+    )
+    try:
+        frame = next(stream)
+        assert frame.camera_name == "left_hand_camera"
+        assert frame.color_bgr.shape == (48, 64, 3)
     finally:
         stream.close()
         client.close()
@@ -200,8 +242,10 @@ class _ServiceResources:
         thread: threading.Thread,
         transport: CameraPipelineRpcServer,
         publisher: CameraFramePublisher,
+        pipeline_context: _TestPipelineContext,
     ) -> None:
         self.address = address
+        self.pipeline_context = pipeline_context
         self._stop_event = stop_event
         self._thread = thread
         self._transport = transport
@@ -238,7 +282,14 @@ def _start_service() -> _ServiceResources:
     stop_event = threading.Event()
     thread = threading.Thread(target=server.serve, args=(stop_event,), daemon=True)
     thread.start()
-    return _ServiceResources(address, stop_event, thread, transport, publisher)
+    return _ServiceResources(
+        address,
+        stop_event,
+        thread,
+        transport,
+        publisher,
+        pipeline_context,
+    )
 
 
 def main() -> None:
@@ -246,6 +297,7 @@ def main() -> None:
 
     test_public_client_calls_in_process_service()
     test_named_head_subscription_filters_multiplexed_stream()
+    test_color_subscription_remains_available_without_rgbd_frames()
     test_named_camera_intrinsics_are_routed_to_requested_camera()
     test_right_arm_intrinsics_api_is_retained_but_reports_disconnected()
     test_protocol_version_mismatch_returns_error_response()

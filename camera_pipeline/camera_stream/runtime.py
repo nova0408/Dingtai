@@ -16,7 +16,7 @@ import numpy as np
 import zmq
 from loguru import logger
 
-from ..protocol import CameraFramePacket
+from ..protocol import CameraColorFramePacket, CameraFramePacket
 
 JsonScalar: TypeAlias = None | bool | int | float | str
 JsonValue: TypeAlias = JsonScalar | list["JsonValue"] | dict[str, "JsonValue"]
@@ -55,7 +55,13 @@ class CameraStreamRuntimeConfig:
     "连续收流超时次数上限；超过后触发自愈。"
 
     recover_retry_interval_s: float = 2.0
-    "自愈后再次尝试前的最小间隔，单位 s。"
+    "上游控制失败后的初始重试间隔，单位 s。"
+
+    recover_retry_max_interval_s: float = 30.0
+    "上游控制连续失败时指数退避的最大间隔，单位 s。"
+
+    max_consecutive_color_only_frames: int = 30
+    "连续无深度帧数量上限；达到后重新请求上游开启深度。"
 
 
 # endregion
@@ -82,6 +88,20 @@ class CameraStreamRuntime:
 
     def __init__(self, config: CameraStreamRuntimeConfig | None = None) -> None:
         self._config = CameraStreamRuntimeConfig() if config is None else config
+        if self._config.recover_retry_interval_s <= 0.0:
+            raise ValueError("recover_retry_interval_s must be greater than zero")
+        if (
+            self._config.recover_retry_max_interval_s
+            < self._config.recover_retry_interval_s
+        ):
+            raise ValueError(
+                "recover_retry_max_interval_s must be greater than or equal to "
+                "recover_retry_interval_s"
+            )
+        if self._config.max_consecutive_color_only_frames <= 0:
+            raise ValueError(
+                "max_consecutive_color_only_frames must be greater than zero"
+            )
         self._context = zmq.Context()
         self._control_socket = self._create_control_socket()
         self._stream_socket: zmq.Socket | None = None
@@ -91,12 +111,21 @@ class CameraStreamRuntime:
         self._frame_order: queue.Queue[int] = queue.Queue(
             maxsize=max(1, int(self._config.cache_size))
         )
+        self._latest_color_frame: CameraColorFramePacket | None = None
+        self._color_frame_cache: dict[int, CameraColorFramePacket] = {}
+        self._color_frame_order: queue.Queue[int] = queue.Queue(
+            maxsize=max(1, int(self._config.cache_size))
+        )
         self._running = False
         self._thread: threading.Thread | None = None
         self._cached_intrinsics: tuple[
             float, float, float, float, tuple[float, ...]
         ] | None = None
         self._last_recover_time = 0.0
+        self._depth_stream_confirmed = False
+        self._consecutive_color_only_frames = 0
+        self._control_retry_failures = 0
+        self._next_control_retry_at = 0.0
 
     def start(self) -> None:
         """启动后台采流线程。"""
@@ -115,24 +144,11 @@ class CameraStreamRuntime:
             self._config.control_port,
             self._config.stream_port,
         )
-        try:
-            self._send_control_command("set_depth_enabled", {"enable": True})
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "set_depth_enabled failed during camera start camera_name={} error={}",
-                self._config.camera_name,
-                exc,
-            )
-        try:
-            self._cached_intrinsics = self._get_intrinsics_from_control()
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "get_intrinsics failed during camera start camera_name={} error={}",
-                self._config.camera_name,
-                exc,
-            )
-            self._cached_intrinsics = None
         self._stream_socket = self._create_stream_socket()
+        self._depth_stream_confirmed = False
+        self._consecutive_color_only_frames = 0
+        self._control_retry_failures = 0
+        self._next_control_retry_at = 0.0
         self._running = True
         self._thread = threading.Thread(
             target=self._capture_loop, name="orin-camera-stream", daemon=True
@@ -177,6 +193,21 @@ class CameraStreamRuntime:
         with self._lock:
             return self._frame_cache.get(int(frame_id))
 
+    def get_latest_color_frame(self) -> CameraColorFramePacket | None:
+        """返回最新彩色帧，不要求同一消息包含深度载荷。"""
+
+        with self._lock:
+            return self._latest_color_frame
+
+    def get_color_frame_by_id(
+        self,
+        frame_id: int,
+    ) -> CameraColorFramePacket | None:
+        """按帧号查询彩色帧缓存。"""
+
+        with self._lock:
+            return self._color_frame_cache.get(int(frame_id))
+
     def wait_until_ready(self, timeout_s: float = 5.0) -> bool:
         """等待第一帧就绪。"""
 
@@ -188,15 +219,27 @@ class CameraStreamRuntime:
         return False
 
     def _capture_loop(self) -> None:
+        """持续接收相机帧，并在上游任意启动顺序下收敛到 RGBD 可用状态。
+
+        Notes
+        -----
+        采集线程同时持有控制 REQ 与数据 SUB socket。控制服务尚未启动时使用指数
+        退避持续重试；数据服务尚未启动时由 ZMQ SUB 自动重连，并由接收超时路径
+        重建本地 socket。只要进程未停止，启动阶段的暂时失败不会成为永久状态。
+        """
+
         consecutive_timeouts = 0
         while self._running:
+            if not self._maintain_upstream_control():
+                time.sleep(0.05)
+                continue
             if self._stream_socket is None:
                 self._recover_stream_runtime("stream socket missing")
                 time.sleep(0.05)
                 continue
             try:
                 raw_message = self._stream_socket.recv()
-                packet = self._decode_frame(raw_message)
+                color_packet, rgbd_packet = self._decode_frame(raw_message)
             except zmq.error.Again:
                 consecutive_timeouts += 1
                 if consecutive_timeouts >= max(
@@ -218,15 +261,109 @@ class CameraStreamRuntime:
                 continue
             consecutive_timeouts = 0
             with self._lock:
-                self._latest_frame = packet
-                self._frame_cache[int(packet.frame_id)] = packet
+                self._latest_color_frame = color_packet
+                self._color_frame_cache[int(color_packet.frame_id)] = color_packet
+                if self._color_frame_order.full():
+                    try:
+                        expired = self._color_frame_order.get_nowait()
+                        self._color_frame_cache.pop(int(expired), None)
+                    except queue.Empty:
+                        pass
+                self._color_frame_order.put_nowait(int(color_packet.frame_id))
+                if rgbd_packet is None:
+                    self._record_color_only_frame()
+                    continue
+                self._record_rgbd_frame()
+                self._latest_frame = rgbd_packet
+                self._frame_cache[int(rgbd_packet.frame_id)] = rgbd_packet
                 if self._frame_order.full():
                     try:
                         expired = self._frame_order.get_nowait()
                         self._frame_cache.pop(int(expired), None)
                     except queue.Empty:
                         pass
-                self._frame_order.put_nowait(int(packet.frame_id))
+                self._frame_order.put_nowait(int(rgbd_packet.frame_id))
+
+    def _maintain_upstream_control(self) -> bool:
+        """按退避计划恢复深度开关和相机内参。
+
+        Returns
+        -------
+        bool
+            `True` 表示已有内参，可继续解码数据流；`False` 表示当前只能等待下一次
+            控制重试。深度是否真正恢复由收到 RGBD 帧确认，不能仅相信控制响应。
+        """
+
+        needs_depth = not self._depth_stream_confirmed
+        needs_intrinsics = self._cached_intrinsics is None
+        if not needs_depth and not needs_intrinsics:
+            return True
+
+        now = time.monotonic()
+        if now < self._next_control_retry_at:
+            return not needs_intrinsics
+        try:
+            if needs_depth:
+                self._send_control_command("set_depth_enabled", {"enable": True})
+            if needs_intrinsics:
+                self._cached_intrinsics = self._get_intrinsics_from_control()
+        except Exception as exc:  # noqa: BLE001
+            self._control_retry_failures += 1
+            retry_interval_s = _calculate_retry_interval_s(
+                self._control_retry_failures,
+                self._config.recover_retry_interval_s,
+                self._config.recover_retry_max_interval_s,
+            )
+            self._next_control_retry_at = now + retry_interval_s
+            logger.warning(
+                "camera upstream control unavailable; retry scheduled "
+                "camera_name={} failures={} retry_s={:.3f} error={}",
+                self._config.camera_name,
+                self._control_retry_failures,
+                retry_interval_s,
+                exc,
+            )
+            return self._cached_intrinsics is not None
+
+        if self._control_retry_failures > 0:
+            logger.success(
+                "camera upstream control recovered camera_name={} failures={}",
+                self._config.camera_name,
+                self._control_retry_failures,
+            )
+        self._control_retry_failures = 0
+        self._next_control_retry_at = now + self._config.recover_retry_interval_s
+        return self._cached_intrinsics is not None
+
+    def _record_color_only_frame(self) -> None:
+        """记录无深度帧，并在持续退化时重新进入深度恢复状态。"""
+
+        self._consecutive_color_only_frames += 1
+        threshold = self._config.max_consecutive_color_only_frames
+        if self._consecutive_color_only_frames < threshold:
+            return
+        if not self._depth_stream_confirmed:
+            return
+        logger.warning(
+            "camera depth stream lost; control recovery scheduled "
+            "camera_name={} color_only_frames={}",
+            self._config.camera_name,
+            self._consecutive_color_only_frames,
+        )
+        self._depth_stream_confirmed = False
+        self._next_control_retry_at = 0.0
+
+    def _record_rgbd_frame(self) -> None:
+        """以实际 RGBD 帧确认深度恢复，并清空连续退化计数。"""
+
+        if not self._depth_stream_confirmed:
+            logger.success(
+                "camera depth stream confirmed camera_name={}",
+                self._config.camera_name,
+            )
+        self._depth_stream_confirmed = True
+        self._consecutive_color_only_frames = 0
+        self._control_retry_failures = 0
 
     def _recover_stream_runtime(self, reason: str) -> None:
         now = time.perf_counter()
@@ -239,23 +376,10 @@ class CameraStreamRuntime:
             self._config.camera_name,
             reason,
         )
-        try:
-            self._send_control_command("set_depth_enabled", {"enable": True})
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "set_depth_enabled failed during recovery camera_name={} error={}",
-                self._config.camera_name,
-                exc,
-            )
-        try:
-            self._cached_intrinsics = self._get_intrinsics_from_control()
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "get_intrinsics failed during recovery camera_name={} error={}",
-                self._config.camera_name,
-                exc,
-            )
-            self._cached_intrinsics = None
+        self._depth_stream_confirmed = False
+        self._consecutive_color_only_frames = 0
+        self._cached_intrinsics = None
+        self._next_control_retry_at = 0.0
         self._recreate_stream_socket()
 
     def _recreate_stream_socket(self) -> None:
@@ -309,14 +433,22 @@ class CameraStreamRuntime:
             raise RuntimeError(error)
         return response
 
-    def _decode_frame(self, raw_message: bytes) -> CameraFramePacket:
+    def _decode_frame(
+        self,
+        raw_message: bytes,
+    ) -> tuple[CameraColorFramePacket, CameraFramePacket | None]:
         if len(raw_message) < self._FRAME_HEADER_SIZE:
-            raise RuntimeError("ZMQ camera frame too short")
+            raise RuntimeError(
+                "ZMQ camera frame too short "
+                f"actual={len(raw_message)} header={self._FRAME_HEADER_SIZE}"
+            )
         if raw_message[:4] != b"ZCAM":
             raise RuntimeError("invalid ZMQ camera frame magic")
         frame_header = self._FRAME_HEADER_STRUCT.unpack(
             raw_message[: self._FRAME_HEADER_SIZE]
         )
+        protocol_version = int(frame_header[1])
+        depth_format = int(frame_header[4])
         color_data_size = int(frame_header[7])
         depth_width = int(frame_header[8])
         depth_height = int(frame_header[9])
@@ -324,6 +456,20 @@ class CameraStreamRuntime:
         depth_original_size = int(frame_header[11])
         timestamp_us = int(frame_header[12])
         sequence = int(frame_header[13])
+        if protocol_version != 1:
+            raise RuntimeError(
+                f"unsupported ZMQ camera protocol version {protocol_version}"
+            )
+        expected_message_size = (
+            self._FRAME_HEADER_SIZE + color_data_size + depth_data_size
+        )
+        if len(raw_message) != expected_message_size:
+            raise RuntimeError(
+                "ZMQ camera frame size mismatch "
+                f"actual={len(raw_message)} expected={expected_message_size} "
+                f"color={color_data_size} depth={depth_data_size} "
+                f"sequence={sequence}"
+            )
         color_start = self._FRAME_HEADER_SIZE
         color_end = color_start + color_data_size
         color_jpeg = raw_message[color_start:color_end]
@@ -334,37 +480,73 @@ class CameraStreamRuntime:
             raise RuntimeError("camera jpeg decode failed")
         # OpenCV 类型声明只保证 MatLike，在解码边界收窄为协议要求的 uint8 图像。
         color_bgr = np.asarray(color_bgr, dtype=np.uint8)
+        fx, fy, cx, cy, distortion = self._get_intrinsics()
+        color_packet = CameraColorFramePacket(
+            frame_id=sequence,
+            camera_name=self._config.camera_name,
+            timestamp_ms=timestamp_us / 1000.0,
+            color_bgr=color_bgr,
+            fx=fx,
+            fy=fy,
+            cx=cx,
+            cy=cy,
+            distortion=distortion,
+        )
+        if (
+            depth_format == 0
+            and depth_data_size == 0
+            and depth_original_size == 0
+        ):
+            return color_packet, None
+        if depth_format != 1:
+            raise RuntimeError(
+                "unsupported ZMQ camera depth format "
+                f"depth_format={depth_format} sequence={sequence}"
+            )
+        expected_depth_size = depth_width * depth_height * 2
+        if depth_original_size != expected_depth_size:
+            raise RuntimeError(
+                "ZMQ camera depth size mismatch "
+                f"header={depth_original_size} dimensions={expected_depth_size} "
+                f"size={depth_width}x{depth_height} sequence={sequence}"
+            )
         depth_start = color_end
         depth_end = depth_start + depth_data_size
         depth_bytes = raw_message[depth_start:depth_end]
         depth_raw = lz4.block.decompress(
             depth_bytes, uncompressed_size=depth_original_size
         )
+        if len(depth_raw) != depth_original_size:
+            raise RuntimeError(
+                "ZMQ camera depth decompressed size mismatch "
+                f"actual={len(depth_raw)} expected={depth_original_size} "
+                f"sequence={sequence}"
+            )
         depth_mm = (
             np.frombuffer(depth_raw, dtype=np.uint16)
             .reshape((depth_height, depth_width))
             .copy()
         )
-        fx, fy, cx, cy, distortion = self._get_intrinsics()
-        return CameraFramePacket(
-            frame_id=int(sequence),
-            camera_name=str(self._config.camera_name),
-            timestamp_ms=float(timestamp_us) / 1000.0,
+        return color_packet, CameraFramePacket(
+            frame_id=sequence,
+            camera_name=self._config.camera_name,
+            timestamp_ms=timestamp_us / 1000.0,
             color_bgr=color_bgr,
             depth_mm=depth_mm,
-            fx=float(fx),
-            fy=float(fy),
-            cx=float(cx),
-            cy=float(cy),
+            fx=fx,
+            fy=fy,
+            cx=cx,
+            cy=cy,
             distortion=distortion,
         )
 
     def _get_intrinsics(
         self,
     ) -> tuple[float, float, float, float, tuple[float, ...]]:
-        if self._cached_intrinsics is not None:
-            return self._cached_intrinsics
-        self._cached_intrinsics = self._get_intrinsics_from_control()
+        """返回控制维护流程已经缓存的内参，不在解码路径发起 ZMQ 请求。"""
+
+        if self._cached_intrinsics is None:
+            raise RuntimeError("camera intrinsics are not ready")
         return self._cached_intrinsics
 
     def _get_intrinsics_from_control(
@@ -444,3 +626,33 @@ def _read_zmq_distortion(payload: dict[str, JsonValue]) -> tuple[float, ...]:
 
     k1, k2, k3, k4, k5, k6, p1, p2 = distortion_values
     return k1, k2, p1, p2, k3, k4, k5, k6
+
+
+def _calculate_retry_interval_s(
+    failure_count: int,
+    initial_interval_s: float,
+    max_interval_s: float,
+) -> float:
+    """计算上游控制连续失败后的指数退避时间。
+
+    Parameters
+    ----------
+    failure_count:
+        当前连续失败次数，从 1 开始。
+    initial_interval_s:
+        第一次失败后的等待时间，单位 s。
+    max_interval_s:
+        退避等待上限，单位 s。
+
+    Returns
+    -------
+    float
+        本次失败后的等待时间，单位 s。
+    """
+
+    retry_interval_s = initial_interval_s
+    for _ in range(max(0, failure_count - 1)):
+        retry_interval_s = min(retry_interval_s * 2.0, max_interval_s)
+        if retry_interval_s >= max_interval_s:
+            break
+    return retry_interval_s

@@ -95,6 +95,10 @@ description: Dingtai 项目 `camera_pipeline` 构造与版本维护原则。用�
 4. 同一批改动只升级一次；同时包含多类改动时按影响最大的版本位升级，不得为每个文件分别升级。
 5. CameraPipeline 功能版本与 `camera_pipeline.service.protocol.PROTOCOL_VERSION` 相互独立。线协议不兼容时应另外升级协议版本，但不得用协议版本代替功能版本。
 6. 部署到 Orin 时必须同步 CHANGELOG，并将其纳入文件清单和 SHA-256 一致性校验。API 或功能已改变但版本号或日志未更新时，不得报告完成。
+7. 修改公共 client、API 或线协议后，必须把 CameraPipeline 与其 RecordReplay
+   消费端作为同一批次同步并重启。停止 RecordReplay 只能是文件替换期间的临时
+   步骤；完成部署前必须恢复并验证两个服务，禁止留下加载旧客户端的常驻进程。
+8. 双服务重启不授权发送 RecordReplay `/start`，也不授权运行任何回放测试。
 
 ## 评审检查点
 

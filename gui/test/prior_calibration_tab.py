@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import numpy as np
+from loguru import logger
 from PySide6.QtCore import Qt, QTimer, Signal, Slot
 from PySide6.QtGui import QColor, QImage, QPixmap
 from PySide6.QtWidgets import (
@@ -12,6 +13,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMessageBox,
+    QProgressBar,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -33,6 +35,7 @@ from src.wuji.prior_calibration import (
     BALL_CAMERA_NAME,
     DEFAULT_BALL_COLORS,
     HEAD_CAMERA_NAME,
+    PriorBallSampleProgress,
     PriorCalibrationRecorder,
     PriorCalibrationResult,
 )
@@ -51,7 +54,7 @@ class PriorCalibrationTabWidget(QWidget, ActivatableTab):
         IndicatorState("unknown", "未知", "#607d8b"),
     )
 
-    progressChanged = Signal(str)
+    ballSampleReady = Signal(object)
     cameraStreamRequested = Signal(str)
     streamStopRequested = Signal()
 
@@ -70,6 +73,7 @@ class PriorCalibrationTabWidget(QWidget, ActivatableTab):
         self._camera_name = BALL_CAMERA_NAME
         self._last_frame_bgr: np.ndarray | None = None
         self._ball_overlay_bgr: np.ndarray | None = None
+        self._head_overlay_bgr: np.ndarray | None = None
         self._joint_targets_initialized = False
         self._ball_colors: list[str] = list(DEFAULT_BALL_COLORS)
         self._ball_color_buttons: list[QPushButton] = []
@@ -110,6 +114,9 @@ class PriorCalibrationTabWidget(QWidget, ActivatableTab):
         controls_layout.addWidget(self._build_arm_group())
         controls_layout.addWidget(self._build_prior_group())
         controls_layout.addWidget(self._build_head_group())
+        self.status_label = QLabel("等待连接", controls)
+        self.status_label.setWordWrap(True)
+        controls_layout.addWidget(self.status_label)
         controls_layout.addStretch(1)
         scroll = QScrollArea(self)
         scroll.setWidgetResizable(True)
@@ -131,12 +138,13 @@ class PriorCalibrationTabWidget(QWidget, ActivatableTab):
         self.drag_indicator.clicked.connect(self._toggle_drag)
         self.move_button.clicked.connect(self._move_joints)
         self.record_ball_button.clicked.connect(self._record_ball_prior)
-        self.overlay_checkbox.toggled.connect(self._refresh_preview)
+        self.ball_overlay_checkbox.toggled.connect(self._refresh_preview)
         self.head_camera_button.clicked.connect(self._toggle_head_camera)
         self.head_yaw_button.clicked.connect(self._move_head_yaw)
         self.head_pitch_button.clicked.connect(self._move_head_pitch)
         self.record_head_button.clicked.connect(self._record_head_prior)
-        self.progressChanged.connect(self.status_label.setText)
+        self.head_overlay_checkbox.toggled.connect(self._refresh_preview)
+        self.ballSampleReady.connect(self._on_ball_sample_ready)
         self._refresh_call.succeeded.connect(self._on_refresh_succeeded)
         self._refresh_call.failed.connect(self._on_refresh_failed)
         self._refresh_call.finished.connect(self._on_refresh_finished)
@@ -250,9 +258,14 @@ class PriorCalibrationTabWidget(QWidget, ActivatableTab):
         self.ball_color_order_label = QLabel(group)
         self.ball_color_order_label.setWordWrap(True)
         layout.addWidget(self.ball_color_order_label)
-        self.overlay_checkbox = QCheckBox("显示先验结果 Overlay", group)
+        self.ball_overlay_checkbox = QCheckBox("显示三球检测 Overlay", group)
+        self.ball_progress_bar = QProgressBar(group)
+        self.ball_progress_bar.setRange(0, 1)
+        self.ball_progress_bar.setValue(0)
+        self.ball_progress_bar.setFormat("尚未采集")
         self.record_ball_button = QPushButton("记录左臂先验", group)
-        layout.addWidget(self.overlay_checkbox)
+        layout.addWidget(self.ball_overlay_checkbox)
+        layout.addWidget(self.ball_progress_bar)
         layout.addWidget(self.record_ball_button)
         self._refresh_ball_color_controls()
         self._control_widgets.append(self.record_ball_button)
@@ -270,19 +283,19 @@ class PriorCalibrationTabWidget(QWidget, ActivatableTab):
             group,
         )
         self.head_camera_button = QPushButton("切换到头部相机", group)
+        self.head_overlay_checkbox = QCheckBox("显示头部检测 Overlay", group)
         self.record_head_button = QPushButton("获取头部先验", group)
         layout.addWidget(self.head_yaw_button)
         layout.addWidget(self.head_pitch_button)
         layout.addWidget(self.head_camera_button)
+        layout.addWidget(self.head_overlay_checkbox)
         layout.addWidget(self.record_head_button)
-        self.status_label = QLabel("等待连接", group)
-        self.status_label.setWordWrap(True)
-        layout.addWidget(self.status_label)
         self._control_widgets.extend(
             (
                 self.head_yaw_button,
                 self.head_pitch_button,
                 self.head_camera_button,
+                self.head_overlay_checkbox,
                 self.record_head_button,
             )
         )
@@ -397,11 +410,17 @@ class PriorCalibrationTabWidget(QWidget, ActivatableTab):
     def _refresh_preview(self) -> None:
         image = self._last_frame_bgr
         if (
-            self.overlay_checkbox.isChecked()
-            and self._camera_name == BALL_CAMERA_NAME
+            self._camera_name == BALL_CAMERA_NAME
+            and self.ball_overlay_checkbox.isChecked()
             and self._ball_overlay_bgr is not None
         ):
             image = self._ball_overlay_bgr
+        elif (
+            self._camera_name == HEAD_CAMERA_NAME
+            and self.head_overlay_checkbox.isChecked()
+            and self._head_overlay_bgr is not None
+        ):
+            image = self._head_overlay_bgr
         if image is not None:
             self.preview.set_preview_pixmap(_bgr_to_pixmap(image))
 
@@ -609,6 +628,13 @@ class PriorCalibrationTabWidget(QWidget, ActivatableTab):
             return
         self._prior_busy = True
         self.record_ball_button.setEnabled(False)
+        target_count = self._require_recorder().ball_sample_count
+        self.ball_progress_bar.setRange(0, target_count)
+        self.ball_progress_bar.setValue(0)
+        self.ball_progress_bar.setFormat(f"0/{target_count}")
+        if self._camera_name != BALL_CAMERA_NAME:
+            self._select_camera(BALL_CAMERA_NAME)
+        self.ball_overlay_checkbox.setChecked(True)
         self.status_label.setText("左臂三球先验开始采集…")
         self._prior_call.start(
             lambda: self._require_recorder().record_ball_prior(
@@ -618,11 +644,25 @@ class PriorCalibrationTabWidget(QWidget, ActivatableTab):
                     self._ball_colors[1],
                     self._ball_colors[2],
                 ),
-                progress=lambda current, total: self.progressChanged.emit(
-                    f"左臂三球先验采集：{current}/{total}"
-                ),
+                progress=lambda sample: self.ballSampleReady.emit(sample),
             )
         )
+
+    @Slot(object)
+    def _on_ball_sample_ready(self, payload: object) -> None:
+        """显示每一帧有效三球检测的采集进度和真实 overlay。"""
+
+        if not isinstance(payload, PriorBallSampleProgress):
+            logger.error("三球采集进度类型异常：{}", type(payload).__name__)
+            return
+        self.ball_progress_bar.setRange(0, payload.total)
+        self.ball_progress_bar.setValue(payload.current)
+        self.ball_progress_bar.setFormat(f"{payload.current}/{payload.total}")
+        self.status_label.setText(
+            f"左臂三球先验采集：{payload.current}/{payload.total}"
+        )
+        self._ball_overlay_bgr = payload.overlay_bgr
+        self._refresh_preview()
 
     @Slot()
     def _record_head_prior(self) -> None:
@@ -630,6 +670,9 @@ class PriorCalibrationTabWidget(QWidget, ActivatableTab):
             return
         self._prior_busy = True
         self.record_head_button.setEnabled(False)
+        if self._camera_name != HEAD_CAMERA_NAME:
+            self._select_camera(HEAD_CAMERA_NAME)
+        self.head_overlay_checkbox.setChecked(True)
         self.status_label.setText("头部 ChArUco 先验检测中…")
         self._prior_call.start(self._capture_head_prior)
 
@@ -651,16 +694,34 @@ class PriorCalibrationTabWidget(QWidget, ActivatableTab):
     @Slot(object)
     def _on_prior_succeeded(self, payload: object) -> None:
         if not isinstance(payload, PriorCalibrationResult):
+            logger.error(
+                "先验获取返回了非预期结果类型：{}",
+                type(payload).__name__,
+            )
             return
         self.status_label.setText(f"{payload.message}\n{payload.result_path}")
         if payload.overlay_bgr is not None:
-            self._ball_overlay_bgr = payload.overlay_bgr
-            self.overlay_checkbox.setChecked(True)
-            self._select_camera(BALL_CAMERA_NAME)
+            if payload.calibration_kind == "ball":
+                self._ball_overlay_bgr = payload.overlay_bgr
+                if self._camera_name != BALL_CAMERA_NAME:
+                    self._select_camera(BALL_CAMERA_NAME)
+                self.ball_overlay_checkbox.setChecked(True)
+            else:
+                self._head_overlay_bgr = payload.overlay_bgr
+                if self._camera_name != HEAD_CAMERA_NAME:
+                    self._select_camera(HEAD_CAMERA_NAME)
+                self.head_overlay_checkbox.setChecked(True)
+            self._refresh_preview()
+        logger.success(
+            "先验获取成功：result_path={} overlay={}",
+            payload.result_path,
+            payload.overlay_bgr is not None,
+        )
 
     @Slot(str)
     def _on_prior_failed(self, message: str) -> None:
         self.status_label.setText(f"先验获取失败：{message}")
+        logger.error("先验获取失败：{}", message)
 
     @Slot()
     def _on_prior_finished(self) -> None:

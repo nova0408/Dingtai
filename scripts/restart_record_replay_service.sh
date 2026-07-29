@@ -4,6 +4,7 @@ set -euo pipefail
 SERVICE_UNIT="record-replay.service"
 SERVICE_PORT="6300"
 SERVICE_URL="http://127.0.0.1:${SERVICE_PORT}"
+SERVICE_PYTHON="/home/wuji-brain/miniconda3/envs/wuji/bin/python"
 WORKSPACE_DIR="/home/wuji-brain/workspace"
 PRIOR_PATH="${WORKSPACE_DIR}/record_replay/prior_data/ball_pose_prior.json"
 DEBUG_OVERLAY_PATH="${WORKSPACE_DIR}/record_replay/prior_data/ball_debug_overlay.jpg"
@@ -12,25 +13,36 @@ LEFT_RECORD_DIR="${WORKSPACE_DIR}/record_replay/records/left"
 RIGHT_RECORD_DIR="${WORKSPACE_DIR}/record_replay/records/right"
 WAIT_TIMEOUT_SECONDS=10
 restart_log_since="$(date '+%Y-%m-%d %H:%M:%S')"
+non_interactive=false
+
+if [[ "${1:-}" == "--non-interactive" ]]; then
+  non_interactive=true
+  shift
+fi
+if (($# != 0)); then
+  echo "[restart] unsupported arguments: $*"
+  exit 1
+fi
 
 print_restart_logs() {
   journalctl -u "${SERVICE_UNIT}" \
     --since "${restart_log_since}" --no-pager -o short-precise || true
 }
 
-if [[ ! -t 0 ]]; then
-  echo "[restart] refused: interactive terminal required"
-  exit 1
-fi
-
-read -r -p "我已确认现场安全并同意重启RecordReplay服务 [Y/n] " confirmation
-case "${confirmation:-Y}" in
-  Y | y) ;;
-  *)
-    echo "[restart] cancelled"
+if [[ "${non_interactive}" != "true" ]]; then
+  if [[ ! -t 0 ]]; then
+    echo "[restart] refused: interactive terminal required"
     exit 1
-    ;;
-esac
+  fi
+  read -r -p "我已确认现场安全并同意重启RecordReplay服务 [Y/n] " confirmation
+  case "${confirmation:-Y}" in
+    Y | y) ;;
+    *)
+      echo "[restart] cancelled"
+      exit 1
+      ;;
+  esac
+fi
 
 if [[ ! -f "${PRIOR_PATH}" ]]; then
   echo "[restart] refused: missing ${PRIOR_PATH}"
@@ -76,7 +88,7 @@ if ss -ltn "( sport = :${SERVICE_PORT} )" | grep -q LISTEN; then
 fi
 
 echo "[restart] restarting ${SERVICE_UNIT} through systemd"
-sudo systemctl restart --no-block "${SERVICE_UNIT}"
+sudo systemctl restart "${SERVICE_UNIT}"
 
 deadline=$((SECONDS + WAIT_TIMEOUT_SECONDS))
 while ((SECONDS < deadline)); do

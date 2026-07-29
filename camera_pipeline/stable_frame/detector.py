@@ -9,7 +9,7 @@ import cv2
 import numpy as np
 import numpy.typing as npt
 
-from ..protocol import StableRgbdFrameProtocol
+from ..protocol import StableColorFrameProtocol, StableRgbdFrameProtocol
 from .types import StableFrameConfig
 
 
@@ -20,7 +20,7 @@ class _FrameFeature:
     frame_id: int
     timestamp_ms: float
     gray: npt.NDArray[np.float32]
-    depth_mm: npt.NDArray[np.float32]
+    depth_mm: npt.NDArray[np.float32] | None
 
 
 class StableFrameDetector:
@@ -55,7 +55,16 @@ class StableFrameDetector:
             `frame_id`；尚未稳定时返回 ``None``。
         """
 
-        feature = self._extract_feature(frame)
+        return self._update_feature(self._extract_rgbd_feature(frame))
+
+    def update_color(self, frame: StableColorFrameProtocol) -> int | None:
+        """输入新彩色帧，仅按时间和 RGB 变化判断稳定。"""
+
+        return self._update_feature(self._extract_color_feature(frame))
+
+    def _update_feature(self, feature: _FrameFeature) -> int | None:
+        """将已提取特征加入连续稳定窗口。"""
+
         if not self._stable_features:
             self._stable_features.append(feature)
             return None
@@ -79,36 +88,67 @@ class StableFrameDetector:
         self._trim_to_latest_complete_window(required_duration_ms)
         return self._select_midpoint_frame_id(required_duration_ms)
 
-    def _extract_feature(self, frame: StableRgbdFrameProtocol) -> _FrameFeature:
+    def _extract_rgbd_feature(
+        self,
+        frame: StableRgbdFrameProtocol,
+    ) -> _FrameFeature:
+        """提取 RGBD 稳定性特征。"""
+
         color_bgr = np.asarray(frame.color_bgr)
         depth_mm = np.asarray(frame.depth_mm)
-        if color_bgr.ndim != 3 or color_bgr.shape[2] != 3:
-            raise ValueError("color_bgr must have shape (H, W, 3)")
+        color_small, gray = self._extract_color_arrays(color_bgr)
         if depth_mm.ndim != 2 or depth_mm.shape != color_bgr.shape[:2]:
             raise ValueError("depth_mm must have the same (H, W) as color_bgr")
-
-        interpolation = (
-            cv2.INTER_AREA if self._config.image_scale < 1.0 else cv2.INTER_LINEAR
-        )
-        color_small = cv2.resize(
-            color_bgr,
-            dsize=None,
-            fx=self._config.image_scale,
-            fy=self._config.image_scale,
-            interpolation=interpolation,
-        )
         depth_small = cv2.resize(
             depth_mm,
             dsize=(color_small.shape[1], color_small.shape[0]),
             interpolation=cv2.INTER_NEAREST,
         )
-        gray = cv2.cvtColor(color_small, cv2.COLOR_BGR2GRAY).astype(np.float32)
         return _FrameFeature(
             frame_id=int(frame.frame_id),
             timestamp_ms=float(frame.timestamp_ms),
             gray=gray,
             depth_mm=depth_small.astype(np.float32),
         )
+
+    def _extract_color_feature(
+        self,
+        frame: StableColorFrameProtocol,
+    ) -> _FrameFeature:
+        """提取不依赖深度图的彩色稳定性特征。"""
+
+        color_bgr = np.asarray(frame.color_bgr)
+        _, gray = self._extract_color_arrays(color_bgr)
+        return _FrameFeature(
+            frame_id=int(frame.frame_id),
+            timestamp_ms=float(frame.timestamp_ms),
+            gray=gray,
+            depth_mm=None,
+        )
+
+    def _extract_color_arrays(
+        self,
+        color_bgr: npt.NDArray[np.uint8],
+    ) -> tuple[npt.NDArray[np.uint8], npt.NDArray[np.float32]]:
+        """校验并缩放彩色图，返回缩放图与灰度特征。"""
+
+        if color_bgr.ndim != 3 or color_bgr.shape[2] != 3:
+            raise ValueError("color_bgr must have shape (H, W, 3)")
+        interpolation = (
+            cv2.INTER_AREA if self._config.image_scale < 1.0 else cv2.INTER_LINEAR
+        )
+        color_small = np.asarray(
+            cv2.resize(
+                color_bgr,
+                dsize=None,
+                fx=self._config.image_scale,
+                fy=self._config.image_scale,
+                interpolation=interpolation,
+            ),
+            dtype=np.uint8,
+        )
+        gray = cv2.cvtColor(color_small, cv2.COLOR_BGR2GRAY).astype(np.float32)
+        return color_small, gray
 
     def _is_temporally_continuous(
         self, previous: _FrameFeature, current: _FrameFeature
@@ -129,6 +169,8 @@ class StableFrameDetector:
         if color_changed_ratio > self._config.color_changed_ratio_threshold:
             return False
 
+        if previous.depth_mm is None or current.depth_mm is None:
+            return previous.depth_mm is None and current.depth_mm is None
         valid_depth = (previous.depth_mm > 0.0) & (current.depth_mm > 0.0)
         valid_depth_ratio = float(np.mean(valid_depth))
         if valid_depth_ratio < self._config.min_valid_depth_ratio:

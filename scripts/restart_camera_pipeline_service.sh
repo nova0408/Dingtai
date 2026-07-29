@@ -22,7 +22,7 @@ read_camera_status() {
 }
 
 echo "[restart] restarting ${SERVICE_UNIT} through systemd"
-sudo systemctl restart --no-block "${SERVICE_UNIT}"
+sudo systemctl restart "${SERVICE_UNIT}"
 
 deadline=$((SECONDS + WAIT_TIMEOUT_SECONDS))
 while ((SECONDS < deadline)); do

@@ -37,6 +37,21 @@ description: 安全维护、迁移、部署、版本管理和评审 Dingtai 根�
 9. 三球与 Board 检测只调用 Orin 本机部署的 `CameraPipelineClient` 业务方法；`record_replay/` 禁止导入、配置或描述底层 ZMQ。
 10. 左右臂 IP 和现场设备地址由 Orin 服务入口固定，不允许本机测试或 API 覆盖。
 
+## CameraPipeline 依赖部署
+
+1. CameraPipeline 公共 client、API 或线协议变化时，把 `camera_pipeline/` 与
+   `record_replay/` 作为同一批次同步；禁止只替换 CameraPipeline 后继续运行加载
+   旧客户端的 RecordReplay 进程。
+2. 部署顺序固定为：确认 RecordReplay 处于 `waiting`、停止 RecordReplay、替换两端
+   文件、启动并验证 CameraPipeline、启动并验证 RecordReplay。
+3. 停止 RecordReplay 只能是部署中的临时状态；部署成功必须恢复 HTTP 业务就绪。
+4. 服务恢复只允许 systemd 启动和只读 `/status` 检查，仍禁止发送 `/start`、运行
+   RecordReplay 测试或调用任何硬件执行入口。
+5. 从 Windows 执行时优先使用
+   `scripts/sync_and_restart_services.ps1`，不要手写 sudo 或拆分部署步骤。
+6. 总控脚本允许向 RecordReplay 重启脚本传递 `--non-interactive`，但该模式仅允许
+   systemd 重启和只读 `/status` 就绪检查；不得扩展为 `/start` 或任何执行授权。
+
 ## 本机与 Orin 同步
 
 按以下顺序部署：

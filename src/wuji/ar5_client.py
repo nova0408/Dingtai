@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from threading import RLock
 from typing import Literal
 
+from loguru import logger
 from sdk.xcoresdk import xCoreSDK_python
 
 # region 数据结构
@@ -106,6 +107,15 @@ DEFAULT_MOVE_ZONE_MM = 10.0
 POWER_STATE_TIMEOUT_S = 3.0
 "等待控制器确认上下电状态的最长时间，单位 s。"
 
+OPERATE_MODE_TIMEOUT_S = 3.0
+"等待控制器确认手动或自动模式的最长时间，单位 s。"
+
+AR5_DEFAULT_TOOL_NAME = "g_tool_0"
+"AR5 已验证默认工具坐标系名称。"
+
+AR5_DEFAULT_WOBJ_NAME = "g_wobj_0"
+"AR5 已验证默认工件坐标系名称。"
+
 
 # endregion
 
@@ -152,6 +162,12 @@ class Ar5Client:
         self._config = config
         self._lock = RLock()
         self._ec: dict[str, object] = {}
+        logger.info(
+            "AR5 SDK connection requested: side={} robot_ip={} local_ip={}",
+            config.side,
+            config.robot_ip,
+            config.local_ip,
+        )
         if config.local_ip is None:
             self._robot = xCoreSDK_python.xMateErProRobot(config.robot_ip)
         else:
@@ -165,6 +181,23 @@ class Ar5Client:
             )
         self._robot_type = str(robot_info.type)
         self._robot_uid = str(robot_info.id)
+        try:
+            self._apply_default_toolset_locked()
+        except Exception:
+            logger.exception(
+                "AR5 SDK connection initialization failed: side={} robot_ip={}",
+                config.side,
+                config.robot_ip,
+            )
+            self.close()
+            raise
+        logger.success(
+            "AR5 SDK connection ready: side={} robot_ip={} robot_type={} robot_uid={}",
+            config.side,
+            config.robot_ip,
+            self._robot_type,
+            self._robot_uid,
+        )
 
     @property
     def side(self) -> Ar5Side:
@@ -233,7 +266,10 @@ class Ar5Client:
                 "setMotionControlMode(NrtCommandMode)",
                 lambda ec: self._robot.setMotionControlMode(xCoreSDK_python.MotionControlMode.NrtCommandMode, ec),
             )
-            self._call_none("setPowerState", lambda ec: self._robot.setPowerState(enabled, ec))
+            self._call_none(
+                f"setPowerState({enabled})",
+                lambda ec: self._robot.setPowerState(enabled, ec),
+            )
             target_state = (
                 xCoreSDK_python.PowerState.on
                 if enabled
@@ -265,6 +301,7 @@ class Ar5Client:
                 f"setOperateMode({target_mode.name})",
                 lambda ec: self._robot.setOperateMode(target_mode, ec),
             )
+            self._wait_operate_mode_locked(target_mode)
 
     def recover_estop(self) -> None:
         """请求控制器执行急停恢复。
@@ -449,7 +486,7 @@ class Ar5Client:
         Raises
         ------
         RuntimeError
-            开启拖动时机器人不是手动模式，或 SDK 拒绝切换使能状态。
+            SDK 拒绝切换工具、模式、使能或拖动状态。
         """
 
         with self._lock:
@@ -466,18 +503,21 @@ class Ar5Client:
                     )
                     self._wait_power_state_locked(xCoreSDK_python.PowerState.on)
                 return
-            operate_mode = self._call_value(
-                "operateMode",
-                self._robot.operateMode,
-            )
-            if operate_mode != xCoreSDK_python.OperateMode.manual:
-                raise RuntimeError("开启拖动前请先将工作模式切换为手动")
+            self._apply_default_toolset_locked()
             self._call_none(
                 "setMotionControlMode(NrtCommandMode)",
                 lambda ec: self._robot.setMotionControlMode(xCoreSDK_python.MotionControlMode.NrtCommandMode, ec),
             )
             self._call_none("setPowerState(False)", lambda ec: self._robot.setPowerState(False, ec))
             self._wait_power_state_locked(xCoreSDK_python.PowerState.off)
+            self._call_none(
+                "setOperateMode(manual)",
+                lambda ec: self._robot.setOperateMode(
+                    xCoreSDK_python.OperateMode.manual,
+                    ec,
+                ),
+            )
+            self._wait_operate_mode_locked(xCoreSDK_python.OperateMode.manual)
             self._call_none("moveReset", self._robot.moveReset)
             self._call_none(
                 "enableDrag(cartesian, freely)",
@@ -539,6 +579,32 @@ class Ar5Client:
             time.sleep(0.1)
         raise RuntimeError(f"等待电机状态超时: target={target_state}")
 
+    def _wait_operate_mode_locked(self, target_mode: object) -> None:
+        """在已持锁状态下等待控制器确认目标工作模式。"""
+
+        deadline = time.monotonic() + OPERATE_MODE_TIMEOUT_S
+        while time.monotonic() < deadline:
+            current_mode = self._call_value("operateMode", self._robot.operateMode)
+            if current_mode == target_mode:
+                return
+            time.sleep(0.1)
+        raise RuntimeError(f"等待工作模式超时: target={target_mode}")
+
+    def _apply_default_toolset_locked(self) -> None:
+        """固定已验证的工具和工件坐标系，避免双臂继承不同控制器上下文。"""
+
+        self._call_value(
+            (
+                f"setToolset({AR5_DEFAULT_TOOL_NAME}, "
+                f"{AR5_DEFAULT_WOBJ_NAME})"
+            ),
+            lambda ec: self._robot.setToolset(
+                AR5_DEFAULT_TOOL_NAME,
+                AR5_DEFAULT_WOBJ_NAME,
+                ec,
+            ),
+        )
+
     def _execute_move(
         self,
         command: xCoreSDK_python.MoveAbsJCommand | xCoreSDK_python.MoveLCommand,
@@ -586,18 +652,75 @@ class Ar5Client:
         return target_pose
 
     def _call_none(self, action: str, callback) -> None:  # noqa: ANN001
-        """调用一个无返回值 SDK 方法并检查错误码。"""
+        """调用无返回值 SDK 方法，并记录目标臂、耗时和完整错误码。"""
 
+        started_at = time.monotonic()
+        logger.info(
+            "AR5 SDK request: side={} robot_ip={} action={}",
+            self._config.side,
+            self._config.robot_ip,
+            action,
+        )
         self._ec.clear()
-        callback(self._ec)
-        self._raise_for_error(action)
+        try:
+            callback(self._ec)
+            self._raise_for_error(action)
+        except Exception:
+            logger.exception(
+                "AR5 SDK request failed: side={} robot_ip={} action={} "
+                "elapsed_ms={:.3f} ec={}",
+                self._config.side,
+                self._config.robot_ip,
+                action,
+                (time.monotonic() - started_at) * 1000.0,
+                self._ec,
+            )
+            raise
+        logger.info(
+            "AR5 SDK response: side={} robot_ip={} action={} "
+            "elapsed_ms={:.3f} ec={}",
+            self._config.side,
+            self._config.robot_ip,
+            action,
+            (time.monotonic() - started_at) * 1000.0,
+            self._ec,
+        )
 
     def _call_value(self, action: str, callback):  # noqa: ANN001, ANN202
-        """调用一个有返回值 SDK 方法并检查错误码。"""
+        """调用有返回值 SDK 方法，并以 DEBUG 记录请求和响应摘要。"""
 
+        started_at = time.monotonic()
+        logger.debug(
+            "AR5 SDK request: side={} robot_ip={} action={}",
+            self._config.side,
+            self._config.robot_ip,
+            action,
+        )
         self._ec.clear()
-        value = callback(self._ec)
-        self._raise_for_error(action)
+        try:
+            value = callback(self._ec)
+            self._raise_for_error(action)
+        except Exception:
+            logger.exception(
+                "AR5 SDK request failed: side={} robot_ip={} action={} "
+                "elapsed_ms={:.3f} ec={}",
+                self._config.side,
+                self._config.robot_ip,
+                action,
+                (time.monotonic() - started_at) * 1000.0,
+                self._ec,
+            )
+            raise
+        logger.debug(
+            "AR5 SDK response: side={} robot_ip={} action={} "
+            "elapsed_ms={:.3f} ec={} value={}",
+            self._config.side,
+            self._config.robot_ip,
+            action,
+            (time.monotonic() - started_at) * 1000.0,
+            self._ec,
+            _summarize_sdk_value(value),
+        )
         return value
 
     def _raise_for_error(self, action: str) -> None:
@@ -611,6 +734,28 @@ class Ar5Client:
         )
 
     # endregion
+
+
+def _summarize_sdk_value(value: object, max_length: int = 500) -> str:
+    """生成适合日志记录的 SDK 返回值摘要。
+
+    Parameters
+    ----------
+    value:
+        SDK 返回对象，只读取其字符串表示，不改变对象内容。
+    max_length:
+        日志摘要最大字符数，避免状态对象异常膨胀日志。
+
+    Returns
+    -------
+    str
+        单行返回值摘要；超过上限时以省略号截断。
+    """
+
+    text = repr(value).replace("\r", "\\r").replace("\n", "\\n")
+    if len(text) <= max_length:
+        return text
+    return f"{text[:max_length]}…"
 
 
 # endregion

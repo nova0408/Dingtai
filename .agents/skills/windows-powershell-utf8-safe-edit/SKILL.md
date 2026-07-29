@@ -20,6 +20,8 @@ description: Windows 文本编辑入口技能。用于在不确定 shell 版本�
 8. 仓库级可执行脚本位于本 skill 的 `scripts/`，禁止回退到旧的 `.agents/tools` 平铺目录。
 9. `.codex/hooks/pre_tool_use_safe_edit.ps1` 在 `apply_patch` 前为已有文件快照。
 10. `.codex/hooks/post_tool_use_static_check.ps1` 在 `apply_patch` 后执行 UTF-8 扫描、确定性文本修复、`ruff --fix` 和 `pyright`。
+11. 需要单独检查文件时，直接调用 `.codex/hooks/scan_text_integrity.ps1 -Path <path>`；不要假定存在 `scripts/utf8_scan.ps1`。
+12. 只有在明确需要自动修复字面量换行时才传入 `-Fix`，并且必须先生成快照。
 
 ## 最小入口流程
 ```powershell
@@ -30,6 +32,13 @@ where.exe powershell
 路由策略：
 - `pwsh` 可用：默认走 PS7 专用技能。
 - `pwsh` 不可用：走 PS5.1 专用技能。
+
+## 独立编码扫描
+```powershell
+pwsh -NoProfile -File .codex/hooks/scan_text_integrity.ps1 -Path <relative-path>
+```
+
+若 `pwsh` 不可用，将命令中的 `pwsh` 替换为 `powershell -NoProfile -ExecutionPolicy Bypass`。
 
 ## 相关专用技能
 - `.agents/skills/windows-powershell-5-utf8-safe-edit/SKILL.md`

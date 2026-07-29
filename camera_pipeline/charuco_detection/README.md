@@ -10,10 +10,12 @@
 ## 职责
 
 `charuco_detection` 接收一帧满足 `camera_pipeline.protocol.RgbdFrameProtocol`
-的稳定 RGBD 帧和调用方构造的 `cv2.aruco.CharucoBoard`，输出标定板到相机的
+的稳定彩色帧和调用方构造的 `cv2.aruco.CharucoBoard`，输出标定板到相机的
 位姿。模块不连接相机、不等待稳定帧、不做重试、RPC、文件读写或窗口显示。
 
-稳定帧获取和最多 5 帧重试由 `PipelineContext.detect_charuco()` 负责。
+纯彩色稳定帧获取和最多 5 帧重试由 `PipelineContext.detect_charuco()` 负责。
+ChArUco 只依赖彩色图、彩色相机内参和畸变参数，不读取深度图，不受深度帧缺失、
+深度噪声或 RGBD 稳定阈值影响。
 
 ## 输入
 
@@ -85,7 +87,7 @@ marker 和 ChArUco 数量属于低成本核心诊断值，无论 debug 是否开
 - 成功：`status="detected"`，位姿矩阵为 `(4, 4)`，误差为有限非负数。
 - 未检测到或角点不足：`status="missing"`，返回当前帧融合计数、空位姿矩阵和
   正无穷误差。这是算法空结果，不是服务级异常。
-- `PipelineContext.detect_charuco()`：单帧空结果时继续等待下一稳定帧，最多尝试
+- `PipelineContext.detect_charuco()`：单帧空结果时继续等待下一纯彩色稳定帧，最多尝试
   `max_frames=5`；第 5 帧仍失败则返回最后一帧的 `missing` 结果。
 - 输入图像、焦距或畸变参数非法：抛出 `ValueError`。
 - 稳定帧超时、缓存帧淘汰或相机不可用：由 `PipelineContext` 抛出 `RuntimeError`。

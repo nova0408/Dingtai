@@ -17,8 +17,8 @@ class CameraName(str, Enum):
     RIGHT_ARM = "right_hand_camera"
 
 
-class StableRgbdFrameProtocol(Protocol):
-    """时序稳定性算法所需的最小 RGBD 帧协议。"""
+class StableColorFrameProtocol(Protocol):
+    """纯彩色时序稳定性算法所需的最小帧协议。"""
 
     @property
     def frame_id(self) -> int: ...
@@ -29,12 +29,16 @@ class StableRgbdFrameProtocol(Protocol):
     @property
     def color_bgr(self) -> npt.NDArray[np.uint8]: ...
 
+
+class StableRgbdFrameProtocol(StableColorFrameProtocol, Protocol):
+    """RGBD 时序稳定性算法所需的最小帧协议。"""
+
     @property
     def depth_mm(self) -> npt.NDArray[np.uint16]: ...
 
 
-class RgbdFrameProtocol(StableRgbdFrameProtocol, Protocol):
-    """几何算法和业务编排共同依赖的完整只读 RGBD 帧协议。"""
+class ColorFrameProtocol(StableColorFrameProtocol, Protocol):
+    """彩色图像算法依赖的完整只读帧协议。"""
 
     @property
     def camera_name(self) -> str: ...
@@ -53,6 +57,14 @@ class RgbdFrameProtocol(StableRgbdFrameProtocol, Protocol):
 
     @property
     def distortion(self) -> tuple[float, ...]: ...
+
+
+class RgbdFrameProtocol(
+    ColorFrameProtocol,
+    StableRgbdFrameProtocol,
+    Protocol,
+):
+    """几何算法和业务编排共同依赖的完整只读 RGBD 帧协议。"""
 
 
 @dataclass(frozen=True, slots=True)

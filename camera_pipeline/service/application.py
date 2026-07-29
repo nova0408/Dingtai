@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import cv2
+import numpy as np
 from loguru import logger
 
 from ..ball_pose_detection.protocol import BallPoseDetectionResponse
@@ -356,7 +357,7 @@ class CameraPipelineApplication:
             board,
             camera_name=request.camera_name,
             config=CharucoDetectionConfig(min_charuco_corners=payload.min_charuco_corners),
-            enable_debug=False,
+            enable_debug=payload.enable_debug,
             max_frames=payload.max_frames,
             stable_timeout_s=payload.stable_timeout_s,
         )
@@ -375,6 +376,12 @@ class CameraPipelineApplication:
             )
         else:
             raise RuntimeError(f"unexpected charuco matrix shape: {matrix_array.shape}")
+        overlay_bgr = np.empty((0, 0, 3), dtype=np.uint8)
+        if result.debug_artifacts:
+            overlay_bgr = np.asarray(
+                result.debug_artifacts[0].overlay_bgr,
+                dtype=np.uint8,
+            ).copy()
         return CharucoDetectionResponse(
             status=result.status,
             camera_name=request.camera_name,
@@ -382,6 +389,7 @@ class CameraPipelineApplication:
             error_px=result.error_px,
             marker_num=result.marker_num,
             charuco_num=result.charuco_num,
+            overlay_bgr=overlay_bgr,
         )
 
     # endregion

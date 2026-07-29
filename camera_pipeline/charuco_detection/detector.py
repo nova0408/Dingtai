@@ -8,7 +8,7 @@ from dataclasses import dataclass
 import cv2
 import numpy as np
 
-from ..protocol import RgbdFrameProtocol
+from ..protocol import ColorFrameProtocol
 from .types import (
     CharucoDebugArtifacts,
     CharucoDetectionConfig,
@@ -69,7 +69,7 @@ class CharucoDetector:
 
     def detect(
         self,
-        frame: RgbdFrameProtocol,
+        frame: ColorFrameProtocol,
         *,
         enable_debug: bool = False,
     ) -> CharucoDetectionResult:
@@ -433,7 +433,7 @@ class CharucoDetector:
         )
 
     @staticmethod
-    def _camera_matrix(frame: RgbdFrameProtocol) -> np.ndarray:
+    def _camera_matrix(frame: ColorFrameProtocol) -> np.ndarray:
         """从帧协议构造 OpenCV 相机内参矩阵。
 
         Parameters

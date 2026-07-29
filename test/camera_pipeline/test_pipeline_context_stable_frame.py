@@ -45,6 +45,23 @@ class _TestPipelineContext(PipelineContext):
         del camera_name
         return self._test_frame_by_id.get(frame_id)
 
+    def get_latest_color_frame(
+        self,
+        camera_name: str | None = None,
+    ) -> CameraFramePacket:
+        """返回下一帧作为纯彩色稳定检查输入。"""
+
+        return self.get_latest_frame(camera_name)
+
+    def get_color_frame_by_id(
+        self,
+        frame_id: int,
+        camera_name: str | None = None,
+    ) -> CameraFramePacket | None:
+        """按帧号返回纯彩色稳定窗口的证据帧。"""
+
+        return self.get_frame_by_id(frame_id, camera_name)
+
 
 def test_resolve_frame_defaults_to_stable_window_midpoint() -> None:
     frames = tuple(_build_frame(frame_id) for frame_id in range(11))
@@ -66,22 +83,39 @@ def test_resolve_frame_keeps_explicit_frame_id_behavior() -> None:
     assert selected_frame.timestamp_ms == 300.0
 
 
+def test_color_stability_does_not_require_constant_depth() -> None:
+    frames = tuple(
+        _build_frame(frame_id, depth_mm=1000 + frame_id * 100)
+        for frame_id in range(11)
+    )
+    context = _TestPipelineContext(frames)
+
+    stable_frame = context.wait_for_stable_color_frame()
+
+    assert stable_frame.frame_id == 5
+
+
 def main() -> None:
     """在 IDE 中直接执行 PipelineContext 稳定帧验证。"""
 
     test_resolve_frame_defaults_to_stable_window_midpoint()
     test_resolve_frame_keeps_explicit_frame_id_behavior()
+    test_color_stability_does_not_require_constant_depth()
     logger.success("PipelineContext 原 resolve_frame API 稳定帧验证通过")
     logger.warning("本结果使用内存合成帧，未验证真实相机缓存与现场稳定性阈值")
 
 
-def _build_frame(frame_id: int) -> CameraFramePacket:
+def _build_frame(
+    frame_id: int,
+    *,
+    depth_mm: int = 1000,
+) -> CameraFramePacket:
     return CameraFramePacket(
         frame_id=frame_id,
         camera_name="test_camera",
         timestamp_ms=frame_id * DEFAULT_FRAME_INTERVAL_MS,
         color_bgr=np.zeros((48, 64, 3), dtype=np.uint8),
-        depth_mm=np.full((48, 64), 1000, dtype=np.uint16),
+        depth_mm=np.full((48, 64), depth_mm, dtype=np.uint16),
         fx=600.0,
         fy=600.0,
         cx=32.0,

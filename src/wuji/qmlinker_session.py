@@ -213,6 +213,19 @@ class _ForwardingRequestHandler(socketserver.BaseRequestHandler):
                     if not data:
                         return
                     local_socket.sendall(data)
+        except (
+            BrokenPipeError,
+            ConnectionAbortedError,
+            ConnectionResetError,
+        ) as exc:
+            logger.debug(
+                "SSH forward stream ended by local connection: "
+                "local={} remote={} peer={} reason={}",
+                self.server.server_address,
+                self.server.remote_address,
+                peer_address,
+                exc,
+            )
         except Exception:
             logger.exception(
                 "SSH forward stream failed: local={} remote={} peer={}",

@@ -21,6 +21,7 @@ from camera_pipeline.service.protocol import (
     CameraPipelineServiceResponse,
     CameraStatusResponse,
     CharucoDetectionRequest,
+    CharucoDetectionResponse,
 )
 from camera_pipeline.service.transport import CameraPipelineRpcClient, CameraPipelineRpcServer
 from camera_pipeline.service.wire_codec import WireCodecError, decode_wire, encode_wire
@@ -66,6 +67,7 @@ def test_charuco_request_round_trip_preserves_explicit_board_parameters() -> Non
             min_charuco_corners=6,
             max_frames=300,
             stable_timeout_s=10.0,
+            enable_debug=True,
         ),
     )
 
@@ -75,6 +77,29 @@ def test_charuco_request_round_trip_preserves_explicit_board_parameters() -> Non
     assert isinstance(decoded.camera_name, CameraName)
     assert decoded.detect_charuco is not None
     assert isinstance(decoded.detect_charuco.camera_name, CameraName)
+    assert decoded.detect_charuco.enable_debug
+
+
+def test_charuco_response_round_trip_preserves_overlay() -> None:
+    overlay = np.arange(36, dtype=np.uint8).reshape(3, 4, 3)
+    response = CharucoDetectionResponse(
+        status="detected",
+        camera_name=CameraName.HEAD,
+        t_cam_board_mm=(
+            (1.0, 0.0, 0.0, 10.0),
+            (0.0, 1.0, 0.0, 20.0),
+            (0.0, 0.0, 1.0, 30.0),
+            (0.0, 0.0, 0.0, 1.0),
+        ),
+        error_px=0.2,
+        marker_num=6,
+        charuco_num=9,
+        overlay_bgr=overlay,
+    )
+
+    decoded = decode_wire(encode_wire(response), CharucoDetectionResponse)
+
+    assert np.array_equal(decoded.overlay_bgr, overlay)
 
 
 def test_frame_round_trip_preserves_numpy_dtype_and_values() -> None:
@@ -116,41 +141,45 @@ def test_transport_round_trip_uses_explicit_wire_protocol() -> None:
     client = CameraPipelineRpcClient(address)
     errors: list[Exception] = []
 
-    def _serve_once() -> None:
+    def _serve_twice() -> None:
         try:
-            request = server.receive()
-            server.send(
-                CameraPipelineServiceResponse(
-                    operation=request.operation,
-                    camera_status=CameraStatusResponse(
-                        service_version="1.4.0",
-                        camera_name="test_camera",
-                        camera_id="TEST",
-                        camera_model="test",
-                        width=640,
-                        height=480,
-                        color_enabled=True,
-                        depth_enabled=True,
-                        online=True,
-                    ),
+            for _ in range(2):
+                request = server.receive()
+                server.send(
+                    CameraPipelineServiceResponse(
+                        operation=request.operation,
+                        camera_status=CameraStatusResponse(
+                            service_version="1.4.0",
+                            camera_name="test_camera",
+                            camera_id="TEST",
+                            camera_model="test",
+                            width=640,
+                            height=480,
+                            color_enabled=True,
+                            depth_enabled=True,
+                            online=True,
+                        ),
+                    )
                 )
-            )
         except Exception as exc:  # noqa: BLE001
             errors.append(exc)
 
-    thread = threading.Thread(target=_serve_once, daemon=True)
+    thread = threading.Thread(target=_serve_twice, daemon=True)
     thread.start()
     try:
-        response = client.call(
-            CameraPipelineServiceRequest(
-                operation="camera_status",
-                camera_name=CameraName.LEFT_ARM,
-                timeout_s=1.0,
-            )
+        request = CameraPipelineServiceRequest(
+            operation="camera_status",
+            camera_name=CameraName.LEFT_ARM,
+            timeout_s=1.0,
         )
-        assert response.camera_status is not None
-        assert response.camera_status.service_version == "1.4.0"
-        assert response.camera_status.camera_name == "test_camera"
+        first_response = client.call(request)
+        persistent_socket = client._socket  # noqa: SLF001
+        second_response = client.call(request)
+        assert client._socket is persistent_socket  # noqa: SLF001
+        for response in (first_response, second_response):
+            assert response.camera_status is not None
+            assert response.camera_status.service_version == "1.4.0"
+            assert response.camera_status.camera_name == "test_camera"
     finally:
         client.close()
         server.close()
@@ -161,6 +190,7 @@ def test_transport_round_trip_uses_explicit_wire_protocol() -> None:
 def main() -> None:
     test_request_round_trip_preserves_nested_protocol_types()
     test_charuco_request_round_trip_preserves_explicit_board_parameters()
+    test_charuco_response_round_trip_preserves_overlay()
     test_frame_round_trip_preserves_numpy_dtype_and_values()
     test_decoder_rejects_non_wire_payload()
     test_transport_round_trip_uses_explicit_wire_protocol()

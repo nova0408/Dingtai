@@ -6,6 +6,7 @@ import re
 from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
+from typing import Literal
 
 import cv2
 import numpy as np
@@ -24,7 +25,25 @@ from src.wuji.ar5_client import Ar5Snapshot
 # region 数据结构
 
 HsvRange = tuple[int, int, int, int, int, int]
-PriorProgressCallback = Callable[[int, int], None]
+
+
+@dataclass(frozen=True, slots=True)
+class PriorBallSampleProgress:
+    """单帧三球先验采集进度。
+
+    该不可变结构用于把后台采集进度及本帧真实检测 overlay 一并交给 GUI。图像为
+    独立 BGR 副本，不持有 CameraPipeline 响应或客户端。
+    """
+
+    current: int
+    "当前已接受的完整且不同的帧数。"
+    total: int
+    "目标完整帧数。"
+    overlay_bgr: np.ndarray
+    "本次有效检测帧的 BGR overlay，形状 `(H, W, 3)`、dtype `uint8`。"
+
+
+PriorProgressCallback = Callable[[PriorBallSampleProgress], None]
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,8 +82,10 @@ class PriorCalibrationResult:
     "面向操作员的完成说明。"
     result_path: Path
     "已写入的先验 JSON 路径。"
+    calibration_kind: Literal["ball", "head"]
+    "结果类型；`ball` 为左臂三球先验，`head` 为头部 ChArUco 先验。"
     overlay_bgr: np.ndarray | None = None
-    "三球先验核验图，形状 `(H, W, 3)`、dtype `uint8`、BGR。"
+    "本次先验核验图，形状 `(H, W, 3)`、dtype `uint8`、BGR。"
 
 
 @dataclass(frozen=True, slots=True)
@@ -152,6 +173,12 @@ class PriorCalibrationRecorder:
             output_dir=DEFAULT_PRIOR_OUTPUT_DIR
         )
 
+    @property
+    def ball_sample_count(self) -> int:
+        """返回三球先验要求的有效采样帧数。"""
+
+        return self._config.ball_sample_count
+
     def record_ball_prior(
         self,
         arm_snapshot: Ar5Snapshot,
@@ -167,7 +194,7 @@ class PriorCalibrationRecorder:
         ball_colors:
             待检测球的 RGB HEX 颜色，顺序固定为 X 轴球、原点球、平面提示球。
         progress:
-            后台进度回调，参数依次为有效帧数和目标帧数。
+            后台进度回调，携带有效帧数、目标帧数和本帧检测 overlay。
 
         Returns
         -------
@@ -219,6 +246,7 @@ class PriorCalibrationRecorder:
                 min_charuco_corners=cfg.min_charuco_corners,
                 max_frames=300,
                 stable_timeout_s=10.0,
+                enable_debug=True,
             )
         )
         if response.status != "detected" or len(response.t_cam_board_mm) != 4:
@@ -226,6 +254,9 @@ class PriorCalibrationRecorder:
                 "未检测到有效 ChArUco Board："
                 f"markers={response.marker_num}, charuco={response.charuco_num}"
             )
+        overlay = np.asarray(response.overlay_bgr, dtype=np.uint8).copy()
+        if overlay.size == 0:
+            raise RuntimeError("头部 ChArUco 检测未返回 overlay")
         transform = np.asarray(
             response.t_cam_board_mm,
             dtype=np.float64,
@@ -256,6 +287,9 @@ class PriorCalibrationRecorder:
         }
         cfg.output_dir.mkdir(parents=True, exist_ok=True)
         result_path = cfg.output_dir / "charuco_board_prior.json"
+        overlay_path = cfg.output_dir / "charuco_debug_overlay.jpg"
+        if not cv2.imwrite(str(overlay_path), overlay):
+            raise RuntimeError(f"头部 ChArUco overlay 保存失败：{overlay_path}")
         result_path.write_text(
             json.dumps(payload, ensure_ascii=False, indent=2),
             encoding="utf-8",
@@ -266,6 +300,8 @@ class PriorCalibrationRecorder:
                 f"(markers={response.marker_num}, charuco={response.charuco_num})"
             ),
             result_path=result_path,
+            calibration_kind="head",
+            overlay_bgr=overlay,
         )
 
     def _capture_ball_samples(
@@ -310,7 +346,16 @@ class PriorCalibrationRecorder:
             samples.append(replace(response, debug_artifacts=()))
             evidence = response
             if progress is not None:
-                progress(len(samples), cfg.ball_sample_count)
+                progress(
+                    PriorBallSampleProgress(
+                        current=len(samples),
+                        total=cfg.ball_sample_count,
+                        overlay_bgr=np.asarray(
+                            response.debug_artifacts[0].overlay_bgr,
+                            dtype=np.uint8,
+                        ).copy(),
+                    )
+                )
             if len(samples) == cfg.ball_sample_count:
                 break
         if len(samples) != cfg.ball_sample_count or evidence is None:
@@ -486,6 +531,7 @@ class PriorCalibrationRecorder:
                 f"(有效 {aggregation.inlier_count}/{aggregation.sample_count} 帧)"
             ),
             result_path=result_path,
+            calibration_kind="ball",
             overlay_bgr=overlay,
         )
 

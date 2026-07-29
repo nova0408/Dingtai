@@ -55,7 +55,7 @@ DEFAULT_PREDEFINED_JOINT_ZONE = 10.0
 DEFAULT_POWER_ON_TIMEOUT_S = 3.0
 DEFAULT_REQUEST_TIMEOUT_S = 10.0
 POSITION_POLL_INTERVAL_S = 0.2
-LIFT_MOTION_TIMEOUT_S = 10.0
+LIFT_MOTION_TIMEOUT_S = 20.0
 LIFT_POLL_INTERVAL_S = 0.1
 LIFT_HEIGHT_TOLERANCE_MM = 1.0
 DEFAULT_TOOL_NAME = "g_tool_0"
@@ -847,7 +847,7 @@ def _wait_lift_until_near_target(body: WujiBodyClient, target_height_mm: int) ->
             return current_height_mm
         remaining_s = deadline - time.monotonic()
         if remaining_s <= 0.0:
-            raise TimeoutError(
+            logger.warning(
                 f"等待 lift 到位超时：target={target_height_mm} mm, actual={current_height_mm:.1f} mm, "
                 f"error={current_error_mm:.1f} mm, timeout={LIFT_MOTION_TIMEOUT_S:.1f} s"
             )

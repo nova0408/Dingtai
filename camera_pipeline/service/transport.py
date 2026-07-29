@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from threading import Lock
 
 import zmq
 
@@ -63,31 +64,55 @@ class CameraPipelineRpcClient:
         self._context = zmq.Context.instance() if context is None else context
         self._options = ZmqSocketOptions() if options is None else options
         self._connect_addr = connect_addr
+        self._socket: zmq.Socket | None = None
+        self._lock = Lock()
         self._closed = False
 
     def close(self) -> None:
-        """禁止当前 transport 继续发起请求。"""
+        """关闭持久 REQ socket，并禁止继续发起请求。"""
 
-        self._closed = True
+        with self._lock:
+            self._closed = True
+            self._close_socket()
 
     def call(
         self, request: CameraPipelineServiceRequest
     ) -> CameraPipelineServiceResponse:
-        """使用独立 REQ socket 完成一次请求响应并校验返回类型。
+        """复用持久 REQ socket 完成一次请求响应并校验返回类型。
 
-        每次 RPC 都关闭本次 socket，避免上一次超时或远端重启残留的 REQ 状态
-        污染后续调用；这也保证连续查询不会复用失效的 TCP pipe。
+        正常请求复用同一条连接，避免连续采样时反复建立 TCP/SSH 转发流。
+        REQ/REP 必须严格一问一答，因此使用锁串行化调用；发送、接收或解码失败时
+        立即丢弃已失效 socket，下一次调用再建立新连接。
         """
 
-        if self._closed:
-            raise RuntimeError("camera pipeline RPC client is closed")
-        socket = self._context.socket(zmq.REQ)
-        _configure_socket(socket, self._options)
-        socket.connect(self._connect_addr)
-        try:
-            socket.send(encode_wire(request))
-            return decode_wire(socket.recv(), CameraPipelineServiceResponse)
-        finally:
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("camera pipeline RPC client is closed")
+            socket = self._get_socket()
+            try:
+                socket.send(encode_wire(request))
+                return decode_wire(socket.recv(), CameraPipelineServiceResponse)
+            except Exception:
+                self._close_socket()
+                raise
+
+    def _get_socket(self) -> zmq.Socket:
+        """返回当前持久 socket；首次调用或故障恢复时创建。"""
+
+        socket = self._socket
+        if socket is None:
+            socket = self._context.socket(zmq.REQ)
+            _configure_socket(socket, self._options)
+            socket.connect(self._connect_addr)
+            self._socket = socket
+        return socket
+
+    def _close_socket(self) -> None:
+        """立即关闭当前 socket，并清空连接状态。"""
+
+        socket = self._socket
+        self._socket = None
+        if socket is not None:
             socket.close(linger=0)
 
 

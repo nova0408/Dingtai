@@ -1,6 +1,6 @@
 ---
 name: ssh-orin-remote-ops
-description: Reliable workflow for working with the `orin` host from Windows PowerShell in the Dingtai project. Use when Codex needs to deploy files to `/home/wuji-brain/workspace`, run remote Python or bash commands over SSH, create temporary remote scripts, manage long-running Orin services, diagnose quoting or here-doc failures, handle CRLF/LF issues, or avoid PowerShell-to-SSH command mangling.
+description: Reliable workflow for working with the `orin` host from Windows PowerShell in the Dingtai project. Use when Codex needs to deploy files to `/home/wuji-brain/workspace`, restart CameraPipeline or RecordReplay through project scripts, run remote Python or bash commands over SSH, create temporary remote scripts, manage long-running Orin services, diagnose quoting or here-doc failures, handle CRLF/LF issues, or avoid PowerShell-to-SSH command mangling.
 ---
 
 # SSH Orin Remote Ops
@@ -26,6 +26,54 @@ Prefer this skill when the task includes any of these patterns:
 - When validating remote startup, test in the foreground first; only then detach to the background.
 - Separate "service can start" from "service stays detached"; validate both.
 - When the remote job needs long model loading or hardware warmup, use generous timeouts and stage the checks.
+- Prefer the repository's Windows service-control entrypoint over hand-written `sudo`,
+  `systemctl`, or nested SSH commands. It already supplies the configured sudo password and
+  runs service-specific readiness checks.
+
+## Project Service Control
+
+Run these commands from the Dingtai repository root with PowerShell 7.
+
+Restart only CameraPipeline without syncing files or touching RecordReplay:
+
+```powershell
+pwsh -NoProfile -File .\scripts\sync_and_restart_services.ps1 -RestartOnly -CameraPipelineOnly
+```
+
+Restart both services without syncing files:
+
+```powershell
+pwsh -NoProfile -File .\scripts\sync_and_restart_services.ps1 -RestartOnly
+```
+
+Use the two-service command only when the user explicitly authorizes restarting RecordReplay.
+Restarting a service does not authorize sending RecordReplay `/start` or running a replay test.
+
+Deploy CameraPipeline and its RecordReplay consumer as one version-aligned unit:
+
+```powershell
+pwsh -NoProfile -File .\scripts\sync_and_restart_services.ps1
+```
+
+When staged CameraPipeline work must proceed before the new RecordReplay overlay artifact exists,
+use the explicit gate override:
+
+```powershell
+pwsh -NoProfile -File .\scripts\sync_and_restart_services.ps1 -SkipRecordReplayOverlayCheck
+```
+
+The override still synchronizes and restarts both services; it skips only the overlay-artifact
+precondition. `-CameraPipelineOnly` is valid only together with `-RestartOnly` and is rejected for
+deployment.
+
+Before deployment, verify RecordReplay is waiting and that restarting it is in scope. Treat script
+success and its business-readiness output as the primary result; use short read-only status checks
+only when additional diagnosis is necessary.
+
+Treat CameraPipeline public client, API, or wire-protocol changes as an atomic two-service
+deployment. Never update and restart CameraPipeline while leaving a running RecordReplay process
+loaded with the previous CameraPipeline client. A completed deployment must restore both services
+to business-ready state; stopping RecordReplay is only a temporary replacement step.
 
 ## Recommended Patterns
 

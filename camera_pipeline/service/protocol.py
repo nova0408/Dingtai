@@ -1,17 +1,19 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal
+
+import numpy as np
 
 from ..ball_pose_detection.protocol import (
     BallPoseDetectionRequest,
     BallPoseDetectionResponse,
 )
 from ..protocol import CameraName
-PROTOCOL_VERSION = 9
+PROTOCOL_VERSION = 10
 "CameraPipeline 线协议版本。"
 
-SERVICE_VERSION = "1.5.0"
+SERVICE_VERSION = "1.8.0"
 "CameraPipeline 服务功能版本，必须与 CHANGELOG 当前版本一致。"
 
 CAMERA_STREAM_TOPIC_SEPARATOR = b"\x00"
@@ -52,6 +54,8 @@ class CharucoDetectionRequest:
     "允许尝试的稳定帧数量。"
     stable_timeout_s: float
     "每次等待稳定帧的超时时间，单位 s。"
+    enable_debug: bool = False
+    "是否返回最终检测帧的 marker、角点和坐标轴叠加图。"
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,6 +68,10 @@ class CharucoDetectionResponse:
     error_px: float
     marker_num: int
     charuco_num: int
+    overlay_bgr: np.ndarray = field(
+        default_factory=lambda: np.empty((0, 0, 3), dtype=np.uint8)
+    )
+    "最终检测帧的 BGR 叠加图；未启用 debug 时形状为 `(0, 0, 3)`。"
 
 
 # region 相机查询协议

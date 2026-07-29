@@ -107,6 +107,7 @@ request = CharucoDetectionRequest(
     min_charuco_corners=6,
     max_frames=300,
     stable_timeout_s=10.0,
+    enable_debug=True,
 )
 result = client.detect_charuco(request)
 ```
@@ -119,11 +120,14 @@ result = client.detect_charuco(request)
 - `square_length_mm`：方格边长，单位 mm，必须大于 0。
 - `marker_length_mm`：marker 边长，单位 mm，必须大于 0 且小于方格边长。
 - `min_charuco_corners`：进入 PnP 的最少角点数，至少为 4。
-- `max_frames`：最多尝试的稳定帧数量，必须大于 0。
-- `stable_timeout_s`：每次等待稳定帧的超时，单位 s，必须大于 0。
+- `max_frames`：最多尝试的纯彩色稳定帧数量，必须大于 0。
+- `stable_timeout_s`：每次等待纯彩色稳定帧的超时，单位 s，必须大于 0；
+  ChArUco 不读取深度帧，也不执行深度稳定阈值。
+- `enable_debug`：是否返回最终检测帧的 marker、角点和坐标轴 overlay。
 
 服务端只校验协议、构造本次请求的
-`cv2.aruco.CharucoBoard`，然后由 `PipelineContext.detect_charuco()` 获取稳定帧并调用
+`cv2.aruco.CharucoBoard`，然后由 `PipelineContext.detect_charuco()` 获取纯彩色
+稳定帧并调用
 `camera_pipeline.charuco_detection.CharucoDetector`；服务端不保存任何固定板型。
 
 返回 `CharucoDetectionResponse`：
@@ -134,6 +138,7 @@ result = client.detect_charuco(request)
   平移单位 mm。空结果时为空元组。
 - `error_px`：平均重投影误差，单位 pixel；空结果时为正无穷。
 - `marker_num`、`charuco_num`：最终融合的 marker 和 ChArUco 角点数量。
+- `overlay_bgr`：`enable_debug=True` 时返回最终检测帧的 BGR 叠加图；关闭时为空数组。
 
 相机不可用、稳定帧超时、板参数非法或服务协议错误由客户端转换为 `RuntimeError`。
 达到 `max_frames` 仍未得到位姿属于合法空结果，返回 `status="missing"`。

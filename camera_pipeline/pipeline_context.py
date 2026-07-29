@@ -15,7 +15,7 @@ from .charuco_detection import (
     CharucoDetectionResult,
     CharucoDetector,
 )
-from .protocol import RgbdFrameProtocol
+from .protocol import ColorFrameProtocol, RgbdFrameProtocol
 from .stable_frame import StableFrameConfig, StableFrameDetector
 
 # region 数据结构
@@ -65,8 +65,8 @@ DEFAULT_CAMERA_ENDPOINTS: tuple[CameraEndpointConfig, ...] = (
         "HEAD",
         5560,
         stable_frame_config=StableFrameConfig(
-            depth_median_delta_threshold_mm=8.0,
-            depth_percentile_delta_threshold_mm=25.0,
+            depth_median_delta_threshold_mm=18.0,
+            depth_percentile_delta_threshold_mm=45.0,
         ),
     ),
     CameraEndpointConfig(
@@ -249,6 +249,23 @@ class PipelineContext:
 
         return self.get_camera_runtime(camera_name).get_frame_by_id(frame_id)
 
+    def get_latest_color_frame(
+        self,
+        camera_name: str | None = None,
+    ) -> ColorFrameProtocol | None:
+        """返回最新彩色帧，不要求对应上游消息包含深度。"""
+
+        return self.get_camera_runtime(camera_name).get_latest_color_frame()
+
+    def get_color_frame_by_id(
+        self,
+        frame_id: int,
+        camera_name: str | None = None,
+    ) -> ColorFrameProtocol | None:
+        """按相机和帧号查询彩色帧缓存。"""
+
+        return self.get_camera_runtime(camera_name).get_color_frame_by_id(frame_id)
+
     def resolve_frame(self, frame_id: int) -> RgbdFrameProtocol:
         """按请求帧号选择相机帧，未指定帧号时默认等待稳定帧。"""
 
@@ -346,6 +363,79 @@ class PipelineContext:
         )
         raise RuntimeError(f"camera did not become stable within {timeout_s:.1f}s")
 
+    def wait_for_stable_color_frame(
+        self,
+        timeout_s: float = 10.0,
+        camera_name: str | None = None,
+    ) -> ColorFrameProtocol:
+        """等待指定相机彩色画面连续稳定，不读取或检查深度图。"""
+
+        if timeout_s <= 0.0:
+            raise ValueError("timeout_s must be greater than zero")
+
+        resolved_name = self._config.camera_name if camera_name is None else camera_name
+        logger.info(
+            "stable color frame wait started camera_name={} timeout_s={:.3f}",
+            resolved_name,
+            timeout_s,
+        )
+        endpoint = self._find_camera_endpoint(resolved_name)
+        detector = StableFrameDetector(config=endpoint.stable_frame_config)
+        deadline = time.monotonic() + timeout_s
+        last_frame_id = -1
+        missing_stable_frame_id: int | None = None
+        while time.monotonic() < deadline:
+            frame = self.get_latest_color_frame(resolved_name)
+            if frame is None or frame.frame_id == last_frame_id:
+                time.sleep(0.01)
+                continue
+
+            last_frame_id = frame.frame_id
+            stable_frame_id = detector.update_color(frame)
+            if stable_frame_id is None:
+                continue
+            if self._config.camera_source_mode == "usb":
+                logger.info(
+                    "stable color frame detected in current-frame mode camera_name={} frame_id={} evidence_frame_id={}",
+                    resolved_name,
+                    frame.frame_id,
+                    frame.frame_id,
+                )
+                return frame
+            stable_frame = self.get_color_frame_by_id(
+                stable_frame_id,
+                resolved_name,
+            )
+            if stable_frame is not None:
+                logger.info(
+                    "stable color frame detected camera_name={} frame_id={} evidence_frame_id={}",
+                    resolved_name,
+                    stable_frame.frame_id,
+                    frame.frame_id,
+                )
+                return stable_frame
+            missing_stable_frame_id = stable_frame_id
+
+        if missing_stable_frame_id is not None:
+            logger.warning(
+                "stable color frame evicted before retrieval camera_name={} frame_id={}",
+                resolved_name,
+                missing_stable_frame_id,
+            )
+            raise RuntimeError(
+                f"stable color frame {missing_stable_frame_id} "
+                "is no longer available in camera frame cache"
+            )
+        logger.warning(
+            "stable color frame wait timed out camera_name={} timeout_s={:.3f} last_frame_id={}",
+            resolved_name,
+            timeout_s,
+            last_frame_id,
+        )
+        raise RuntimeError(
+            f"camera color image did not become stable within {timeout_s:.1f}s"
+        )
+
     def detect_charuco(
         self,
         board: cv2.aruco.CharucoBoard,
@@ -388,8 +478,9 @@ class PipelineContext:
         Notes
         -----
         本方法只负责稳定帧获取与重试编排。单帧预处理、融合和 PnP 全部由
-        `CharucoDetector` 完成。每次重新调用 `wait_for_stable_frame` 都创建新的稳定
-        时间窗，因此失败后输入的是后续稳定帧，不重复使用同一证据帧。
+        `CharucoDetector` 完成。每次重新调用 `wait_for_stable_color_frame` 都创建
+        新的纯 RGB 稳定时间窗，因此失败后输入的是后续稳定彩色帧，不重复使用同一
+        证据帧，也不依赖深度帧或深度稳定阈值。
         """
 
         if max_frames <= 0:
@@ -408,7 +499,7 @@ class PipelineContext:
             enable_debug,
         )
         for attempt_index in range(1, max_frames + 1):
-            frame = self.wait_for_stable_frame(
+            frame = self.wait_for_stable_color_frame(
                 timeout_s=stable_timeout_s,
                 camera_name=camera_name,
             )

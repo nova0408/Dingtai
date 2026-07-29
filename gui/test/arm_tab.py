@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from queue import Queue
 from threading import Thread
 
+from loguru import logger
 from PySide6.QtCore import QObject, Qt, QTimer, Signal, Slot
 from PySide6.QtWidgets import (
     QComboBox,
@@ -531,6 +532,12 @@ class ArmTabWidget(QWidget, ActivatableTab):
 
     @Slot(str)
     def _on_refresh_failed(self, message: str) -> None:
+        logger.warning(
+            "AR5 GUI refresh failed: side={} title={} error={}",
+            self.side,
+            self.title,
+            message,
+        )
         self.info_label.setText(f"{self.title} 状态读取失败：{message}")
 
     @Slot()
@@ -610,15 +617,6 @@ class ArmTabWidget(QWidget, ActivatableTab):
         snapshot = self._snapshot
         if snapshot is None:
             self.drag_switch.set_checked(False)
-            return
-        if enabled and snapshot.operate_mode != "manual":
-            self.drag_switch.set_checked(False)
-            QMessageBox.warning(
-                self,
-                "拖动状态不满足",
-                "开启拖动前请点击工作模式指示灯，将机器人切换为手动模式。\n"
-                "拖动开关会自动处理下电；关闭拖动后会自动上电。",
-            )
             return
         self._run_action(
             lambda client: client.set_drag_enabled(enabled),
@@ -810,16 +808,34 @@ class ArmTabWidget(QWidget, ActivatableTab):
         client = self._client
         if client is None:
             return
+        logger.info(
+            "AR5 GUI action submitted: side={} title={} action={}",
+            self.side,
+            self.title,
+            success_message,
+        )
         self.info_label.setText(f"{self.title} 执行中…")
         self._action_worker.submit(lambda: callback(client), success_message)
 
     @Slot(object)
     def _on_action_succeeded(self, payload: object) -> None:
+        logger.success(
+            "AR5 GUI action succeeded: side={} title={} result={}",
+            self.side,
+            self.title,
+            payload,
+        )
         self.info_label.setText(f"{self.title} | {payload}")
         QTimer.singleShot(100, self._request_refresh)
 
     @Slot(str)
     def _on_action_failed(self, message: str) -> None:
+        logger.error(
+            "AR5 GUI action failed: side={} title={} error={}",
+            self.side,
+            self.title,
+            message,
+        )
         self.info_label.setText(f"{self.title} 控制失败：{message}")
         if self._snapshot is not None:
             self._update_snapshot(self._snapshot)

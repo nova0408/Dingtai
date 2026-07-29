@@ -12,6 +12,10 @@
 USB 模式不允许以枚举顺序代替 SN；设备缺失时按指数退避持续重试，SN 为空时线程保持空闲，
 同时通过服务 Loguru 配置记录连接、断线、异常和恢复日志。
 
+ZMQ 模式同样不依赖固定服务启动顺序。CameraPipeline 可先于上游相机控制和数据
+服务启动；后台运行时会持续退避恢复深度、内参和 SUB 收流。对外彩色转发与
+RGBD 转发使用独立缓存，深度恢复期间彩色预览仍可工作。
+
 ## 目标
 
 `camera_pipeline` 是以 Python 3.12 部署在 NVIDIA Orin 上的相机数据与视觉算法服务。它统一连接上游 RGBD 相机流，对外提供相机状态、稳定帧、帧订阅以及 ball 位姿算法请求。
@@ -65,7 +69,7 @@ CameraPipelineClient
   -> service transport
   -> CameraPipelineApplication
   -> PipelineContext.resolve_frame(frame_id <= 0)
-  -> StableFrameDetector
+  -> StableFrameDetector (RGBD 或纯彩色模式)
   -> 中点 frame_id -> CameraStreamRuntime 缓存帧
   -> 纯算法 service.compute(frame, request)
   -> response

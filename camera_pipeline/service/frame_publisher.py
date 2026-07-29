@@ -10,6 +10,7 @@ from ..protocol import (
     CameraColorFramePacket,
     CameraDepthFramePacket,
     CameraFramePacket,
+    ColorFrameProtocol,
     RgbdFrameProtocol,
 )
 from .protocol import build_camera_stream_topic
@@ -105,7 +106,10 @@ class CameraFramePublisher:
         return socket
 
     def _publish_loop(self) -> None:
-        last_frame_ids: dict[str, int] = {}
+        """分别转发 RGBD、彩色和深度缓存，避免三类订阅互相阻塞。"""
+
+        last_rgbd_frame_ids: dict[str, int] = {}
+        last_color_frame_ids: dict[str, int] = {}
         while not self._stop_event.is_set():
             self._drain_subscription_events()
             if not self._has_any_subscriber():
@@ -116,21 +120,37 @@ class CameraFramePublisher:
                 topic = build_camera_stream_topic(camera_name)
                 if not self._has_topic_subscriber(topic):
                     continue
-                frame = self._pipeline_context.get_latest_frame(camera_name)
-                if frame is None or frame.frame_id == last_frame_ids.get(camera_name):
-                    continue
-                last_frame_ids[camera_name] = frame.frame_id
-                self._publish_frame(frame, topic)
-                published = True
+                if self._has_rgbd_subscriber(topic):
+                    frame = self._pipeline_context.get_latest_frame(camera_name)
+                    if (
+                        frame is not None
+                        and frame.frame_id != last_rgbd_frame_ids.get(camera_name)
+                    ):
+                        last_rgbd_frame_ids[camera_name] = frame.frame_id
+                        self._publish_rgbd_frame(frame, topic)
+                        published = True
+                if self._color_subscriptions.get(topic, 0) > 0:
+                    color_frame = self._pipeline_context.get_latest_color_frame(
+                        camera_name
+                    )
+                    if (
+                        color_frame is not None
+                        and color_frame.frame_id
+                        != last_color_frame_ids.get(camera_name)
+                    ):
+                        last_color_frame_ids[camera_name] = color_frame.frame_id
+                        self._publish_color_frame(color_frame, topic)
+                        published = True
             if not published:
                 self._stop_event.wait(0.02)
                 continue
             self._stop_event.wait(0.01)
 
-    def _publish_frame(self, frame: RgbdFrameProtocol, topic: bytes) -> None:
+    def _publish_rgbd_frame(self, frame: RgbdFrameProtocol, topic: bytes) -> None:
+        """按订阅类型发布完整 RGBD 或独立深度数据。"""
+
         if (
             self._frame_socket is None
-            or self._color_socket is None
             or self._depth_socket is None
         ):
             raise RuntimeError("camera frame publisher sockets are not ready")
@@ -142,8 +162,6 @@ class CameraFramePublisher:
         ] = []
         if self._frame_subscriptions.get(topic, 0) > 0:
             packets.append((self._frame_socket, self._build_frame_packet(frame)))
-        if self._color_subscriptions.get(topic, 0) > 0:
-            packets.append((self._color_socket, self._build_color_packet(frame)))
         if self._depth_subscriptions.get(topic, 0) > 0:
             packets.append((self._depth_socket, self._build_depth_packet(frame)))
         for socket, packet in packets:
@@ -151,6 +169,23 @@ class CameraFramePublisher:
                 socket.send(topic + encode_wire(packet), flags=zmq.NOBLOCK)
             except zmq.error.Again:
                 continue
+
+    def _publish_color_frame(
+        self,
+        frame: ColorFrameProtocol,
+        topic: bytes,
+    ) -> None:
+        """发布不依赖深度缓存的彩色数据。"""
+
+        if self._color_socket is None:
+            raise RuntimeError("camera color frame publisher socket is not ready")
+        try:
+            self._color_socket.send(
+                topic + encode_wire(self._build_color_packet(frame)),
+                flags=zmq.NOBLOCK,
+            )
+        except zmq.error.Again:
+            return
 
     @staticmethod
     def _build_frame_packet(frame: RgbdFrameProtocol) -> CameraFramePacket:
@@ -219,8 +254,16 @@ class CameraFramePublisher:
             or self._depth_subscriptions.get(topic, 0) > 0
         )
 
+    def _has_rgbd_subscriber(self, topic: bytes) -> bool:
+        """返回该相机是否需要读取 RGBD 缓存。"""
+
+        return (
+            self._frame_subscriptions.get(topic, 0) > 0
+            or self._depth_subscriptions.get(topic, 0) > 0
+        )
+
     @staticmethod
-    def _build_color_packet(frame: RgbdFrameProtocol) -> CameraColorFramePacket:
+    def _build_color_packet(frame: ColorFrameProtocol) -> CameraColorFramePacket:
         return CameraColorFramePacket(
             frame_id=frame.frame_id,
             camera_name=frame.camera_name,

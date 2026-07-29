@@ -122,11 +122,11 @@ systemd 模板位于 `camera-pipeline.service`，进程启动、停止上限分�
 
 ## 协议与安全边界
 
-请求包含 `protocol_version`，当前版本为 `9`。版本 8 为三球先验增加每球专属
+请求包含 `protocol_version`，当前版本为 `10`。版本 8 为三球先验增加每球专属
 `hsv_ranges`，并在检测结果中返回 `observed_hsv`。相机相关请求必须显式携带
 `camera_name`；版本 9 在 `CameraStatusResponse` 中增加必填 `service_version`，
 供客户端在连通性阶段核对远端功能版本。客户端与服务端线协议版本不一致时服务端
-明确拒绝。
+明确拒绝。版本 10 为 ChArUco debug 响应增加最终检测帧 overlay。
 
 三球请求若携带球先验但不含有效毫米尺度相对位置关系，服务将其识别为先验采集，
 并强制要求 `enable_debug=True`；完全不带球先验的冒烟请求不属于先验采集。
@@ -138,6 +138,10 @@ Python pickle，不依赖 dataclass 的 Python 版本内存布局。Orin 服务�
 `/home/wuji-brain/miniconda3/envs/wuji/bin/python`（Python 3.10+），不再使用
 `pytorch_38`/`py38_tourch` 环境。未知类型、未知协议标识、越界数组
 和字段不匹配均会明确拒绝。
+
+三类帧流彼此独立：彩色发布读取彩色缓存，完整帧与深度发布读取 RGBD 缓存。
+因此上游暂时只有 RGB 时，`camera_color_frame_subscribe` 仍持续转发彩色帧，
+不会被尚未恢复的深度流阻塞。ZMQ SUB 客户端允许发布端晚启动或重启。
 
 ## 错误约定
 

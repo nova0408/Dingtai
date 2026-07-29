@@ -77,12 +77,29 @@ def test_depth_change_resets_stable_window() -> None:
     assert detector.update(changed_frame) is None
 
 
+def test_color_only_stability_ignores_depth_changes() -> None:
+    detector = _build_detector()
+    result = None
+    for frame_id in range(11):
+        depth = np.full((48, 64), 1000 + frame_id * 100, dtype=np.uint16)
+        result = detector.update_color(
+            _build_frame(
+                frame_id,
+                frame_id * DEFAULT_FRAME_INTERVAL_MS,
+                depth_mm=depth,
+            )
+        )
+
+    assert result == 5
+
+
 def main() -> None:
     """在 IDE 中直接执行稳定帧最小验证。"""
 
     test_returns_midpoint_frame_id_after_complete_stable_window()
     test_motion_resets_stable_window()
     test_depth_change_resets_stable_window()
+    test_color_only_stability_ignores_depth_changes()
     logger.success("stable_frame 合成帧验证通过")
     logger.warning("本结果未连接真实相机，稳定性阈值仍需使用现场数据标定")
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from .protocol import RgbdFrameProtocol
+from .protocol import ColorFrameProtocol, RgbdFrameProtocol
 
 
 class CameraRuntimeProtocol(Protocol):
@@ -24,3 +24,7 @@ class CameraRuntimeProtocol(Protocol):
     def get_latest_frame(self) -> RgbdFrameProtocol | None: ...
 
     def get_frame_by_id(self, frame_id: int) -> RgbdFrameProtocol | None: ...
+
+    def get_latest_color_frame(self) -> ColorFrameProtocol | None: ...
+
+    def get_color_frame_by_id(self, frame_id: int) -> ColorFrameProtocol | None: ...

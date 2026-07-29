@@ -16,13 +16,16 @@ description: 在 PowerShell 7 (`pwsh`) 下执行 UTF-8 安全文本编辑。用�
 ```powershell
 pwsh -File .agents/skills/windows-powershell-utf8-safe-edit/scripts/utf8_snapshot.ps1 -Path <relative-path>
 pwsh -File .agents/skills/windows-powershell-utf8-safe-edit/scripts/utf8_replace.ps1 -Path <relative-path> -Pattern '<pattern>' -Replacement '<replacement>'
+pwsh -NoProfile -File .codex/hooks/scan_text_integrity.ps1 -Path <relative-path>
 ```
 
 ## Hook 入口
 1. 项目级 hooks 位于 `.codex/hooks.json`。
 2. `PreToolUse` 负责编辑前快照。
 3. `PostToolUse` 负责编辑后 UTF-8 扫描、确定性修复和静态检查。
-4. 旧的 `.agents/tools` 路径已废弃，不允许继续引用。
+4. 单独扫描文件时直接调用 `.codex/hooks/scan_text_integrity.ps1`，不要假定存在 `scripts/utf8_scan.ps1`。
+5. `scan_text_integrity.ps1` 的 `-Fix` 会修改文件；使用前必须先执行 `utf8_snapshot.ps1`。
+6. 旧的 `.agents/tools` 路径已废弃，不允许继续引用。
 
 ## 回退策略
 1. 若 `pwsh` 不可用，自动回退到 `powershell` 并切换 `windows-powershell-5-utf8-safe-edit`。
