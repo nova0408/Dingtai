@@ -2,8 +2,9 @@ from __future__ import annotations
 
 # pyright: reportMissingImports=false
 
-import queue
 import json
+import math
+import queue
 import struct
 import threading
 import time
@@ -47,6 +48,9 @@ class CameraStreamRuntimeConfig:
 
     stream_timeout_ms: int = 8000
     "数据流接收超时，单位 ms。"
+
+    stale_frame_timeout_s: float = 3.0
+    "帧号或时间戳持续不递增时触发流恢复的超时，单位 s。"
 
     cache_size: int = 16
     "按帧号缓存最近帧数量。"
@@ -102,6 +106,8 @@ class CameraStreamRuntime:
             raise ValueError(
                 "max_consecutive_color_only_frames must be greater than zero"
             )
+        if self._config.stale_frame_timeout_s <= 0.0:
+            raise ValueError("stale_frame_timeout_s must be greater than zero")
         self._context = zmq.Context()
         self._control_socket = self._create_control_socket()
         self._stream_socket: zmq.Socket | None = None
@@ -123,9 +129,13 @@ class CameraStreamRuntime:
         ] | None = None
         self._last_recover_time = 0.0
         self._depth_stream_confirmed = False
+        self._depth_reset_required = False
         self._consecutive_color_only_frames = 0
         self._control_retry_failures = 0
         self._next_control_retry_at = 0.0
+        self._last_stream_frame_id: int | None = None
+        self._last_stream_timestamp_ms: float | None = None
+        self._last_stream_progress_at = time.perf_counter()
 
     def start(self) -> None:
         """启动后台采流线程。"""
@@ -146,9 +156,11 @@ class CameraStreamRuntime:
         )
         self._stream_socket = self._create_stream_socket()
         self._depth_stream_confirmed = False
+        self._depth_reset_required = False
         self._consecutive_color_only_frames = 0
         self._control_retry_failures = 0
         self._next_control_retry_at = 0.0
+        self._reset_stream_progress()
         self._running = True
         self._thread = threading.Thread(
             target=self._capture_loop, name="orin-camera-stream", daemon=True
@@ -260,6 +272,8 @@ class CameraStreamRuntime:
                 consecutive_timeouts = 0
                 continue
             consecutive_timeouts = 0
+            if not self._accept_stream_progress(color_packet):
+                continue
             with self._lock:
                 self._latest_color_frame = color_packet
                 self._color_frame_cache[int(color_packet.frame_id)] = color_packet
@@ -295,6 +309,11 @@ class CameraStreamRuntime:
         """
 
         needs_depth = not self._depth_stream_confirmed
+        reset_depth = needs_depth and self._depth_reset_required
+        if reset_depth:
+            # 深度流与控制状态不一致时，上游相机可能已经重新初始化。旧内参不能
+            # 继续随恢复后的帧使用，必须与深度开关一起重新读取。
+            self._cached_intrinsics = None
         needs_intrinsics = self._cached_intrinsics is None
         if not needs_depth and not needs_intrinsics:
             return True
@@ -304,7 +323,13 @@ class CameraStreamRuntime:
             return not needs_intrinsics
         try:
             if needs_depth:
+                if reset_depth:
+                    self._send_control_command(
+                        "set_depth_enabled",
+                        {"enable": False},
+                    )
                 self._send_control_command("set_depth_enabled", {"enable": True})
+                self._depth_reset_required = False
             if needs_intrinsics:
                 self._cached_intrinsics = self._get_intrinsics_from_control()
         except Exception as exc:  # noqa: BLE001
@@ -342,15 +367,23 @@ class CameraStreamRuntime:
         threshold = self._config.max_consecutive_color_only_frames
         if self._consecutive_color_only_frames < threshold:
             return
-        if not self._depth_stream_confirmed:
+        if self._depth_stream_confirmed:
+            logger.warning(
+                "camera depth stream lost; control reset scheduled "
+                "camera_name={} color_only_frames={}",
+                self._config.camera_name,
+                self._consecutive_color_only_frames,
+            )
+            self._depth_stream_confirmed = False
+        if self._consecutive_color_only_frames % threshold != 0:
             return
         logger.warning(
-            "camera depth stream lost; control recovery scheduled "
+            "camera depth stream still missing; disable-enable reset scheduled "
             "camera_name={} color_only_frames={}",
             self._config.camera_name,
             self._consecutive_color_only_frames,
         )
-        self._depth_stream_confirmed = False
+        self._depth_reset_required = True
         self._next_control_retry_at = 0.0
 
     def _record_rgbd_frame(self) -> None:
@@ -362,8 +395,48 @@ class CameraStreamRuntime:
                 self._config.camera_name,
             )
         self._depth_stream_confirmed = True
+        self._depth_reset_required = False
         self._consecutive_color_only_frames = 0
         self._control_retry_failures = 0
+
+    def _accept_stream_progress(self, frame: CameraColorFramePacket) -> bool:
+        """仅接受帧号与时间戳都向前推进的数据包，并恢复持续陈旧的流。"""
+
+        now = time.perf_counter()
+        frame_id = frame.frame_id
+        timestamp_ms = frame.timestamp_ms
+        if (
+            self._last_stream_frame_id is None
+            or self._last_stream_timestamp_ms is None
+        ):
+            self._last_stream_frame_id = frame_id
+            self._last_stream_timestamp_ms = timestamp_ms
+            self._last_stream_progress_at = now
+            return True
+        if (
+            frame_id > self._last_stream_frame_id
+            and timestamp_ms > self._last_stream_timestamp_ms
+        ):
+            self._last_stream_frame_id = frame_id
+            self._last_stream_timestamp_ms = timestamp_ms
+            self._last_stream_progress_at = now
+            return True
+
+        stale_duration_s = now - self._last_stream_progress_at
+        if stale_duration_s < self._config.stale_frame_timeout_s:
+            return False
+
+        previous_frame_id = self._last_stream_frame_id
+        previous_timestamp_ms = self._last_stream_timestamp_ms
+        self._last_stream_progress_at = now
+        self._recover_stream_runtime(
+            "frame identity did not advance "
+            f"for {stale_duration_s:.3f}s "
+            f"previous_frame_id={previous_frame_id} frame_id={frame_id} "
+            f"previous_timestamp_ms={previous_timestamp_ms:.3f} "
+            f"timestamp_ms={timestamp_ms:.3f}"
+        )
+        return False
 
     def _recover_stream_runtime(self, reason: str) -> None:
         now = time.perf_counter()
@@ -377,10 +450,33 @@ class CameraStreamRuntime:
             reason,
         )
         self._depth_stream_confirmed = False
+        self._depth_reset_required = False
         self._consecutive_color_only_frames = 0
         self._cached_intrinsics = None
         self._next_control_retry_at = 0.0
+        self._clear_cached_frames()
+        self._reset_stream_progress()
         self._recreate_stream_socket()
+
+    def _clear_cached_frames(self) -> None:
+        """恢复收流前清除旧帧，避免查询接口继续返回陈旧缓存。"""
+
+        with self._lock:
+            self._latest_frame = None
+            self._frame_cache.clear()
+            while not self._frame_order.empty():
+                self._frame_order.get_nowait()
+            self._latest_color_frame = None
+            self._color_frame_cache.clear()
+            while not self._color_frame_order.empty():
+                self._color_frame_order.get_nowait()
+
+    def _reset_stream_progress(self) -> None:
+        """重置帧身份推进状态，让重连后的首帧建立新基线。"""
+
+        self._last_stream_frame_id = None
+        self._last_stream_timestamp_ms = None
+        self._last_stream_progress_at = time.perf_counter()
 
     def _recreate_stream_socket(self) -> None:
         old_socket = self._stream_socket
@@ -556,13 +652,20 @@ class CameraStreamRuntime:
         data = payload.get("data", {})
         if not isinstance(data, dict):
             raise RuntimeError("invalid get_intrinsics payload")
-        return (
+        intrinsics = (
             _read_json_number(data, "fx", 910.0),
             _read_json_number(data, "fy", 910.0),
             _read_json_number(data, "cx", 640.0),
             _read_json_number(data, "cy", 360.0),
             _read_zmq_distortion(data),
         )
+        fx, fy, cx, cy, _distortion = intrinsics
+        if fx <= 0.0 or fy <= 0.0:
+            raise RuntimeError(
+                "invalid get_intrinsics focal length: "
+                f"fx={fx:.6f} fy={fy:.6f} cx={cx:.6f} cy={cy:.6f}"
+            )
+        return intrinsics
 
     def _tcp_addr(self, port: int) -> str:
         return "tcp://{0}:{1}".format(self._config.host, int(port))
@@ -606,7 +709,10 @@ def _read_json_number(
     value = payload.get(key, default)
     if not isinstance(value, (int, float)) or isinstance(value, bool):
         raise RuntimeError(f"invalid camera control numeric field: {key}")
-    return float(value)
+    number = float(value)
+    if not math.isfinite(number):
+        raise RuntimeError(f"non-finite camera control numeric field: {key}")
+    return number
 
 
 def _read_zmq_distortion(payload: dict[str, JsonValue]) -> tuple[float, ...]:
@@ -622,7 +728,10 @@ def _read_zmq_distortion(payload: dict[str, JsonValue]) -> tuple[float, ...]:
     for item in distortion_raw:
         if not isinstance(item, (int, float)) or isinstance(item, bool):
             raise RuntimeError("invalid get_intrinsics dist value")
-        distortion_values.append(float(item))
+        coefficient = float(item)
+        if not math.isfinite(coefficient):
+            raise RuntimeError("non-finite get_intrinsics dist value")
+        distortion_values.append(coefficient)
 
     k1, k2, k3, k4, k5, k6, p1, p2 = distortion_values
     return k1, k2, p1, p2, k3, k4, k5, k6

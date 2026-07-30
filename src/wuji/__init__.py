@@ -15,7 +15,7 @@ from .protocol import (
     WujiQmlinkerEnableModuleName,
 )
 from .qmlinker_session import WujiQmlinkerSession
-from .right_hand_specs import RIGHT_HAND_ACTUATOR_SPECS, WujiRightHandActuatorSpec
+from .right_hand_specs import WujiRightHandActuatorSpec, build_right_hand_actuator_specs
 from .zmq_camera_catalog import (
     SUPPORTED_WUJI_ZMQ_CAMERAS,
     SUPPORTED_WUJI_ZMQ_CAMERAS_LOCAL,
@@ -42,6 +42,7 @@ __all__ = [
     "SUPPORTED_WUJI_QMLINKER_ENABLE_MODULES",
     "SUPPORTED_WUJI_ZMQ_CAMERAS",
     "SUPPORTED_WUJI_ZMQ_CAMERAS_LOCAL",
+    "WujiAgvClient",
     "WujiCameraEnableState",
     "WujiCameraFrame",
     "WujiCameraIntrinsicsInfo",
@@ -54,7 +55,7 @@ __all__ = [
     "WujiZmqCameraClient",
     "WujiZmqCameraEndpoint",
     "WujiZmqCameraStatus",
-    "RIGHT_HAND_ACTUATOR_SPECS",
+    "build_right_hand_actuator_specs",
     "get_wuji_zmq_camera_endpoint",
     "list_wuji_zmq_camera_runtime_infos",
     "parse_wuji_camera_name",

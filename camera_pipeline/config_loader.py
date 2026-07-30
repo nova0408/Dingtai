@@ -99,6 +99,9 @@ def load_pipeline_context_config(path: Path) -> PipelineContextConfig:
         camera_stream_port=default_endpoint.stream_port,
         camera_request_timeout_ms=_require_int(zmq_config, "request_timeout_ms"),
         camera_stream_timeout_ms=_require_int(zmq_config, "stream_timeout_ms"),
+        camera_stale_frame_timeout_s=_require_number(
+            zmq_config, "stale_frame_timeout_s"
+        ),
         camera_frame_cache_size=_require_int(zmq_config, "frame_cache_size"),
         camera_endpoints=tuple(endpoints),
         usb_frame_timeout_ms=_require_int(usb_config, "frame_timeout_ms"),

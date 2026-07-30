@@ -135,7 +135,7 @@ def test_decoder_rejects_non_wire_payload() -> None:
         raise AssertionError("non-wire payload was not rejected")
 
 
-def test_transport_round_trip_uses_explicit_wire_protocol() -> None:
+def test_transport_round_trip_uses_call_scoped_sockets() -> None:
     address = f"inproc://wire-codec-{uuid.uuid4().hex}"
     server = CameraPipelineRpcServer(address)
     client = CameraPipelineRpcClient(address)
@@ -173,9 +173,7 @@ def test_transport_round_trip_uses_explicit_wire_protocol() -> None:
             timeout_s=1.0,
         )
         first_response = client.call(request)
-        persistent_socket = client._socket  # noqa: SLF001
         second_response = client.call(request)
-        assert client._socket is persistent_socket  # noqa: SLF001
         for response in (first_response, second_response):
             assert response.camera_status is not None
             assert response.camera_status.service_version == "1.4.0"
@@ -193,7 +191,7 @@ def main() -> None:
     test_charuco_response_round_trip_preserves_overlay()
     test_frame_round_trip_preserves_numpy_dtype_and_values()
     test_decoder_rejects_non_wire_payload()
-    test_transport_round_trip_uses_explicit_wire_protocol()
+    test_transport_round_trip_uses_call_scoped_sockets()
 
 
 if __name__ == "__main__":

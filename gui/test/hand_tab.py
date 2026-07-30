@@ -8,20 +8,10 @@ from PySide6.QtWidgets import QGroupBox, QHBoxLayout, QLabel, QVBoxLayout, QWidg
 from gui.test.common import ActivatableTab, AxisControlConfig, AxisControlRow, HoldRepeatController, StreamReaderWorker
 from gui.util_components.casia_indicator_light import CasiaIndicatorLight
 from src.wuji.right_hand_client import WujiRightHandClient
-from src.wuji.right_hand_specs import RIGHT_HAND_ACTUATOR_SPECS
-
-FINGER_GROUPS: tuple[tuple[str, tuple[int, ...]], ...] = (
-    ("thumb", (0, 1, 2)),
-    ("index", (3, 4)),
-    ("middle", (5, 6)),
-    ("ring", (7, 8)),
-    ("little", (9, 10)),
-)
+from src.wuji.right_hand_specs import WujiRightHandActuatorSpec
 
 
-
-
-class M11HandTabWidget(QWidget, ActivatableTab):
+class M6HandTabWidget(QWidget, ActivatableTab):
     STEP = 0.1
 
     # region 初始化
@@ -37,6 +27,7 @@ class M11HandTabWidget(QWidget, ActivatableTab):
 
         self.enable_indicator: CasiaIndicatorLight
         self.info_label: QLabel
+        self._actuator_layout: QVBoxLayout
 
         self._setup_ui()
         self._connect_signals()
@@ -49,11 +40,11 @@ class M11HandTabWidget(QWidget, ActivatableTab):
             font_size=12,
             default_status=False,
         )
-        self.info_label = QLabel("m11 hand 未连接", self)
+        self.info_label = QLabel("M6 hand 未连接", self)
 
         root_layout = QVBoxLayout(self)
         root_layout.addWidget(self._build_info_group())
-        root_layout.addLayout(self._build_finger_layout())
+        root_layout.addWidget(self._build_actuator_group())
         root_layout.addStretch(1)
 
     def _build_info_group(self) -> QGroupBox:
@@ -63,24 +54,15 @@ class M11HandTabWidget(QWidget, ActivatableTab):
         layout.addWidget(self.info_label, 1)
         return group
 
-    def _build_finger_layout(self) -> QHBoxLayout:
-        finger_layout = QHBoxLayout()
-        for finger_name, actuator_ids in FINGER_GROUPS:
-            finger_layout.addWidget(self._build_finger_group(finger_name, actuator_ids), 1)
-        return finger_layout
-
-    def _build_finger_group(self, finger_name: str, actuator_ids: tuple[int, ...]) -> QGroupBox:
-        group = QGroupBox(finger_name, self)
-        layout = QVBoxLayout(group)
-        for actuator_id in actuator_ids:
-            layout.addWidget(self._build_axis_row(actuator_id))
+    def _build_actuator_group(self) -> QGroupBox:
+        group = QGroupBox("M6 Actuators", self)
+        self._actuator_layout = QVBoxLayout(group)
         return group
 
-    def _build_axis_row(self, actuator_id: int) -> AxisControlRow:
-        spec = RIGHT_HAND_ACTUATOR_SPECS[actuator_id]
+    def _build_axis_row(self, spec: WujiRightHandActuatorSpec) -> AxisControlRow:
         row = AxisControlRow(
             AxisControlConfig(
-                axis_key=str(actuator_id),
+                axis_key=str(spec.actuator_id),
                 title=spec.label,
                 minimum=spec.minimum,
                 maximum=spec.maximum,
@@ -90,14 +72,23 @@ class M11HandTabWidget(QWidget, ActivatableTab):
             repeat_controller=HoldRepeatController(self),
             parent=self,
         )
-        self._axis_rows[actuator_id] = row
+        self._axis_rows[spec.actuator_id] = row
         return row
+
+    def _configure_actuator_rows(self, specs: tuple[WujiRightHandActuatorSpec, ...]) -> None:
+        for row in self._axis_rows.values():
+            self._actuator_layout.removeWidget(row)
+            row.deleteLater()
+        self._axis_rows.clear()
+
+        for spec in specs:
+            row = self._build_axis_row(spec)
+            row.setRequested.connect(self._on_axis_target_requested)
+            row.nudgeRequested.connect(self._on_axis_target_requested)
+            self._actuator_layout.addWidget(row)
 
     def _connect_signals(self) -> None:
         self.enable_indicator.clicked.connect(self._on_enable_clicked)
-        for row in self._axis_rows.values():
-            row.setRequested.connect(self._on_axis_target_requested)
-            row.nudgeRequested.connect(self._on_axis_target_requested)
         self._stream_worker.valueReceived.connect(self._on_stream_values_received)
         self._stream_worker.errorRaised.connect(self._on_stream_error)
 
@@ -107,9 +98,17 @@ class M11HandTabWidget(QWidget, ActivatableTab):
 
     def set_client(self, client: WujiRightHandClient | None) -> None:
         self._client = client
-        self.set_connection_ready(client is not None)
         if client is None:
             self._stream_worker.stop()
+            self.set_connection_ready(False)
+            return
+        try:
+            self._configure_actuator_rows(client.get_right_hand_instance_specs())
+        except Exception as exc:  # noqa: BLE001
+            self.info_label.setText(f"M6 hand 信息读取失败: {exc}")
+            self.set_connection_ready(False)
+            return
+        self.set_connection_ready(True)
 
     def set_active(self, active: bool) -> None:
         self._active = bool(active)
@@ -117,7 +116,7 @@ class M11HandTabWidget(QWidget, ActivatableTab):
             self._stream_worker.stop()
             return
         if self._client is None:
-            self.info_label.setText("m11 hand 未连接")
+            self.info_label.setText("M6 hand 未连接")
             return
         self._try_enable()
         self._stream_run_id = self._stream_worker.start()

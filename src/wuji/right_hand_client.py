@@ -7,7 +7,7 @@ from typing import Any, cast
 from qmlinker import QMHand
 from qmlinker.grpc_py import hand_pb2
 
-from src.wuji.right_hand_specs import RIGHT_HAND_ACTUATOR_SPECS, WujiRightHandActuatorSpec
+from src.wuji.right_hand_specs import WujiRightHandActuatorSpec, build_right_hand_actuator_specs
 
 DEFAULT_RIGHT_HAND_SPEED_RATIO = 0.5
 "右手下发默认速度比例，单位 归一化比例。现场 hand_m_example.py 也是该值。"
@@ -24,14 +24,15 @@ DEFAULT_RIGHT_HAND_FORCE_LIMIT = 0.5
 
 
 class WujiRightHandClient(QMHand):
-    """无际右手灵巧手客户端。
+    """无际 M6 右手灵巧手客户端。
 
     职责边界：
     - 直接继承 `QMHand`，负责右手状态读取、使能控制和状态下发。
     - 不承担左手夹爪语义，左手应由专用 gripper 客户端处理。
 
     设计思想：
-    - 现场已经确认右手是 11 个执行器，因此这里把轴定义固定成项目侧结构体。
+    - 当前右手硬件为 M6，执行器数量与名称以 qmlinker `hand_info` 为运行时真值。
+    - 控制前根据运行时规格校验目标数量，避免向 M6 下发长度不匹配的命令。
     - 仅保留右手语义，不再支持左手作为通用 hand。
 
     生命周期：
@@ -123,15 +124,48 @@ class WujiRightHandClient(QMHand):
         return value
 
     def get_right_hand_actuator_count(self) -> int:
-        """读取右手执行器数量。"""
+        """从 qmlinker 手部信息读取右手执行器数量。
 
-        return len(RIGHT_HAND_ACTUATOR_SPECS)
+        Returns
+        -------
+        int
+            当前右手执行器数量，单位 个。
+        """
 
+        return len(self.get_right_hand_instance_specs())
 
     def get_right_hand_instance_specs(self) -> tuple[WujiRightHandActuatorSpec, ...]:
-        """返回右手固定执行器规格。"""
+        """根据 qmlinker 手部信息返回当前右手执行器规格。
 
-        return RIGHT_HAND_ACTUATOR_SPECS
+        Returns
+        -------
+        tuple[WujiRightHandActuatorSpec, ...]
+            当前右手执行器规格，顺序与 qmlinker actuator_id 一致。
+
+        Raises
+        ------
+        RuntimeError
+            手部信息不可用，或返回字段类型不符合协议。
+        ValueError
+            执行器数量与执行器名称数量不一致。
+        """
+
+        hand_info = self.get_hand_info()
+        if hand_info is None:
+            raise RuntimeError("右手信息不可用")
+
+        actuator_count = hand_info.get("actuator_count")
+        if not isinstance(actuator_count, int):
+            raise RuntimeError(f"右手 actuator_count 类型异常: {actuator_count!r}")
+
+        actuator_names = hand_info.get("actuator_names")
+        if not isinstance(actuator_names, list) or not all(isinstance(name, str) for name in actuator_names):
+            raise RuntimeError(f"右手 actuator_names 类型异常: {actuator_names!r}")
+
+        return build_right_hand_actuator_specs(
+            actuator_count=actuator_count,
+            actuator_names=actuator_names,
+        )
 
     def set_right_hand_axis(self, actuator_id: int, target_value: float) -> bool:
         """设置右手单轴目标值。
@@ -146,6 +180,7 @@ class WujiRightHandClient(QMHand):
             target_value,
             axis_name=f"right_hand_a{int(actuator_id)}",
         )
+        actuator_specs = self.get_right_hand_instance_specs()
         current_values = self.get_right_hand_values()
         positions = [
             normalized_target_value
@@ -154,7 +189,7 @@ class WujiRightHandClient(QMHand):
                 self._get_required_current_value(current_values, spec.axis_name),
                 axis_name=spec.axis_name,
             )
-            for spec in RIGHT_HAND_ACTUATOR_SPECS
+            for spec in actuator_specs
         ]
         return bool(self.set_hand_state(positions))
 
@@ -184,19 +219,25 @@ class WujiRightHandClient(QMHand):
         return float(current_values[axis_name])
 
     def set_hand_state(self, actuator_commands: Sequence[float]) -> bool:
-        """按 11 个执行器位置直接下发右手状态。
+        """按运行时 M6 执行器规格下发右手状态。
+
+        Parameters
+        ----------
+        actuator_commands:
+            归一化位置序列，数量必须与 qmlinker `hand_info` 的执行器数量一致。
 
         Notes
         -----
-        调用方只需要传入 11 个归一化位置值。
+        调用方只需要传入当前 M6 的归一化位置值。
         当前 `wuyou` 端右手示例链路对 `speed_ratio` 和 `force_limit` 都使用 `0.5`。
         现场曾验证过把 `force_limit` 误设为 `0.0` 时，命令可能已经到达但手部不发生有效动作。
         因此这里固定使用示例一致的默认值，不再回退到 `0.0`。
         """
 
+        actuator_specs = self.get_right_hand_instance_specs()
         normalized_positions = [
             self._validate_normalized_position(position, axis_name=spec.axis_name)
-            for spec, position in zip(RIGHT_HAND_ACTUATOR_SPECS, actuator_commands, strict=True)
+            for spec, position in zip(actuator_specs, actuator_commands, strict=True)
         ]
         command_frames = [
             {
@@ -205,7 +246,7 @@ class WujiRightHandClient(QMHand):
                 "speed_ratio": DEFAULT_RIGHT_HAND_SPEED_RATIO,
                 "force_limit": DEFAULT_RIGHT_HAND_FORCE_LIMIT,
             }
-            for spec, position in zip(RIGHT_HAND_ACTUATOR_SPECS, normalized_positions, strict=True)
+            for spec, position in zip(actuator_specs, normalized_positions, strict=True)
         ]
         return bool(super().set_hand_state(command_frames))
 

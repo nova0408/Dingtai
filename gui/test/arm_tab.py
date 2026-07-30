@@ -532,12 +532,6 @@ class ArmTabWidget(QWidget, ActivatableTab):
 
     @Slot(str)
     def _on_refresh_failed(self, message: str) -> None:
-        logger.warning(
-            "AR5 GUI refresh failed: side={} title={} error={}",
-            self.side,
-            self.title,
-            message,
-        )
         self.info_label.setText(f"{self.title} 状态读取失败：{message}")
 
     @Slot()

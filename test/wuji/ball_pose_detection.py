@@ -27,6 +27,11 @@ from camera_pipeline.ball_pose_detection.protocol import (
 )
 from camera_pipeline.client import CameraName, CameraPipelineClient
 from camera_pipeline.service.protocol import CameraStatusResponse
+from record_replay.offset_detector_gateway import (
+    CameraPipelineThreeBallDetector,
+    load_three_ball_priors,
+)
+from record_replay.settings import ReplayOffsetSettings
 
 # region 默认常量
 
@@ -42,6 +47,10 @@ DEFAULT_TIMEOUT_MS = 60_000
 # 等待稳定帧超时时间，单位 s
 DEFAULT_STABLE_TIMEOUT_S = 15.0
 DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "test" / "wuji" / ".archive" / "ball_pose_detection_capture"
+DEFAULT_RECORDED_PRIOR_PATH = (
+    PROJECT_ROOT / "record_replay" / "prior_data" / "ball_pose_prior.json"
+)
+# GUI 保存的完整三球先验，用于验证回放采用的宽窄分级检测策略。
 # 首次检测仅输入参考颜色和物理直径，占位中心不包含有效相对位置关系
 DEFAULT_REFERENCE_PRIORS = (
     BallPosePriorInfo("#ffff00", 20.0, (1.0, 0.0, 0.0)),
@@ -66,83 +75,102 @@ def main(
 
     output_dir.mkdir(parents=True, exist_ok=True)
     logger.info("ball_pose_detection 冒烟开始：service_addr={} camera_name={}", service_addr, camera_name)
-    client = CameraPipelineClient(service_addr=str(service_addr), timeout_ms=int(timeout_ms))
-    try:
-        selected_camera = CameraName(camera_name)
-        logger.info("阶段 1/3：检查服务连通性、相机状态和功能版本")
-        expected_service_version = client.expected_service_version
-        status = client.get_camera_status(selected_camera, timeout_s=float(stable_timeout_s))
-        _validate_connectivity(
-            status=status,
-            expected_service_version=expected_service_version,
-        )
-        logger.success(
-            "阶段 1/3 通过：service_version={} camera_name={} width={} px height={} px",
-            status.service_version,
-            status.camera_name,
-            status.width,
-            status.height,
-        )
+    selected_camera = CameraName(camera_name)
+    logger.info("阶段 1/4：检查服务连通性、相机状态和功能版本")
+    expected_service_version, status = _get_camera_status(
+        service_addr=str(service_addr),
+        camera_name=selected_camera,
+        timeout_ms=int(timeout_ms),
+        timeout_s=float(stable_timeout_s),
+    )
+    _validate_connectivity(
+        status=status,
+        expected_service_version=expected_service_version,
+    )
+    logger.success(
+        "阶段 1/4 通过：service_version={} camera_name={} width={} px height={} px",
+        status.service_version,
+        status.camera_name,
+        status.width,
+        status.height,
+    )
 
-        logger.info("阶段 2/3：使用参考颜色、物理直径和占位中心执行首次三球检测")
-        reference_frame_id = _resolve_target_frame_id(
-            client=client,
+    logger.info("阶段 2/4：使用参考颜色、物理直径和占位中心执行首次三球检测")
+    reference_frame_id = _resolve_target_frame_id(
+        service_addr=str(service_addr),
+        camera_name=selected_camera,
+        timeout_ms=int(timeout_ms),
+        stable_timeout_s=float(stable_timeout_s),
+    )
+    reference_response = _detect_ball(
+        service_addr=str(service_addr),
+        timeout_ms=int(timeout_ms),
+        request=BallPoseDetectionRequest(
+            request_id=2,
             camera_name=selected_camera,
-            stable_timeout_s=float(stable_timeout_s),
+            frame_id=reference_frame_id,
+            enable_debug=True,
+            priors=DEFAULT_REFERENCE_PRIORS,
         )
-        reference_response = client.detect_ball(
-            BallPoseDetectionRequest(
-                request_id=2,
-                camera_name=selected_camera,
-                frame_id=reference_frame_id,
-                enable_debug=True,
-                priors=DEFAULT_REFERENCE_PRIORS,
-            )
-        )
-        _save_capture(
-            output_dir=output_dir / "02_reference_detection",
-            response=reference_response,
-            stage_name="reference_detection",
-        )
-        _validate_detection_response(
-            response=reference_response,
-            target_frame_id=reference_frame_id,
-            stage_name="首次三球检测",
-        )
-        logger.success(
-            "阶段 2/3 通过：frame_id={} matched_count={}",
-            reference_response.frame_id,
-            reference_response.matched_count,
-        )
+    )
+    _save_capture(
+        output_dir=output_dir / "02_reference_detection",
+        response=reference_response,
+        stage_name="reference_detection",
+    )
+    _validate_detection_response(
+        response=reference_response,
+        target_frame_id=reference_frame_id,
+        stage_name="首次三球检测",
+    )
+    logger.success(
+        "阶段 2/4 通过：frame_id={} matched_count={}",
+        reference_response.frame_id,
+        reference_response.matched_count,
+    )
 
-        metric_priors = _build_metric_priors(reference_response)
-        logger.info("阶段 3/3：使用首次检测得到的三球相对位置先验执行复检")
-        metric_frame_id = _resolve_target_frame_id(
-            client=client,
+    metric_priors = _build_metric_priors(reference_response)
+    logger.info("阶段 3/4：使用首次检测得到的三球相对位置先验执行复检")
+    metric_frame_id = _resolve_target_frame_id(
+        service_addr=str(service_addr),
+        camera_name=selected_camera,
+        timeout_ms=int(timeout_ms),
+        stable_timeout_s=float(stable_timeout_s),
+    )
+    metric_response = _detect_ball(
+        service_addr=str(service_addr),
+        timeout_ms=int(timeout_ms),
+        request=BallPoseDetectionRequest(
+            request_id=3,
             camera_name=selected_camera,
-            stable_timeout_s=float(stable_timeout_s),
+            frame_id=metric_frame_id,
+            enable_debug=True,
+            priors=metric_priors,
         )
-        metric_response = client.detect_ball(
-            BallPoseDetectionRequest(
-                request_id=3,
-                camera_name=selected_camera,
-                frame_id=metric_frame_id,
-                enable_debug=True,
-                priors=metric_priors,
-            )
-        )
-        _save_capture(
-            output_dir=output_dir / "03_metric_prior_detection",
-            response=metric_response,
-            stage_name="metric_prior_detection",
-        )
-        _validate_detection_response(
-            response=metric_response,
-            target_frame_id=metric_frame_id,
-            stage_name="相对位置先验复检",
-        )
-    finally:
-        client.close()
+    )
+    _save_capture(
+        output_dir=output_dir / "03_metric_prior_detection",
+        response=metric_response,
+        stage_name="metric_prior_detection",
+    )
+    _validate_detection_response(
+        response=metric_response,
+        target_frame_id=metric_frame_id,
+        stage_name="相对位置先验复检",
+    )
+    logger.info("阶段 4/4：验证 RecordReplay 宽 HSV 基准与窄 HSV 一致性回退策略")
+    recorded_priors = load_three_ball_priors(DEFAULT_RECORDED_PRIOR_PATH)
+    hierarchical_detector = CameraPipelineThreeBallDetector(
+        camera_name=selected_camera,
+        priors=recorded_priors,
+        settings=ReplayOffsetSettings(sample_count=1),
+        service_addr=str(service_addr),
+    )
+    hierarchical_samples = hierarchical_detector.capture_samples(1)
+    logger.success(
+        "阶段 4/4 通过：宽窄分级检测获得完整三球样本 count={}",
+        len(hierarchical_samples),
+    )
 
     _print_summary(
         service_addr=service_addr,
@@ -152,7 +180,7 @@ def main(
         metric_response=metric_response,
     )
     logger.success(
-        "阶段 3/3 通过，ball_pose_detection 三阶段冒烟完成："
+        "阶段 4/4 通过，ball_pose_detection 宽窄分级冒烟完成："
         "reference_frame_id={} metric_frame_id={}",
         reference_response.frame_id,
         metric_response.frame_id,
@@ -167,17 +195,57 @@ def main(
 
 
 def _resolve_target_frame_id(
-    client: CameraPipelineClient,
+    service_addr: str,
     camera_name: CameraName,
+    timeout_ms: int,
     stable_timeout_s: float,
 ) -> int:
-    stable_frame = client.get_stable_frame(camera_name, timeout_s=float(stable_timeout_s))
+    client = CameraPipelineClient(service_addr=service_addr, timeout_ms=timeout_ms)
+    try:
+        stable_frame = client.get_stable_frame(
+            camera_name,
+            timeout_s=stable_timeout_s,
+        )
+    finally:
+        client.close()
     logger.info(
         "稳定帧获取成功：frame_id={} timestamp_ms={} ms",
         stable_frame.frame_id,
         stable_frame.timestamp_ms,
     )
     return int(stable_frame.frame_id)
+
+
+def _get_camera_status(
+    service_addr: str,
+    camera_name: CameraName,
+    timeout_ms: int,
+    timeout_s: float,
+) -> tuple[str, CameraStatusResponse]:
+    """使用独立 RPC 客户端查询状态和服务版本。"""
+
+    client = CameraPipelineClient(service_addr=service_addr, timeout_ms=timeout_ms)
+    try:
+        return (
+            client.expected_service_version,
+            client.get_camera_status(camera_name, timeout_s=timeout_s),
+        )
+    finally:
+        client.close()
+
+
+def _detect_ball(
+    service_addr: str,
+    timeout_ms: int,
+    request: BallPoseDetectionRequest,
+) -> BallPoseDetectionResponse:
+    """使用独立 RPC 客户端完成一次检测，避免测试阶段间遗留 REQ 状态。"""
+
+    client = CameraPipelineClient(service_addr=service_addr, timeout_ms=timeout_ms)
+    try:
+        return client.detect_ball(request)
+    finally:
+        client.close()
 
 
 def _validate_connectivity(

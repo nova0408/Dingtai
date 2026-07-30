@@ -69,6 +69,7 @@ class BallPoseDetector:
             frame.frame_id,
             len(priors),
         )
+        _validate_camera_intrinsics(frame)
         hsv = self._convert_to_hsv(frame.color_bgr)
         ranked: dict[str, list[_BallDetection]] = {}
         for prior in priors:
@@ -704,6 +705,25 @@ class BallPoseDetector:
         if not np.all(np.isfinite(center)):
             return None
         return center
+
+
+def _validate_camera_intrinsics(frame: RgbdFrameProtocol) -> None:
+    """拒绝无法用于三维反投影的相机内参。"""
+
+    intrinsics = np.asarray(
+        [frame.fx, frame.fy, frame.cx, frame.cy],
+        dtype=np.float64,
+    )
+    if not np.all(np.isfinite(intrinsics)):
+        raise ValueError(
+            "camera intrinsics must be finite: "
+            f"fx={frame.fx} fy={frame.fy} cx={frame.cx} cy={frame.cy}"
+        )
+    if frame.fx <= 0.0 or frame.fy <= 0.0:
+        raise ValueError(
+            "camera intrinsics fx/fy must be greater than zero: "
+            f"fx={frame.fx} fy={frame.fy} cx={frame.cx} cy={frame.cy}"
+        )
 
 
 def _hex_to_bgr(color_hex: str) -> np.ndarray:

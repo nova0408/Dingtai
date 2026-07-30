@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Protocol
 
@@ -26,6 +26,12 @@ PRIOR_SAMPLE_COUNT = 30
 "先验记录要求的完整且不同帧数量。"
 PRIOR_MIN_INLIER_COUNT = 24
 "先验异常剔除后要求的最少保留帧数量。"
+RUNTIME_NARROW_HUE_TOLERANCE = 8.0
+"运行期窄 HSV Hue 半宽，单位 OpenCV Hue。"
+RUNTIME_SATURATION_MIN = 140
+"运行期窄 HSV 保留完整球面颜色的 Saturation 下限。"
+RUNTIME_VALUE_MIN = 120
+"运行期窄 HSV 保留完整球面明暗区域的 Value 下限。"
 
 
 def load_three_ball_priors(
@@ -164,9 +170,89 @@ def _extract_ball_values(
             values[color] = (
                 diameter_mm,
                 center_tuple,
-                _parse_hsv_ranges(item.get("hsv_ranges")),
+                _runtime_hsv_ranges(item),
             )
     return values
+
+
+def _runtime_hsv_ranges(item: dict[str, object]) -> tuple[HsvRange, ...]:
+    """从实测 Hue 构造运行期窄范围，并保留完整球面的 S/V 区域。"""
+
+    observed_hsv = item.get("observed_hsv")
+    if isinstance(observed_hsv, list) and len(observed_hsv) == 3:
+        try:
+            hue = float(observed_hsv[0])
+        except (TypeError, ValueError):
+            hue = float("nan")
+        if np.isfinite(hue) and 0.0 <= hue < 180.0:
+            return _build_runtime_hue_ranges(hue)
+    recorded = _parse_hsv_ranges(item.get("hsv_ranges"))
+    return tuple(
+        (
+            hsv_range[0],
+            min(hsv_range[1], RUNTIME_SATURATION_MIN),
+            min(hsv_range[2], RUNTIME_VALUE_MIN),
+            hsv_range[3],
+            255,
+            255,
+        )
+        for hsv_range in recorded
+    )
+
+
+def _build_runtime_hue_ranges(hue: float) -> tuple[HsvRange, ...]:
+    """围绕实测 Hue 构造支持 179/0 环绕的一段或两段范围。"""
+
+    hue_min = hue - RUNTIME_NARROW_HUE_TOLERANCE
+    hue_max = hue + RUNTIME_NARROW_HUE_TOLERANCE
+    if hue_min < 0.0:
+        return (
+            (
+                0,
+                RUNTIME_SATURATION_MIN,
+                RUNTIME_VALUE_MIN,
+                int(np.ceil(hue_max)),
+                255,
+                255,
+            ),
+            (
+                int(np.floor(180.0 + hue_min)),
+                RUNTIME_SATURATION_MIN,
+                RUNTIME_VALUE_MIN,
+                179,
+                255,
+                255,
+            ),
+        )
+    if hue_max > 179.0:
+        return (
+            (
+                0,
+                RUNTIME_SATURATION_MIN,
+                RUNTIME_VALUE_MIN,
+                int(np.ceil(hue_max - 180.0)),
+                255,
+                255,
+            ),
+            (
+                int(np.floor(hue_min)),
+                RUNTIME_SATURATION_MIN,
+                RUNTIME_VALUE_MIN,
+                179,
+                255,
+                255,
+            ),
+        )
+    return (
+        (
+            int(np.floor(hue_min)),
+            RUNTIME_SATURATION_MIN,
+            RUNTIME_VALUE_MIN,
+            int(np.ceil(hue_max)),
+            255,
+            255,
+        ),
+    )
 
 
 def _parse_hsv_ranges(value: object) -> tuple[HsvRange, ...]:
@@ -210,7 +296,7 @@ class ThreeBallDetector(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class CameraPipelineThreeBallDetector:
-    """将 camera_pipeline 的球位姿 RPC 适配为业务三球样本。"""
+    """将 camera_pipeline 的宽窄分级球位姿 RPC 适配为业务三球样本。"""
 
     camera_name: CameraName
     "逻辑相机名称。"
@@ -218,58 +304,195 @@ class CameraPipelineThreeBallDetector:
     "检测请求使用的三球先验。"
     settings: ReplayOffsetSettings
     "三球检测与鲁棒聚合参数。"
+    service_addr: str = "tcp://127.0.0.1:6200"
+    "CameraPipeline 服务地址；正式服务固定使用 Orin 本机地址。"
 
     def capture_samples(self, sample_count: int) -> list[tuple[tuple[float, float, float], ...]]:
-        """连续请求三球检测并只返回完整有效的三球样本。"""
+        """先用宽 HSV 确认三球，再以一致的窄 HSV 结果提高精度。
 
-        client = CameraPipelineClient(timeout_ms=self.settings.detection_timeout_ms)
+        窄范围未检出或与宽范围球心差异过大时回退宽范围结果。宽范围仍携带相同的
+        物理直径和三球模型坐标，因此回退不会绕过尺寸与几何约束。
+        """
+
+        client = CameraPipelineClient(
+            service_addr=self.service_addr,
+            timeout_ms=self.settings.detection_timeout_ms,
+        )
         samples: list[tuple[tuple[float, float, float], ...]] = []
+        ordered_colors = tuple(prior.color_hex for prior in self.priors)
+        if len(ordered_colors) != 3:
+            raise RuntimeError("三球检测先验必须恰好包含三个颜色")
+        wide_priors = tuple(
+            replace(prior, hsv_ranges=())
+            for prior in self.priors
+        )
         try:
-            for request_id in range(1, sample_count + 1):
-                try:
-                    response = client.detect_ball(
-                        BallPoseDetectionRequest(
-                            request_id=request_id,
-                            camera_name=self.camera_name,
-                            frame_id=-1,
-                            enable_debug=False,
-                            priors=self.priors,
-                        )
+            for sample_index in range(1, sample_count + 1):
+                wide_centers = self._detect_centers_with_retries(
+                    client,
+                    request_id_base=sample_index * 100,
+                    priors=wide_priors,
+                    ordered_colors=ordered_colors,
+                    mode="wide",
+                )
+                if wide_centers is None:
+                    logger.warning(
+                        "宽 HSV 三球检测失败，跳过当前采样 index={}",
+                        sample_index,
                     )
-                except RuntimeError as error:
-                    logger.warning("三球检测请求失败，跳过当前采样 index={} error={}", request_id, error)
                     continue
-                detections = tuple(
-                    (item.color_hex, (float(item.center_mm[0]), float(item.center_mm[1]), float(item.center_mm[2])))
-                    for item in response.detections
-                    if item.detected and len(item.center_mm) == 3
+                narrow_centers = self._detect_centers_with_retries(
+                    client,
+                    request_id_base=sample_index * 100 + 50,
+                    priors=self.priors,
+                    ordered_colors=ordered_colors,
+                    mode="narrow",
                 )
-                ordered_colors = tuple(
-                    prior.color_hex for prior in self.priors
-                )
-                if len(ordered_colors) != 3:
-                    raise RuntimeError("三球检测先验必须恰好包含三个颜色")
-                centers = ordered_three_ball_centers(
-                    detections,
-                    (
-                        ordered_colors[0],
-                        ordered_colors[1],
-                        ordered_colors[2],
-                    ),
-                )
-                if centers is not None:
-                    samples.append(
-                        (
-                            (float(centers[0, 0]), float(centers[0, 1]), float(centers[0, 2])),
-                            (float(centers[1, 0]), float(centers[1, 1]), float(centers[1, 2])),
-                            (float(centers[2, 0]), float(centers[2, 1]), float(centers[2, 2])),
-                        )
+                selected_centers = wide_centers
+                if narrow_centers is None:
+                    logger.warning(
+                        "窄 HSV 三球检测失败，回退宽 HSV 结果 index={}",
+                        sample_index,
                     )
+                else:
+                    center_deltas_mm = np.linalg.norm(
+                        narrow_centers - wide_centers,
+                        axis=1,
+                    )
+                    max_delta_mm = float(np.max(center_deltas_mm))
+                    if (
+                        max_delta_mm
+                        <= self.settings.narrow_consistency_tolerance_mm
+                    ):
+                        selected_centers = narrow_centers
+                        logger.success(
+                            "宽窄 HSV 三球检测一致，采用窄范围结果 "
+                            "index={} max_center_delta_mm={:.3f}",
+                            sample_index,
+                            max_delta_mm,
+                        )
+                    else:
+                        logger.warning(
+                            "窄 HSV 球心与宽 HSV 不一致，回退宽范围结果 "
+                            "index={} max_center_delta_mm={:.3f} tolerance_mm={:.3f}",
+                            sample_index,
+                            max_delta_mm,
+                            self.settings.narrow_consistency_tolerance_mm,
+                        )
+                samples.append(_centers_to_sample(selected_centers))
         finally:
             client.close()
         if not samples:
-            raise RuntimeError("连续采样未得到可用三球检测结果")
+            raise RuntimeError(
+                "宽 HSV 三球检测在全部尝试中均未得到完整结果 "
+                f"requested_samples={sample_count} "
+                f"attempts_per_sample={self.settings.detection_attempts_per_sample}"
+            )
         return samples
+
+    def _detect_centers_with_retries(
+        self,
+        client: CameraPipelineClient,
+        *,
+        request_id_base: int,
+        priors: tuple[BallPosePriorInfo, ...],
+        ordered_colors: tuple[str, ...],
+        mode: str,
+    ) -> np.ndarray | None:
+        """在限定次数内获取一次完整三球结果。"""
+
+        for attempt in range(1, self.settings.detection_attempts_per_sample + 1):
+            centers = self._detect_centers(
+                client,
+                request_id=request_id_base + attempt,
+                priors=priors,
+                ordered_colors=ordered_colors,
+                mode=mode,
+            )
+            if centers is not None:
+                return centers
+            logger.warning(
+                "三球检测未完整，准备重试 mode={} attempt={}/{}",
+                mode,
+                attempt,
+                self.settings.detection_attempts_per_sample,
+            )
+        return None
+
+    def _detect_centers(
+        self,
+        client: CameraPipelineClient,
+        *,
+        request_id: int,
+        priors: tuple[BallPosePriorInfo, ...],
+        ordered_colors: tuple[str, ...],
+        mode: str,
+    ) -> np.ndarray | None:
+        """执行一次检测并按先验声明的颜色顺序返回 `(3, 3)` mm 球心。"""
+
+        try:
+            response = client.detect_ball(
+                BallPoseDetectionRequest(
+                    request_id=request_id,
+                    camera_name=self.camera_name,
+                    frame_id=-1,
+                    enable_debug=False,
+                    priors=priors,
+                )
+            )
+        except RuntimeError as error:
+            logger.warning(
+                "三球检测请求失败 mode={} request_id={} error={}",
+                mode,
+                request_id,
+                error,
+            )
+            return None
+        detections = tuple(
+            (
+                item.color_hex,
+                (
+                    float(item.center_mm[0]),
+                    float(item.center_mm[1]),
+                    float(item.center_mm[2]),
+                ),
+            )
+            for item in response.detections
+            if item.detected and len(item.center_mm) == 3
+        )
+        colors = (
+            ordered_colors[0],
+            ordered_colors[1],
+            ordered_colors[2],
+        )
+        centers = ordered_three_ball_centers(detections, colors)
+        status_by_color = {
+            item.color_hex: item.status
+            for item in response.detections
+        }
+        logger.info(
+            "三球检测响应 mode={} request_id={} frame_id={} matched_count={} "
+            "complete={} status_by_color={}",
+            mode,
+            request_id,
+            response.frame_id,
+            response.matched_count,
+            centers is not None,
+            status_by_color,
+        )
+        return centers
+
+
+def _centers_to_sample(
+    centers: np.ndarray,
+) -> tuple[tuple[float, float, float], ...]:
+    """把 `(3, 3)` mm 数组转换为不可变三球样本。"""
+
+    return (
+        (float(centers[0, 0]), float(centers[0, 1]), float(centers[0, 2])),
+        (float(centers[1, 0]), float(centers[1, 1]), float(centers[1, 2])),
+        (float(centers[2, 0]), float(centers[2, 1]), float(centers[2, 2])),
+    )
 
 
 # endregion

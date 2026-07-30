@@ -5,6 +5,7 @@
     "control_port": 5570,
     "request_timeout_ms": 3000,
     "stream_timeout_ms": 8000,
+    "stale_frame_timeout_s": 3.0,
     "frame_cache_size": 64
   },
   "usb": {

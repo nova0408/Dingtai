@@ -12,6 +12,9 @@ Logs/*
 *.pcd
 *.ply
 *.csv
+!record_replay/prior_data/charuco_offset_history.csv
+!record_left/
+!record_right/
 *.png
 *.jpg
 *.bmp

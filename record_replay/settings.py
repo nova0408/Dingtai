@@ -99,6 +99,8 @@ class ReplayOffsetSettings:
     "单次全局纠偏连续采样次数。"
     detection_timeout_ms: int = 30_000
     "单次三球检测 RPC 超时，单位 ms。"
+    detection_attempts_per_sample: int = 3
+    "每个宽 HSV 或窄 HSV 阶段获得完整三球结果的最大尝试次数。"
     trigger_move_abs_j_end_linear_speed_mm_s: float = 700.0
     "纠偏触发 CSV 临时使用的末端线速度，单位 mm/s。"
     capture_settle_delay_s: float = 0.0
@@ -107,6 +109,8 @@ class ReplayOffsetSettings:
     "三球样本 MAD 异常剔除倍数。"
     min_outlier_threshold_mm: float = 2.0
     "MAD 过小时采用的最小异常距离阈值，单位 mm。"
+    narrow_consistency_tolerance_mm: float = 8.0
+    "窄 HSV 与宽 HSV 同色球心允许的最大差异，单位 mm。"
 
 
 @dataclass(frozen=True, slots=True)

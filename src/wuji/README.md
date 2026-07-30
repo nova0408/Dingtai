@@ -35,7 +35,8 @@
 - 设置右手使能
 - 设置右手状态
 
-右手固定为 `M11`，共 11 个执行器，GUI 只显示固定轴序列，不再动态兼容旧手型。
+当前右手硬件为 `M6`。`WujiRightHandClient` 直接读取 qmlinker `hand_info`，
+根据 `actuator_count` 和 `actuator_names` 生成运行时执行器规格，不再在协议客户端中硬编码轴数。
 
 ### 左手夹爪
 
@@ -82,5 +83,4 @@ AGV 当前可稳定完成：
 - `dahuan_gripper_client.py`
 - `agv_client.py`
 - `zmq_camera_client.py`
-
 

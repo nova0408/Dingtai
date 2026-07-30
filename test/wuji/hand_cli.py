@@ -12,17 +12,12 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from common import DEFAULT_PORT, create_wuyou_channel, stop_ssh_process
 from src.wuji.right_hand_client import WujiRightHandClient
-from src.wuji.right_hand_specs import (
-    RIGHT_HAND_ACTUATOR_SPECS,
-)
 
 PRINTED_AXIS_ROWS: tuple[tuple[int, ...], ...] = (
-    (1, 2, 4, 6, 8, 10),
-    (0, 3, 5, 7, 9),
+    (0, 1, 2, 3, 4, 5),
 )
 PAIR_GROUPS: tuple[tuple[str, str, tuple[int, ...]], ...] = (
-    ("f", "前端", (3, 5, 7, 9)),
-    ("e", "末端", (4, 6, 8, 10)),
+    ("f", "食指/中指/无名指/小指", (2, 3, 4, 5)),
 )
 
 
@@ -39,13 +34,16 @@ def _find_current_positions(hand: WujiRightHandClient) -> list[float]:
     if state is None:
         raise RuntimeError("右手状态不可用")
     positions = [float(actuator["position"]) for actuator in state["actuators"]]
-    if len(positions) != 11:
-        raise RuntimeError(f"右手状态数量异常: {len(positions)}")
+    actuator_count = hand.get_right_hand_actuator_count()
+    if len(positions) != actuator_count:
+        raise RuntimeError(
+            f"右手状态数量与 hand_info 不一致: state={len(positions)} info={actuator_count}"
+        )
     return positions
 
 
 def _build_axis_positions(hand: WujiRightHandClient) -> list[float]:
-    """获取 11 轴当前位置。"""
+    """获取当前 M6 各执行器位置。"""
 
     return _find_current_positions(hand)
 
@@ -93,7 +91,8 @@ def _print_state(hand: WujiRightHandClient) -> None:
 def _set_single_axis(hand: WujiRightHandClient) -> None:
     while True:
         print("")
-        print("可选轴号：1-10")
+        actuator_count = hand.get_right_hand_actuator_count()
+        print(f"可选轴号：0-{actuator_count - 1}")
         user_axis = _prompt("axis> ")
         if user_axis in {"back", "b"}:
             return
@@ -103,7 +102,7 @@ def _set_single_axis(hand: WujiRightHandClient) -> None:
             print("轴号必须是数字。")
             continue
         actuator_id = int(user_axis)
-        if actuator_id < 0 or actuator_id >= len(RIGHT_HAND_ACTUATOR_SPECS):
+        if actuator_id < 0 or actuator_id >= actuator_count:
             print("轴号超出范围。")
             continue
 
@@ -136,8 +135,7 @@ def _set_four_finger_pair(hand: WujiRightHandClient) -> None:
     while True:
         print("")
         print("选择四指联动目标：")
-        print("  f : 根部")
-        print("  e : 指尖")
+        print("  f : 食指/中指/无名指/小指")
         print("  q : 返回上一层")
         user_choice = _prompt("pair> ")
         if user_choice in {"q", "back", "b"}:

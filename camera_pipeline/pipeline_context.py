@@ -136,6 +136,9 @@ class PipelineContextConfig:
     camera_stream_timeout_ms: int = 8000
     "相机数据流接收超时，单位 ms。"
 
+    camera_stale_frame_timeout_s: float = 3.0
+    "相机帧号或时间戳持续不递增时触发收流恢复的超时，单位 s。"
+
     camera_frame_cache_size: int = 64
     "最近相机帧缓存数量，需要覆盖稳定时间窗中点帧的回取。"
 
@@ -316,6 +319,7 @@ class PipelineContext:
         detector = StableFrameDetector(config=endpoint.stable_frame_config)
         deadline = time.monotonic() + timeout_s
         last_frame_id = -1
+        unique_frame_count = 0
         missing_stable_frame_id: int | None = None
         while time.monotonic() < deadline:
             frame = self.get_latest_frame(resolved_name)
@@ -324,6 +328,7 @@ class PipelineContext:
                 continue
 
             last_frame_id = frame.frame_id
+            unique_frame_count += 1
             stable_frame_id = detector.update(frame)
             if stable_frame_id is None:
                 continue
@@ -346,6 +351,20 @@ class PipelineContext:
                 return stable_frame
             missing_stable_frame_id = stable_frame_id
 
+        if unique_frame_count <= 1:
+            logger.warning(
+                "camera frame stream did not advance camera_name={} timeout_s={:.3f} "
+                "unique_frame_count={} last_frame_id={}",
+                resolved_name,
+                timeout_s,
+                unique_frame_count,
+                last_frame_id,
+            )
+            raise RuntimeError(
+                "camera frame stream did not advance "
+                f"within {timeout_s:.1f}s camera_name={resolved_name} "
+                f"last_frame_id={last_frame_id}"
+            )
         if missing_stable_frame_id is not None:
             logger.warning(
                 "stable frame evicted before retrieval camera_name={} frame_id={}",
@@ -383,6 +402,7 @@ class PipelineContext:
         detector = StableFrameDetector(config=endpoint.stable_frame_config)
         deadline = time.monotonic() + timeout_s
         last_frame_id = -1
+        unique_frame_count = 0
         missing_stable_frame_id: int | None = None
         while time.monotonic() < deadline:
             frame = self.get_latest_color_frame(resolved_name)
@@ -391,6 +411,7 @@ class PipelineContext:
                 continue
 
             last_frame_id = frame.frame_id
+            unique_frame_count += 1
             stable_frame_id = detector.update_color(frame)
             if stable_frame_id is None:
                 continue
@@ -416,6 +437,20 @@ class PipelineContext:
                 return stable_frame
             missing_stable_frame_id = stable_frame_id
 
+        if unique_frame_count <= 1:
+            logger.warning(
+                "camera color frame stream did not advance camera_name={} "
+                "timeout_s={:.3f} unique_frame_count={} last_frame_id={}",
+                resolved_name,
+                timeout_s,
+                unique_frame_count,
+                last_frame_id,
+            )
+            raise RuntimeError(
+                "camera color frame stream did not advance "
+                f"within {timeout_s:.1f}s camera_name={resolved_name} "
+                f"last_frame_id={last_frame_id}"
+            )
         if missing_stable_frame_id is not None:
             logger.warning(
                 "stable color frame evicted before retrieval camera_name={} frame_id={}",
@@ -591,6 +626,7 @@ class PipelineContext:
                     camera_name=endpoint.camera_name,
                     request_timeout_ms=self._config.camera_request_timeout_ms,
                     stream_timeout_ms=self._config.camera_stream_timeout_ms,
+                    stale_frame_timeout_s=self._config.camera_stale_frame_timeout_s,
                     cache_size=self._config.camera_frame_cache_size,
                 )
             )

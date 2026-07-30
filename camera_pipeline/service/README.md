@@ -139,6 +139,9 @@ Python pickle，不依赖 dataclass 的 Python 版本内存布局。Orin 服务�
 `pytorch_38`/`py38_tourch` 环境。未知类型、未知协议标识、越界数组
 和字段不匹配均会明确拒绝。
 
+公共 RPC 客户端的每次 `call()` 都创建并关闭独立 REQ socket。同一客户端实例仍以
+锁串行化调用，但不跨操作复用 REQ 状态，避免短查询之后执行稳定帧长等待时丢失响应。
+
 三类帧流彼此独立：彩色发布读取彩色缓存，完整帧与深度发布读取 RGBD 缓存。
 因此上游暂时只有 RGB 时，`camera_color_frame_subscribe` 仍持续转发彩色帧，
 不会被尚未恢复的深度流阻塞。ZMQ SUB 客户端允许发布端晚启动或重启。

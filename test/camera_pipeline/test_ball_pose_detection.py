@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 import sys
 
@@ -254,6 +255,15 @@ def test_no_prior_smoke_path_returns_empty_result_without_debug() -> None:
     assert response.debug_artifacts == ()
 
 
+def test_detector_rejects_zero_focal_length_before_geometry_matching() -> None:
+    """零焦距必须明确报告内参错误，不能退化成三球相对几何不匹配。"""
+
+    frame = replace(_build_frame(), fx=0.0)
+
+    with pytest.raises(ValueError, match="fx/fy must be greater than zero"):
+        BallPoseDetector().detect(frame, _build_metric_priors())
+
+
 def _build_metric_priors() -> list[BallPosePrior]:
     """构造具有实际毫米尺度的黄、红、紫三球模型先验。"""
 
@@ -362,6 +372,7 @@ def main() -> None:
     test_prior_capture_without_relative_positions_requires_debug()
     test_prior_capture_with_debug_always_returns_overlay()
     test_no_prior_smoke_path_returns_empty_result_without_debug()
+    test_detector_rejects_zero_focal_length_before_geometry_matching()
     logger.success("三球几何、直径、精确 HSV 与先验采集模式验证通过")
     logger.warning("本结果未连接真实相机，未验证现场颜色、深度噪声和实时耗时")
 

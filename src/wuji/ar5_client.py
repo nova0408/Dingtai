@@ -6,7 +6,10 @@ from dataclasses import dataclass
 from threading import RLock
 from typing import Literal
 
+import numpy as np
 from loguru import logger
+from scipy.spatial.transform import Rotation
+
 from sdk.xcoresdk import xCoreSDK_python
 
 # region 数据结构
@@ -37,8 +40,9 @@ class Ar5ConnectionConfig:
 class Ar5Snapshot:
     """AR5 一帧只读状态。
 
-    该结构是硬件适配层与 GUI 之间的数据契约。所有角度和长度均已转换为适合人工
-    查看与输入的 deg/mm，SDK 原始 m/rad 不会从该对象回灌到计算链路。
+    该结构是硬件适配层与 GUI 之间的数据契约。人工查看字段使用 deg/mm；
+    ``pose_matrix_m`` 在读取 SDK 原始 m/rad 后直接构造，供标定计算链路使用，
+    避免把展示单位回灌到齐次矩阵。
     """
 
     robot_type: str
@@ -58,6 +62,9 @@ class Ar5Snapshot:
 
     joint_deg: tuple[float, ...]
     "七个机械臂关节角，单位 deg。"
+
+    pose_matrix_m: tuple[tuple[float, ...], ...]
+    "当前工具末端齐次变换，形状为 (4, 4)，平移单位 m，姿态使用小写外禀 xyz 约定。"
 
     xyz_mm: tuple[float, float, float]
     "当前工具末端位置，单位 mm，顺序为 X/Y/Z。"
@@ -230,6 +237,14 @@ class Ar5Client:
             joint_rad = tuple(self._call_value("jointPos", self._robot.jointPos))
             translation_m = tuple(float(value) for value in cartesian_pose.trans)
             sdk_rpy_rad = tuple(float(value) for value in cartesian_pose.rpy)
+            # pose_matrix_m: (4, 4) float64；直接使用 SDK 原始 m/rad 构造计算矩阵。
+            pose_matrix_m = np.eye(4, dtype=np.float64)
+            pose_matrix_m[:3, :3] = Rotation.from_euler(
+                "xyz",
+                sdk_rpy_rad,
+                degrees=False,
+            ).as_matrix()
+            pose_matrix_m[:3, 3] = translation_m
             return Ar5Snapshot(
                 robot_type=self._robot_type,
                 robot_uid=self._robot_uid,
@@ -237,6 +252,10 @@ class Ar5Client:
                 operate_mode=operate_mode.name,
                 power_state=power_state.name,
                 joint_deg=tuple(math.degrees(float(value)) for value in joint_rad[:7]),
+                pose_matrix_m=tuple(
+                    tuple(float(value) for value in row)
+                    for row in pose_matrix_m
+                ),
                 xyz_mm=(
                     translation_m[0] * 1000.0,
                     translation_m[1] * 1000.0,
@@ -593,7 +612,7 @@ class Ar5Client:
     def _apply_default_toolset_locked(self) -> None:
         """固定已验证的工具和工件坐标系，避免双臂继承不同控制器上下文。"""
 
-        self._call_value(
+        self._call_control_value(
             (
                 f"setToolset({AR5_DEFAULT_TOOL_NAME}, "
                 f"{AR5_DEFAULT_WOBJ_NAME})"
@@ -687,10 +706,18 @@ class Ar5Client:
         )
 
     def _call_value(self, action: str, callback):  # noqa: ANN001, ANN202
-        """调用有返回值 SDK 方法，并以 DEBUG 记录请求和响应摘要。"""
+        """调用只读或本地计算 SDK 方法，不写入周期性日志。"""
+
+        self._ec.clear()
+        value = callback(self._ec)
+        self._raise_for_error(action)
+        return value
+
+    def _call_control_value(self, action: str, callback):  # noqa: ANN001, ANN202
+        """调用带返回值的控制指令，并记录请求、响应、耗时和错误码。"""
 
         started_at = time.monotonic()
-        logger.debug(
+        logger.info(
             "AR5 SDK request: side={} robot_ip={} action={}",
             self._config.side,
             self._config.robot_ip,
@@ -711,7 +738,7 @@ class Ar5Client:
                 self._ec,
             )
             raise
-        logger.debug(
+        logger.info(
             "AR5 SDK response: side={} robot_ip={} action={} "
             "elapsed_ms={:.3f} ec={} value={}",
             self._config.side,

@@ -10,7 +10,7 @@ qmlinker、AGV 和 Orin 本机部署的 camera_pipeline，并由 HTTP API 触发
 
 服务的数据路径固定在包内，不允许通过启动参数覆盖：
 
-- `record_replay/prior_data/`：`test/wuji/prior_record.py` 记录的先验结果。
+- `record_replay/prior_data/`：GUI 先验标定页或 `test/wuji/prior_record.py` 记录的先验结果。
   服务固定读取 `ball_pose_prior.json` 和 `hand_eye_result.txt`；同目录
   同时保存 `charuco_board_prior.json`。三球尺寸字段统一为 `diameter_mm`，单位 mm；
   不再接受旧的 `radius_mm` 先验文件。重新记录的三球条目还包含 `hsv_ranges` 和
@@ -18,11 +18,44 @@ qmlinker、AGV 和 Orin 本机部署的 camera_pipeline，并由 HTTP API 触发
   读取，服务端不维护固定球色。服务启动时要求三球相对位置有效且每球都包含 30 帧标定的
   `hsv_ranges`，并要求同目录存在 `ball_debug_overlay.jpg` 核验图。无效或证据不完整
   的文件会阻止服务启动，不再回退到占位球心。
+  `ball_pose_prior.json` 中的 `tcp_pose_matrix` 由 AR5 SDK 原始 `trans(m)+rpy(rad)`
+  按小写外禀 `xyz` 直接构造，矩阵平移保持 m；`tcp_translation_mm` 和
+  `tcp_rpy_degrees` 仅用于人工查看。GUI 根据 30 帧颜色波动生成窄 HSV 范围；
+  Hue 使用周期为 180 的环形统计并保持 6–8 的半宽，红色跨越 179/0 时保存为两段，
+  S/V 下限不高于 140/120，以免只分割出球体高饱和高亮局部。
 - `record_replay/records/left/`：提前录制的左臂 CSV。
 - `record_replay/records/right/`：提前录制的右臂 CSV。
 
-部署时必须把代码、先验 JSON 和两侧 CSV 作为同一个 `record_replay/` 目录同步到 Orin，
-并参与文件清单和 SHA-256 一致性校验。
+部署时必须把代码、先验 JSON、ChArUco offset 历史 CSV 和两侧回放 CSV 作为同一个
+`record_replay/` 目录同步到 Orin，并参与文件清单和 SHA-256 一致性校验。
+
+`test/wuji/record_replay_cli.py` 是本机直连硬件的人工验证入口，与 Orin HTTP 服务的数据
+位置不同：它读取本机 `record_left/`、`record_right/`，先验读取 GUI 写入的本机
+`record_replay/prior_data/`。该入口默认关闭 AGV、使用左臂单臂模式，只加载文件名首段
+为纯数字的 CSV，并按该数字的数值顺序执行；文件名首段不是数字的 CSV 不参与回放。
+人工 CLI 的 MoveAbsJ 末端线速度和 zone 都使用 CSV 数字前缀到数值的字典，并为左右臂
+分别提供显式命名的配置。每套字典的键 `-1` 是该侧机械臂默认值，其余整数键覆盖该侧
+对应 CSV；并行回放时左右臂各自读取自己的速度和 zone 配置。
+三球 offset 触发 CSV 不再使用独立的临时 MoveAbsJ 速度，直接遵循该侧 CSV 速度字典。
+零字节或只有表头的 CSV 可作为序号占位文件参与排序和双臂计划构建；人工 CLI 在执行到
+该文件时记录警告并整文件跳过，不触发该 CSV 对应的 offset 或设备动作。
+Orin HTTP 服务只读取已部署到 `/home/wuji-brain/workspace/record_replay/records/` 和
+`prior_data/` 的远端副本。
+
+人工 CLI 在启用头部 ChArUco 纠偏前读取
+`record_replay/prior_data/charuco_offset_history.csv`。同侧机械臂至少需要 6 条
+`accepted=true` 的有效历史；xyz/rpy 各分量必须位于历史均值 ±4σ 内，平移和旋转
+模长还必须同时低于历史 4σ 上界及 60 mm/5° 绝对安全上限。运行时只读该 CSV，
+不会自动追加检测结果；新增实验数据必须先由人工判断可靠性，再手动录入并设置
+`accepted`。单次候选 offset 未通过安全检查时会重新检测目标板并计算，最多尝试
+3 次；三次均不通过才拒绝本轮执行。异常拒绝发生在 offset 写入运行时及后续纠偏
+运动之前。
+
+运行期三球纠偏使用分级检测：先移除标定 HSV 限制，以 HEX 推导的宽范围确认三个球均
+可检出；随后使用标定窄范围复检。窄范围三球球心与宽范围逐球差异不超过 8 mm 时采用
+窄范围结果，否则记录明确告警并回退宽范围结果。宽、窄请求始终使用同一组物理直径、
+模型坐标和先验文件声明的颜色顺序，因此回退不会绕过尺寸或三球几何约束。每个宽、窄
+阶段最多尝试 3 次，降低稳定帧中偶发遮挡或检测波动造成的整轮失败。
 
 ## 循环状态
 

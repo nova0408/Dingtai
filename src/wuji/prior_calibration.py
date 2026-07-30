@@ -127,6 +127,20 @@ BALL_MODEL_CENTERS_MM = (
 )
 OUTLIER_MAD_SCALE = 3.5
 OUTLIER_MIN_THRESHOLD_MM = 2.0
+BALL_HUE_TOLERANCE_RANGE = (6.0, 8.0)
+"标定 HSV Hue 半宽的最小值和最大值，单位 OpenCV Hue。"
+BALL_SATURATION_TOLERANCE_RANGE = (15.0, 45.0)
+"标定 HSV Saturation 半宽的最小值和最大值。"
+BALL_VALUE_TOLERANCE_RANGE = (20.0, 55.0)
+"标定 HSV Value 半宽的最小值和最大值。"
+BALL_COLOR_OUTLIER_MIN_THRESHOLDS = (2.0, 8.0, 8.0)
+"颜色帧异常剔除的 Hue、Saturation、Value 最小偏差阈值。"
+BALL_COLOR_MIN_INLIER_RATIO = 0.8
+"生成窄 HSV 范围要求保留的最小颜色样本比例。"
+BALL_RUNTIME_SATURATION_MIN = 140
+"完整保留球面颜色所需的最小 Saturation 下限。"
+BALL_RUNTIME_VALUE_MIN = 120
+"完整保留球面明暗区域所需的最小 Value 下限。"
 
 # endregion
 
@@ -418,8 +432,12 @@ class PriorCalibrationRecorder:
         for color_index, color in enumerate(ball_colors):
             detections = [frame[color_index] for frame in kept]
             template = detections[-1]
-            hsv_center = _mean_tuple(item.observed_hsv for item in detections)
-            hsv_ranges[color] = _build_hsv_range(hsv_center)
+            hsv_center, hsv_ranges[color] = _aggregate_hsv_prior(
+                np.asarray(
+                    [item.observed_hsv for item in detections],
+                    dtype=np.float64,
+                )
+            )
             averaged.append(
                 replace(
                     template,
@@ -511,6 +529,9 @@ class PriorCalibrationRecorder:
                 for item in response.detections
             ],
             "tcp_joint_deg": list(arm_snapshot.joint_deg),
+            "tcp_pose_matrix": [
+                list(row) for row in arm_snapshot.pose_matrix_m
+            ],
             "tcp_translation_mm": list(arm_snapshot.xyz_mm),
             "tcp_rpy_degrees": list(arm_snapshot.rpy_deg),
             "tcp_elbow_deg": arm_snapshot.elbow_deg,
@@ -617,18 +638,206 @@ def _mean_tuple(values: Iterable[tuple[float, ...]]) -> tuple[float, ...]:
     return tuple(float(value) for value in np.mean(array, axis=0))
 
 
-def _build_hsv_range(hsv: tuple[float, ...]) -> tuple[HsvRange, ...]:
-    """由聚合 HSV 中心生成保守的 OpenCV 检测范围。"""
+def _aggregate_hsv_prior(
+    hsv_values: np.ndarray,
+) -> tuple[tuple[float, float, float], tuple[HsvRange, ...]]:
+    """聚合多帧 HSV 中心并生成支持 Hue 环绕的自适应窄范围。
 
-    hue, saturation, value = hsv
+    Parameters
+    ----------
+    hsv_values:
+        多帧球体颜色中心，形状为 `(N, 3)`，三列为 OpenCV H/S/V。
+
+    Returns
+    -------
+    hsv_center:
+        异常剔除后的 HSV 中心；Hue 使用周期为 180 的环形均值。
+    hsv_ranges:
+        一段或两段 OpenCV HSV 范围；跨越红色 179/0 边界时拆成两段。
+
+    Raises
+    ------
+    RuntimeError
+        有效颜色样本少于输入样本的 80%。
+    """
+
+    # values: (N, 3) float64；Hue 是周期量，S/V 是线性量。
+    values = np.asarray(hsv_values, dtype=np.float64).reshape(-1, 3)
+    initial_hue = _circular_hue_mean(values[:, 0])
+    initial_center = np.asarray(
+        [
+            initial_hue,
+            float(np.median(values[:, 1])),
+            float(np.median(values[:, 2])),
+        ],
+        dtype=np.float64,
+    )
+    # deviations: (N, 3) float64；Hue 偏差折叠到 [-90, 90) 后取绝对值。
+    deviations = np.column_stack(
+        [
+            np.abs(
+                ((values[:, 0] - initial_center[0] + 90.0) % 180.0) - 90.0
+            ),
+            np.abs(values[:, 1] - initial_center[1]),
+            np.abs(values[:, 2] - initial_center[2]),
+        ]
+    )
+    median_deviations = np.median(deviations, axis=0)
+    deviation_mad = np.median(
+        np.abs(deviations - median_deviations.reshape(1, 3)),
+        axis=0,
+    )
+    thresholds = np.maximum(
+        np.asarray(BALL_COLOR_OUTLIER_MIN_THRESHOLDS, dtype=np.float64),
+        median_deviations + OUTLIER_MAD_SCALE * deviation_mad,
+    )
+    keep_mask = np.all(deviations <= thresholds.reshape(1, 3), axis=1)
+    color_inlier_count = int(np.count_nonzero(keep_mask))
+    minimum_color_inliers = int(
+        np.ceil(values.shape[0] * BALL_COLOR_MIN_INLIER_RATIO)
+    )
+    if color_inlier_count < minimum_color_inliers:
+        raise RuntimeError(
+            "小球颜色异常帧过多，拒绝生成精确 HSV 范围 "
+            f"inliers={color_inlier_count}/{values.shape[0]}"
+        )
+
+    values = values[keep_mask]
+    hue = _circular_hue_mean(values[:, 0])
+    saturation = float(np.mean(values[:, 1]))
+    value = float(np.mean(values[:, 2]))
+    hue_deviation = np.abs(
+        ((values[:, 0] - hue + 90.0) % 180.0) - 90.0
+    )
+    tolerances = (
+        float(
+            np.clip(
+                np.quantile(hue_deviation, 0.90) + 2.0,
+                *BALL_HUE_TOLERANCE_RANGE,
+            )
+        ),
+        float(
+            np.clip(
+                np.quantile(np.abs(values[:, 1] - saturation), 0.90) + 8.0,
+                *BALL_SATURATION_TOLERANCE_RANGE,
+            )
+        ),
+        float(
+            np.clip(
+                np.quantile(np.abs(values[:, 2] - value), 0.90) + 10.0,
+                *BALL_VALUE_TOLERANCE_RANGE,
+            )
+        ),
+    )
+    hsv_center = (hue, saturation, value)
+    return hsv_center, _build_hsv_ranges(hsv_center, tolerances)
+
+
+def _circular_hue_mean(hue_values: np.ndarray) -> float:
+    """计算 OpenCV Hue 周期为 180 的环形均值。
+
+    Parameters
+    ----------
+    hue_values:
+        Hue 数组，形状 `(N,)`，范围 `[0, 179]`。
+
+    Returns
+    -------
+    hue:
+        环形均值，范围 `[0, 180)`。
+    """
+
+    hue_angles = np.asarray(hue_values, dtype=np.float64) * (
+        2.0 * np.pi / 180.0
+    )
+    hue_angle = np.arctan2(
+        np.mean(np.sin(hue_angles)),
+        np.mean(np.cos(hue_angles)),
+    )
+    return float(
+        (hue_angle % (2.0 * np.pi)) * 180.0 / (2.0 * np.pi)
+    )
+
+
+def _build_hsv_ranges(
+    hsv_center: tuple[float, float, float],
+    tolerances: tuple[float, float, float],
+) -> tuple[HsvRange, ...]:
+    """将 HSV 中心与半宽转换为支持 Hue 首尾环绕的检测范围。
+
+    Parameters
+    ----------
+    hsv_center:
+        OpenCV HSV 中心。
+    tolerances:
+        H/S/V 三个通道的半宽。
+
+    Returns
+    -------
+    hsv_ranges:
+        一段或两段闭区间 HSV 范围。
+    """
+
+    hue, saturation, value = hsv_center
+    hue_tolerance, saturation_tolerance, value_tolerance = tolerances
+    saturation_min = min(
+        BALL_RUNTIME_SATURATION_MIN,
+        int(np.clip(np.floor(saturation - saturation_tolerance), 0, 255)),
+    )
+    value_min = min(
+        BALL_RUNTIME_VALUE_MIN,
+        int(np.clip(np.floor(value - value_tolerance), 0, 255)),
+    )
+    saturation_max = 255
+    value_max = 255
+    hue_min = hue - hue_tolerance
+    hue_max = hue + hue_tolerance
+    if hue_min < 0.0:
+        return (
+            (
+                0,
+                saturation_min,
+                value_min,
+                int(np.ceil(hue_max)),
+                saturation_max,
+                value_max,
+            ),
+            (
+                int(np.floor(180.0 + hue_min)),
+                saturation_min,
+                value_min,
+                179,
+                saturation_max,
+                value_max,
+            ),
+        )
+    if hue_max > 179.0:
+        return (
+            (
+                0,
+                saturation_min,
+                value_min,
+                int(np.ceil(hue_max - 180.0)),
+                saturation_max,
+                value_max,
+            ),
+            (
+                int(np.floor(hue_min)),
+                saturation_min,
+                value_min,
+                179,
+                saturation_max,
+                value_max,
+            ),
+        )
     return (
         (
-            int(np.clip(np.floor(hue - 5.0), 0, 179)),
-            int(np.clip(np.floor(saturation - 30.0), 0, 255)),
-            int(np.clip(np.floor(value - 35.0), 0, 255)),
-            int(np.clip(np.ceil(hue + 5.0), 0, 179)),
-            int(np.clip(np.ceil(saturation + 30.0), 0, 255)),
-            int(np.clip(np.ceil(value + 35.0), 0, 255)),
+            int(np.floor(hue_min)),
+            saturation_min,
+            value_min,
+            int(np.ceil(hue_max)),
+            saturation_max,
+            value_max,
         ),
     )
 

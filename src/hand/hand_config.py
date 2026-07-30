@@ -37,8 +37,8 @@ def load_wuji_hand_instances(client: WujiRightHandClient | None = None) -> tuple
         return (
             WujiHandInstanceSpec(
                 device_name="right_hand",
-                title="M11 Hand",
-                actuator_count=int(actuator_count),
+                title="M6 Hand",
+                actuator_count=actuator_count,
             ),
         )
     except Exception:

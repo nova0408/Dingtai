@@ -60,8 +60,8 @@ LIFT_POLL_INTERVAL_S = 0.1
 LIFT_HEIGHT_TOLERANCE_MM = 1.0
 DEFAULT_TOOL_NAME = "g_tool_0"
 DEFAULT_WOBJ_NAME = "g_wobj_0"
-M11_ROOT_ACTUATOR_IDS: tuple[int, ...] = (3, 5, 7, 9)
-M11_TIP_ACTUATOR_IDS: tuple[int, ...] = (4, 6, 8, 10)
+M6_ACTUATOR_COUNT = 6
+M6_FOUR_FINGER_ACTUATOR_IDS: tuple[int, ...] = (2, 3, 4, 5)
 EXPECTED_ARM_TYPES = {
     "left": "AR5-5_0.8L-W4C1C9-ZY2",
     "right": "AR5-5_0.8R-W4C1C9-ZY2",
@@ -121,8 +121,8 @@ class InterlockTarget:
     gripper_pos: int | None
     "左手夹爪位置。"
 
-    hand_root_tip: dict[str, list[float]] | None
-    "右手根部和指尖的目标值。"
+    hand_four_finger_position: float | None
+    "M6 右手食指、中指、无名指和小指的统一目标值。"
 
 
 # endregion
@@ -134,7 +134,7 @@ INTERLOCK_LEFT_TARGETS: tuple[InterlockTarget, ...] = (
         arm_joint_deg=[-85.00, -100.00, 45.00, -50.00, -10.00, -15.00, -5.00],
         arm_xyzrpye=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
         gripper_pos=1000,
-        hand_root_tip=None,
+        hand_four_finger_position=None,
     ),
     InterlockTarget(
         target_type="arm",
@@ -142,7 +142,7 @@ INTERLOCK_LEFT_TARGETS: tuple[InterlockTarget, ...] = (
         arm_joint_deg=[-75.00, -90.00, 50.00, -45.00, -8.00, -12.00, -2.00],
         arm_xyzrpye=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
         gripper_pos=0,
-        hand_root_tip=None,
+        hand_four_finger_position=None,
     ),
 )
 INTERLOCK_RIGHT_TARGETS: tuple[InterlockTarget, ...] = (
@@ -152,7 +152,7 @@ INTERLOCK_RIGHT_TARGETS: tuple[InterlockTarget, ...] = (
         arm_joint_deg=[-100.00, 100.00, 135.00, -55.00, 0.00, -15.00, 10.00],
         arm_xyzrpye=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
         gripper_pos=None,
-        hand_root_tip={"root": [0.0, 0.0, 0.0, 0.0], "tip": [1.0, 1.0, 1.0, 1.0]},
+        hand_four_finger_position=1.0,
     ),
     InterlockTarget(
         target_type="arm",
@@ -160,7 +160,7 @@ INTERLOCK_RIGHT_TARGETS: tuple[InterlockTarget, ...] = (
         arm_joint_deg=[-90.00, 95.00, 120.00, -50.00, 3.00, -10.00, 8.00],
         arm_xyzrpye=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
         gripper_pos=None,
-        hand_root_tip={"root": [1.0, 1.0, 1.0, 1.0], "tip": [0.0, 0.0, 0.0, 0.0]},
+        hand_four_finger_position=0.0,
     ),
 )
 
@@ -289,28 +289,24 @@ def _get_actuator_positions(state: dict[str, object]) -> list[float]:
     return positions
 
 
-def _validate_m11_positions(positions: list[float]) -> None:
-    """确认当前右手状态能覆盖 m11 所需的执行器索引。"""
+def _validate_m6_positions(positions: list[float]) -> None:
+    """确认当前右手状态包含 M6 的 6 个执行器。"""
 
-    required_max_id = max(*M11_ROOT_ACTUATOR_IDS, *M11_TIP_ACTUATOR_IDS)
-    if len(positions) <= required_max_id:
+    if len(positions) != M6_ACTUATOR_COUNT:
         raise RuntimeError(
-            "右手状态执行器数量不足以覆盖 m11 索引，" f"required_max_id={required_max_id}, actual_len={len(positions)}"
+            f"右手状态执行器数量与 M6 不一致，expected={M6_ACTUATOR_COUNT}, actual={len(positions)}"
         )
 
 
-def _set_m11_group_positions(
+def _set_m6_four_finger_positions(
     hand: WujiRightHandClient,
     positions: list[float],
-    selected_ids: tuple[int, ...],
     target_value: float,
 ) -> bool:
-    """将 m11 的一组执行器统一设置为同一目标值。"""
+    """统一设置 M6 的食指、中指、无名指和小指，保留大拇指当前值。"""
 
-    if len(selected_ids) == 0:
-        raise ValueError("selected_ids 不能为空")
-    _validate_m11_positions(positions)
-    for actuator_id in selected_ids:
+    _validate_m6_positions(positions)
+    for actuator_id in M6_FOUR_FINGER_ACTUATOR_IDS:
         positions[actuator_id] = target_value
     return bool(hand.set_hand_state(positions))
 
@@ -703,7 +699,7 @@ def _drag_record_loop(
                 if connected_arm.arm_side == "left":
                     _manual_gripper_record(hand_clients.gripper, records)
                 else:
-                    _manual_m11_record(hand_clients.right_hand, records)
+                    _manual_m6_record(hand_clients.right_hand, records)
                 continue
             if raw_text == "l":
                 _manual_lift_record(hand_clients.body, records)
@@ -768,30 +764,25 @@ def _manual_gripper_record(client: DahuanGripperClient, records: list[dict[str, 
     print(f"  type: {record['type']}, pose: {record['pose']}")
 
 
-def _manual_m11_record(hand: WujiRightHandClient, records: list[dict[str, str]]) -> None:
-    """右臂拖动记录时的 m11 手动控制。"""
+def _manual_m6_record(hand: WujiRightHandClient, records: list[dict[str, str]]) -> None:
+    """右臂拖动记录时统一控制 M6 的四个非拇指。"""
 
-    group_choice = input("请选择 root/tip 并回车：").strip().lower()
-    if group_choice not in {"root", "tip"}:
-        print("已取消 m11 手动记录")
-        return
     state = hand.get_hand_state(include_tactile=False)
     if state is None:
         raise RuntimeError("右手状态不可用")
     positions = _get_actuator_positions(state)
-    selected_ids = M11_ROOT_ACTUATOR_IDS if group_choice == "root" else M11_TIP_ACTUATOR_IDS
-    _validate_m11_positions(positions)
-    print("当前选中四指/关节值：")
-    print(_format_joint_values([positions[index] for index in selected_ids]))
-    raw_value = input("请输入统一值并回车：").strip()
+    _validate_m6_positions(positions)
+    print("当前四指值（食指/中指/无名指/小指）：")
+    print(_format_joint_values([positions[index] for index in M6_FOUR_FINGER_ACTUATOR_IDS]))
+    raw_value = input("请输入四指统一目标值，单位归一化 0-1，直接回车取消：").strip()
     if raw_value == "":
-        print("已取消 m11 手动记录")
+        print("已取消 M6 手动记录")
         return
     target_value = float(raw_value)
-    for index in selected_ids:
-        positions[index] = target_value
-    if not hand.set_hand_state(positions):
-        raise RuntimeError("m11 手动下发失败")
+    if not 0.0 <= target_value <= 1.0:
+        raise ValueError("四指目标值必须在 0-1 之间")
+    if not _set_m6_four_finger_positions(hand, positions, target_value):
+        raise RuntimeError("M6 四指手动下发失败")
     time.sleep(2.0)
     current_state = hand.get_hand_state(include_tactile=False)
     if current_state is None:
@@ -799,7 +790,7 @@ def _manual_m11_record(hand: WujiRightHandClient, records: list[dict[str, str]])
     current_positions = [float(item["position"]) for item in current_state["actuators"]]
     record = {
         "timestamp": datetime.now().isoformat(timespec="seconds"),
-        "type": "m11",
+        "type": "m6",
         "joints": _format_joint_values(current_positions),
         "pose": "NaN",
     }
@@ -949,19 +940,18 @@ def _temporary_hand_control(connected_arm: ConnectedArm, hand_clients: Persisten
         if state is None:
             raise RuntimeError("右手状态不可用")
         positions = _get_actuator_positions(state)
-        _validate_m11_positions(positions)
+        _validate_m6_positions(positions)
         print("当前右手执行器值：")
         print(_format_joint_values(positions))
-        print("输入 axis 进行单轴控制，输入 root 或 tip 进行整组控制，输入 q 返回")
+        print("输入轴编号进行单轴控制，输入 r 控制四个手指（大拇指除外），输入 q 返回")
         raw_mode = input("请选择控制类型：").strip().lower()
         if raw_mode == "q":
             print("已退出手掌控制模式")
             return
-        if raw_mode in {"root", "tip"}:
-            selected_ids = M11_ROOT_ACTUATOR_IDS if raw_mode == "root" else M11_TIP_ACTUATOR_IDS
-            selected_values = [positions[actuator_id] for actuator_id in selected_ids]
-            print(f"当前选中{raw_mode}: {_format_joint_values(selected_values)}")
-            raw_value = input("请输入统一目标值，单位归一化 0-1: ").strip().lower()
+        if raw_mode == "r":
+            selected_values = [positions[actuator_id] for actuator_id in M6_FOUR_FINGER_ACTUATOR_IDS]
+            print(f"当前四指值（食指/中指/无名指/小指）：{_format_joint_values(selected_values)}")
+            raw_value = input("请输入四指统一目标值，单位归一化 0-1: ").strip().lower()
             if raw_value == "q":
                 print("已退出手掌控制模式")
                 return
@@ -973,7 +963,7 @@ def _temporary_hand_control(connected_arm: ConnectedArm, hand_clients: Persisten
             if not 0.0 <= target_value <= 1.0:
                 print("目标值必须在 0-1 之间")
                 continue
-            if not _set_m11_group_positions(hand, positions, selected_ids, target_value):
+            if not _set_m6_four_finger_positions(hand, positions, target_value):
                 print("右手下发失败")
                 continue
         else:
@@ -1250,7 +1240,7 @@ def _cartesian_control_loop(
         _print_motion_speed_status("笛卡尔", cartesian_speed, cartesian_zone)
         print("输入新的 xyzrpy，单位分别为 mm 和 deg")
         print("也支持输入完整 pose 列格式：[x, y, z, r, p, y, hasElbow, elbowDeg, confData]")
-        print("输入 s 调整速度，输入 h 进入手掌控制模式（axis/root/tip），输入 l 进入 lift 控制模式，输入 q 返回主菜单")
+        print("输入 s 调整速度，输入 h 进入手掌控制模式（轴编号/r），输入 l 进入 lift 控制模式，输入 q 返回主菜单")
         raw_text = input("目标 xyzrpy: ").strip()
         if raw_text.lower() == "s":
             cartesian_speed = _prompt_motion_speed(cartesian_speed, "笛卡尔")
@@ -1368,7 +1358,7 @@ def _joint_control_loop(
         print(f"当前关节值 (deg): {_format_sequence(_rad_to_deg(joint_values))}")
         _print_motion_speed_status("关节", joint_speed, joint_zone)
         print("输入新的关节值，单位 deg，支持空格、英文逗号或中文逗号分隔")
-        print("输入 s 调整速度，输入 h 进入手掌控制模式（axis/root/tip），输入 l 进入 lift 控制模式，输入 q 返回主菜单")
+        print("输入 s 调整速度，输入 h 进入手掌控制模式（轴编号/r），输入 l 进入 lift 控制模式，输入 q 返回主菜单")
         raw_text = input("目标关节值：").strip()
         if raw_text.lower() == "s":
             joint_speed = _prompt_motion_speed(joint_speed, "关节")
@@ -1627,20 +1617,22 @@ def _poll_gripper_until_idle(client: DahuanGripperClient, target_position: int) 
         time.sleep(POSITION_POLL_INTERVAL_S)
 
 
-def _poll_right_hand_until_idle(hand: WujiRightHandClient, target_name: str) -> None:
+def _poll_right_hand_until_idle(
+    hand: WujiRightHandClient,
+    target_name: str,
+    target_position: float,
+) -> None:
     deadline = time.monotonic() + DEFAULT_REQUEST_TIMEOUT_S
     while True:
         state = hand.get_hand_state(include_tactile=False)
         if state is None:
             raise RuntimeError("右手状态不可用")
         positions = _get_actuator_positions(state)
-        root_positions = [positions[actuator_id] for actuator_id in M11_ROOT_ACTUATOR_IDS]
-        tip_positions = [positions[actuator_id] for actuator_id in M11_TIP_ACTUATOR_IDS]
-        print(
-            f"hand {target_name}: "
-            f"root={_format_sequence(root_positions, decimals=6)}/r "
-            f"tip={_format_sequence(tip_positions, decimals=6)}/r"
-        )
+        _validate_m6_positions(positions)
+        finger_positions = [positions[actuator_id] for actuator_id in M6_FOUR_FINGER_ACTUATOR_IDS]
+        print(f"hand {target_name}: four_fingers={_format_sequence(finger_positions, decimals=6)}")
+        if all(math.isclose(position, target_position, abs_tol=1e-3) for position in finger_positions):
+            return
         if time.monotonic() >= deadline:
             raise TimeoutError("右手联调执行超时")
         time.sleep(POSITION_POLL_INTERVAL_S)
@@ -1715,7 +1707,7 @@ def _run_interlock_sequence(connected_arm: ConnectedArm, hand_clients: Persisten
             f"下一个目标：{target.target_type}-{target.target_id}, "
             f"关节角度 (deg)={_format_sequence(target.arm_joint_deg)}, "
             f"xyzrpye(mm/deg)={_format_sequence(target.arm_xyzrpye or [])}, "
-            f"pos={target.hand_root_tip}, speed={speed:.2f}"
+            f"four_finger_pos={target.hand_four_finger_position}, speed={speed:.2f}"
         )
         while True:
             key = _read_nonblocking_key()
@@ -1730,21 +1722,13 @@ def _run_interlock_sequence(connected_arm: ConnectedArm, hand_clients: Persisten
             if key == "\n":
                 _move_arm_to_joint(connected_arm.robot, connected_arm.ec, target.arm_joint_deg, speed)
                 state = hand.get_hand_state(include_tactile=False)
-                if state is None or target.hand_root_tip is None:
+                if state is None or target.hand_four_finger_position is None:
                     raise RuntimeError("右手状态不可用")
                 current_positions = _get_actuator_positions(state)
-                _validate_m11_positions(current_positions)
-                root_values = target.hand_root_tip["root"]
-                tip_values = target.hand_root_tip["tip"]
-                if len(root_values) != len(M11_ROOT_ACTUATOR_IDS) or len(tip_values) != len(M11_TIP_ACTUATOR_IDS):
-                    raise RuntimeError("右手 root/tip 目标长度与 m11 定义不一致")
-                for actuator_id, target_value in zip(M11_ROOT_ACTUATOR_IDS, root_values):
-                    current_positions[actuator_id] = target_value
-                for actuator_id, target_value in zip(M11_TIP_ACTUATOR_IDS, tip_values):
-                    current_positions[actuator_id] = target_value
-                if not hand.set_hand_state(current_positions):
+                target_position = target.hand_four_finger_position
+                if not _set_m6_four_finger_positions(hand, current_positions, target_position):
                     raise RuntimeError("右手联调下发失败")
-                _poll_right_hand_until_idle(hand, f"{target.target_type}-{target.target_id}")
+                _poll_right_hand_until_idle(hand, f"{target.target_type}-{target.target_id}", target_position)
                 break
             time.sleep(0.05)
 

@@ -229,7 +229,7 @@ ssh -N `
 - `camera_head` -> `CPC7B530000P`
 - `camera_chest` -> `CP9365300011`
 - `camera_left` -> `CV2R161000B1`
-- `camera_right` -> `CV2R1610002E`
+- `camera_right`
 
 结合现场 USB 重新检查后的结论：
 
