@@ -104,9 +104,9 @@ RIGHT_REPLAY_MOVE_ABS_J_END_LINEAR_SPEED_MM_S_BY_CSV_SEQUENCE: dict[int, float] 
 
 LEFT_REPLAY_MOVE_ABS_J_ZONE_MM_BY_CSV_SEQUENCE: dict[int, float] = {
     -1: DEFAULT_JOINT_ZONE,
-    2:40.0,
+    2:80.0,
     4:0,
-    15:40.0,
+    15:80.0,
 }
 "左臂各 CSV 连续 MoveAbsJ 中间点的转弯区半径，单位 mm；-1 为左臂默认值。"
 
