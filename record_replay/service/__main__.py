@@ -14,6 +14,7 @@ from qmlinker import QMGripper, QMHead, QMLift, QMMoveBase, create_channel
 
 from camera_pipeline.client import CameraName
 
+from ..charuco_offset import CharucoOffsetInitializer
 from ..context import ReplayContext
 from ..cycle_service import RecordReplayCycleService
 from ..device_status import DeviceStatusReader
@@ -22,6 +23,7 @@ from ..offset_updater import GlobalOffsetUpdater
 from ..settings import OffsetConfig, ReplayCycleConfig, ReplayDeviceConnection
 from .application import RecordReplayApplication
 from .config_store import RuntimeConfigStore
+from .prior_store import RecordReplayPriorStore
 from .server import RecordReplayServer
 
 SERVICE_ROOT = Path(__file__).resolve().parents[1]
@@ -41,6 +43,22 @@ BALL_POSE_PRIOR_PATH = PRIOR_DATA_DIR / "ball_pose_prior.json"
 
 HAND_EYE_RESULT_PATH = PRIOR_DATA_DIR / "hand_eye_result.txt"
 "当前现场手眼标定结果的固定路径。"
+
+CHARUCO_PRIOR_PATH = PRIOR_DATA_DIR / "charuco_board_prior.json"
+"头部 ChArUco T_camera_board 先验固定路径。"
+
+CHARUCO_HISTORY_PATH = PRIOR_DATA_DIR / "charuco_offset_history.csv"
+"人工确认的 ChArUco offset 历史固定路径。"
+
+LEFT_HEAD_BASE_CAMERA_PATH = (
+    SERVICE_ROOT / "prior_data" / "left_head_base_camera.npy"
+)
+"左臂基坐标系下的头部相机外参固定路径。"
+
+RIGHT_HEAD_BASE_CAMERA_PATH = (
+    SERVICE_ROOT / "prior_data" / "right_head_base_camera.npy"
+)
+"右臂基坐标系下的头部相机外参固定路径。"
 
 RUNTIME_CONFIG_PATH = SERVICE_ROOT / "config.json"
 "本机 API 修改后持久化的运行参数路径。"
@@ -81,7 +99,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             device_connection=device_connection,
             settings=settings,
             start_station=args.start_station,
-            finish_station=args.finish_station,
         )
     )
     agv_channel = create_channel(f"{AGV_HOST}:{QMLINKER_PORT}")
@@ -99,31 +116,40 @@ def main(argv: Sequence[str] | None = None) -> int:
         prior_capture_path=BALL_POSE_PRIOR_PATH,
         hand_eye_result_path=HAND_EYE_RESULT_PATH,
         camera_name=args.camera_name,
+        charuco_prior_path=CHARUCO_PRIOR_PATH,
+        charuco_history_path=CHARUCO_HISTORY_PATH,
+        left_head_base_camera_path=LEFT_HEAD_BASE_CAMERA_PATH,
+        right_head_base_camera_path=RIGHT_HEAD_BASE_CAMERA_PATH,
     )
-    prior_load_started_at = time.perf_counter()
-    ball_priors = load_three_ball_priors(
-        offset_config.prior_capture_path,
-    )
-    logger.info(
-        "record replay ball priors loaded count={} elapsed_ms={:.3f}",
-        len(ball_priors),
-        (time.perf_counter() - prior_load_started_at) * 1000.0,
-    )
-    detector = CameraPipelineThreeBallDetector(
-        CameraName(offset_config.camera_name),
-        ball_priors,
-        settings.offset,
-    )
-    cycle_service = RecordReplayCycleService(
-        context,
-        agv_client,
-        offset_updater=GlobalOffsetUpdater(offset_config, detector),
-    )
+    def build_cycle_service() -> RecordReplayCycleService:
+        """在人工 POST /start 之前完成先验加载和回放业务组装。"""
+
+        prior_load_started_at = time.perf_counter()
+        ball_priors = load_three_ball_priors(offset_config.prior_capture_path)
+        logger.info(
+            "record replay ball priors loaded count={} elapsed_ms={:.3f}",
+            len(ball_priors),
+            (time.perf_counter() - prior_load_started_at) * 1000.0,
+        )
+        detector = CameraPipelineThreeBallDetector(
+            CameraName(offset_config.camera_name),
+            ball_priors,
+            settings.offset,
+        )
+        return RecordReplayCycleService(
+            context,
+            agv_client,
+            offset_updater=GlobalOffsetUpdater(offset_config, detector),
+            charuco_initializer=CharucoOffsetInitializer(offset_config, settings),
+        )
+
+    prior_store = RecordReplayPriorStore(PRIOR_DATA_DIR)
     application = RecordReplayApplication(
         context,
-        cycle_service,
+        build_cycle_service,
         config_store,
         device_status_reader,
+        prior_store,
     )
     server = RecordReplayServer(args.host, args.port, application)
 
@@ -162,8 +188,7 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Dingtai RecordReplay service")
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=6300)
-    parser.add_argument("--start-station", default="3")
-    parser.add_argument("--finish-station", default="1")
+    parser.add_argument("--start-station", default="1")
     parser.add_argument("--camera-name", default="left_hand_camera")
     return parser.parse_args(argv)
 

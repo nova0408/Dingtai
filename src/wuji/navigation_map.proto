@@ -1,0 +1,26 @@
+syntax = "proto3";
+
+package robot.api.v1.navigation;
+
+import "google/protobuf/empty.proto";
+
+service NavigationMapService {
+  rpc GetNavigationTargets(google.protobuf.Empty) returns (NavigationTargetsResponse);
+}
+
+message NavigationTarget {
+  string name = 1;
+  uint64 id = 2;
+  float x_m = 3;
+  float y_m = 4;
+  float yaw_rad = 5;
+}
+
+message NavigationTargetsResponse {
+  bool success = 1;
+  string message = 2;
+  string map_name = 3;
+  uint64 map_id = 4;
+  float resolution = 5;
+  repeated NavigationTarget targets = 6;
+}

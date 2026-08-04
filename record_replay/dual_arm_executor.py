@@ -6,7 +6,10 @@ import threading
 import time
 from pathlib import Path
 
+from loguru import logger
+
 from .arm_actions import flush_pending_arm_segment
+from .charuco_offset import CharucoOffsetInitializer
 from .context import ReplayContext
 from .contracts import CsvExecutionPlan, ReplayRow, ReplayServiceState
 from .csv_repository import load_replay_rows, state_name_from_left_csv
@@ -20,22 +23,35 @@ class DualArmExecutor:
 
     # region 主入口
 
-    def execute(self, context: ReplayContext, plans: list[CsvExecutionPlan], offset_updater: GlobalOffsetUpdater | None = None) -> None:
+    def execute(
+        self,
+        context: ReplayContext,
+        plans: list[CsvExecutionPlan],
+        offset_updater: GlobalOffsetUpdater | None = None,
+        charuco_initializer: CharucoOffsetInitializer | None = None,
+    ) -> None:
         """创建 runtime 并完整执行给定的双臂计划。"""
 
         stop_event = context.stop_event
         device_connection = context.config.device_connection
         service_settings = context.config.settings
+        preloaded_rows_by_path = _preload_plan_rows(plans)
         left_runtime = create_runtime("left", stop_event, device_connection, service_settings)
         right_runtime = None
         try:
+            left_runtime.preloaded_rows_by_path = preloaded_rows_by_path
             prepare_runtime(left_runtime)
             if offset_updater is not None:
                 left_runtime.offset_target_sequences = service_settings.offset.target_sequences
             if _plans_require_right_runtime(plans):
                 right_runtime = create_runtime("right", stop_event, device_connection, service_settings)
+                right_runtime.preloaded_rows_by_path = preloaded_rows_by_path
                 prepare_runtime(right_runtime)
             context.attach_runtimes(left_runtime, right_runtime)
+            if charuco_initializer is not None:
+                charuco_initializer.initialize(
+                    [left_runtime] if right_runtime is None else [left_runtime, right_runtime]
+                )
             for index, plan in enumerate(plans):
                 context.set_state(
                     ReplayServiceState.REPLAYING,
@@ -188,14 +204,23 @@ class DualArmExecutor:
         flush_at_end: bool = False,
         offset_updater: GlobalOffsetUpdater | None = None,
     ) -> None:
-        """执行一个 CSV，并在视觉纠偏触发文件内保持旧的速度与采集边界。"""
+        """执行一个已在启动阶段预解析的 CSV。"""
 
         is_offset_trigger = offset_updater is not None and offset_updater.should_update_after(runtime, csv_path.name)
-        rows = load_replay_rows(csv_path)
-        original_speed = runtime.move_abs_j_end_linear_speed_mm_s
+        rows = runtime.preloaded_rows_by_path.get(csv_path)
+        if rows is None:
+            raise RuntimeError(f"CSV 未在启动阶段预加载，拒绝在执行期读取文件：{csv_path}")
+        if not rows:
+            if flush_at_end:
+                flush_pending_arm_segment(runtime)
+            logger.warning(
+                "CSV 是零字节或只有表头的占位文件，跳过执行 arm_side={} file={}",
+                runtime.connected_arm.arm_side,
+                csv_path.name,
+            )
+            return
         if is_offset_trigger:
             flush_pending_arm_segment(runtime)
-            runtime.move_abs_j_end_linear_speed_mm_s = runtime.settings.offset.trigger_move_abs_j_end_linear_speed_mm_s
         try:
             for row in rows:
                 context.set_csv_progress(
@@ -211,9 +236,7 @@ class DualArmExecutor:
                 time.sleep(runtime.settings.offset.capture_settle_delay_s)
                 offset_updater.update(runtime)
         finally:
-            if is_offset_trigger:
-                runtime.move_abs_j_end_linear_speed_mm_s = original_speed
-        context.clear_csv_progress(runtime.connected_arm.arm_side)
+            context.clear_csv_progress(runtime.connected_arm.arm_side)
 
     def _execute_row(self, runtime: ReplayRuntime, row: ReplayRow) -> None:
         if runtime.stop_event.is_set():
@@ -246,3 +269,22 @@ def _plans_require_right_runtime(plans: list[CsvExecutionPlan]) -> bool:
         or plan.right_post_stage_csv_paths
         for plan in plans
     )
+
+
+def _preload_plan_rows(plans: list[CsvExecutionPlan]) -> dict[Path, tuple[ReplayRow, ...]]:
+    """按实际执行计划一次性解析所有 CSV，空占位文件保留为空元组。"""
+
+    paths: list[Path] = []
+    seen: set[Path] = set()
+    for plan in plans:
+        for path in (
+            plan.left_csv_path,
+            plan.right_start_csv_path,
+            *plan.right_pre_stage_csv_paths,
+            plan.right_sync_csv_path,
+            *plan.right_post_stage_csv_paths,
+        ):
+            if path is not None and path not in seen:
+                seen.add(path)
+                paths.append(path)
+    return {path: tuple(load_replay_rows(path)) for path in paths}

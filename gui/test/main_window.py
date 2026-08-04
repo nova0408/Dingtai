@@ -1,11 +1,7 @@
 from __future__ import annotations
 
-import ipaddress
-import platform
-import subprocess
 import time
 from dataclasses import dataclass
-from urllib.parse import urlsplit
 
 from loguru import logger
 from PySide6.QtCore import QObject, QSettings, Qt, Signal, Slot
@@ -19,9 +15,8 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from qmlinker import create_channel
 
-from camera_pipeline.client import CameraPipelineClient
+from camera_pipeline.service.http_client import CameraPipelineHttpClient
 from gui.test.agv_tab import AgvTabWidget
 from gui.test.algo_tab import AlgoPlaceholderTabWidget
 from gui.test.arm_tab import ArmTabWidget
@@ -31,77 +26,57 @@ from gui.test.camera_tab import WujiCameraTabWidget
 from gui.test.common import ActivatableTab, BackgroundCall
 from gui.test.deployment_tab import DeploymentTabWidget
 from gui.test.gripper_tab import GripperTabWidget
+from gui.test.hand_tab import M6HandTabWidget
 from gui.test.head_tab import HeadTabWidget
 from gui.test.prior_calibration_tab import PriorCalibrationTabWidget
+from gui.test.robot_control_clients import (
+    RobotControlAgvClient,
+    RobotControlAr5Client,
+    RobotControlBodyClient,
+    RobotControlGripperClient,
+    RobotControlHeadClient,
+    RobotControlRightHandClient,
+    RobotControlStatusStream,
+)
 from gui.util_components.casia_indicator_light import CasiaIndicatorLight
-from src.wuji.agv_client import WujiAgvClient
-from src.wuji.ar5_client import (
-    AR5_DIRECT_IPS,
-    AR5_SSH_FORWARD_PORTS,
-    AR5_TUNNEL_IPS,
-    Ar5Client,
-    Ar5ConnectionConfig,
-)
-from src.wuji.body_client import WujiBodyClient
+from robot_control.service.client import RobotControlClient
 from src.wuji.camera_protocol import WujiCameraFrame
-from src.wuji.dahuan_gripper_client import DahuanGripperClient
-from src.wuji.head_client import WujiHeadClient
 from src.wuji.prior_calibration import PriorCalibrationRecorder
-from src.wuji.qmlinker_session import WujiQmlinkerSession, WujiSshForward
-from src.wuji.zmq_camera_catalog import (
-    SUPPORTED_WUJI_ZMQ_CAMERAS,
-    SUPPORTED_WUJI_ZMQ_CAMERAS_LOCAL,
-)
-from src.wuji.zmq_camera_client import WujiZmqCameraClient
 
-DEFAULT_ORIN_IP = "192.168.100.50"
-DEFAULT_CONTROL_IP = "192.168.100.60"
-DEFAULT_AGV_IP = "192.168.100.70"
-DEFAULT_QMLINKER_PORT = 50062
-DEFAULT_CAMERA_CONTROL_PORT = 5570
-DEFAULT_CAMERA_PIPELINE_PORT = 6200
-DEFAULT_CAMERA_PIPELINE_SSH_HOST = "127.0.0.1"
-DEFAULT_GRIPPER_PORT = 50066
-DEFAULT_CAMERA_STREAM_TIMEOUT_MS = 2000
+DEFAULT_GATEWAY_HOST = "wujibrain-desktop"
+LEGACY_GATEWAY_IPS = frozenset({"192.168.1.128", "192.168.100.50"})
+DEFAULT_ROBOT_CONTROL_API_PREFIX = "/api/v1/robot-control"
+DEFAULT_CAMERA_API_PREFIX = "/api/v1/camera"
+DEFAULT_CAMERA_WEBSOCKET_PREFIX = "/api/v1/camera-ws"
 SETTINGS_ORGANIZATION = "DingTai"
 SETTINGS_APPLICATION = "WujiTouchGui"
-SETTINGS_LAST_IP_KEY = "connection/last_ip"
-SETTINGS_LEFT_ARM_IP_KEY = "connection/left_arm_ip"
-SETTINGS_RIGHT_ARM_IP_KEY = "connection/right_arm_ip"
+SETTINGS_LAST_HOST_KEY = "connection/last_host"
+SETTINGS_LEGACY_IP_KEY = "connection/last_ip"
 
 
 @dataclass(slots=True)
 class ConnectionBundle:
     """GUI 全部设备连接及其统一释放顺序。"""
 
-    session: WujiQmlinkerSession
-    direct: bool
-    left_arm: Ar5Client
-    right_arm: Ar5Client
-    agv: WujiAgvClient
-    head: WujiHeadClient
-    body: WujiBodyClient
-    gripper: DahuanGripperClient
-    camera: WujiZmqCameraClient
-    camera_pipeline: CameraPipelineClient
+    robot_control: RobotControlClient
+    status_stream: RobotControlStatusStream
+    left_arm: RobotControlAr5Client
+    right_arm: RobotControlAr5Client
+    agv: RobotControlAgvClient
+    head: RobotControlHeadClient
+    body: RobotControlBodyClient
+    gripper: RobotControlGripperClient
+    right_hand: RobotControlRightHandClient
+    camera: CameraPipelineHttpClient
 
     def close(self) -> None:
-        """停止机械臂、关闭相机并释放 SSH 转发。"""
+        """停止共享状态流并关闭相机 HTTP 客户端。"""
 
-        for arm in (self.left_arm, self.right_arm):
-            try:
-                arm.close()
-            except Exception:
-                pass
+        self.status_stream.close()
         try:
             self.camera.close()
         except Exception:
             pass
-        try:
-            self.camera_pipeline.close()
-        except Exception:
-            pass
-        self.session.close()
 
 
 class _ConnectionWorker(QObject):
@@ -125,9 +100,7 @@ class TestGuiMainWindow(QMainWindow):
         super().__init__(parent)
         self._bundle: ConnectionBundle | None = None
         self._tabs: list[ActivatableTab] = []
-        self._requested_host = DEFAULT_ORIN_IP
-        self._requested_left_arm_ip = AR5_DIRECT_IPS["left"]
-        self._requested_right_arm_ip = AR5_DIRECT_IPS["right"]
+        self._requested_host = DEFAULT_GATEWAY_HOST
         self._camera_bridge = CameraBridge(self)
         self._connection_worker = _ConnectionWorker(self)
         self._settings = QSettings(SETTINGS_ORGANIZATION, SETTINGS_APPLICATION)
@@ -150,7 +123,7 @@ class TestGuiMainWindow(QMainWindow):
 
         connect_row = QHBoxLayout()
         self.host_edit = QLineEdit(central)
-        self.host_edit.setPlaceholderText("Orin 接入 IP（本机可输入 DHCP 地址）")
+        self.host_edit.setPlaceholderText("Gateway HTTPS 主机名（例如 wujibrain-desktop）")
         self.host_edit.setMinimumHeight(52)
         self.connect_button = QPushButton("连接", central)
         self.disconnect_button = QPushButton("断开", central)
@@ -182,6 +155,7 @@ class TestGuiMainWindow(QMainWindow):
         self.left_arm_tab = ArmTabWidget("left", "左 AR5", self.tab_widget)
         self.right_arm_tab = ArmTabWidget("right", "右 AR5", self.tab_widget)
         self.gripper_tab = GripperTabWidget(self.tab_widget)
+        self.hand_tab = M6HandTabWidget(self.tab_widget)
         self.camera_tab = WujiCameraTabWidget(self.tab_widget)
         self.prior_calibration_tab = PriorCalibrationTabWidget(self.tab_widget)
         self.algo_tab = AlgoPlaceholderTabWidget(self.tab_widget)
@@ -189,10 +163,11 @@ class TestGuiMainWindow(QMainWindow):
             ("项目主页", self.deployment_tab),
             ("AGV", self.agv_tab),
             ("头部", self.head_tab),
-            ("升降/腰部", self.body_tab),
+            ("升降", self.body_tab),
             ("左 AR5", self.left_arm_tab),
             ("右 AR5", self.right_arm_tab),
             ("夹爪", self.gripper_tab),
+            ("右手", self.hand_tab),
             ("相机", self.camera_tab),
             ("先验标定", self.prior_calibration_tab),
             ("算法", self.algo_tab),
@@ -208,11 +183,11 @@ class TestGuiMainWindow(QMainWindow):
             self.left_arm_tab,
             self.right_arm_tab,
             self.gripper_tab,
+            self.hand_tab,
             self.prior_calibration_tab,
             self.algo_tab,
         ]
-        self.setStyleSheet(
-            """
+        self.setStyleSheet("""
             QMainWindow, QWidget { font-size: 16px; }
             QLineEdit { padding: 8px; font-size: 18px; }
             QPushButton { min-height: 46px; min-width: 82px; font-size: 17px; }
@@ -226,8 +201,7 @@ class TestGuiMainWindow(QMainWindow):
                 font-size: 14px;
                 font-weight: 600;
             }
-            """
-        )
+            """)
         self.statusBar().setSizeGripEnabled(False)
 
     def _connect_signals(self) -> None:
@@ -237,36 +211,27 @@ class TestGuiMainWindow(QMainWindow):
         self.camera_tab.cameraSelected.connect(self._camera_bridge.refresh_camera)
         self.camera_tab.rgbdStreamRequested.connect(self._camera_bridge.start_rgbd_stream)
         self.camera_tab.streamStopRequested.connect(self._camera_bridge.stop_stream)
-        self.prior_calibration_tab.cameraStreamRequested.connect(
-            self._camera_bridge.start_rgb_stream
-        )
-        self.prior_calibration_tab.streamStopRequested.connect(
-            self._camera_bridge.stop_stream
-        )
+        self.prior_calibration_tab.cameraStreamRequested.connect(self._camera_bridge.start_rgb_stream)
+        self.prior_calibration_tab.streamStopRequested.connect(self._camera_bridge.stop_stream)
         self._camera_bridge.inventoryReady.connect(self.camera_tab.update_camera_inventory)
-        self._camera_bridge.enableStateReady.connect(self.camera_tab.update_camera_enable_state)
+        self._camera_bridge.connectionStateReady.connect(self.camera_tab.update_camera_connection_state)
         self._camera_bridge.intrinsicsReady.connect(self.camera_tab.update_intrinsics)
         self._camera_bridge.frameReady.connect(self._on_camera_frame_ready)
-        self._camera_bridge.errorRaised.connect(self._show_status_message)
+        self._camera_bridge.errorRaised.connect(self._on_camera_error)
         self._connection_worker.succeeded.connect(self._on_bundle_ready)
         self._connection_worker.failed.connect(self._on_bundle_failed)
         self.host_edit.editingFinished.connect(self._update_deployment_host)
 
     def _load_last_network_config(self) -> None:
-        saved_host = str(self._settings.value(SETTINGS_LAST_IP_KEY, DEFAULT_ORIN_IP)).strip()
-        saved_left_arm_ip = str(
-            self._settings.value(SETTINGS_LEFT_ARM_IP_KEY, AR5_DIRECT_IPS["left"])
+        saved_host = str(
+            self._settings.value(
+                SETTINGS_LAST_HOST_KEY,
+                self._settings.value(SETTINGS_LEGACY_IP_KEY, DEFAULT_GATEWAY_HOST),
+            )
         ).strip()
-        saved_right_arm_ip = str(
-            self._settings.value(SETTINGS_RIGHT_ARM_IP_KEY, AR5_DIRECT_IPS["right"])
-        ).strip()
-        self.host_edit.setText(saved_host or DEFAULT_ORIN_IP)
-        self.left_arm_tab.set_connection_ip(
-            saved_left_arm_ip or AR5_DIRECT_IPS["left"]
-        )
-        self.right_arm_tab.set_connection_ip(
-            saved_right_arm_ip or AR5_DIRECT_IPS["right"]
-        )
+        if saved_host in LEGACY_GATEWAY_IPS:
+            saved_host = DEFAULT_GATEWAY_HOST
+        self.host_edit.setText(saved_host or DEFAULT_GATEWAY_HOST)
         self._update_deployment_host()
 
     # endregion
@@ -276,29 +241,14 @@ class TestGuiMainWindow(QMainWindow):
     @Slot()
     def _connect_requested(self) -> None:
         requested_host = self.host_edit.text().strip()
-        requested_left_arm_ip = self.left_arm_tab.connection_ip()
-        requested_right_arm_ip = self.right_arm_tab.connection_ip()
-        invalid_label = _first_invalid_ip(
-            (
-                ("Orin 接入 IP", requested_host),
-                ("左 AR5 IP", requested_left_arm_ip),
-                ("右 AR5 IP", requested_right_arm_ip),
-            )
-        )
-        if invalid_label is not None:
-            self._apply_connection_state(False, f"连接失败：{invalid_label} 无效")
+        if not requested_host:
+            self._apply_connection_state(False, "连接失败：Gateway 地址不能为空")
             return
         self._requested_host = requested_host
-        self._requested_left_arm_ip = requested_left_arm_ip
-        self._requested_right_arm_ip = requested_right_arm_ip
-        self._settings.setValue(SETTINGS_LAST_IP_KEY, requested_host)
-        self._settings.setValue(SETTINGS_LEFT_ARM_IP_KEY, requested_left_arm_ip)
-        self._settings.setValue(SETTINGS_RIGHT_ARM_IP_KEY, requested_right_arm_ip)
+        self._settings.setValue(SETTINGS_LAST_HOST_KEY, requested_host)
         self.deployment_tab.set_service_host(requested_host)
         self._disconnect_requested()
-        self.left_arm_tab.set_connection_ip_enabled(False)
-        self.right_arm_tab.set_connection_ip_enabled(False)
-        self._apply_connection_state(False, "正在检测网络并连接…")
+        self._apply_connection_state(False, "正在连接 Gateway HTTP…")
         self.connect_button.setEnabled(False)
         self._connection_worker.start(self._create_connection_bundle)
 
@@ -313,16 +263,17 @@ class TestGuiMainWindow(QMainWindow):
         self.left_arm_tab.set_client(payload.left_arm)
         self.right_arm_tab.set_client(payload.right_arm)
         self.gripper_tab.set_client(payload.gripper)
+        self.hand_tab.set_client(payload.right_hand)
         self.prior_calibration_tab.set_clients(
             payload.left_arm,
             payload.head,
-            PriorCalibrationRecorder(payload.camera_pipeline),
+            PriorCalibrationRecorder(payload.camera),
         )
         self._camera_bridge.set_client(payload.camera)
-        mode_text = "平板直连" if payload.direct else "本机 SSH 转发"
+        mode_text = "Gateway HTTPS"
         self._apply_connection_state(True, f"已连接 · {mode_text}")
         self._on_current_tab_changed(self.tab_widget.currentIndex())
-        logger.info("GUI connected: access_ip={} mode={}", self._requested_host, mode_text)
+        logger.info("GUI connected: gateway_host={} mode={}", self._requested_host, mode_text)
 
     @Slot(str)
     def _on_bundle_failed(self, message: str) -> None:
@@ -342,6 +293,7 @@ class TestGuiMainWindow(QMainWindow):
         self.left_arm_tab.set_client(None)
         self.right_arm_tab.set_client(None)
         self.gripper_tab.set_client(None)
+        self.hand_tab.set_client(None)
         self.prior_calibration_tab.set_clients(None, None, None)
         bundle = self._bundle
         self._bundle = None
@@ -354,254 +306,82 @@ class TestGuiMainWindow(QMainWindow):
         self._on_current_tab_changed(self.tab_widget.currentIndex())
 
     def closeEvent(self, event) -> None:  # noqa: ANN001, N802
-        """窗口关闭前释放 SDK、相机和 SSH 资源。"""
+        """窗口关闭前释放共享状态流与 HTTP 客户端。"""
 
         self._disconnect_requested()
         super().closeEvent(event)
 
     # endregion
-
     # region 连接构造
 
     def _create_connection_bundle(self) -> ConnectionBundle:
         started_at = time.monotonic()
         access_host = self._requested_host
-        stage = "接入 IP 探测"
-        logger.info(
-            "GUI connection begin: access_ip={} left_ar5_ip={} right_ar5_ip={}",
-            access_host,
-            self._requested_left_arm_ip,
-            self._requested_right_arm_ip,
-        )
-        if not _ping_host(access_host):
-            logger.error("GUI connection access ping failed: access_ip={}", access_host)
-            raise RuntimeError(f"接入 IP 不可达：{access_host}")
-        logger.info("GUI connection access ping passed: access_ip={}", access_host)
-
-        direct = _ping_host(DEFAULT_CONTROL_IP)
-        mode_text = "direct" if direct else "ssh"
-        logger.info(
-            "GUI connection mode selected: mode={} control_ip={} control_ping={}",
-            mode_text,
-            DEFAULT_CONTROL_IP,
-            direct,
-        )
-        session: WujiQmlinkerSession | None = None
-        left_arm: Ar5Client | None = None
-        right_arm: Ar5Client | None = None
-        camera_client: WujiZmqCameraClient | None = None
-        camera_pipeline_client: CameraPipelineClient | None = None
+        stage = "RobotControl Gateway HTTPS"
+        logger.info("GUI connection begin: gateway_host={}", access_host)
+        robot_control: RobotControlClient | None = None
+        status_stream: RobotControlStatusStream | None = None
+        camera_client: CameraPipelineHttpClient | None = None
         try:
-            stage = "SSH 共享转发" if not direct else "直连会话"
+            gateway_base_url = f"https://{access_host}"
+            robot_control = RobotControlClient(
+                base_url=gateway_base_url,
+                api_prefix=DEFAULT_ROBOT_CONTROL_API_PREFIX,
+                timeout_s=10.0,
+            )
+            health = robot_control.get_health()
+            logger.info("RobotControl health: {}", health)
+            status_stream = RobotControlStatusStream(robot_control)
+            status_stream.start()
+            status_stream.wait_ready(timeout_s=15.0)
+
+            stage = "CameraPipeline Gateway HTTPS/WebSocket"
             logger.info("GUI connection stage begin: {}", stage)
-            session = WujiQmlinkerSession(
-                host=DEFAULT_CONTROL_IP,
-                port=DEFAULT_QMLINKER_PORT,
-                direct=direct,
-                ssh_host=None if direct else access_host,
-                tunnel_forwards=() if direct else self._build_shared_tunnel_forwards(),
+            camera_client = CameraPipelineHttpClient(
+                base_url=gateway_base_url,
+                websocket_url=f"wss://{access_host}",
+                api_prefix=DEFAULT_CAMERA_API_PREFIX,
+                websocket_prefix=DEFAULT_CAMERA_WEBSOCKET_PREFIX,
+                timeout_s=60.0,
+                stream_timeout_s=30.0,
             )
             logger.info(
-                "GUI connection stage ready: {} summary={}",
+                "GUI connection stage ready: {} base_url={}",
                 stage,
-                session.debug_connection_summary(),
+                gateway_base_url,
             )
 
-            stage = "qmlinker 通道就绪"
-            logger.info("GUI connection stage begin: {}", stage)
-            session.check_ready()
-            logger.info("GUI connection stage ready: {}", stage)
-
-            stage = "左 AR5 SDK 连接"
-            left_sdk_ip = (
-                self._requested_left_arm_ip if direct else AR5_TUNNEL_IPS["left"]
-            )
-            logger.info(
-                "GUI connection stage begin: {} sdk_ip={} controller_ip={}",
-                stage,
-                left_sdk_ip,
-                self._requested_left_arm_ip,
-            )
-            left_arm = Ar5Client(
-                Ar5ConnectionConfig(
-                    side="left",
-                    robot_ip=left_sdk_ip,
-                )
-            )
-            logger.info("GUI connection stage ready: {}", stage)
-
-            stage = "右 AR5 SDK 连接"
-            right_sdk_ip = (
-                self._requested_right_arm_ip
-                if direct
-                else AR5_TUNNEL_IPS["right"]
-            )
-            logger.info(
-                "GUI connection stage begin: {} sdk_ip={} controller_ip={}",
-                stage,
-                right_sdk_ip,
-                self._requested_right_arm_ip,
-            )
-            right_arm = Ar5Client(
-                Ar5ConnectionConfig(
-                    side="right",
-                    robot_ip=right_sdk_ip,
-                )
-            )
-            logger.info("GUI connection stage ready: {}", stage)
-
-            stage = "相机客户端创建"
-            logger.info("GUI connection stage begin: {}", stage)
-            camera_endpoints = (
-                SUPPORTED_WUJI_ZMQ_CAMERAS
-                if direct
-                else SUPPORTED_WUJI_ZMQ_CAMERAS_LOCAL
-            )
-            camera_target = session.resolve_target(
-                DEFAULT_CONTROL_IP,
-                DEFAULT_CAMERA_CONTROL_PORT,
-            )
-            camera_host, camera_port = _parse_target(camera_target)
-            camera_client = WujiZmqCameraClient(
-                host=camera_host,
-                control_port=camera_port,
-                request_timeout_ms=max(500, int(session.request_timeout_s * 1000.0)),
-                stream_timeout_ms=DEFAULT_CAMERA_STREAM_TIMEOUT_MS,
-                camera_endpoints=camera_endpoints,
-            )
-            logger.info(
-                "GUI connection stage ready: {} target={}:{}",
-                stage,
-                camera_host,
-                camera_port,
-            )
-
-            stage = "CameraPipeline 客户端创建"
-            logger.info("GUI connection stage begin: {}", stage)
-            pipeline_remote_host = (
-                DEFAULT_ORIN_IP
-                if direct
-                else DEFAULT_CAMERA_PIPELINE_SSH_HOST
-            )
-            pipeline_target = session.resolve_target(
-                pipeline_remote_host,
-                DEFAULT_CAMERA_PIPELINE_PORT,
-            )
-            camera_pipeline_client = CameraPipelineClient(
-                service_addr=f"tcp://{pipeline_target}",
-                timeout_ms=60_000,
-            )
-            logger.info(
-                "GUI connection stage ready: {} target={}",
-                stage,
-                pipeline_target,
-            )
-
-            stage = "AGV/头部/身体/夹爪客户端创建"
-            logger.info("GUI connection stage begin: {}", stage)
-            gripper_target = session.resolve_target(
-                DEFAULT_CONTROL_IP,
-                DEFAULT_GRIPPER_PORT,
-            )
+            stage = "RobotControl HTTP 设备适配器"
+            if robot_control is None or status_stream is None:
+                raise RuntimeError("RobotControl HTTP 客户端未初始化")
             bundle = ConnectionBundle(
-                session=session,
-                direct=direct,
-                left_arm=left_arm,
-                right_arm=right_arm,
-                agv=WujiAgvClient(
-                    create_channel(session.resolve_target(DEFAULT_AGV_IP, DEFAULT_QMLINKER_PORT)),
-                    request_timeout_s=session.request_timeout_s,
-                ),
-                head=WujiHeadClient(session.channel),
-                body=WujiBodyClient(session.channel),
-                gripper=DahuanGripperClient(create_channel(gripper_target)),
+                robot_control=robot_control,
+                status_stream=status_stream,
+                left_arm=RobotControlAr5Client("left", robot_control, status_stream),
+                right_arm=RobotControlAr5Client("right", robot_control, status_stream),
+                agv=RobotControlAgvClient(robot_control, status_stream),
+                head=RobotControlHeadClient(robot_control, status_stream),
+                body=RobotControlBodyClient(robot_control, status_stream),
+                gripper=RobotControlGripperClient(robot_control, status_stream),
+                right_hand=RobotControlRightHandClient(robot_control, status_stream),
                 camera=camera_client,
-                camera_pipeline=camera_pipeline_client,
             )
             logger.info(
-                "GUI connection completed: mode={} elapsed_s={:.3f}",
-                mode_text,
+                "GUI connection completed: mode=gateway-https elapsed_s={:.3f}",
                 time.monotonic() - started_at,
             )
             return bundle
         except Exception as exc:
-            logger.exception(
-                "GUI connection stage failed: stage={} mode={} elapsed_s={:.3f}",
+            logger.error(
+                "GUI connection stage failed: stage={} elapsed_s={:.3f}",
                 stage,
-                mode_text,
                 time.monotonic() - started_at,
             )
-            if left_arm is not None:
-                left_arm.close()
-            if right_arm is not None:
-                right_arm.close()
             if camera_client is not None:
                 camera_client.close()
-            if camera_pipeline_client is not None:
-                camera_pipeline_client.close()
-            if session is not None:
-                session.close()
-            raise RuntimeError(
-                f"{stage}失败：{type(exc).__name__}: {exc}"
-            ) from exc
-
-    def _build_shared_tunnel_forwards(self) -> tuple[WujiSshForward, ...]:
-        forwards = [
-            WujiSshForward(
-                local_host="127.0.0.1",
-                local_port=DEFAULT_QMLINKER_PORT - 1,
-                remote_host=DEFAULT_CONTROL_IP,
-                remote_port=DEFAULT_QMLINKER_PORT,
-            ),
-            WujiSshForward(
-                local_host="127.0.0.1",
-                local_port=DEFAULT_QMLINKER_PORT + 1,
-                remote_host=DEFAULT_AGV_IP,
-                remote_port=DEFAULT_QMLINKER_PORT,
-            ),
-            WujiSshForward(
-                local_host="127.0.0.1",
-                local_port=DEFAULT_GRIPPER_PORT - 1,
-                remote_host=DEFAULT_CONTROL_IP,
-                remote_port=DEFAULT_GRIPPER_PORT,
-            ),
-            WujiSshForward(
-                local_host="127.0.0.1",
-                local_port=DEFAULT_CAMERA_CONTROL_PORT - 1,
-                remote_host=DEFAULT_CONTROL_IP,
-                remote_port=DEFAULT_CAMERA_CONTROL_PORT,
-            ),
-            WujiSshForward(
-                local_host="127.0.0.1",
-                local_port=DEFAULT_CAMERA_PIPELINE_PORT - 1,
-                remote_host=DEFAULT_CAMERA_PIPELINE_SSH_HOST,
-                remote_port=DEFAULT_CAMERA_PIPELINE_PORT,
-            ),
-        ]
-        arm_remote_ips = {
-            "left": self._requested_left_arm_ip,
-            "right": self._requested_right_arm_ip,
-        }
-        for side in ("left", "right"):
-            for port in AR5_SSH_FORWARD_PORTS:
-                forwards.append(
-                    WujiSshForward(
-                        local_host=AR5_TUNNEL_IPS[side],
-                        local_port=port,
-                        remote_host=arm_remote_ips[side],
-                        remote_port=port,
-                    )
-                )
-        for endpoint in SUPPORTED_WUJI_ZMQ_CAMERAS_LOCAL:
-            forwards.append(
-                WujiSshForward(
-                    local_host="127.0.0.1",
-                    local_port=endpoint.stream_port,
-                    remote_host=DEFAULT_CONTROL_IP,
-                    remote_port=endpoint.stream_port + 1,
-                )
-            )
-        return tuple(forwards)
+            if status_stream is not None:
+                status_stream.close()
+            raise RuntimeError(f"{stage}失败：{type(exc).__name__}: {exc}") from exc
 
     # endregion
 
@@ -635,60 +415,38 @@ class TestGuiMainWindow(QMainWindow):
     def _on_camera_frame_ready(self, frame: object, run_id: int) -> None:
         _ = run_id
         if isinstance(frame, WujiCameraFrame):
-            current_widget = self.tab_widget.currentWidget()
-            if current_widget is self.camera_tab:
-                self.camera_tab.update_frame(frame)
-            elif current_widget is self.prior_calibration_tab:
-                self.prior_calibration_tab.update_frame(frame)
+            try:
+                current_widget = self.tab_widget.currentWidget()
+                if current_widget is self.camera_tab:
+                    self.camera_tab.update_frame(frame)
+                elif current_widget is self.prior_calibration_tab:
+                    self.prior_calibration_tab.update_frame(frame)
+            except Exception as exc:
+                self._on_camera_error(f"相机画面刷新失败：{type(exc).__name__}: {exc}")
+
+    @Slot(str)
+    def _on_camera_error(self, message: str) -> None:
+        """将相机错误限制在当前相机相关页，避免污染主窗口连接状态。"""
+
+        logger.error("GUI camera error: {}", message)
+        current_widget = self.tab_widget.currentWidget()
+        if current_widget is self.camera_tab:
+            self.camera_tab.show_camera_error(message)
+        elif current_widget is self.prior_calibration_tab:
+            self.prior_calibration_tab.show_camera_error(message)
+        else:
+            logger.warning("Camera error received while another tab is active: {}", message)
 
     @Slot(str)
     def _show_status_message(self, message: str) -> None:
+        logger.error("GUI error: {}", message)
         self.connection_label.setText(message)
         self.statusBar().showMessage(message)
 
     @Slot()
     def _update_deployment_host(self) -> None:
         host = self.host_edit.text().strip()
-        try:
-            ipaddress.ip_address(host)
-        except ValueError:
-            return
-        self.deployment_tab.set_service_host(host)
+        if host:
+            self.deployment_tab.set_service_host(host)
 
     # endregion
-
-
-def _ping_host(host: str, timeout_ms: int = 1200) -> bool:
-    """跨 Windows/Linux 探测单个 IP 是否可达。"""
-
-    if platform.system() == "Windows":
-        command = ["ping", "-n", "1", "-w", str(timeout_ms), host]
-    else:
-        timeout_s = max(1, int(round(timeout_ms / 1000.0)))
-        command = ["ping", "-c", "1", "-W", str(timeout_s), host]
-    completed = subprocess.run(
-        command,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        check=False,
-        timeout=max(2.0, timeout_ms / 1000.0 + 1.0),
-    )
-    return completed.returncode == 0
-
-
-def _parse_target(target: str) -> tuple[str, int]:
-    """解析 ``host:port`` 连接目标。"""
-
-    parsed = urlsplit(f"tcp://{target}")
-    if parsed.hostname is None or parsed.port is None:
-        raise RuntimeError(f"无效连接目标：{target}")
-    return parsed.hostname, parsed.port
-
-
-def _first_invalid_ip(items: tuple[tuple[str, str], ...]) -> str | None:
-    for label, value in items:
-        try:
-            ipaddress.ip_address(value)
-        except ValueError:
-            return label
-    return None

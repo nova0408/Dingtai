@@ -1,6 +1,6 @@
 # CameraPipeline 版本日志
 
-当前版本：`1.8.1`
+当前版本：`1.10.0`
 
 ## 版本号规则
 
@@ -11,6 +11,35 @@
 - `c`：缺陷修复和不改变功能边界的优化。
 
 每次更新 API 或功能时，必须同步更新当前版本号，并在本文件顶部追加带日期的版本记录。同一批改动只升级一次，按影响最大的改动选择版本位。
+
+## 1.10.0 - 2026-07-31
+
+### 新增
+
+- 增加 `GET /api/v1/cameras` 相机清单接口，仅返回已配置、已连接且已有最新帧的相机。
+- GUI 改为消费 HTTP 相机清单，不再遍历固定相机枚举，也不再为未连接相机发起状态请求。
+
+## 1.9.1 - 2026-07-31
+
+### 变更
+
+- 统一对外 HTTP URL 使用小写资源名和短横线命名：检测路径改为 `/api/v1/detections/ball`
+  与 `/api/v1/detections/charuco`，相机路径参数改为 `{camera}`。
+- OpenAPI `operationId`、AsyncAPI channel 和 operation 标识统一改为 `snake_case`；内部
+  ZMQ `CPW1`、`PROTOCOL_VERSION=10` 和 JSON body 字段保持不变。
+- 增加 `service/http_client.py`，将 HTTP/JSON 和 `CPWS1` WebSocket 解析封装为可复用的
+  `CameraPipelineHttpClient`，GUI 和其它项目不再需要直接依赖内部 ZMQ client。
+
+## 1.9.0 - 2026-07-31
+
+### 新增
+
+- 增加对外 HTTP/JSON 控制适配层，提供健康检查、相机状态、内参、稳定帧、三球检测和
+  ChArUco 检测接口；内部 ZMQ RPC 和算法编排保持不变。
+- 增加标准库实现的 WebSocket 最新帧订阅层，使用 `CPWS1` 二进制帧协议提供 color、depth
+  和 rgbd 三种流；每个连接只发送最新帧，不建立无界积压队列。
+- 增加 `API Reference.md`、`openapi.yaml` 和 `asyncapi.yaml`，明确 HTTP、WebSocket、
+  JSON 字段、数组编码、单位、坐标系、错误和版本边界。
 
 ## 1.8.1 - 2026-07-30
 

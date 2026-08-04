@@ -123,15 +123,15 @@ class WujiCameraIntrinsicsInfo:
 
 
 @dataclass(frozen=True, slots=True)
-class WujiCameraEnableState:
-    """无际 qmlinker 相机使能状态结果。
+class WujiCameraConnectionState:
+    """无际 CameraPipeline 相机连接状态结果。
 
     职责边界：
-    - 只表达一次相机使能状态读取或设置回写的结果。
-    - 不负责实际 RPC 调用、GUI 渲染或错误弹窗。
+    - 只表达一次相机在线连接状态读取结果。
+    - 不负责实际 HTTP 请求、GUI 渲染或错误弹窗。
 
     设计思想：
-    - 将“当前使能值”和“接口是否可用”拆开表达，避免把 `UNIMPLEMENTED` 误显示成已禁用。
+    - 使用 `connected` 明确对应 CameraPipeline status 的 `online` 字段。
     - 保留 message 文本，便于 GUI 和测试脚本给出可读诊断。
 
     生命周期：
@@ -144,14 +144,11 @@ class WujiCameraEnableState:
     camera_name: WujiCameraName
     "相机逻辑名称。"
 
-    enabled: bool
-    "当前使能值；当接口不可用时仅作占位值使用。"
-
-    api_available: bool
-    "相机使能接口是否由当前 qmlinker 服务实现。"
+    connected: bool
+    "相机服务是否报告在线连接，直接对应 CameraPipeline status 的 `online` 字段。"
 
     message: str = ""
-    "附加诊断信息，例如未实现原因或回写摘要。"
+    "附加连接诊断信息。"
 
 
 @dataclass(frozen=True, slots=True)

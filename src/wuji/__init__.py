@@ -1,8 +1,8 @@
-from .agv_client import WujiAgvClient
+from .agv_client import WujiAgvClient, WujiAgvNavigationMap, WujiAgvNavigationTarget
 from .camera_protocol import (
     DEFAULT_WUJI_CAMERA,
     SUPPORTED_WUJI_CAMERAS,
-    WujiCameraEnableState,
+    WujiCameraConnectionState,
     WujiCameraFrame,
     WujiCameraIntrinsicsInfo,
     WujiCameraName,
@@ -43,7 +43,9 @@ __all__ = [
     "SUPPORTED_WUJI_ZMQ_CAMERAS",
     "SUPPORTED_WUJI_ZMQ_CAMERAS_LOCAL",
     "WujiAgvClient",
-    "WujiCameraEnableState",
+    "WujiAgvNavigationMap",
+    "WujiAgvNavigationTarget",
+    "WujiCameraConnectionState",
     "WujiCameraFrame",
     "WujiCameraIntrinsicsInfo",
     "WujiCameraName",

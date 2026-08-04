@@ -31,11 +31,18 @@ description: 安全维护、迁移、部署、版本管理和评审 Dingtai 根�
 6. 业务行为以 `test/wuji/record_replay_cli.py` 的最新人工验证语义为基准；迁移实现与 CLI 不一致时必须显式列出差异，禁止声称完全等价。
 7. 服务数据目录固定，不提供路径参数或环境变量覆盖：
    - `record_replay/prior_data/ball_pose_prior.json` 与 `charuco_board_prior.json` 保存 `test/wuji/prior_record.py` 的人工采集结果。
+   - `hand_eye_result.txt`、`charuco_offset_history.csv`、`left_head_base_camera.npy` 和
+     `right_head_base_camera.npy` 是 `/start` 前全量检查的部署先验。
    - `record_replay/records/left/` 保存左臂预录 CSV。
    - `record_replay/records/right/` 保存右臂预录 CSV。
-8. 先验 JSON 与预录 CSV 属于部署源文件，必须和 Python 代码一起参与本机与 Orin 文件清单及 SHA-256 校验。
-9. 三球与 Board 检测只调用 Orin 本机部署的 `CameraPipelineClient` 业务方法；`record_replay/` 禁止导入、配置或描述底层 ZMQ。
-10. 左右臂 IP 和现场设备地址由 Orin 服务入口固定，不允许本机测试或 API 覆盖。
+8. 服务启动只建立 HTTP 监听，不加载或校验先验；人工 `POST /start` 创建回放业务前必须
+   全量检查上述先验，并在错误响应中逐项报告缺失或无效文件，不得因为缺少先验阻止 HTTP 服务启动。
+9. 仅允许通过 `POST /prior/ball-pose` 和 `POST /prior/charuco` 替换两个 JSON 先验；请求内容
+   必须先校验，成功后原子替换，旧文件备份到服务端 `record_replay/.archive/prior_data/`。
+   `.archive` 是服务端运行备份，必须从部署归档和清单中排除。
+10. 先验 JSON 与预录 CSV 属于部署源文件，必须和 Python 代码一起参与本机与 Orin 文件清单及 SHA-256 校验。
+11. 三球与 Board 检测只调用 Orin 本机部署的 `CameraPipelineClient` 业务方法；`record_replay/` 禁止导入、配置或描述底层 ZMQ。
+12. 左右臂 IP 和现场设备地址由 Orin 服务入口固定，不允许本机测试或 API 覆盖。
 
 ## CameraPipeline 依赖部署
 
@@ -130,7 +137,8 @@ Windows 与 Linux 输出路径不同，比较前只保留相对于 `record_repla
 1. 先检查 `record_replay/README.md`、API 协议、业务入口和对应人工测试入口。
 2. 修改前为已有文件生成 `.archive` 快照。
 3. 做最小范围修改，不添加旧 `src.business.record_replay` 兼容层。
-4. 更新 README，明确本机/Orin 连接差异、API 行为和硬件风险。
+4. 更新 README、`API Reference.md` 和 `openapi.yaml`，明确本机/Orin 连接差异、API 行为、
+   先验全量检查、JSON 替换及 `.archive` 备份语义和硬件风险。
 5. 按改动影响升级 `record_replay/CHANGELOG.md` 的版本号并追加版本记录。
 6. 只运行 ruff、pyright、编码扫描、compile-only 验证。
 7. 每次涉及测试脚本时，在报告完成前显式检查：

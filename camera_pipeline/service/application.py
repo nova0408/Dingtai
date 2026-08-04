@@ -16,6 +16,7 @@ from .protocol import (
     CameraColorFrameSubscribeResponse,
     CameraDepthFrameSubscribeResponse,
     CameraFrameSubscribeResponse,
+    CameraInventoryResponse,
     CameraIntrinsicsResponse,
     CameraPipelineServiceRequest,
     CameraPipelineServiceResponse,
@@ -111,6 +112,29 @@ class CameraPipelineApplication:
     # endregion
 
     # region 相机查询与稳定帧
+
+    def get_camera_inventory(self) -> CameraInventoryResponse:
+        """返回当前已配置、已连接且已有最新帧的相机清单。"""
+
+        cameras: list[CameraStatusResponse] = []
+        for camera_name in self._pipeline_context.get_connected_camera_names():
+            frame = self._pipeline_context.get_latest_frame(camera_name)
+            if frame is None:
+                continue
+            cameras.append(
+                CameraStatusResponse(
+                    service_version=SERVICE_VERSION,
+                    camera_name=frame.camera_name,
+                    camera_id=self._pipeline_context.get_camera_id(frame.camera_name),
+                    camera_model="unknown",
+                    width=frame.color_bgr.shape[1],
+                    height=frame.color_bgr.shape[0],
+                    color_enabled=True,
+                    depth_enabled=True,
+                    online=True,
+                )
+            )
+        return CameraInventoryResponse(cameras=tuple(cameras))
 
     def _handle_camera_summary(
         self, request: CameraPipelineServiceRequest

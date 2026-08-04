@@ -63,13 +63,11 @@ class CameraFramePublisher:
             self._color_socket = self._create_socket(self._color_bind_addr)
             self._depth_socket = self._create_socket(self._depth_bind_addr)
         except Exception:
-            logger.exception("camera frame publisher socket initialization failed")
+            logger.error("camera frame publisher socket initialization failed")
             self.close()
             raise
         self._stop_event.clear()
-        self._thread = threading.Thread(
-            target=self._publish_loop, name="camera-frame-publisher", daemon=True
-        )
+        self._thread = threading.Thread(target=self._publish_loop, name="camera-frame-publisher", daemon=True)
         self._thread.start()
         logger.info(
             "camera frame publisher started frame_addr={} color_addr={} depth_addr={}",
@@ -122,22 +120,13 @@ class CameraFramePublisher:
                     continue
                 if self._has_rgbd_subscriber(topic):
                     frame = self._pipeline_context.get_latest_frame(camera_name)
-                    if (
-                        frame is not None
-                        and frame.frame_id != last_rgbd_frame_ids.get(camera_name)
-                    ):
+                    if frame is not None and frame.frame_id != last_rgbd_frame_ids.get(camera_name):
                         last_rgbd_frame_ids[camera_name] = frame.frame_id
                         self._publish_rgbd_frame(frame, topic)
                         published = True
                 if self._color_subscriptions.get(topic, 0) > 0:
-                    color_frame = self._pipeline_context.get_latest_color_frame(
-                        camera_name
-                    )
-                    if (
-                        color_frame is not None
-                        and color_frame.frame_id
-                        != last_color_frame_ids.get(camera_name)
-                    ):
+                    color_frame = self._pipeline_context.get_latest_color_frame(camera_name)
+                    if color_frame is not None and color_frame.frame_id != last_color_frame_ids.get(camera_name):
                         last_color_frame_ids[camera_name] = color_frame.frame_id
                         self._publish_color_frame(color_frame, topic)
                         published = True
@@ -149,10 +138,7 @@ class CameraFramePublisher:
     def _publish_rgbd_frame(self, frame: RgbdFrameProtocol, topic: bytes) -> None:
         """按订阅类型发布完整 RGBD 或独立深度数据。"""
 
-        if (
-            self._frame_socket is None
-            or self._depth_socket is None
-        ):
+        if self._frame_socket is None or self._depth_socket is None:
             raise RuntimeError("camera frame publisher sockets are not ready")
         packets: list[
             tuple[
@@ -207,11 +193,7 @@ class CameraFramePublisher:
     def _drain_subscription_events(self) -> None:
         """消费 XPUB 订阅事件并更新每个相机 topic 的订阅者数量。"""
 
-        if (
-            self._frame_socket is None
-            or self._color_socket is None
-            or self._depth_socket is None
-        ):
+        if self._frame_socket is None or self._color_socket is None or self._depth_socket is None:
             return
         socket_states = (
             (self._frame_socket, self._frame_subscriptions),
@@ -239,11 +221,7 @@ class CameraFramePublisher:
     def _has_any_subscriber(self) -> bool:
         """返回任一帧类型是否存在活跃订阅者。"""
 
-        return bool(
-            self._frame_subscriptions
-            or self._color_subscriptions
-            or self._depth_subscriptions
-        )
+        return bool(self._frame_subscriptions or self._color_subscriptions or self._depth_subscriptions)
 
     def _has_topic_subscriber(self, topic: bytes) -> bool:
         """返回指定相机 topic 是否存在任一帧类型订阅者。"""
@@ -257,10 +235,7 @@ class CameraFramePublisher:
     def _has_rgbd_subscriber(self, topic: bytes) -> bool:
         """返回该相机是否需要读取 RGBD 缓存。"""
 
-        return (
-            self._frame_subscriptions.get(topic, 0) > 0
-            or self._depth_subscriptions.get(topic, 0) > 0
-        )
+        return self._frame_subscriptions.get(topic, 0) > 0 or self._depth_subscriptions.get(topic, 0) > 0
 
     @staticmethod
     def _build_color_packet(frame: ColorFrameProtocol) -> CameraColorFramePacket:

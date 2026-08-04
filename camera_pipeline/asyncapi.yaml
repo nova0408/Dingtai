@@ -1,0 +1,92 @@
+asyncapi: 3.0.0
+info:
+  title: CameraPipeline WebSocket API
+  version: 1.10.0
+  description: >-
+    CameraPipeline 对外最新帧 WebSocket 订阅协议。HTTP 控制接口见 openapi.yaml。
+servers:
+  orin:
+    host: '{host}:6401'
+    protocol: ws
+    variables:
+      host:
+        default: 127.0.0.1
+channels:
+  camera_color:
+    address: /api/v1/ws/cameras/{camera}/color
+    description: 彩色 BGR 最新帧
+    parameters:
+      camera:
+        $ref: '#/components/parameters/camera'
+    messages:
+      color_frame:
+        $ref: '#/components/messages/color_frame'
+  camera_depth:
+    address: /api/v1/ws/cameras/{camera}/depth
+    description: 深度最新帧
+    parameters:
+      camera:
+        $ref: '#/components/parameters/camera'
+    messages:
+      depth_frame:
+        $ref: '#/components/messages/depth_frame'
+  camera_rgbd:
+    address: /api/v1/ws/cameras/{camera}/rgbd
+    description: RGBD 最新帧
+    parameters:
+      camera:
+        $ref: '#/components/parameters/camera'
+    messages:
+      rgbd_frame:
+        $ref: '#/components/messages/rgbd_frame'
+operations:
+  receive_color:
+    action: receive
+    channel:
+      $ref: '#/channels/camera_color'
+    summary: 接收彩色帧
+  receive_depth:
+    action: receive
+    channel:
+      $ref: '#/channels/camera_depth'
+    summary: 接收深度帧
+  receive_rgbd:
+    action: receive
+    channel:
+      $ref: '#/channels/camera_rgbd'
+    summary: 接收 RGBD 帧
+components:
+  parameters:
+    camera:
+      description: 逻辑相机名称
+      enum: [head_camera, chest_camera, left_hand_camera, right_hand_camera]
+  messages:
+    color_frame:
+      name: color_frame
+      title: CPWS1 color_frame
+      contentType: application/octet-stream
+      payload:
+        $ref: '#/components/schemas/Cpws1BinaryMessage'
+    depth_frame:
+      name: depth_frame
+      title: CPWS1 depth_frame
+      contentType: application/octet-stream
+      payload:
+        $ref: '#/components/schemas/Cpws1BinaryMessage'
+    rgbd_frame:
+      name: rgbd_frame
+      title: CPWS1 rgbd_frame
+      contentType: application/octet-stream
+      payload:
+        $ref: '#/components/schemas/Cpws1BinaryMessage'
+  schemas:
+    Cpws1BinaryMessage:
+      type: string
+      format: binary
+      description: >-
+        WebSocket binary message。前 5 字节为 ASCII CPWS1，随后 4 字节为大端 metadata
+        长度，再跟 UTF-8 JSON metadata 和 raw array area。数组 descriptor 使用 dtype、
+        shape、offset、nbytes；offset 相对于 metadata 后的 raw array area。
+    CameraName:
+      type: string
+      enum: [head_camera, chest_camera, left_hand_camera, right_hand_camera]

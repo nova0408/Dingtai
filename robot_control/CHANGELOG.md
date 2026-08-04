@@ -1,0 +1,73 @@
+# RobotControl 版本日志
+
+当前版本：`0.6.0`
+
+## 版本号规则
+
+版本号使用 `a.b.c`：
+
+- `a`：重大架构或部署边界变化。
+- `b`：HTTP API、设备能力或控制语义变化。
+- `c`：不改变控制边界的缺陷修复和文档改进。
+
+## 0.6.0 - 2026-08-03
+
+### 新增
+
+- 新增只读 `GET /api/v1/qmlinker/agv/targets`，返回 Woosh 当前地图元数据和可用导航点。
+- 目标点返回名称、底盘点位 ID、米制坐标和弧度制航向；查询不发送任何运动控制请求。
+- qmlinker AGV 客户端新增地图结构读取接口，并保留目标名称列表接口供现有 GUI 使用。
+
+## 0.5.0 - 2026-08-03
+
+### 变更
+
+- `qmlinker_waist` 改为可选状态能力，支持通过 `--no-qmlinker-waist` 适配不含腰部的后续机型。
+- 不支持腰部时保留稳定设备记录并返回 `data.available=false`，不会创建腰部客户端。
+- 同步更新 RobotControl 的配置说明、API Reference 和 OpenAPI 契约。
+
+## 0.4.0 - 2026-08-03
+
+### 新增
+
+- 新增 AR5 急停恢复、拖动开关和单轴 Jog 控制接口。
+- 新增 qmlinker 夹爪使能/校准、右手使能、AGV 使能、实时平移和软件停止接口。
+- 状态新增 `qmlinker_waist` 腰部 Pitch 只读设备，并为 `qmlinker_right_hand` 增加 `enabled` 字段。
+
+### 约束
+
+- 腰部不提供使能或角度控制接口；腰部自由度按设计取消，仅保留只读状态。
+- AGV 实时平移必须由现场人员显式调用 AGV stop；软件停止不等同于硬件急停。
+
+## 0.1.0 - 2026-07-31
+
+### 新增
+
+- 新增 qmlinker 与 AR5 统一控制服务目录。
+- 新增健康检查、设备只读状态和设备状态别名接口。
+- 新增显式 qmlinker/AR5 控制路由；控制接口只保留给现场人员手动发起。
+- 新增延迟硬件客户端创建和 AR5 只读连接模式，避免 GET 状态读取隐式写入 tool/wobj。
+
+## 0.2.0 - 2026-07-31
+
+### 变更
+
+- AR5 控制客户端默认不再写入默认 tool/wobj。
+- RobotControl 的 AR5 运动请求不再自动配置 tool/wobj；RecordReplay 保持由自身回放流程显式配置。
+- `sync_and_restart_services.ps1 -RobotControlOnly` 可独立同步依赖源码、安装并重启 RobotControl，启动检查只调用 `/api/v1/health`。
+
+## 0.3.0 - 2026-07-31
+
+### 新增
+
+- 新增只读 SSE 状态订阅接口 `GET /api/v1/status/stream`，按固定间隔推送全部 qmlinker 与 AR5 设备快照。
+- RobotControl 客户端新增 `subscribe_status()`，支持直连或统一 Gateway 前缀访问。
+- 状态订阅只读取状态，不发送任何控制请求；控制 POST 仍只能由现场人员手动发起。
+
+## 0.3.1 - 2026-08-03
+
+### 文档
+
+- 补齐 `API Reference.md`，覆盖只读接口、SSE 订阅、状态字段、单位和控制请求格式。
+- 完善 `openapi.yaml` 的状态响应与控制请求 schema，并将 README、API Reference、OpenAPI、CHANGELOG
+  设为每次公开契约变更必须同步更新的文档集合。

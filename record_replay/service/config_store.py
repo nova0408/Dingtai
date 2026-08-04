@@ -15,7 +15,6 @@ class RuntimeParameters:
 
     move_abs_j_end_linear_speed_mm_s: float = 1000.0
     move_abs_j_zone_mm: float = 10.0
-    offset_trigger_speed_mm_s: float = 700.0
     agv_navigation_timeout_s: float = 600.0
     agv_navigation_poll_interval_s: float = 1.0
     non_motion_retry_count: int = 3
@@ -28,8 +27,6 @@ class RuntimeParameters:
             raise ValueError("move_abs_j_end_linear_speed_mm_s 必须在 5 至 4000 之间")
         if self.move_abs_j_zone_mm < 0.0:
             raise ValueError("move_abs_j_zone_mm 不能小于 0")
-        if not 5.0 <= self.offset_trigger_speed_mm_s <= 4000.0:
-            raise ValueError("offset_trigger_speed_mm_s 必须在 5 至 4000 之间")
         if self.agv_navigation_timeout_s <= 0.0 or self.agv_navigation_poll_interval_s <= 0.0:
             raise ValueError("AGV 超时和轮询周期必须大于 0")
         if self.non_motion_retry_count <= 0 or self.non_motion_retry_delay_s < 0.0:
@@ -46,10 +43,7 @@ class RuntimeParameters:
                 move_abs_j_end_linear_speed_mm_s=self.move_abs_j_end_linear_speed_mm_s,
                 move_abs_j_zone_mm=self.move_abs_j_zone_mm,
             ),
-            offset=replace(
-                ReplayOffsetSettings(),
-                trigger_move_abs_j_end_linear_speed_mm_s=self.offset_trigger_speed_mm_s,
-            ),
+            offset=ReplayOffsetSettings(),
             agv_navigation_timeout_s=self.agv_navigation_timeout_s,
             agv_navigation_poll_interval_s=self.agv_navigation_poll_interval_s,
             non_motion_retry_count=self.non_motion_retry_count,

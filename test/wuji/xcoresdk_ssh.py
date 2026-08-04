@@ -37,7 +37,7 @@ def main(robot_ip: str = DEFAULT_ROBOT_IP) -> int:
         )
         return 0
     except Exception:
-        logger.exception("机器人连接测试失败，robot_ip={}", robot_ip)
+        logger.error("机器人连接测试失败，robot_ip={}", robot_ip)
         return 1
 
 

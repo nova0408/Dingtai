@@ -184,7 +184,7 @@ class LocalCameraRuntime:
                     self._config.reconnect_initial_interval_s,
                     self._config.reconnect_max_interval_s,
                 )
-                logger.exception(
+                logger.error(
                     "usb camera session failed; reconnect scheduled camera_name={} camera_id={} serial_number={} retry_s={:.3f}",
                     self._config.camera_name,
                     self._config.camera_id,

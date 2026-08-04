@@ -6,7 +6,7 @@ from PySide6.QtWidgets import QGroupBox, QHBoxLayout, QLabel, QVBoxLayout, QWidg
 from gui.test.common import ActivatableTab, AxisControlConfig, AxisControlRow, BackgroundCall, HoldRepeatController
 from gui.util_components.casia_indicator_light import CasiaIndicatorLight
 from src.arm.wuji_arm_protocol import WUJI_BODY_AXIS_LIMITS
-from src.wuji.body_client import WujiBodyClient
+from gui.test.robot_control_clients import RobotControlBodyClient
 
 
 class _BodyAxisPanel(QGroupBox):
@@ -56,20 +56,18 @@ class _BodyAxisPanel(QGroupBox):
 class BodyTabWidget(QWidget, ActivatableTab):
     LIFT_MAX_HEIGHT_MM = WUJI_BODY_AXIS_LIMITS["body_z"].maximum
     HOLD_STEP_MM = 10.0
-    HOLD_STEP_DEG = 2.0
 
     # region 初始化
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self._client: WujiBodyClient | None = None
+        self._client: RobotControlBodyClient | None = None
         self._active = False
         self._refresh_timer = QTimer(self)
         self._refresh_call = BackgroundCall(self)
 
         self.info_label: QLabel
         self.lift_panel: _BodyAxisPanel
-        self.waist_panel: _BodyAxisPanel
 
         self._setup_timer()
         self._setup_ui()
@@ -84,12 +82,10 @@ class BodyTabWidget(QWidget, ActivatableTab):
     def _setup_ui(self) -> None:
         self.info_label = QLabel("body 未连接", self)
         self.lift_panel = self._build_lift_panel()
-        self.waist_panel = self._build_waist_panel()
 
         layout = QVBoxLayout(self)
         layout.addWidget(self.info_label)
         layout.addWidget(self.lift_panel)
-        layout.addWidget(self.waist_panel)
         layout.addStretch(1)
 
     def _build_lift_panel(self) -> _BodyAxisPanel:
@@ -103,24 +99,10 @@ class BodyTabWidget(QWidget, ActivatableTab):
             self,
         )
 
-    def _build_waist_panel(self) -> _BodyAxisPanel:
-        limit = WUJI_BODY_AXIS_LIMITS["body_ry"]
-        return _BodyAxisPanel(
-            "Waist",
-            "waist",
-            limit.minimum,
-            limit.maximum,
-            self.HOLD_STEP_DEG,
-            self,
-        )
-
     def _connect_signals(self) -> None:
         self.lift_panel.enable_indicator.clicked.connect(self._on_lift_enable_clicked)
-        self.waist_panel.enable_indicator.clicked.connect(self._on_waist_enable_clicked)
         self.lift_panel.row.setRequested.connect(self._on_axis_target_requested)
         self.lift_panel.row.nudgeRequested.connect(self._on_axis_target_requested)
-        self.waist_panel.row.setRequested.connect(self._on_axis_target_requested)
-        self.waist_panel.row.nudgeRequested.connect(self._on_axis_target_requested)
 
     def _connect_background_signals(self) -> None:
         self._refresh_call.succeeded.connect(self._on_refresh_succeeded)
@@ -130,7 +112,7 @@ class BodyTabWidget(QWidget, ActivatableTab):
 
     # region 生命周期
 
-    def set_client(self, client: WujiBodyClient | None) -> None:
+    def set_client(self, client: RobotControlBodyClient | None) -> None:
         self._client = client
         self.set_connection_ready(client is not None)
         if client is None:
@@ -144,48 +126,29 @@ class BodyTabWidget(QWidget, ActivatableTab):
         if self._client is None:
             self.info_label.setText("body 未连接")
             return
-        self._try_enable_modules()
         self._refresh_timer.start()
         self._request_refresh()
 
     def set_connection_ready(self, ready: bool) -> None:
         enabled = bool(ready)
         self.lift_panel.enable_indicator.setEnabled(enabled)
-        self.waist_panel.enable_indicator.setEnabled(enabled)
         self.lift_panel.row.set_row_enabled(enabled)
-        self.waist_panel.row.set_row_enabled(enabled)
         if not enabled:
             self.lift_panel.row.set_current_value(None)
-            self.waist_panel.row.set_current_value(None)
             self.lift_panel.enable_indicator.set_status(False)
-            self.waist_panel.enable_indicator.set_status(False)
 
     # endregion
 
     # region 使能
 
-    def _try_enable_modules(self) -> None:
-        if self._client is None:
-            return
-        self._refresh_call.start(self._ensure_enable_modules)
-
     @Slot()
     def _on_lift_enable_clicked(self) -> None:
         self._toggle_lift_enable()
-
-    @Slot()
-    def _on_waist_enable_clicked(self) -> None:
-        self._toggle_waist_enable()
 
     def _toggle_lift_enable(self) -> None:
         if self._client is None:
             return
         self._refresh_call.start(self._set_lift_enable_state)
-
-    def _toggle_waist_enable(self) -> None:
-        if self._client is None:
-            return
-        self._refresh_call.start(self._set_waist_enable_state)
 
     # endregion
 
@@ -201,55 +164,34 @@ class BodyTabWidget(QWidget, ActivatableTab):
             return
         self._refresh_call.start(self._read_state)
 
-    def _read_state(self) -> tuple[bool, bool, float, float]:
+    def _read_state(self) -> tuple[bool, float]:
         if self._client is None:
             raise RuntimeError("body 未连接")
         lift_enabled = bool(self._client.lift.get_enable())
-        waist_enabled = bool(self._client.waist.get_enable())
         lift_value_mm = self._read_lift_height_mm()
-        waist_value_deg = self._read_waist_pitch_deg()
-        return lift_enabled, waist_enabled, lift_value_mm, waist_value_deg
+        return lift_enabled, lift_value_mm
 
     @Slot(object)
     def _on_refresh_succeeded(self, payload: object) -> None:
-        if not isinstance(payload, tuple) or len(payload) != 4:
+        if not isinstance(payload, tuple) or len(payload) != 2:
             return
-        lift_enabled, waist_enabled, lift_value_mm, waist_value_deg = payload
-        if not isinstance(lift_enabled, bool) or not isinstance(waist_enabled, bool):
+        lift_enabled, lift_value_mm = payload
+        if not isinstance(lift_enabled, bool):
             return
         self.lift_panel.enable_indicator.set_status(lift_enabled)
-        self.waist_panel.enable_indicator.set_status(waist_enabled)
         self.lift_panel.row.set_current_value(float(lift_value_mm), suffix="mm")
-        self.waist_panel.row.set_current_value(float(waist_value_deg), suffix="deg")
         self.lift_panel.info_label.setText(f"height={float(lift_value_mm):.1f} mm")
-        self.waist_panel.info_label.setText(f"pitch={float(waist_value_deg):.1f} deg")
-        self.info_label.setText(f"body lift={lift_enabled} waist={waist_enabled}")
+        self.info_label.setText(f"body lift={lift_enabled}")
 
     @Slot(str)
     def _on_refresh_failed(self, message: str) -> None:
         self.info_label.setText(f"body 刷新失败: {message}")
 
-    def _ensure_enable_modules(self) -> tuple[bool, bool, float, float]:
-        if self._client is None:
-            raise RuntimeError("body 未连接")
-        if not bool(self._client.lift.get_enable()):
-            self._client.lift.set_enable(True)
-        if not bool(self._client.waist.get_enable()):
-            self._client.waist.set_enable(True)
-        return self._read_state()
-
-    def _set_lift_enable_state(self) -> tuple[bool, bool, float, float]:
+    def _set_lift_enable_state(self) -> tuple[bool, float]:
         if self._client is None:
             raise RuntimeError("body 未连接")
         current_enabled = bool(self._client.lift.get_enable())
         self._client.lift.set_enable(not current_enabled)
-        return self._read_state()
-
-    def _set_waist_enable_state(self) -> tuple[bool, bool, float, float]:
-        if self._client is None:
-            raise RuntimeError("body 未连接")
-        current_enabled = bool(self._client.waist.get_enable())
-        self._client.waist.set_enable(not current_enabled)
         return self._read_state()
 
     def _read_lift_height_mm(self) -> float:
@@ -259,14 +201,6 @@ class BodyTabWidget(QWidget, ActivatableTab):
         if result is None:
             raise RuntimeError("lift height unavailable")
         return float(result[0])
-
-    def _read_waist_pitch_deg(self) -> float:
-        if self._client is None:
-            return 0.0
-        pitch_value = self._client.waist.get_waist_pitch()
-        if pitch_value is None:
-            raise RuntimeError("waist pitch unavailable")
-        return float(pitch_value)
 
     # endregion
 
@@ -280,7 +214,7 @@ class BodyTabWidget(QWidget, ActivatableTab):
             if axis_key == "lift":
                 self._client.lift.set_lift_physical_height(int(round(float(value))))
             else:
-                self._client.waist.set_waist_pitch(float(value))
+                return
             self._request_refresh()
         except Exception as exc:  # noqa: BLE001
             self.info_label.setText(f"{axis_key} 设置失败: {exc}")

@@ -21,19 +21,25 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from src.pointcloud import (
     CoordinateFramePose,
-    estimate_phase_shift,
     PlanePoseConfig,
     PoseWindowStabilizer,
-    prepare_tracking_gray,
     TrayDetection,
     TrayDetectionConfig,
     TrayPointExcluder,
+    estimate_phase_shift,
     estimate_three_plane_pose,
+    prepare_tracking_gray,
     project_points_to_image,
     relative_pose,
     warp_mask,
 )
-from src.rgbd_camera import CameraIntrinsics, Gemini305, SessionOptions, set_point_cloud_filter_format, OrbbecSession
+from src.rgbd_camera import (
+    CameraIntrinsics,
+    Gemini305,
+    OrbbecSession,
+    SessionOptions,
+    set_point_cloud_filter_format,
+)
 from src.utils.datas import Color
 
 # region 默认参数（优先在这里直接改）
@@ -376,7 +382,7 @@ def _worker_loop(
             result = _run_compute_job(job, pose_cfg, tray_snapshot)
             _put_latest_result(result_queue, result)
         except Exception as exc:
-            logger.exception(f"帧 {job.frame_idx} 优化管线计算失败：{exc}")
+            logger.error(f"帧 {job.frame_idx} 优化管线计算失败：{exc}")
         finally:
             busy_event.clear()
             job_queue.task_done()
@@ -401,9 +407,7 @@ def _run_compute_job(
     timings_ms["project_points"] = (time.perf_counter() - step_t0) * 1000.0
 
     step_t0 = time.perf_counter()
-    base_bgr = (
-        _prepare_base_bgr(job.color_bgr, xyz, rgb, uv, valid_proj, job.img_w, job.img_h)
-    )
+    base_bgr = _prepare_base_bgr(job.color_bgr, xyz, rgb, uv, valid_proj, job.img_w, job.img_h)
     timings_ms["prepare_preview"] = (time.perf_counter() - step_t0) * 1000.0
 
     tray_t0 = time.perf_counter()
@@ -656,7 +660,9 @@ def _submit_tray_job(
     if not cfg.enable_tray_exclusion:
         return
     if color_bgr is not None:
-        base_bgr = _prepare_base_bgr(color_bgr, xyz, rgb, np.zeros((0, 2), dtype=np.int32), np.zeros((0,), dtype=bool), img_w, img_h)
+        base_bgr = _prepare_base_bgr(
+            color_bgr, xyz, rgb, np.zeros((0, 2), dtype=np.int32), np.zeros((0,), dtype=bool), img_w, img_h
+        )
     else:
         uv, valid_proj = project_points_to_image(xyz, intrinsics)
         base_bgr = _prepare_base_bgr(color_bgr, xyz, rgb, uv, valid_proj, img_w, img_h)
@@ -692,7 +698,7 @@ def _tray_worker_loop(
             with tray_state_lock:
                 tray_state["latest"] = snapshot
         except Exception as exc:
-            logger.exception(f"帧 {job.frame_idx} 托盘异步检测失败：{exc}")
+            logger.error(f"帧 {job.frame_idx} 托盘异步检测失败：{exc}")
         finally:
             tray_job_queue.task_done()
 
@@ -739,13 +745,7 @@ def _build_excluded_mask_from_snapshot(
             det_with_excluded_points.append(shifted_tray)
             continue
         h, w = mask.shape
-        valid_uv = (
-            valid_proj
-            & (uv[:, 0] >= 0)
-            & (uv[:, 0] < int(w))
-            & (uv[:, 1] >= 0)
-            & (uv[:, 1] < int(h))
-        )
+        valid_uv = valid_proj & (uv[:, 0] >= 0) & (uv[:, 0] < int(w)) & (uv[:, 1] >= 0) & (uv[:, 1] < int(h))
         if not np.any(valid_uv):
             det_with_excluded_points.append(shifted_tray)
             continue

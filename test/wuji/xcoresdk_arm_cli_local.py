@@ -623,8 +623,6 @@ def _format_pose_values(pose: xCoreSDK_python.CartesianPosition | None) -> str:
     )
 
 
-
-
 def _write_drag_records_csv(records: list[dict[str, str]], arm_side: str) -> Path | None:
     if not records:
         return None
@@ -1134,7 +1132,7 @@ def _run_arm_predefined_joint_motion_thread(
                 print(f"{arm_side} 移动到关节值 (deg): {_format_sequence(target_values)}")
                 _play_predefined_joint_waypoint(connected_arm, target_values, speed_mm_s, zone)
     except Exception:
-        logger.exception("{} 机械臂预设轨迹线程异常", connected_arm.arm_side)
+        logger.error("{} 机械臂预设轨迹线程异常", connected_arm.arm_side)
         stop_event.set()
 
 
@@ -1220,8 +1218,6 @@ def _toggle_operate_mode(robot: xCoreSDK_python.xMateErProRobot, ec: dict[str, o
     print(f"切换目标模式：{target_mode}")
     robot.setOperateMode(target_mode, ec)
     _print_sdk_result("setOperateMode(toggle)", ec)
-
-
 
 
 def _main_menu(connected_arms: dict[str, ConnectedArm]) -> None:

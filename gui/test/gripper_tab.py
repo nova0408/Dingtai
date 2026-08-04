@@ -14,8 +14,7 @@ from PySide6.QtWidgets import (
 
 from gui.test.common import ActivatableTab, BackgroundCall, HoldRepeatController
 from gui.util_components.casia_indicator_light import CasiaIndicatorLight
-from qmlinker import GripperInfo
-from src.wuji.dahuan_gripper_client import DahuanGripperClient
+from gui.test.robot_control_clients import GripperInfo, RobotControlGripperClient
 
 
 class GripperTabWidget(QWidget, ActivatableTab):
@@ -25,7 +24,7 @@ class GripperTabWidget(QWidget, ActivatableTab):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self._client: DahuanGripperClient | None = None
+        self._client: RobotControlGripperClient | None = None
         self._active = False
         self._status_timer = QTimer(self)
         self._refresh_call = BackgroundCall(self)
@@ -136,7 +135,7 @@ class GripperTabWidget(QWidget, ActivatableTab):
 
     # region 生命周期
 
-    def set_client(self, client: DahuanGripperClient | None) -> None:
+    def set_client(self, client: RobotControlGripperClient | None) -> None:
         self._client = client
         self.set_connection_ready(client is not None)
         if client is None:
@@ -150,7 +149,6 @@ class GripperTabWidget(QWidget, ActivatableTab):
         if self._client is None:
             self._set_status_unavailable()
             return
-        self._try_enable()
         self._status_timer.start()
         self._request_refresh()
 
@@ -171,11 +169,6 @@ class GripperTabWidget(QWidget, ActivatableTab):
     # endregion
 
     # region 使能
-
-    def _try_enable(self) -> None:
-        if self._client is None:
-            return
-        self._refresh_call.start(self._ensure_enable)
 
     @Slot()
     def _on_enable_clicked(self) -> None:
@@ -265,15 +258,6 @@ class GripperTabWidget(QWidget, ActivatableTab):
         self.enable_label.setText("-")
         self.position_label.setText("-")
         self.state_label.setText("-")
-
-    def _ensure_enable(self) -> GripperInfo:
-        if self._client is None:
-            raise RuntimeError("夹爪未连接")
-        status = self._client.get_status()
-        if not bool(status.enable):
-            self._client.set_enable(True)
-            status = self._client.get_status()
-        return status
 
     def _toggle_enable(self) -> GripperInfo:
         if self._client is None:

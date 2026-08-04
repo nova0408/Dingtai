@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Mapping
-from typing import Protocol
+from typing import Protocol, cast
 
 from loguru import logger
 
@@ -21,6 +21,12 @@ class AgvClient(Protocol):
         """读取 qmlinker AGV 底层状态。"""
 
         ...
+
+
+class _AgvBaseStatusProtocol(Protocol):
+    """qmlinker GetBaseStatus 响应的最小字段。"""
+
+    navi_status: str
 
 
 def wait_until_arrived(client: AgvClient, target: str, timeout_s: float, poll_s: float) -> None:
@@ -67,7 +73,7 @@ def wait_until_arrived(client: AgvClient, target: str, timeout_s: float, poll_s:
 def _read_navigation_status(payload: object) -> str:
     """从 qmlinker AGV 状态中读取导航状态。"""
 
-    if not isinstance(payload, Mapping):
-        logger.warning("AGV 状态返回无效 actual={}", type(payload).__name__)
-        return ""
-    return str(payload.get("navi_status", "")).strip().lower()
+    if isinstance(payload, Mapping):
+        return str(payload.get("navi_status", "")).strip().lower()
+    status = cast(_AgvBaseStatusProtocol, payload)
+    return str(status.navi_status).strip().lower()

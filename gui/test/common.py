@@ -1,13 +1,14 @@
 from __future__ import annotations
 
+import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from math import cos, sin
 from threading import Event, Thread
-import time
 from typing import Any
 
 import numpy as np
+from loguru import logger
 from PySide6.QtCore import QObject, QTimer, Signal
 from PySide6.QtWidgets import QDoubleSpinBox, QHBoxLayout, QLabel, QPushButton, QWidget
 
@@ -91,7 +92,7 @@ class StreamReaderWorker(QObject):
         run_id = self._run_id
         self._thread = Thread(
             target=self._run,
-            args=(run_id,),
+            args=(run_id, self._stop_event),
             name=f"{self.__class__.__name__}-{run_id}",
             daemon=True,
         )
@@ -101,16 +102,20 @@ class StreamReaderWorker(QObject):
     def stop(self) -> None:
         self._stop_event.set()
 
-    def _run(self, run_id: int) -> None:
+    def _run(self, run_id: int, stop_event: Event) -> None:
         try:
             iterator = self._stream_factory()
             for value in iterator:
-                if self._stop_event.is_set() or run_id != self._run_id:
+                if stop_event.is_set() or run_id != self._run_id:
                     break
                 self.valueReceived.emit(value, run_id)
             self.finished.emit(run_id)
+        except GeneratorExit:
+            # 迭代器被停止或销毁时的正常关闭信号，不应作为 GUI 错误上报。
+            logger.debug("后台流任务正常关闭: run_id={}", run_id)
         except Exception as exc:  # noqa: BLE001
-            if not self._stop_event.is_set() and run_id == self._run_id:
+            logger.error("后台流任务失败")
+            if not stop_event.is_set() and run_id == self._run_id:
                 self.errorRaised.emit(str(exc), run_id)
                 self.finished.emit(run_id)
 
@@ -139,6 +144,7 @@ class BackgroundCall(QObject):
         try:
             result = callback()
         except Exception as exc:  # noqa: BLE001
+            logger.error("后台调用失败")
             self.failed.emit(str(exc))
         else:
             if run_id == self._run_id:

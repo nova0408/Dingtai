@@ -13,6 +13,9 @@
 | `wire_codec.py` | 白名单协议对象、JSON 元数据和 NumPy 原始字节块编解码 |
 | `transport.py` | ZMQ REQ/REP 收发与消息类型校验 |
 | `client.py` | 外接开发机和 Orin 本地业务服务共用的客户端实现 |
+| `http_client.py` | GUI 和其它项目使用的 HTTP/WebSocket 外部 client |
+| `http_api.py` | 对外 HTTP/JSON 路由与统一响应信封 |
+| `websocket_server.py` | 对外 CPWS1 最新帧 WebSocket 订阅 |
 | `frame_publisher.py` | 单线程发布 RGBD、彩色、深度最新帧 |
 | `application.py` | 相机请求和 ball 业务调用编排 |
 | `server.py` | 通用 REP 请求循环和统一异常边界 |
@@ -54,6 +57,26 @@ client = CameraPipelineClient()  # 默认 tcp://127.0.0.1:6200
 ```python
 client = CameraPipelineClient(service_addr="tcp://<orin-ip>:6200")
 ```
+
+GUI 或其它项目使用外部协议时，改用 `CameraPipelineHttpClient`：
+
+```python
+from camera_pipeline.client import CameraName
+from camera_pipeline.service.http_client import CameraPipelineHttpClient
+
+client = CameraPipelineHttpClient(
+    base_url="http://<orin-ip>:6400",
+    websocket_url="ws://<orin-ip>:6401",
+)
+inventory = client.get_camera_inventory()
+status = client.get_camera_status(CameraName.LEFT_ARM)
+frames = client.subscribe_camera_color_frames(CameraName.LEFT_ARM)
+```
+
+`get_camera_inventory()` 只返回已配置、已连接且已有最新帧的相机；其它相机不会出现在清单中。
+外部 client 不依赖内部 ZMQ 地址；HTTP `6400` 负责控制、查询和检测，WebSocket `6401`
+负责 `CPWS1` 二进制最新帧。字段、数组编码和错误语义以项目根目录的 API Reference、
+OpenAPI 和 AsyncAPI 文档为准。
 
 启动命令：
 
@@ -103,6 +126,8 @@ systemd 模板位于 `camera-pipeline.service`，进程启动、停止上限分�
 - `6201`：完整 RGBD 帧。
 - `6202`：彩色帧。
 - `6203`：深度帧。
+- `6400`：对外 HTTP/JSON 控制与检测接口。
+- `6401`：对外 WebSocket `CPWS1` 最新帧订阅接口。
 
 帧订阅响应返回服务端 bind 地址；客户端会将 `0.0.0.0` 或 `127.0.0.1` 替换为当前服务主机，因此同时支持外接开发机和 Orin loopback。
 
@@ -117,12 +142,13 @@ systemd 模板位于 `camera-pipeline.service`，进程启动、停止上限分�
 发布端口只在首次订阅时绑定。未订阅帧流时不会创建 PUB socket 或发布线程。
 三个 XPUB 端口都使用以 `camera_name + NUL` 编码的 topic 前缀，因此头部、
 胸腔和左臂可复用同一组发布端口，订阅端不会收到其他安装位的帧。
-右臂 topic 和 client API 已保留，但当前端点标记为未连接，请求会明确返回服务错误。
+右臂 topic 和 client API 已保留，但当前端点标记为未连接；HTTP 相机清单不会返回该端点。
 发布器跟踪真实订阅与取消订阅事件，只编码当前存在订阅者的相机和帧类型。
 
 ## 协议与安全边界
 
-请求包含 `protocol_version`，当前版本为 `10`。版本 8 为三球先验增加每球专属
+请求包含 `protocol_version`，当前内部 ZMQ 版本为 `10`。对外 HTTP 使用功能版本 `1.10.0`，
+WebSocket 使用 `CPWS1` 版本 `1`。版本 8 为三球先验增加每球专属
 `hsv_ranges`，并在检测结果中返回 `observed_hsv`。相机相关请求必须显式携带
 `camera_name`；版本 9 在 `CameraStatusResponse` 中增加必填 `service_version`，
 供客户端在连通性阶段核对远端功能版本。客户端与服务端线协议版本不一致时服务端
@@ -159,7 +185,9 @@ Python pickle，不依赖 dataclass 的 Python 版本内存布局。Orin 服务�
 ## API Reference
 
 全部公开 client API、请求/响应字段和错误边界已迁移到
-[CameraPipeline API Reference](../API%20Reference.md)。
+[CameraPipeline API Reference](../API%20Reference.md)。对外 HTTP/JSON 和 WebSocket 的机器
+可读协议分别见 [OpenAPI](../openapi.yaml) 与 [AsyncAPI](../asyncapi.yaml)；内部 ZMQ 仍由
+`CameraPipelineClient` 使用。
 
 ## 测试边界
 

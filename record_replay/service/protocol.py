@@ -13,6 +13,20 @@ from .config_store import RuntimeParameters
 
 
 @dataclass(frozen=True, slots=True)
+class PriorUploadResponse:
+    """先验 JSON 替换结果。"""
+
+    accepted: bool
+    "服务是否已完成先验文件替换。"
+
+    file_name: str
+    "被替换的固定先验文件名。"
+
+    backup_file: str | None
+    "旧文件在服务端 `.archive` 下的相对路径。"
+
+
+@dataclass(frozen=True, slots=True)
 class RecordReplayResponse:
     """HTTP API 返回的服务状态与可选持久化参数。"""
 

@@ -11,7 +11,6 @@ from qmlinker import QMGripper
 
 from .arm_gateway import retry_non_motion_call
 from .contracts import ReplayRow
-from .motion_parsing import parse_joint_values
 from .runtime import ReplayRuntime
 
 RIGHT_HAND_ACTUATOR_COUNT = 11
@@ -27,7 +26,9 @@ def execute_gripper_row(runtime: ReplayRuntime, row: ReplayRow) -> None:
     gripper = runtime.hand_body.gripper
     if gripper is None:
         raise RuntimeError("当前 runtime 未配置左手夹爪客户端")
-    target_value = int(round(float(row.pose_text)))
+    if row.pose_value is None:
+        raise RuntimeError(f"gripper pose 未在启动阶段完成预解析 file={row.csv_name} row={row.row_index}")
+    target_value = int(round(row.pose_value))
     if not retry_non_motion_call(
         f"gripper.set_pos({row.csv_name}:{row.row_index})",
         lambda: gripper.set_pos(target_value),
@@ -50,6 +51,58 @@ def execute_gripper_row(runtime: ReplayRuntime, row: ReplayRow) -> None:
         target_value,
         bool(status_payload.get("calibrated", False)),
     )
+
+
+def prepare_gripper_before_replay(runtime: ReplayRuntime) -> None:
+    """按人工 CLI 语义校准夹爪并确认回放前位置为 0。"""
+
+    gripper = runtime.hand_body.gripper
+    if gripper is None:
+        return
+    settings = runtime.settings.hand
+
+    def read_status() -> Mapping[str, object]:
+        payload = retry_non_motion_call(
+            "gripper.status(pre-replay)",
+            lambda: gripper._send_control(QMGripper.STATUS),
+            runtime.settings.non_motion_retry_count,
+            runtime.settings.non_motion_retry_delay_s,
+        )
+        if not isinstance(payload, Mapping):
+            raise RuntimeError(f"夹爪状态读取失败：{payload!r}")
+        return payload
+
+    status = read_status()
+    calibrated = bool(status.get("calibrated", False))
+    if not calibrated:
+        if not retry_non_motion_call(
+            "gripper.calibrate(pre-replay)",
+            gripper.calibrate,
+            runtime.settings.non_motion_retry_count,
+            runtime.settings.non_motion_retry_delay_s,
+        ):
+            raise RuntimeError("回放前夹爪校准命令下发失败")
+        time.sleep(settings.gripper_calibration_wait_s)
+        if not bool(read_status().get("calibrated", False)):
+            raise RuntimeError("回放前夹爪校准后仍未进入已校准状态")
+
+    def read_position() -> int:
+        value = read_status().get("position", settings.gripper_zero_position)
+        if not isinstance(value, int | float):
+            raise RuntimeError(f"夹爪 position 状态不是数值：{value!r}")
+        return int(value)
+
+    current_position = read_position()
+    while current_position != settings.gripper_zero_position:
+        if not retry_non_motion_call(
+            "gripper.set_pos(pre-replay)",
+            lambda: gripper.set_pos(settings.gripper_zero_position),
+            runtime.settings.non_motion_retry_count,
+            runtime.settings.non_motion_retry_delay_s,
+        ):
+            raise RuntimeError("回放前夹爪运动到零位的命令下发失败")
+        time.sleep(settings.gripper_zero_poll_interval_s)
+        current_position = read_position()
 
 
 def execute_m11_row(runtime: ReplayRuntime, row: ReplayRow) -> None:
@@ -79,9 +132,9 @@ def execute_m11_row(runtime: ReplayRuntime, row: ReplayRow) -> None:
     if right_hand is None:
         raise RuntimeError("当前 runtime 未配置右手 M11 客户端")
     positions = _read_valid_m11_positions(runtime)
-    for actuator_id, target_value in enumerate(
-        parse_joint_values(row.joints_text, expected_len=RIGHT_HAND_ACTUATOR_COUNT)
-    ):
+    if row.joint_values is None or len(row.joint_values) != RIGHT_HAND_ACTUATOR_COUNT:
+        raise RuntimeError(f"M11 joints 未在启动阶段完成预解析 file={row.csv_name} row={row.row_index}")
+    for actuator_id, target_value in enumerate(row.joint_values):
         positions[actuator_id] = target_value
     commands = [_build_m11_command(actuator_id, value) for actuator_id, value in enumerate(positions)]
     if not retry_non_motion_call(
@@ -222,7 +275,9 @@ def execute_lift_row(runtime: ReplayRuntime, row: ReplayRow) -> None:
     本函数同步阻塞当前 CSV 执行流。等待函数成功返回前，不会放行后续机械臂轨迹。
     """
 
-    target_height_mm = int(round(float(row.pose_text)))
+    if row.pose_value is None:
+        raise RuntimeError(f"lift pose 未在启动阶段完成预解析 file={row.csv_name} row={row.row_index}")
+    target_height_mm = int(round(row.pose_value))
     if target_height_mm < 0:
         raise ValueError(f"lift 目标高度非法：{target_height_mm}")
     _ensure_lift_enabled(runtime, f"lift.set_enable({row.csv_name}:{row.row_index})")

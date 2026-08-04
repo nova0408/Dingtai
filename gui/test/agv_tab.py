@@ -14,19 +14,17 @@ from PySide6.QtWidgets import (
 
 from gui.test.common import ActivatableTab, BackgroundCall
 from gui.util_components.casia_indicator_light import CasiaIndicatorLight
-from src.wuji.agv_client import WujiAgvClient
+from gui.test.robot_control_clients import RobotControlAgvClient
 
 
 class AgvTabWidget(QWidget, ActivatableTab):
     """AGV 调试页。"""
 
-    _MOVE_SPEED_MPS = 0.3
-
     # region 初始化
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self._client: WujiAgvClient | None = None
+        self._client: RobotControlAgvClient | None = None
         self._active = False
         self._refresh_in_flight = False
         self._refresh_timer = QTimer(self)
@@ -41,10 +39,6 @@ class AgvTabWidget(QWidget, ActivatableTab):
         self.battery_label: QLabel
         self.target_combo: QComboBox
         self.navigate_button: QPushButton
-        self.forward_button: QPushButton
-        self.backward_button: QPushButton
-        self.left_button: QPushButton
-        self.right_button: QPushButton
 
         self._setup_timer()
         self._setup_ui()
@@ -74,10 +68,6 @@ class AgvTabWidget(QWidget, ActivatableTab):
         self.target_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
         self.target_combo.setPlaceholderText("未读取到目标点")
         self.navigate_button = QPushButton("导航到目标点", self)
-        self.forward_button = QPushButton("前进", self)
-        self.backward_button = QPushButton("后退", self)
-        self.left_button = QPushButton("左移", self)
-        self.right_button = QPushButton("右移", self)
 
         root_layout = QHBoxLayout(self)
         root_layout.addWidget(self._build_status_group(), 1)
@@ -118,22 +108,12 @@ class AgvTabWidget(QWidget, ActivatableTab):
         nav_row.addWidget(self.navigate_button)
         layout.addLayout(nav_row)
 
-        move_grid = QGridLayout()
-        move_grid.addWidget(self.forward_button, 0, 1)
-        move_grid.addWidget(self.left_button, 1, 0)
-        move_grid.addWidget(self.right_button, 1, 2)
-        move_grid.addWidget(self.backward_button, 2, 1)
-        layout.addLayout(move_grid)
         layout.addStretch(1)
         return group
 
     def _connect_signals(self) -> None:
         self.enable_indicator.clicked.connect(self._on_enable_clicked)
         self.navigate_button.clicked.connect(self._on_navigate_clicked)
-        self.forward_button.clicked.connect(lambda: self._move_direction(0))
-        self.backward_button.clicked.connect(lambda: self._move_direction(180))
-        self.left_button.clicked.connect(lambda: self._move_direction(90))
-        self.right_button.clicked.connect(lambda: self._move_direction(270))
 
     def _connect_background_signals(self) -> None:
         self._refresh_call.succeeded.connect(self._on_refresh_succeeded)
@@ -144,7 +124,7 @@ class AgvTabWidget(QWidget, ActivatableTab):
 
     # region 生命周期
 
-    def set_client(self, client: WujiAgvClient | None) -> None:
+    def set_client(self, client: RobotControlAgvClient | None) -> None:
         self._client = client
         self._refresh_in_flight = False
         self._reload_navigation_targets()
@@ -168,10 +148,6 @@ class AgvTabWidget(QWidget, ActivatableTab):
         self.enable_indicator.setEnabled(enabled)
         self.target_combo.setEnabled(enabled)
         self.navigate_button.setEnabled(enabled)
-        self.forward_button.setEnabled(enabled)
-        self.backward_button.setEnabled(enabled)
-        self.left_button.setEnabled(enabled)
-        self.right_button.setEnabled(enabled)
         if not enabled:
             self.enable_indicator.set_status(False)
             self.navi_status_label.setText("-")
@@ -259,15 +235,6 @@ class AgvTabWidget(QWidget, ActivatableTab):
         client = self._client
         self._refresh_call.start(lambda: client.navigate_to(target_name))
         self.info_label.setText(f"AGV 导航请求已发送: {target_name}")
-
-    def _move_direction(self, direction_deg: int) -> None:
-        if self._client is None:
-            return
-        client = self._client
-        self._refresh_call.start(
-            lambda: client.real_time_translate(self._MOVE_SPEED_MPS, direction_deg)
-        )
-        self._request_refresh()
 
     # endregion
 

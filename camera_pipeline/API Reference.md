@@ -1,169 +1,352 @@
 # CameraPipeline API Reference
 
-## 公共入口与通用约定
+文档版本：`1.0.4`（2026-08-03）
+CameraPipeline 功能版本：`1.10.0`
+内部 ZMQ 线协议：`CPW1` / `PROTOCOL_VERSION=10`
+外部 WebSocket 帧协议：`CPWS1` / `protocol_version=1`
 
-用户统一从 `camera_pipeline.client` 导入 `CameraPipelineClient`：
+机器可读文件：
+
+- [OpenAPI 3.1 HTTP API](openapi.yaml)
+- [AsyncAPI 3.0 WebSocket API](asyncapi.yaml)
+
+## 1. 传输边界
+
+| 用途 | 协议 | 默认地址 | 调用方 |
+| --- | --- | --- | --- |
+| 服务内部 RPC | ZMQ REQ/REP + `CPW1` | `tcp://<orin>:6200` | 内部 Python client、RecordReplay |
+| 服务内部帧流 | ZMQ XPUB + `CPW1` | `6201/6202/6203` | 兼容旧内部调用方 |
+| 服务 HTTP 后端 | HTTP/JSON | `http://<orin>:6400` | Gateway、人工测试与诊断 |
+| 服务 WebSocket 后端 | WebSocket + `CPWS1` | `ws://<orin>:6401` | Gateway、人工测试与诊断 |
+
+HTTP/WebSocket 适配层只桥接现有 `CameraPipelineApplication` 和 `PipelineContext`，不复制
+算法，也不改变内部 ZMQ 协议。GUI 不需要实现 `CPW1`。
+
+正式客户端访问必须经过统一 API Gateway：HTTP 使用
+`https://<orin-host>/api/v1/camera/*`，图像 WebSocket 使用
+`wss://<orin-host>/api/v1/camera-ws/*`。客户端首次使用前必须安装并信任 CasiaHand Root CA；
+不得关闭证书校验。`6400`、`6401` 以及内部 ZMQ 端口只用于服务内部
+联调、人工测试和故障诊断；不得作为 GUI 或其它正式客户端的默认访问地址。Gateway 只做
+转发，不合并 CameraPipeline 进程。
+
+URL 统一使用小写和短横线；路径参数使用简短资源名；JSON body 字段继续使用既有
+`snake_case`，避免把 URL 命名规则和数据字段规则混在一起。
+
+## 2. HTTP 通用约定
+
+成功响应统一为：
+
+```json
+{
+  "ok": true,
+  "service_version": "1.10.0",
+  "zmq_protocol_version": 10,
+  "data": {},
+  "error": null
+}
+```
+
+错误响应统一为：
+
+```json
+{
+  "ok": false,
+  "service_version": "1.10.0",
+  "zmq_protocol_version": 10,
+  "data": null,
+  "error": {"code": "invalid_request", "message": "ValueError: ..."}
+}
+```
+
+| HTTP 状态码 | code | 语义 |
+| ---: | --- | --- |
+| `400` | `invalid_request` | JSON、路径、类型、数值或参数非法 |
+| `404` | `not_found` | 路径或相机枚举不支持 |
+| `503` | `service_error` | 相机不可用、内部业务异常或 payload 缺失 |
+| `504` | `timeout` | 等待相机帧或稳定帧超时 |
+
+“未检测到目标”不是 HTTP 错误；算法允许空结果时仍返回 `200`，由 `status` 或
+`detected` 表示。
+
+支持的 `camera_name`：`head_camera`、`chest_camera`、`left_hand_camera`、
+`right_hand_camera`。相机清单接口只返回当前已配置、已连接且已有最新帧的相机；
+未连接或未配置的安装位不会出现在清单中。
+
+## 3. HTTP 接口
+
+### 3.1 健康检查
+
+```http
+GET /api/v1/health
+```
+
+`data`：`{"service_version":"1.10.0","zmq_protocol_version":10}`。该接口只表示
+HTTP 适配层可响应，不保证任意相机已有首帧；请使用相机状态接口判断相机可用性。
+
+### 3.2 相机清单
+
+```http
+GET /api/v1/cameras
+```
+
+`data`：
+
+```json
+{
+  "cameras": [
+    {
+      "service_version": "1.10.0",
+      "camera_name": "left_hand_camera",
+      "camera_id": "LEFT",
+      "camera_model": "unknown",
+      "width": 1280,
+      "height": 720,
+      "color_enabled": true,
+      "depth_enabled": true,
+      "online": true,
+      "error": null
+    }
+  ]
+}
+```
+
+数组只包含已配置、已连接且已有最新帧的相机；没有可用相机时返回空数组，不返回错误。
+
+### 3.3 相机状态
+
+```http
+GET /api/v1/cameras/{camera}/status?timeout_s=10
+```
+
+`timeout_s` 可选，默认 `10.0` 秒，必须为正数。`data` 字段：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `service_version` | string | 远端功能版本 |
+| `camera_name` | string | 实际逻辑相机名 |
+| `camera_id` | string | 上游相机 ID/SN |
+| `camera_model` | string | 当前无法取得时为 `unknown` |
+| `width` / `height` | integer | 彩色帧尺寸，pixel |
+| `color_enabled` / `depth_enabled` | boolean | 彩色/深度流开关状态 |
+| `online` | boolean | 首帧是否可用 |
+| `error` | null/string | 成功时为 `null`；保留的协议字段 |
+
+没有首帧时不会返回伪造的在线状态，而是返回 `503`。
+
+### 3.4 相机内参
+
+```http
+GET /api/v1/cameras/{camera}/intrinsics?timeout_s=10
+```
+
+`data`：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `camera_name` | string | 逻辑相机名 |
+| `fx` / `fy` | number | 焦距，pixel |
+| `cx` / `cy` | number | 主点，pixel |
+| `distortion` | number[8] | OpenCV `(k1,k2,p1,p2,k3,k4,k5,k6)` |
+| `width` / `height` | integer | 彩色图尺寸，pixel |
+| `error` | null/string | 成功时为 `null`；保留的协议字段 |
+
+### 3.5 稳定帧
+
+```http
+POST /api/v1/cameras/{camera}/stable-frame
+Content-Type: application/json
+
+{"timeout_s": 10.0}
+```
+
+body 可以为空对象 `{}`，`timeout_s` 默认 `10.0` 秒。`data`：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `frame_id` | integer | 稳定窗口中点的实际帧号 |
+| `camera_name` | string | 实际相机名 |
+| `timestamp_ms` | number | 采集时间戳，ms |
+| `error` | null/string | 成功时为 `null`；保留的协议字段 |
+
+稳定窗口未形成或帧没有递增时返回 `504` 或 `503`。
+
+### 3.6 三球位姿检测
+
+```http
+POST /api/v1/detections/ball
+Content-Type: application/json
+```
+
+请求：
+
+```json
+{
+  "request_id": 1,
+  "camera_name": "left_hand_camera",
+  "frame_id": -1,
+  "enable_debug": false,
+  "priors": [
+    {
+      "color_hex": "#FFFF00",
+      "diameter_mm": 50.0,
+      "model_center_mm": [0.0, 0.0, 0.0],
+      "hsv_ranges": [[20, 80, 80, 40, 255, 255]]
+    }
+  ]
+}
+```
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `request_id` | integer | 调用方编号，原样返回 |
+| `camera_name` | enum | 逻辑相机名 |
+| `frame_id` | integer | 正数精确取缓存帧；非正数选择稳定帧 |
+| `enable_debug` | boolean | 是否返回 debug 图像，默认 `false` |
+| `priors` | array | 先验顺序决定结果顺序；为空时不检测球 |
+| `priors[].color_hex` | string | 带 `#` 的六位 RGB 颜色身份 |
+| `priors[].diameter_mm` | number | 球物理直径，mm |
+| `priors[].model_center_mm` | number[3] | 参考坐标系 `(x,y,z)`，mm |
+| `priors[].hsv_ranges` | array | 每项六整数 `(hmin,smin,vmin,hmax,smax,vmax)` |
+
+响应 `data`：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `request_id` / `frame_id` | integer | 请求编号 / 实际计算帧号 |
+| `camera_name` | string | 实际相机名 |
+| `timestamp_ms` | number | 实际帧时间戳，ms |
+| `elapsed_ms` | number | 检测耗时，ms |
+| `matched_count` | integer | 有效三维球数量 |
+| `detections` | array | 与 `priors` 同顺序 |
+| `debug_artifacts` | array | debug 开启并生成成功时通常一个元素 |
+
+`detections[]`：`color_hex`、`detected`、`center_px`（`u,v` pixel）、`center_mm`
+（相机坐标 `x,y,z` mm）、`diameter_mm`、`radius_px`、`center_norm`、`radius_norm`、
+`point_count`、`status`（如 `detected`/`depth_weak`/`missing`）和 `observed_hsv`。
+无效坐标字段为空数组。`enable_debug=false` 时 `debug_artifacts` 为空数组。
+
+### 3.7 ChArUco 位姿检测
+
+```http
+POST /api/v1/detections/charuco
+Content-Type: application/json
+```
+
+请求：
+
+```json
+{
+  "camera_name": "head_camera",
+  "dictionary_name": "DICT_APRILTAG_16H5",
+  "squares_x": 4,
+  "squares_y": 4,
+  "square_length_mm": 20.0,
+  "marker_length_mm": 14.0,
+  "min_charuco_corners": 6,
+  "max_frames": 5,
+  "stable_timeout_s": 10.0,
+  "enable_debug": false
+}
+```
+
+当前只支持 `DICT_APRILTAG_16H5`；横纵方格至少为 `2`；方格和 marker 边长必须满足
+`0 < marker_length_mm < square_length_mm`；最少角点至少为 `4`；`max_frames` 和
+`stable_timeout_s` 必须大于 `0`。服务端自行构造 Board、等待纯彩色稳定帧并执行 PnP。
+
+响应 `data`：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `status` | string | `detected` 或 `missing` |
+| `camera_name` | string | 实际相机名 |
+| `t_cam_board_mm` | number[4][4] | `p_camera = T_camera_board @ p_board`，平移 mm |
+| `error_px` | number/null | 平均重投影误差，pixel；请优先判断 `status` |
+| `marker_num` / `charuco_num` | integer | marker / ChArUco 角点数量 |
+| `overlay_bgr` | object | debug 图像；关闭 debug 时为空图像对象 |
+
+JSON 不允许标准外的 `Infinity`。内部无结果的 `inf` 会以 JSON `null` 兼容返回，GUI
+不得用 `error_px` 是否无穷判断成功，必须使用 `status`。
+
+## 4. WebSocket 图像订阅
+
+```text
+ws://<orin>:6401/api/v1/ws/cameras/{camera}/color
+ws://<orin>:6401/api/v1/ws/cameras/{camera}/depth
+ws://<orin>:6401/api/v1/ws/cameras/{camera}/rgbd
+```
+
+服务端只发送 binary message，不发送 Base64。服务重启、断线或无首帧时，客户端应重新
+连接。每个连接只保留最新帧，慢客户端会跳过中间帧。
+
+### 4.1 CPWS1 消息格式
+
+```text
+offset  size  meaning
+0       5     ASCII magic: CPWS1
+5       4     unsigned big-endian metadata_length
+9       N     UTF-8 JSON metadata
+9+N     ...   binary array area
+```
+
+示例 metadata：
+
+```json
+{
+  "protocol": "camera_pipeline.websocket",
+  "protocol_version": 1,
+  "packet_type": "color_frame",
+  "fields": {
+    "frame_id": 123,
+    "camera_name": "head_camera",
+    "timestamp_ms": 1720000000000.0,
+    "fx": 600.0,
+    "fy": 600.0,
+    "cx": 320.0,
+    "cy": 240.0,
+    "distortion": [0, 0, 0, 0, 0, 0, 0, 0],
+    "color_bgr": {"encoding":"raw","dtype":"|u1","shape":[480,640,3],"offset":0,"nbytes":921600}
+  }
+}
+```
+
+`offset`/`nbytes` 相对于 metadata 后的 binary area；数组为 C contiguous。流字段：
+
+| URL 尾段 | packet_type | 数组 |
+| --- | --- | --- |
+| `color` | `color_frame` | `color_bgr`: `uint8`、`(H,W,3)`、BGR |
+| `depth` | `depth_frame` | `depth_mm`: `uint16`、`(H,W)`、mm、0 无效 |
+| `rgbd` | `rgbd_frame` | 上述两个数组 |
+
+所有流都包含 `frame_id`、`camera_name`、`timestamp_ms`、`fx`、`fy`、`cx`、`cy` 和
+`distortion`。
+
+## 5. 内部 ZMQ 兼容接口
+
+RecordReplay 和同一 Python 部署包内的旧调用方继续使用：
 
 ```python
 from camera_pipeline.client import CameraName, CameraPipelineClient
 
-client = CameraPipelineClient(service_addr="tcp://127.0.0.1:6200")
+client = CameraPipelineClient("tcp://127.0.0.1:6200")
 try:
-    intrinsics = client.get_camera_intrinsics(CameraName.HEAD)
+    status = client.get_camera_status(CameraName.HEAD)
 finally:
     client.close()
 ```
 
-当前协议版本为 `9`。RPC 失败统一写入
-`CameraPipelineServiceResponse.error`，client 将其转换为 `RuntimeError`。
-网络超时、服务未启动、协议版本不匹配、相机未连接或目标 payload 缺失都不作为成功结果返回。
+内部 operation 为：`camera_summary`、`camera_intrinsics`、`camera_status`、`stable_frame`、
+`camera_frame_subscribe`、`camera_color_frame_subscribe`、`camera_depth_frame_subscribe`、
+`detect_ball`、`detect_charuco`。`tray_detection` 和 `opening_detection` 当前不属于协议。
 
-支持的逻辑相机名与上游端口为：
+## 6. 文档变更记录
 
-| 安装位 | 枚举 | 协议值 | 上游端口 |
-| --- | --- | --- | ---: |
-| 头部 | `CameraName.HEAD` | `head_camera` | 5560 |
-| 胸腔 | `CameraName.CHEST` | `chest_camera` | 5561 |
-| 左臂 | `CameraName.LEFT_ARM` | `left_hand_camera` | 5562 |
-| 右臂 | `CameraName.RIGHT_ARM` | `right_hand_camera` | 5563 |
+| 文档版本 | 日期 | 内容 |
+| --- | --- | --- |
+| `1.0.4` | 2026-08-03 | 正式 Gateway 入口改为 HTTPS/WSS 443，并要求客户端安装 CasiaHand CA |
+| `1.0.3` | 2026-08-03 | 明确正式客户端必须通过 API Gateway，独立端口仅用于测试和诊断 |
+| `1.0.2` | 2026-07-31 | 增加只返回当前可用相机的 `GET /api/v1/cameras` 清单接口 |
+| `1.0.1` | 2026-07-31 | 统一 URL、OpenAPI operationId 和 AsyncAPI 标识命名 |
+| `1.0.0` | 2026-07-31 | 新增 HTTP/JSON、CPWS1 WebSocket、OpenAPI 和 AsyncAPI 说明 |
 
-## 生命周期 API
-
-### `CameraPipelineClient(service_addr="tcp://127.0.0.1:6200", timeout_ms=30000)`
-
-创建 RPC client。`service_addr` 是统一 REQ/REP 服务地址；`timeout_ms` 同时用于 RPC 发送与接收超时，单位 ms。
-
-### `close() -> None`
-
-关闭 RPC socket。帧订阅返回独立迭代器，调用方结束订阅时也应关闭该迭代器。
-
-## 相机查询 API
-
-| API | 返回类型 | 成功语义 | 失败条件 |
-| --- | --- | --- | --- |
-| `get_camera_summary(camera_name, timeout_s=10.0)` | `CameraSummaryResponse` | 返回指定相机的最新帧摘要 | 首帧未就绪、帧字段非法 |
-| `get_camera_intrinsics(camera_name, timeout_s=10.0)` | `CameraIntrinsicsResponse` | 读取指定相机内参 | 相机未就绪、未连接或内参查询失败 |
-| `get_camera_status(camera_name, timeout_s=10.0)` | `CameraStatusResponse` | 返回指定相机状态 | 首帧不可用、相机流异常 |
-| `get_stable_frame(camera_name, timeout_s=10.0)` | `StableFrameResponse` | 返回指定相机稳定窗口中点帧 | 相机未连接、稳定等待超时、目标帧已淘汰 |
-
-### 相机查询响应字段
-
-- `CameraSummaryResponse`：`frame_id`、`camera_name`、`timestamp_ms`、
-  `color_shape`、`depth_shape`、`fx`、`fy`、`cx`、`cy`。
-- `CameraIntrinsicsResponse`：`camera_name`、`fx`、`fy`、`cx`、`cy`、
-  `distortion`、`width`、`height`。焦距和主点单位为像素。
-- `CameraStatusResponse`：`service_version`、`camera_name`、`camera_id`、`camera_model`、
-  `width`、`height`、`color_enabled`、`depth_enabled`、`online`。
-- `StableFrameResponse`：`frame_id`、`camera_name`、`timestamp_ms`。
-
-## 参数化帧订阅 API
-
-参数化 API 主要供通用工具和测试使用：
-
-| API | 迭代元素 | 发布端口 |
-| --- | --- | ---: |
-| `subscribe_camera_frames(camera_name)` | `CameraFramePacket` | 6201 |
-| `subscribe_camera_color_frames(camera_name)` | `CameraColorFramePacket` | 6202 |
-| `subscribe_camera_depth_frames(camera_name)` | `CameraDepthFramePacket` | 6203 |
-
-这三个方法先通过 RPC 获取发布地址，再按 `camera_name + NUL` topic
-订阅指定相机。合法订阅不存在“空结果”；首帧等待或 socket 超时会抛异常。
-服务端通过 XPUB 跟踪实际订阅与取消订阅事件，只为当前存在订阅者的
-相机和帧类型编码数据；所有订阅结束后不会继续占用 CPU 编码无人接收的帧。
-
-### 帧数据包字段
-
-- `CameraFramePacket`：`frame_id`、`camera_name`、`timestamp_ms`、
-  `color_bgr`、`depth_mm`、`fx`、`fy`、`cx`、`cy`、`distortion`。
-- `CameraColorFramePacket`：`frame_id`、`camera_name`、`timestamp_ms`、
-  `color_bgr`、`fx`、`fy`、`cx`、`cy`、`distortion`。
-- `CameraDepthFramePacket`：`frame_id`、`camera_name`、`timestamp_ms`、
-  `depth_mm`、`fx`、`fy`、`cx`、`cy`、`distortion`。
-
-`color_bgr` 形状为 `(H, W, 3)`、dtype 为 `uint8`、通道顺序 BGR；
-`depth_mm` 形状为 `(H, W)`、dtype 为 `uint16`、单位 mm，零值表示无效深度。
-`distortion` 是彩色相机 OpenCV 8 参数畸变系数元组，固定按
-`(k1, k2, p1, p2, k3, k4, k5, k6)` 排列。上游 ZMQ 的 `data["dist"]`
-使用 Orbbec SDK 顺序 `(k1, k2, k3, k4, k5, k6, p1, p2)`；该差异已在
-`CameraStreamRuntime` 的控制协议边界完成转换，不向算法和 RPC 客户端传播。
-
-## ChArUco Board 检测客户端 API
-
-### `CameraPipelineClient.detect_charuco(request) -> CharucoDetectionResponse`
-
-用户必须显式传入完整 Board 几何和检测边界。CameraPipeline 不提供默认板型：
-
-```python
-from camera_pipeline.client import CameraName
-from camera_pipeline.service.protocol import CharucoDetectionRequest
-
-request = CharucoDetectionRequest(
-    camera_name=CameraName.HEAD,
-    dictionary_name="DICT_APRILTAG_16H5",
-    squares_x=4,
-    squares_y=4,
-    square_length_mm=20.0,
-    marker_length_mm=14.0,
-    min_charuco_corners=6,
-    max_frames=300,
-    stable_timeout_s=10.0,
-    enable_debug=True,
-)
-result = client.detect_charuco(request)
-```
-
-协议中的所有参数均为必填：
-
-- `camera_name`：逻辑相机名。
-- `dictionary_name`：Board 使用的 ArUco 字典；当前支持 `DICT_APRILTAG_16H5`。
-- `squares_x`、`squares_y`：横向、纵向方格数量，均至少为 2。
-- `square_length_mm`：方格边长，单位 mm，必须大于 0。
-- `marker_length_mm`：marker 边长，单位 mm，必须大于 0 且小于方格边长。
-- `min_charuco_corners`：进入 PnP 的最少角点数，至少为 4。
-- `max_frames`：最多尝试的纯彩色稳定帧数量，必须大于 0。
-- `stable_timeout_s`：每次等待纯彩色稳定帧的超时，单位 s，必须大于 0；
-  ChArUco 不读取深度帧，也不执行深度稳定阈值。
-- `enable_debug`：是否返回最终检测帧的 marker、角点和坐标轴 overlay。
-
-服务端只校验协议、构造本次请求的
-`cv2.aruco.CharucoBoard`，然后由 `PipelineContext.detect_charuco()` 获取纯彩色
-稳定帧并调用
-`camera_pipeline.charuco_detection.CharucoDetector`；服务端不保存任何固定板型。
-
-返回 `CharucoDetectionResponse`：
-
-- `status`：`detected` 或 `missing`。
-- `camera_name`：实际检测相机名。
-- `t_cam_board_mm`：`T_camera_board`；满足 `p_camera = T_camera_board @ p_board`，
-  平移单位 mm。空结果时为空元组。
-- `error_px`：平均重投影误差，单位 pixel；空结果时为正无穷。
-- `marker_num`、`charuco_num`：最终融合的 marker 和 ChArUco 角点数量。
-- `overlay_bgr`：`enable_debug=True` 时返回最终检测帧的 BGR 叠加图；关闭时为空数组。
-
-相机不可用、稳定帧超时、板参数非法或服务协议错误由客户端转换为 `RuntimeError`。
-达到 `max_frames` 仍未得到位姿属于合法空结果，返回 `status="missing"`。
-
-## 算法请求 API
-
-`request_tray_detection()` 和 `request_opening_detection()` 已暂时移除。协议版本 8
-不再接受 `tray_detection`、`opening_detection` operation，也不再暴露对应的请求、
-响应字段或 wire codec 类型。调用方不得继续构造旧版 operation；需要恢复时应同步
-恢复子模块入口、服务编排、协议、codec、client API 和测试后再提升协议版本。
-
-### `detect_ball(request) -> BallPoseDetectionResponse`
-
-请求类型为 `BallPoseDetectionRequest`，主要字段为 `request_id`、
-`camera_name`、`frame_id`、`enable_debug`、`priors`。每个 `BallPosePriorInfo` 包含
-`color_hex`、`diameter_mm`、`model_center_mm`、`hsv_ranges`。`color_hex` 是稳定
-身份和首次记录参考色；非空 `hsv_ranges` 是记录先验得到的专属窄范围，优先于参考色
-宽范围。`diameter_mm` 表示球的物理直径，单位 mm。成功响应包含 `matched_count`、
-`detections` 和可选 debug 产物。无先验时 `detections=()`；单球漏检时对应
-`BallDetectionInfo.detected=False`，坐标元组为空；有效结果的 `observed_hsv` 是候选
-内部颜色像素的实测 HSV 中心。
-
-## 统一响应边界
-
-- 算法成功响应只描述算法结果，不重复定义服务级 `error` 字段。
-- “没有检测到目标”只有在对应算法明确允许时才是成功空结果。
-- `debug_artifacts=()` 表示调用方关闭 debug 或本次未生成调试载荷，不表示算法失败。
-- `frame_id` 是实际计算帧号。使用稳定帧时，响应帧号是最终证据帧，不是请求发出时的最新帧。
+服务功能版本见 `camera_pipeline/CHANGELOG.md`；本次外部 API 新增使功能版本升级为
+`1.10.0`，内部 ZMQ `PROTOCOL_VERSION=10` 不变。

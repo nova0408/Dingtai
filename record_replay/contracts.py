@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 
+from .motion_parsing import ParsedArmPose
+
 
 # region 状态枚举
 
@@ -16,7 +18,6 @@ class ReplayServiceState(str, Enum):
     WAITING = "waiting"
     NAVIGATING_TO_START = "navigating_to_start"
     REPLAYING = "replaying"
-    NAVIGATING_TO_FINISH = "navigating_to_finish"
     FAILED = "failed"
 
     def __str__(self) -> str:
@@ -45,6 +46,14 @@ class ReplayRow:
     "原始 joints 单元格文本。"
     pose_text: str
     "原始 pose 单元格文本。"
+    joint_values: tuple[float, ...] | None = None
+    "启动阶段解析后的关节数值；单位为 CSV 原始角度或执行器归一化值。"
+    arm_joint_rad: tuple[float, ...] | None = None
+    "arm 行预解析后的关节弧度。"
+    arm_pose: ParsedArmPose | None = None
+    "arm 行预解析后的笛卡尔目标。"
+    pose_value: float | None = None
+    "gripper/lift 行预解析后的标量值。"
 
 
 @dataclass(frozen=True, slots=True)

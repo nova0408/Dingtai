@@ -1,5 +1,11 @@
 # 双臂记录回放服务
 
+当前业务语义版本：`1.11.0`，对应人工验证入口
+`test/wuji/record_replay_cli.py` 中的 `RECORD_REPLAY_CLI_VERSION`。
+
+面向 GUI 和其它项目的完整 HTTP 契约见 [API Reference](API%20Reference.md)，机器可读描述见
+[OpenAPI](openapi.yaml)。
+
 本服务从 `test/wuji/record_replay_cli.py` 拆分而来，位于仓库根目录，和
 `camera_pipeline` 同级。业务代码不导入 `test`，在 Orin 上直接连接机械臂、
 qmlinker、AGV 和 Orin 本机部署的 camera_pipeline，并由 HTTP API 触发一轮执行。
@@ -15,9 +21,10 @@ qmlinker、AGV 和 Orin 本机部署的 camera_pipeline，并由 HTTP API 触发
   同时保存 `charuco_board_prior.json`。三球尺寸字段统一为 `diameter_mm`，单位 mm；
   不再接受旧的 `radius_mm` 先验文件。重新记录的三球条目还包含 `hsv_ranges` 和
   `observed_color_hex`；颜色和坐标语义从先验文件的 `local_coordinate_frame`
-  读取，服务端不维护固定球色。服务启动时要求三球相对位置有效且每球都包含 30 帧标定的
-  `hsv_ranges`，并要求同目录存在 `ball_debug_overlay.jpg` 核验图。无效或证据不完整
-  的文件会阻止服务启动，不再回退到占位球心。
+  读取，服务端不维护固定球色。服务启动只建立 HTTP 监听，不加载或校验先验。人工调用
+  `POST /start` 时才会完整检查全部先验；无效或缺失项会在响应中逐项列出，不会回退到占位
+  球心。三球运行时只依赖 `ball_pose_prior.json`，`ball_debug_overlay.jpg` 属于本地调试
+  证据，不是远端运行依赖。
   `ball_pose_prior.json` 中的 `tcp_pose_matrix` 由 AR5 SDK 原始 `trans(m)+rpy(rad)`
   按小写外禀 `xyz` 直接构造，矩阵平移保持 m；`tcp_translation_mm` 和
   `tcp_rpy_degrees` 仅用于人工查看。GUI 根据 30 帧颜色波动生成窄 HSV 范围；
@@ -26,8 +33,13 @@ qmlinker、AGV 和 Orin 本机部署的 camera_pipeline，并由 HTTP API 触发
 - `record_replay/records/left/`：提前录制的左臂 CSV。
 - `record_replay/records/right/`：提前录制的右臂 CSV。
 
-部署时必须把代码、先验 JSON、ChArUco offset 历史 CSV 和两侧回放 CSV 作为同一个
+部署时必须把代码、先验 JSON、ChArUco offset 历史 CSV、两侧相机外参和两侧回放 CSV 作为同一个
 `record_replay/` 目录同步到 Orin，并参与文件清单和 SHA-256 一致性校验。
+
+服务提供两个 JSON 先验替换接口：`POST /prior/ball-pose` 和
+`POST /prior/charuco`。替换前旧文件会备份到服务端
+`record_replay/.archive/prior_data/<时间戳>/`，不会直接删除；上传内容先通过对应文件格式校验，
+校验失败不会替换现有文件。
 
 `test/wuji/record_replay_cli.py` 是本机直连硬件的人工验证入口，与 Orin HTTP 服务的数据
 位置不同：它读取本机 `record_left/`、`record_right/`，先验读取 GUI 写入的本机
@@ -51,6 +63,10 @@ Orin HTTP 服务只读取已部署到 `/home/wuji-brain/workspace/record_replay/
 3 次；三次均不通过才拒绝本轮执行。异常拒绝发生在 offset 写入运行时及后续纠偏
 运动之前。
 
+启用 ChArUco 纠偏时还必须部署 `left_head_base_camera.npy` 和
+`right_head_base_camera.npy`，分别表示对应机械臂基坐标系下的 `T_base_camera`；
+服务不会从其他目录猜测或回退读取这两个矩阵。
+
 运行期三球纠偏使用分级检测：先移除标定 HSV 限制，以 HEX 推导的宽范围确认三个球均
 可检出；随后使用标定窄范围复检。窄范围三球球心与宽范围逐球差异不超过 8 mm 时采用
 窄范围结果，否则记录明确告警并回退宽范围结果。宽、窄请求始终使用同一组物理直径、
@@ -61,9 +77,8 @@ Orin HTTP 服务只读取已部署到 `/home/wuji-brain/workspace/record_replay/
 
 ```text
 waiting
-  -> navigating_to_start (AGV navigate_to("3") + raw_status 从 busy 变为 idel)
+  -> navigating_to_start (AGV navigate_to("1") + raw_status 从 busy 变为 idel)
   -> replaying          (按左/右 CSV 执行计划回放)
-  -> navigating_to_finish (AGV navigate_to("1") + get_runtime_info 到位确认)
   -> waiting
 ```
 
@@ -162,13 +177,15 @@ python test/record_replay/local/record_replay_local_manual.py
 
 - `ReplayArmSettings`：NRT、tool/wobj、MoveAbsJ、reset 与机械臂型号；
 - `ReplayHandSettings`：夹爪/M11/升降动作与容差；
-- `ReplayOffsetSettings`：offset 触发、采样、速度和三球鲁棒聚合；
+- `ReplayOffsetSettings`：offset 触发、采样、ChArUco 安全门和三球鲁棒聚合；
 - `OffsetConfig`：相机名、先验捕获与手眼结果路径；
 - `ReplayServiceSettings`：AGV、触发文件及非运动调用重试。
 
 业务模块通过 `ReplayContext.config.settings` 或 `ReplayRuntime.settings` 读取这些数据，
 禁止重新声明模块级调试常量。若需现场调参，请在本机入口构造
 `ReplayServiceSettings` 的定制实例，再传入 `ReplayCycleConfig`。
+MoveAbsJ 末端线速度和中间点 zone 按左右臂及 CSV 数字序号配置；offset 触发 CSV
+不再使用独立临时速度。
 
 ## Orin 服务 API
 
@@ -181,10 +198,24 @@ python test/record_replay/local/record_replay_local_manual.py
 GUI 可按 1 秒周期轮询该只读接口；不需要维持 SSE/WebSocket 长连接，短暂断网后下一次
 轮询会自然恢复。
 
-HTTP API：`GET /status`、`GET /config`、`GET /device-status`、`POST /config`、`POST /start`。配置更新 body
-是字段到数值的 JSON object；服务执行期间拒绝修改配置。`POST /start` 必须提供
-`{"enable_agv_navigation": true|false}`；为 `false` 时同时跳过去起点与返回终点导航，
-双臂 CSV 回放仍会执行。
+HTTP API：`GET /status`、`GET /config`、`GET /device-status`、`POST /config`、
+`POST /prior/ball-pose`、`POST /prior/charuco`、`POST /start`。配置更新 body
+是字段到数值的 JSON object；服务执行期间拒绝修改配置。两个 prior 接口接收完整 JSON，
+校验通过后原子替换并将旧文件备份到服务端 `.archive/prior_data/<时间戳>/`。`POST /start` 必须提供
+`{"enable_agv_navigation": true|false}`；为 `false` 时不执行回放前导航，双臂 CSV
+回放仍会执行；为 `true` 时只在回放前导航到站点 `1`，回放完成后不自动返航，与已验证
+人工 CLI 一致。调用 `/start` 前会全量检查所有运行先验，缺失或无效文件会逐项写入
+`error_text`；服务启动本身不会因先验缺失失败。
+
+正式客户端必须通过统一 Gateway 访问本服务：使用 `https://<orin-host>`，并配置
+`/api/v1/record-replay` 前缀。Gateway 只统一客户端地址和 URL 前缀，不会合并进程，
+也不会移除 RecordReplay 实际监听的 `6300` 端口；6300 仅用于人工测试、Orin 本地只读
+诊断和故障排查，不作为正式客户端入口。完整映射见
+[`api_gateway/README.md`](../api_gateway/README.md)。RecordReplay 的 `POST /start`
+仍然只能由现场人员明确手动发起，不能通过统一入口被自动化测试调用。客户端首次使用前
+必须安装并信任 CasiaHand Root CA，安装指南见
+[`api_gateway/certificates/README.md`](../api_gateway/certificates/README.md)；不得
+关闭证书校验。
 
 Orin 人工测试的本机源文件与远端执行文件是非镜像映射：
 
@@ -239,7 +270,7 @@ bash scripts/restart_record_replay_service.sh
 ```
 
 脚本显示 `我已确认现场安全并同意重启RecordReplay服务 [Y/n]`，输入 `Y`、`y` 或
-直接回车继续，输入 `n` 取消；非交互环境直接拒绝。它会先检查三球先验、左右臂 CSV，
+直接回车继续，输入 `n` 取消；非交互环境直接拒绝。它会检查左右臂 CSV，
 并在已有服务状态不是 `waiting` 或状态不可查询时拒绝停止进程。停止阶段只发送 SIGTERM；
 若服务不能干净退出则停止操作，不使用 SIGKILL。脚本只重启 HTTP API 服务，不发送
 `POST /start`，因此不会主动开始一轮回放。

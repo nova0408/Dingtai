@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Linux service restart helper; keep this file LF-encoded for remote execution.
 set -euo pipefail
 
 SERVICE_UNIT="record-replay.service"
@@ -6,9 +7,6 @@ SERVICE_PORT="6300"
 SERVICE_URL="http://127.0.0.1:${SERVICE_PORT}"
 SERVICE_PYTHON="/home/wuji-brain/miniconda3/envs/wuji/bin/python"
 WORKSPACE_DIR="/home/wuji-brain/workspace"
-PRIOR_PATH="${WORKSPACE_DIR}/record_replay/prior_data/ball_pose_prior.json"
-DEBUG_OVERLAY_PATH="${WORKSPACE_DIR}/record_replay/prior_data/ball_debug_overlay.jpg"
-HAND_EYE_PATH="${WORKSPACE_DIR}/record_replay/prior_data/hand_eye_result.txt"
 LEFT_RECORD_DIR="${WORKSPACE_DIR}/record_replay/records/left"
 RIGHT_RECORD_DIR="${WORKSPACE_DIR}/record_replay/records/right"
 WAIT_TIMEOUT_SECONDS=10
@@ -44,18 +42,6 @@ if [[ "${non_interactive}" != "true" ]]; then
   esac
 fi
 
-if [[ ! -f "${PRIOR_PATH}" ]]; then
-  echo "[restart] refused: missing ${PRIOR_PATH}"
-  exit 1
-fi
-if [[ ! -f "${DEBUG_OVERLAY_PATH}" ]]; then
-  echo "[restart] refused: missing ${DEBUG_OVERLAY_PATH}"
-  exit 1
-fi
-if [[ ! -f "${HAND_EYE_PATH}" ]]; then
-  echo "[restart] refused: missing ${HAND_EYE_PATH}"
-  exit 1
-fi
 if ! compgen -G "${LEFT_RECORD_DIR}/*.csv" >/dev/null; then
   echo "[restart] refused: no left-arm CSV in ${LEFT_RECORD_DIR}"
   exit 1

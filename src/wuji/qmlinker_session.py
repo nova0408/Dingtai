@@ -219,15 +219,14 @@ class _ForwardingRequestHandler(socketserver.BaseRequestHandler):
             ConnectionResetError,
         ) as exc:
             logger.debug(
-                "SSH forward stream ended by local connection: "
-                "local={} remote={} peer={} reason={}",
+                "SSH forward stream ended by local connection: " "local={} remote={} peer={} reason={}",
                 self.server.server_address,
                 self.server.remote_address,
                 peer_address,
                 exc,
             )
         except Exception:
-            logger.exception(
+            logger.error(
                 "SSH forward stream failed: local={} remote={} peer={}",
                 self.server.server_address,
                 self.server.remote_address,
@@ -440,9 +439,7 @@ class WujiQmlinkerSession:
 
         if self._direct:
             return f"{remote_host}:{int(remote_port)}"
-        shared_target = self._shared_forward_targets.get(
-            (str(remote_host), int(remote_port))
-        )
+        shared_target = self._shared_forward_targets.get((str(remote_host), int(remote_port)))
         if shared_target is not None:
             return shared_target
         return self.open_ssh_tunnel(remote_host, remote_port)
@@ -558,12 +555,8 @@ class WujiQmlinkerSession:
         if not forwards:
             return
         ssh_target = self._ssh_host or self._ssh_alias
-        service_forwards = tuple(
-            forward for forward in forwards if forward.local_host == "127.0.0.1"
-        )
-        arm_forwards = tuple(
-            forward for forward in forwards if forward.local_host != "127.0.0.1"
-        )
+        service_forwards = tuple(forward for forward in forwards if forward.local_host == "127.0.0.1")
+        arm_forwards = tuple(forward for forward in forwards if forward.local_host != "127.0.0.1")
         logger.info(
             "SSH password tunnel connecting: host={} username={} forwards={}",
             ssh_target,
@@ -601,17 +594,15 @@ class WujiQmlinkerSession:
                 thread = threading.Thread(
                     target=server.serve_forever,
                     kwargs={"poll_interval": 0.1},
-                    name=(
-                        f"ssh-forward-{forward.local_host}-{forward.local_port}"
-                    ),
+                    name=(f"ssh-forward-{forward.local_host}-{forward.local_port}"),
                     daemon=True,
                 )
                 thread.start()
                 servers.append(server)
                 threads.append(thread)
-                self._shared_forward_targets[
-                    (forward.remote_host, forward.remote_port)
-                ] = f"{forward.local_host}:{forward.local_port}"
+                self._shared_forward_targets[(forward.remote_host, forward.remote_port)] = (
+                    f"{forward.local_host}:{forward.local_port}"
+                )
                 logger.debug(
                     "SSH forward listening: local={}:{} remote={}:{}",
                     forward.local_host,
@@ -700,8 +691,7 @@ class WujiQmlinkerSession:
             command.extend(
                 (
                     "-L",
-                    f"{forward.local_host}:{forward.local_port}:"
-                    f"{forward.remote_host}:{forward.remote_port}",
+                    f"{forward.local_host}:{forward.local_port}:" f"{forward.remote_host}:{forward.remote_port}",
                 )
             )
         command.append(f"{DEFAULT_WUJI_SSH_USERNAME}@{ssh_host}")
@@ -718,9 +708,7 @@ class WujiQmlinkerSession:
             ssh_host,
             len(forwards),
         )
-        creation_flags = (
-            subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
-        )
+        creation_flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
         process = subprocess.Popen(
             command,
             stdin=subprocess.DEVNULL,
@@ -735,9 +723,7 @@ class WujiQmlinkerSession:
             error_text = ""
             if process.stderr is not None:
                 error_text = process.stderr.read().strip()
-            raise RuntimeError(
-                f"AR5 OpenSSH 转发提前退出：{error_text or 'unknown'}"
-            )
+            raise RuntimeError(f"AR5 OpenSSH 转发提前退出：{error_text or 'unknown'}")
         for forward in forwards:
             key = (
                 forward.remote_host,
@@ -762,11 +748,7 @@ class WujiQmlinkerSession:
     def _allocate_local_port(self, remote_port: int) -> int:
         """为当前会话分配一个不冲突的本地端口。"""
 
-        used_local_ports = {
-            tunnel.local_port
-            for tunnel in self._tunnels.values()
-            if tunnel.local_host == "127.0.0.1"
-        }
+        used_local_ports = {tunnel.local_port for tunnel in self._tunnels.values() if tunnel.local_host == "127.0.0.1"}
         local_port = int(remote_port) - 1
         while local_port in used_local_ports:
             local_port -= 1

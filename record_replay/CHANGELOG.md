@@ -1,6 +1,6 @@
 # RecordReplay 版本日志
 
-当前版本：`1.9.0`
+当前版本：`1.11.0`
 
 ## 版本号规则
 
@@ -11,6 +11,33 @@
 - `c`：缺陷修复和不改变功能边界的优化。
 
 每次更新 API 或功能时，必须同步更新当前版本号，并在本文件顶部追加带日期的版本记录。同一批改动只升级一次，按影响最大的改动选择版本位。
+
+## 1.11.0 - 2026-08-03
+
+### 变更
+
+- RecordReplay 服务启动时只建立 HTTP 监听，不再因缺少先验或本地调试 overlay 文件而启动失败。
+- `POST /start` 在创建回放线程前一次性检查全部运行先验，并在 `error_text` 中逐项报告缺失或无效项目。
+- 新增 `POST /prior/ball-pose` 和 `POST /prior/charuco`，支持校验后原子替换两个 JSON 先验；旧文件备份到服务端 `record_replay/.archive/prior_data/<时间戳>/`。
+- `ball_debug_overlay.jpg` 明确为本地调试证据，不再作为远端运行依赖；远端部署清单不包含服务端 `.archive` 备份目录。
+
+## 1.10.0 - 2026-07-31
+
+### 变更
+
+- RecordReplay 服务执行语义与已验证的 `test/wuji/record_replay_cli.py` 对齐，人工 CLI
+  同步增加 `RECORD_REPLAY_CLI_VERSION = "1.10.0"`，服务包同步提供
+  `RECORD_REPLAY_VERSION = "1.10.0"`。
+- 服务 CSV 发现改为只接收纯数字首段并按数值排序；零字节或只有表头的 CSV 继续参与
+  计划和状态清单，但执行时只记录警告并跳过，不触发动作或 offset。
+- 服务在创建设备 runtime 前预解析执行计划中的全部 CSV；MoveAbsJ 速度和 zone 按左右臂
+  与 CSV 序号字典选择，三球 offset 触发文件不再切换临时速度。
+- 服务补齐 ChArUco 头部姿态、稳定帧检测、同侧历史统计安全门和最多三次重新检测，
+  并按测试脚本的左右臂 CSV 序号应用缓存 offset；offset 后 IK 失败时回退到原 CSV joints。
+- 删除服务运行参数中的独立 `offset_trigger_speed_mm_s`，避免与测试脚本已经验证的
+  CSV 速度语义分叉。
+- AGV 行为与人工 CLI 对齐：启用时仅在回放前导航到站点 `1`，不再在回放完成后自动
+  导航到终点。
 
 ## 1.9.0 - 2026-07-30
 

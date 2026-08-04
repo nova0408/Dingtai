@@ -14,7 +14,6 @@ from sdk.xcoresdk import xCoreSDK_python
 
 from .arm_gateway import retry_non_motion_call
 from .contracts import ReplayRow
-from .motion_parsing import parse_joint_values, parse_pose_values
 from .runtime import ReplayRuntime
 
 # region 数据结构
@@ -39,11 +38,15 @@ class ArmMoveTarget:
 def build_arm_target(runtime: ReplayRuntime, row: ReplayRow) -> ArmMoveTarget:
     """构建 CSV joints 或 pose IK 对应的关节目标。"""
 
-    if row.pose_text.lower() == "nan":
+    if row.arm_pose is None:
+        if row.arm_joint_rad is None:
+            raise RuntimeError(f"arm joints 未在启动阶段完成预解析 file={row.csv_name} row={row.row_index}")
         return ArmMoveTarget(
-            row, xCoreSDK_python.JointPosition(_deg_to_rad(parse_joint_values(row.joints_text))), "csv-joints"
+            row,
+            xCoreSDK_python.JointPosition(list(row.arm_joint_rad)),
+            "csv-joints",
         )
-    pose = parse_pose_values(row.pose_text)
+    pose = row.arm_pose
     robot = runtime.connected_arm.robot
     ec = runtime.connected_arm.ec
     current_pose = retry_non_motion_call(
@@ -64,12 +67,10 @@ def build_arm_target(runtime: ReplayRuntime, row: ReplayRow) -> ArmMoveTarget:
         target_pose.elbow = _deg_to_rad([pose.elbow_deg])[0]
     if pose.conf_data is not None:
         target_pose.confData = list(pose.conf_data)
-    applies_offset = (
-        runtime.global_cartesian_offset is not None
-        and _extract_csv_sequence(row.csv_name) in runtime.offset_target_sequences
-    )
-    if applies_offset:
-        target_pose = _apply_global_offset(target_pose, runtime.global_cartesian_offset)
+    offset_matrix, offset_source = _resolve_cartesian_offset(runtime, row.csv_name)
+    applies_offset = offset_matrix is not None
+    if offset_matrix is not None:
+        target_pose = _apply_global_offset(target_pose, offset_matrix)
     toolset = retry_non_motion_call(
         f"toolset(replay-arm-ik:{row.csv_name}:{row.row_index})",
         lambda: robot.toolset(ec),
@@ -81,13 +82,21 @@ def build_arm_target(runtime: ReplayRuntime, row: ReplayRow) -> ArmMoveTarget:
     result = robot.model().calcIk(target_pose, toolset, ec)
     if ec.get("ec", 0) == 0:
         joint = _normalize_ik_result(result)
-        return ArmMoveTarget(row, joint, "tcp-ik-offset" if applies_offset else "tcp-ik")
-    if applies_offset:
-        raise RuntimeError("offset 后 T_new_tcp 逆解失败，无法生成 MoveAbsJ 目标")
-    fallback = parse_joint_values(row.joints_text)
+        source = "tcp-ik" if not applies_offset else f"tcp-ik-offset-{offset_source}"
+        return ArmMoveTarget(row, joint, source)
+    if row.arm_joint_rad is None:
+        raise RuntimeError(f"CSV joints 兜底未在启动阶段完成预解析 file={row.csv_name} row={row.row_index}")
     ec["ec"] = 0
-    ec["message"] = "原始 TCP 逆解失败，已改用 CSV 记录关节值"
-    return ArmMoveTarget(row, xCoreSDK_python.JointPosition(_deg_to_rad(fallback)), "csv-joints-fallback")
+    fallback_reason = "offset 后 T_new_tcp 逆解失败，本行未实施 offset" if applies_offset else "原始 TCP 逆解失败"
+    ec["message"] = f"{fallback_reason}，已改用 CSV 记录关节值"
+    logger.warning(
+        "{}，最终兜底为 CSV joints MoveAbsJ file={} row={}",
+        fallback_reason,
+        row.csv_name,
+        row.row_index,
+    )
+    source = "csv-joints-fallback" if not applies_offset else "csv-joints-fallback-offset-ik"
+    return ArmMoveTarget(row, xCoreSDK_python.JointPosition(list(row.arm_joint_rad)), source)
 
 
 # endregion
@@ -106,13 +115,9 @@ def execute_arm_segment(runtime: ReplayRuntime, rows: list[ReplayRow]) -> None:
     for index, target in enumerate(targets):
         segment_end = index == len(targets) - 1
         csv_end = segment_end or targets[index + 1].row.csv_name != target.row.csv_name
-        force_zero_zone = (
-            runtime.connected_arm.arm_side == "left"
-            and csv_end
-            and _extract_csv_sequence(target.row.csv_name) in runtime.settings.arm.left_zero_zone_sequences
-        )
-        zone = 0.0 if segment_end or force_zero_zone else runtime.settings.arm.move_abs_j_zone_mm
-        commands.append(xCoreSDK_python.MoveAbsJCommand(target.joint, runtime.move_abs_j_end_linear_speed_mm_s, zone))
+        zone = 0.0 if csv_end else _resolve_replay_move_abs_j_zone_mm(runtime, target.row.csv_name)
+        speed = _resolve_replay_move_abs_j_end_linear_speed_mm_s(runtime, target.row.csv_name)
+        commands.append(xCoreSDK_python.MoveAbsJCommand(target.joint, speed, zone))
     robot = runtime.connected_arm.robot
     ec = runtime.connected_arm.ec
     _wait_until_reset_ready(robot, ec, runtime, rows[0], rows[-1])
@@ -211,6 +216,55 @@ def _extract_csv_sequence(csv_name: str) -> int:
     """解析 CSV 文件名前缀的整数阶段序号。"""
 
     return int(csv_name.split("_", maxsplit=1)[0])
+
+
+def _resolve_cartesian_offset(
+    runtime: ReplayRuntime,
+    csv_name: str,
+) -> tuple[np.ndarray | None, str]:
+    """按测试 CLI 的优先级选择当前 CSV 的 ChArUco 或三球纠偏。"""
+
+    sequence = _extract_csv_sequence(csv_name)
+    charuco_sequences = (
+        runtime.settings.offset.left_charuco_target_sequences
+        if runtime.connected_arm.arm_side == "left"
+        else runtime.settings.offset.right_charuco_target_sequences
+    )
+    if sequence in charuco_sequences:
+        if runtime.charuco_cartesian_offset is None:
+            raise RuntimeError(f"CSV {csv_name} 需要 ChArUco offset，但当前尚未完成目标板检测")
+        return np.asarray(runtime.charuco_cartesian_offset, dtype=np.float64), "charuco"
+    if sequence in runtime.offset_target_sequences:
+        if runtime.global_cartesian_offset is None:
+            raise RuntimeError(f"CSV {csv_name} 需要三球 offset，但当前尚未完成三球检测")
+        return np.asarray(runtime.global_cartesian_offset, dtype=np.float64), "three-ball"
+    return None, "none"
+
+
+def _resolve_replay_move_abs_j_end_linear_speed_mm_s(runtime: ReplayRuntime, csv_name: str) -> float:
+    """按机械臂侧别和 CSV 序号选择 MoveAbsJ 末端线速度。"""
+
+    sequence = _extract_csv_sequence(csv_name)
+    entries = (
+        runtime.settings.arm.left_move_abs_j_end_linear_speed_mm_s_by_csv_sequence
+        if runtime.connected_arm.arm_side == "left"
+        else runtime.settings.arm.right_move_abs_j_end_linear_speed_mm_s_by_csv_sequence
+    )
+    values = dict(entries)
+    return values.get(sequence, values[-1])
+
+
+def _resolve_replay_move_abs_j_zone_mm(runtime: ReplayRuntime, csv_name: str) -> float:
+    """按机械臂侧别和 CSV 序号选择连续 MoveAbsJ 中间点 zone。"""
+
+    sequence = _extract_csv_sequence(csv_name)
+    entries = (
+        runtime.settings.arm.left_move_abs_j_zone_mm_by_csv_sequence
+        if runtime.connected_arm.arm_side == "left"
+        else runtime.settings.arm.right_move_abs_j_zone_mm_by_csv_sequence
+    )
+    values = dict(entries)
+    return values.get(sequence, values[-1])
 
 
 def _apply_global_offset(

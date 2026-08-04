@@ -1,0 +1,79 @@
+openapi: 3.1.0
+info:
+  title: Dingtai API Gateway
+  version: 0.2.1
+  description: >-
+    统一客户端入口。业务请求按 URL 前缀转发到 CameraPipeline、RecordReplay 或
+    RobotControl；Gateway 由 aiohttp 直接提供 TLS。客户端必须预先安装并信任
+    CasiaHand Root CA。后端服务的完整协议仍以各自目录中的 OpenAPI/AsyncAPI 为准。
+servers:
+  - url: https://<orin-host>
+paths:
+  /api/v1/gateway/health:
+    get:
+      operationId: get_gateway_health
+      description: 只检查 Gateway 自身，不探测后端或硬件。
+      responses:
+        '200':
+          description: Gateway 可响应
+  /api/v1/camera/{path}:
+    parameters:
+      - name: path
+        in: path
+        required: true
+        schema: {type: string}
+    get:
+      summary: 转发 CameraPipeline HTTP GET
+      responses: {'200': {description: 后端响应}}
+    post:
+      summary: 转发 CameraPipeline HTTP POST
+      responses: {'200': {description: 后端响应}}
+  /api/v1/camera-ws/{path}:
+    parameters:
+      - name: path
+        in: path
+        required: true
+        schema: {type: string}
+    get:
+      summary: 转发 CameraPipeline WebSocket 握手
+      responses: {'101': {description: Switching Protocols}}
+  /api/v1/record-replay/{path}:
+    parameters:
+      - name: path
+        in: path
+        required: true
+        schema: {type: string}
+    get:
+      summary: 转发 RecordReplay 请求
+      responses: {'200': {description: 后端响应}}
+    post:
+      summary: 转发 RecordReplay 请求
+      responses: {'200': {description: 后端响应}}
+  /api/v1/robot-control/{path}:
+    parameters:
+      - name: path
+        in: path
+        required: true
+        schema: {type: string}
+    get:
+      summary: 转发 RobotControl GET
+      responses: {'200': {description: 后端响应}}
+    post:
+      summary: 转发 RobotControl 控制请求
+      description: 可能控制真实设备，只能由现场人员手动发起。
+      responses: {'202': {description: 后端响应}}
+  /api/v1/robot-control/status/stream:
+    get:
+      summary: 转发 RobotControl SSE 只读状态流
+      description: 只读事件流，不发送任何控制请求。
+      parameters:
+        - name: interval_s
+          in: query
+          required: false
+          schema: {type: number, minimum: 0.05, maximum: 5.0, default: 0.2}
+      responses:
+        '200':
+          description: RobotControl SSE event stream
+          content:
+            text/event-stream:
+              schema: {type: string}

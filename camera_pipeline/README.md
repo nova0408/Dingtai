@@ -44,8 +44,10 @@ from camera_pipeline.client import CameraName, CameraPipelineClient
 5. debug 数据通过请求显式控制；关闭后算法不构造大体积调试图像。
 6. 文本和协议必须明确单位、坐标系和错误语义。
 
-面向用户的全部 client API、请求/响应字段、合法空结果和服务错误统一见
-[API Reference](API%20Reference.md)；算法 README 只描述算法内部数据契约和计算失败原因。
+面向用户的全部 client API、HTTP/JSON 请求响应字段、WebSocket 帧格式、合法空结果和服务
+错误统一见 [API Reference](API%20Reference.md)。可供 GUI 或其它语言直接读取的机器文档为
+[OpenAPI](openapi.yaml) 和 [AsyncAPI](asyncapi.yaml)；算法 README 只描述算法内部数据
+契约和计算失败原因。
 
 ## 模块结构
 
@@ -56,6 +58,7 @@ from camera_pipeline.client import CameraName, CameraPipelineClient
 | `charuco_detection` | 使用原图、CLAHE 和 unsharp 回退融合检测 ChArUco 位姿 | [charuco_detection/README.md](charuco_detection/README.md) |
 | `ball_pose_detection` | 根据颜色和几何先验检测球心三维坐标 | [ball_pose_detection/README.md](ball_pose_detection/README.md) |
 | `service` | 统一 RPC、帧发布、业务编排和部署入口 | [service/README.md](service/README.md) |
+| `service/http_client.py` | 对外 HTTP/WebSocket client，供 GUI 和其它项目复用 | 本文“外部 API client” |
 | `pipeline_context.py` | 组装相机运行时，解析指定帧或稳定帧 | 本文“帧选择” |
 | `protocol.py` | 跨模块 RGBD 帧 Protocol 和帧传输 packet | 本文“架构原则” |
 | `client.py` | 用户级 `CameraPipelineClient` facade | 本文“调用方式” |
@@ -103,6 +106,28 @@ client = CameraPipelineClient(
 
 外接地址必须由调用方显式提供，不写入正式业务逻辑。
 
+### GUI 或其它项目使用外部协议
+
+```python
+from camera_pipeline.client import CameraName
+from camera_pipeline.service.http_client import CameraPipelineHttpClient
+
+client = CameraPipelineHttpClient(
+    base_url="https://orin.local",
+    websocket_url="wss://orin.local",
+    api_prefix="/api/v1/camera",
+    websocket_prefix="/api/v1/camera-ws",
+)
+inventory = client.get_camera_inventory()
+status = client.get_camera_status(CameraName.LEFT_ARM)
+frames = client.subscribe_camera_color_frames(CameraName.LEFT_ARM)
+```
+
+`get_camera_inventory()` 只返回已配置、已连接且已有最新帧的相机；未连接或未配置相机不会出现。
+该 client 不创建内部 ZMQ 连接；HTTP 端口用于清单、状态、内参、稳定帧和检测，WebSocket
+端口用于 `CPWS1` 最新帧订阅。完整字段和错误语义以 [API Reference](API%20Reference.md)
+及 OpenAPI/AsyncAPI 文档为准。
+
 ### 多相机订阅与内参
 
 所有相机入口显式使用 `CameraName`：
@@ -149,12 +174,22 @@ After=camera-pipeline.service
 
 ## 端口
 
+正式客户端必须访问统一 Gateway：`https://<orin-host>/api/v1/camera/*`，WebSocket 使用
+`wss://<orin-host>/api/v1/camera-ws/*`。使用前必须安装并信任 CasiaHand Root CA，安装指南见
+[`api_gateway/certificates/README.md`](../api_gateway/certificates/README.md)，不得关闭证书校验。6400、6401 仅用于人工测试、
+只读诊断和故障排查，不作为正式客户端入口。这只统一客户端入口，
+不会合并 CameraPipeline 的 ZMQ、HTTP 和 WebSocket 进程，也不会移除下面的内部端口；
+`6400` 和 `6401` 仍分别是 CameraPipeline 的 HTTP、WebSocket 监听端口。
+完整映射与部署方式见 [`api_gateway/README.md`](../api_gateway/README.md)。
+
 | 端口 | 用途 |
 | --- | --- |
 | `6200` | 统一 REQ/REP 服务 |
 | `6201` | 完整 RGBD 帧 PUB |
 | `6202` | 彩色帧 PUB |
 | `6203` | 深度帧 PUB |
+| `6400` | 对外 HTTP/JSON API |
+| `6401` | 对外 WebSocket 最新帧流 |
 | `5570` | 上游相机控制口 |
 | `5560` | 上游头部相机数据流 |
 | `5561` | 上游胸腔相机数据流 |
@@ -165,7 +200,8 @@ After=camera-pipeline.service
 
 ## 协议与安全
 
-统一请求包含 `protocol_version`。当前版本 8 为三球先验增加每球专属
+统一请求包含 `protocol_version`。当前内部 ZMQ 线协议版本为 `10`；对外 HTTP API 使用
+`service_version=1.10.0`，WebSocket `CPWS1` 帧协议版本为 `1`。版本 8 为三球先验增加每球专属
 `hsv_ranges`，并在检测结果中返回 `observed_hsv`；所有相机查询、订阅和算法请求
 必须显式携带 `camera_name`。
 网络数据采用白名单协议 dataclass 的 JSON 元数据与 NumPy 原始字节块，不使用

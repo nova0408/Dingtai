@@ -1,0 +1,15 @@
+[Unit]
+Description=Dingtai RobotControl HTTP service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/wuji-brain/workspace
+ExecStart=/home/wuji-brain/miniconda3/envs/wuji/bin/python -m robot_control.service --host 127.0.0.1 --port 6500
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=10
+
+[Install]
+WantedBy=multi-user.target

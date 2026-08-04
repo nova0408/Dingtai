@@ -10,6 +10,7 @@ from .application import CameraPipelineApplication
 from .protocol import CameraPipelineServiceResponse
 from .transport import CameraPipelineRpcServer
 
+
 class CameraPipelineServer:
     """运行统一 REP 请求循环，并把业务处理委托给 application。"""
 
@@ -30,7 +31,7 @@ class CameraPipelineServer:
             except zmq.error.Again:
                 continue
             except Exception as exc:  # noqa: BLE001
-                logger.exception("camera pipeline request decode failed: {}", exc)
+                logger.error("camera pipeline request decode failed: {}", exc)
                 self._transport.send(
                     CameraPipelineServiceResponse(
                         operation="camera_status",
@@ -42,7 +43,7 @@ class CameraPipelineServer:
             try:
                 response = self._application.handle(request)
             except Exception as exc:  # noqa: BLE001
-                logger.exception(
+                logger.error(
                     "camera pipeline request failed operation={} error={}",
                     request.operation,
                     exc,

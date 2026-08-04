@@ -14,6 +14,8 @@ from qmlinker import QMGripper, QMHand, QMLift, create_channel
 class HandBodyRuntime:
     """一个机械臂侧别关联的 qmlinker 设备对象。"""
 
+    body_channel: object
+    "qmlinker body channel；头部 ChArUco 检测复用该通道。"
     lift: QMLift
     "qmlinker 升降对象。"
     gripper: QMGripper | None = None
@@ -42,8 +44,8 @@ def create_hand_body_runtime(
     lift = QMLift(body_channel)
     if arm_side == "left":
         gripper_channel = create_channel(f"{qmlinker_host}:{gripper_port}")
-        return HandBodyRuntime(lift, gripper=QMGripper(gripper_channel))
-    return HandBodyRuntime(lift, right_hand=QMHand(body_channel, cast(str, QMHand.HAND_RIGHT)))
+        return HandBodyRuntime(body_channel, lift, gripper=QMGripper(gripper_channel))
+    return HandBodyRuntime(body_channel, lift, right_hand=QMHand(body_channel, cast(str, QMHand.HAND_RIGHT)))
 
 
 def close_hand_body_runtime(runtime: HandBodyRuntime | None) -> None:

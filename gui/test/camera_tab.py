@@ -18,7 +18,12 @@ from PySide6.QtWidgets import (
 )
 
 from gui.util_components.casia_indicator_light import CasiaIndicatorLight
-from src.wuji.camera_protocol import WujiCameraEnableState, WujiCameraFrame, WujiCameraIntrinsicsInfo, WujiCameraRuntimeInfo
+from src.wuji.camera_protocol import (
+    WujiCameraConnectionState,
+    WujiCameraFrame,
+    WujiCameraIntrinsicsInfo,
+    WujiCameraRuntimeInfo,
+)
 
 
 class ImagePreviewLabel(QLabel):
@@ -62,7 +67,6 @@ class WujiCameraTabWidget(QWidget):
     """无际 qmlinker 相机测试页。"""
 
     cameraSelected = Signal(str)
-    cameraEnableToggleRequested = Signal(str, bool)
     rgbStreamRequested = Signal(str)
     rgbdStreamRequested = Signal(str)
     streamStopRequested = Signal()
@@ -75,9 +79,9 @@ class WujiCameraTabWidget(QWidget):
 
         self.camera_combo = QComboBox(self)
 
-        self.enable_indicator = CasiaIndicatorLight(
+        self.connection_indicator = CasiaIndicatorLight(
             self,
-            text=("使能", "禁用"),
+            text=("已连接", "未启用"),
             font_size=12,
             default_status=False,
         )
@@ -88,7 +92,7 @@ class WujiCameraTabWidget(QWidget):
         self.camera_id_label = QLabel("远端槽位: -", self)
         self.serial_label = QLabel("序列号: -", self)
         self.online_label = QLabel("在线状态: -", self)
-        self.enable_status_label = QLabel("使能接口: -", self)
+        self.connection_status_label = QLabel("连接情况: -", self)
         self.intrinsics_label = QLabel("内参: -", self)
         self.resolution_label = QLabel("分辨率: -", self)
 
@@ -96,7 +100,7 @@ class WujiCameraTabWidget(QWidget):
         self._connect_signals()
         self.rgb_button.setEnabled(False)
         self.rgbd_button.setEnabled(False)
-        self.enable_indicator.setEnabled(False)
+        self.connection_indicator.setEnabled(False)
 
     def activate_default_camera(self) -> None:
         """首次打开 tab 时请求远端在线相机清单。"""
@@ -149,18 +153,26 @@ class WujiCameraTabWidget(QWidget):
         if selected_camera_name != previous_camera_name:
             self.cameraSelected.emit(selected_camera_name)
 
-    def update_camera_enable_state(self, state: WujiCameraEnableState) -> None:
-        """刷新当前相机使能状态指示灯。"""
+    def update_camera_connection_state(
+        self,
+        state: WujiCameraConnectionState,
+    ) -> None:
+        """刷新当前相机连接情况指示灯。"""
 
         if state.camera_name != self._current_camera_name:
             return
-        self.enable_indicator.set_status(state.enabled)
-        self.enable_indicator.setEnabled(False)
-        if state.api_available:
-            self.enable_status_label.setText("使能接口: 可用")
-        else:
-            message = state.message.strip() or "当前 qmlinker 未实现相机使能接口"
-            self.enable_status_label.setText(f"使能接口: 不可用 ({message})")
+        self.connection_indicator.set_status(state.connected)
+        self.connection_indicator.setEnabled(False)
+        status_text = "已连接" if state.connected else "未启用"
+        self.connection_status_label.setText(f"连接情况: {status_text}")
+
+    @Slot(str)
+    def show_camera_error(self, message: str) -> None:
+        """仅在相机页显示相机链路错误，不改变整机连接状态。"""
+
+        self.connection_indicator.set_status(False)
+        self.connection_indicator.setEnabled(False)
+        self.connection_status_label.setText(f"连接情况: {message}")
 
     def update_intrinsics(self, intrinsics: WujiCameraIntrinsicsInfo) -> None:
         """刷新当前相机内参与分辨率文本。"""
@@ -198,7 +210,7 @@ class WujiCameraTabWidget(QWidget):
         top_layout.addWidget(QLabel("相机:", self))
         top_layout.addWidget(self.camera_combo)
         top_layout.addWidget(QLabel("状态:", self))
-        top_layout.addWidget(self.enable_indicator)
+        top_layout.addWidget(self.connection_indicator)
         top_layout.addStretch(1)
         main_layout.addLayout(top_layout)
 
@@ -211,7 +223,7 @@ class WujiCameraTabWidget(QWidget):
         bottom_layout.addWidget(self.camera_id_label)
         bottom_layout.addWidget(self.serial_label)
         bottom_layout.addWidget(self.online_label)
-        bottom_layout.addWidget(self.enable_status_label)
+        bottom_layout.addWidget(self.connection_status_label)
         bottom_layout.addWidget(self.intrinsics_label)
         bottom_layout.addWidget(self.resolution_label)
         main_layout.addLayout(bottom_layout)
@@ -234,8 +246,8 @@ class WujiCameraTabWidget(QWidget):
         self._current_camera_name = camera_name
         self._refresh_current_camera_labels()
         self.clear_images()
-        self.enable_indicator.setEnabled(False)
-        self.enable_status_label.setText("使能接口: -")
+        self.connection_indicator.setEnabled(False)
+        self.connection_status_label.setText("连接情况: -")
         self.streamStopRequested.emit()
         self.cameraSelected.emit(camera_name)
         self.rgbdStreamRequested.emit(self._current_camera_name)
@@ -266,12 +278,12 @@ class WujiCameraTabWidget(QWidget):
 
         self.camera_combo.clear()
         self.clear_images()
-        self.enable_indicator.setEnabled(False)
-        self.enable_indicator.set_status(False)
+        self.connection_indicator.setEnabled(False)
+        self.connection_indicator.set_status(False)
         self.camera_id_label.setText("远端槽位: -")
         self.serial_label.setText("序列号: -")
         self.online_label.setText("在线状态: 当前没有在线相机")
-        self.enable_status_label.setText("使能接口: -")
+        self.connection_status_label.setText("连接情况: -")
         self.intrinsics_label.setText("内参: -")
         self.resolution_label.setText("分辨率: -")
 

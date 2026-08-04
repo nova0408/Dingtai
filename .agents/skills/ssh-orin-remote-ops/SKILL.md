@@ -29,6 +29,10 @@ Prefer this skill when the task includes any of these patterns:
 - Prefer the repository's Windows service-control entrypoint over hand-written `sudo`,
   `systemctl`, or nested SSH commands. It already supplies the configured sudo password and
   runs service-specific readiness checks.
+- On Orin, service-to-service requests and local read-only diagnostics must use each service's
+  `localhost`/`127.0.0.1` internal port directly. Do not route these requests through the API
+  Gateway. The API Gateway is only the external client entry point; its HTTPS 443 endpoint and
+  prefixed URLs are not the default path for Orin-local access.
 
 ## Project Service Control
 
@@ -40,31 +44,66 @@ Restart only CameraPipeline without syncing files or touching RecordReplay:
 pwsh -NoProfile -File .\scripts\sync_and_restart_services.ps1 -RestartOnly -CameraPipelineOnly
 ```
 
-Restart both services without syncing files:
+Restart all deployed services without syncing files:
 
 ```powershell
 pwsh -NoProfile -File .\scripts\sync_and_restart_services.ps1 -RestartOnly
 ```
 
-Use the two-service command only when the user explicitly authorizes restarting RecordReplay.
+Restart only RobotControl without syncing files:
+
+```powershell
+pwsh -NoProfile -File .\scripts\sync_and_restart_services.ps1 -RestartOnly -RobotControlOnly
+```
+
+Restart only the unified API Gateway without syncing files:
+
+```powershell
+pwsh -NoProfile -File .\scripts\sync_and_restart_services.ps1 -RestartOnly -ApiGatewayOnly
+```
+
+Use the all-service command only when the user explicitly authorizes restarting RecordReplay.
 Restarting a service does not authorize sending RecordReplay `/start` or running a replay test.
 
-Deploy CameraPipeline and its RecordReplay consumer as one version-aligned unit:
+Deploy and restart only RobotControl:
+
+```powershell
+pwsh -NoProfile -File .\scripts\sync_and_restart_services.ps1 -RobotControlOnly
+```
+
+The RobotControl-only deployment validates the staged SHA-256 manifest, backs up the previous
+remote copy, installs `robot-control.service`, and checks only `GET /api/v1/health`; it does not
+call `/api/v1/status` or any control POST.
+
+The Orin-local RobotControl health check is intentionally direct, for example
+`http://127.0.0.1:6500/api/v1/health`. The Gateway prefix
+`/api/v1/robot-control/*` is reserved for external clients.
+
+Deploy and restart only the unified API Gateway:
+
+```powershell
+pwsh -NoProfile -File .\scripts\sync_and_restart_services.ps1 -ApiGatewayOnly
+```
+
+This installs `api_gateway/requirements.txt` into the Orin `wuji` environment, validates the
+staged SHA-256 manifest, and checks only `GET /api/v1/gateway/health`. Gateway unification changes
+the client entry and URL prefixes; it does not merge processes or remove the CameraPipeline,
+RecordReplay, or RobotControl internal ports.
+
+Gateway deployment health is the exception because it checks Gateway itself. Backend checks from
+Orin remain direct: CameraPipeline HTTP/WebSocket, RecordReplay, and RobotControl use their own
+`localhost` ports and are not probed through Gateway.
+
+Deploy CameraPipeline, RecordReplay, RobotControl and the API Gateway as one version-aligned unit:
 
 ```powershell
 pwsh -NoProfile -File .\scripts\sync_and_restart_services.ps1
 ```
 
-When staged CameraPipeline work must proceed before the new RecordReplay overlay artifact exists,
-use the explicit gate override:
-
-```powershell
-pwsh -NoProfile -File .\scripts\sync_and_restart_services.ps1 -SkipRecordReplayOverlayCheck
-```
-
-The override still synchronizes and restarts both services; it skips only the overlay-artifact
-precondition. `-CameraPipelineOnly` is valid only together with `-RestartOnly` and is rejected for
-deployment.
+RecordReplay service startup no longer depends on `ball_debug_overlay.jpg` or any other prior file.
+Missing or invalid runtime priors are reported only when现场人员 explicitly calls `POST /start`;
+the synchronization script must not add an overlay-artifact precondition. `-CameraPipelineOnly` is
+valid only together with `-RestartOnly` and is rejected for deployment.
 
 Before deployment, verify RecordReplay is waiting and that restarting it is in scope. Treat script
 success and its business-readiness output as the primary result; use short read-only status checks

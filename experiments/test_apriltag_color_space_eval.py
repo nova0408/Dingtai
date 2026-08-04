@@ -1856,5 +1856,5 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         logger.warning("用户中断，程序退出。")
     except Exception as exc:
-        logger.exception(f"程序异常退出：{exc}")
+        logger.error(f"程序异常退出：{exc}")
         raise

@@ -1,0 +1,19 @@
+[Unit]
+Description=Dingtai unified API gateway
+After=network.target camera-pipeline.service record-replay.service robot-control.service
+
+[Service]
+Type=simple
+User=wuji-brain
+WorkingDirectory=/home/wuji-brain/workspace
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/wuji-brain/miniconda3/envs/wuji/bin/python -m api_gateway.service --host 0.0.0.0 --port 443 --tls-cert /etc/dingtai/api-gateway/tls/api-gateway.fullchain.pem --tls-key /etc/dingtai/api-gateway/tls/api-gateway.key.pem
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=10
+
+[Install]
+WantedBy=multi-user.target

@@ -7,8 +7,10 @@ from PySide6.QtWidgets import QGroupBox, QHBoxLayout, QLabel, QVBoxLayout, QWidg
 
 from gui.test.common import ActivatableTab, AxisControlConfig, AxisControlRow, HoldRepeatController, StreamReaderWorker
 from gui.util_components.casia_indicator_light import CasiaIndicatorLight
-from src.wuji.right_hand_client import WujiRightHandClient
-from src.wuji.right_hand_specs import WujiRightHandActuatorSpec
+from gui.test.robot_control_clients import (
+    RightHandActuatorSpec,
+    RobotControlRightHandClient,
+)
 
 
 class M6HandTabWidget(QWidget, ActivatableTab):
@@ -18,7 +20,7 @@ class M6HandTabWidget(QWidget, ActivatableTab):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self._client: WujiRightHandClient | None = None
+        self._client: RobotControlRightHandClient | None = None
         self._active = False
         self._stream_run_id = 0
         self._current_values: dict[int, float] = {}
@@ -59,7 +61,7 @@ class M6HandTabWidget(QWidget, ActivatableTab):
         self._actuator_layout = QVBoxLayout(group)
         return group
 
-    def _build_axis_row(self, spec: WujiRightHandActuatorSpec) -> AxisControlRow:
+    def _build_axis_row(self, spec: RightHandActuatorSpec) -> AxisControlRow:
         row = AxisControlRow(
             AxisControlConfig(
                 axis_key=str(spec.actuator_id),
@@ -75,7 +77,7 @@ class M6HandTabWidget(QWidget, ActivatableTab):
         self._axis_rows[spec.actuator_id] = row
         return row
 
-    def _configure_actuator_rows(self, specs: tuple[WujiRightHandActuatorSpec, ...]) -> None:
+    def _configure_actuator_rows(self, specs: tuple[RightHandActuatorSpec, ...]) -> None:
         for row in self._axis_rows.values():
             self._actuator_layout.removeWidget(row)
             row.deleteLater()
@@ -96,7 +98,7 @@ class M6HandTabWidget(QWidget, ActivatableTab):
 
     # region 生命周期
 
-    def set_client(self, client: WujiRightHandClient | None) -> None:
+    def set_client(self, client: RobotControlRightHandClient | None) -> None:
         self._client = client
         if client is None:
             self._stream_worker.stop()
@@ -118,7 +120,6 @@ class M6HandTabWidget(QWidget, ActivatableTab):
         if self._client is None:
             self.info_label.setText("M6 hand 未连接")
             return
-        self._try_enable()
         self._stream_run_id = self._stream_worker.start()
 
     def set_connection_ready(self, ready: bool) -> None:
@@ -134,15 +135,6 @@ class M6HandTabWidget(QWidget, ActivatableTab):
     # endregion
 
     # region 使能
-
-    def _try_enable(self) -> None:
-        if self._client is None:
-            return
-        try:
-            if not self._client.get_enable():
-                self._client.set_enable(True)
-        except Exception:
-            pass
 
     @Slot()
     def _on_enable_clicked(self) -> None:

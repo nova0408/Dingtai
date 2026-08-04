@@ -415,7 +415,7 @@ def _worker_loop(
             )
             _put_latest(result_queue, result)
         except Exception as exc:
-            logger.exception(f"帧 {job.frame_idx} 三色小球检测失败：{exc}")
+            logger.error(f"帧 {job.frame_idx} 三色小球检测失败：{exc}")
         finally:
             busy_event.clear()
             job_queue.task_done()

@@ -9,9 +9,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from .application import RecordReplayApplication
 from ..device_status import DeviceStatusResponse
-from .protocol import RecordReplayResponse
+from .protocol import PriorUploadResponse, RecordReplayResponse
 
-ApiResponse = RecordReplayResponse | DeviceStatusResponse
+ApiResponse = RecordReplayResponse | DeviceStatusResponse | PriorUploadResponse
 
 
 class RecordReplayServer:
@@ -61,13 +61,28 @@ class RecordReplayServer:
                 try:
                     if self.path == "/start":
                         enable_agv_navigation = self._read_start_options()
-                        self._send(
-                            HTTPStatus.ACCEPTED,
-                            application.start(enable_agv_navigation),
+                        response = application.start(enable_agv_navigation)
+                        response_status = (
+                            HTTPStatus.BAD_REQUEST
+                            if not response.accepted and response.error_text is not None
+                            else HTTPStatus.ACCEPTED
                         )
+                        self._send(response_status, response)
                         return
                     if self.path == "/config":
                         self._send(HTTPStatus.OK, application.update_parameters(self._read_changes()))
+                        return
+                    if self.path == "/prior/ball-pose":
+                        self._send(
+                            HTTPStatus.OK,
+                            application.replace_ball_pose_prior(self._read_json_object()),
+                        )
+                        return
+                    if self.path == "/prior/charuco":
+                        self._send(
+                            HTTPStatus.OK,
+                            application.replace_charuco_prior(self._read_json_object()),
+                        )
                         return
                     self._send_error(HTTPStatus.NOT_FOUND, "unsupported path")
                 except Exception as exc:

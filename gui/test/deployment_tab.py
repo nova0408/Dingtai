@@ -20,6 +20,8 @@ from PySide6.QtWidgets import (
 from gui.test.common import ActivatableTab, BackgroundCall
 from record_replay.client import RecordReplayClient
 
+_RECORD_REPLAY_API_PREFIX = "/api/v1/record-replay"
+
 
 @dataclass(frozen=True, slots=True)
 class DeploymentTaskItem:
@@ -300,7 +302,12 @@ class DeploymentTabWidget(QWidget, ActivatableTab):
             return
         self._service_host = normalized_host
         self.address_label.setText(
-            f"http://{normalized_host}:6300" if normalized_host else "-"
+            (
+                f"https://{normalized_host}"
+                f"{_RECORD_REPLAY_API_PREFIX}"
+            )
+            if normalized_host
+            else "-"
         )
         self._latest_state = "unknown"
         self._last_tasks = None
@@ -469,8 +476,9 @@ class DeploymentTabWidget(QWidget, ActivatableTab):
 
     def _new_client(self) -> RecordReplayClient:
         return RecordReplayClient(
-            base_url=f"http://{self._service_host}:6300",
+            base_url=f"https://{self._service_host}",
             timeout_s=2.0,
+            api_prefix=_RECORD_REPLAY_API_PREFIX,
         )
 
     # endregion

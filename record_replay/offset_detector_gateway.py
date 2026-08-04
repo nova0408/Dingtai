@@ -39,9 +39,6 @@ def load_three_ball_priors(
 ) -> tuple[BallPosePriorInfo, ...]:
     """从 30 帧记录结果及其坐标语义重建三球模型先验。"""
 
-    debug_overlay_path = prior_capture_path.with_name("ball_debug_overlay.jpg")
-    if not debug_overlay_path.is_file():
-        raise FileNotFoundError(f"三球先验缺少 debug overlay：{debug_overlay_path}")
     payload = json.loads(prior_capture_path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
         raise ValueError(f"三球先验根节点必须是对象：{prior_capture_path}")

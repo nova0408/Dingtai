@@ -1,0 +1,4 @@
+interface:
+  display_name: "Robot Control Service Maintainer"
+  short_description: "安全维护机器人控制 HTTP 服务与现场硬件安全边界"
+  default_prompt: "Use $robot-control-service-maintainer to safely modify robot_control without running hardware control tests."

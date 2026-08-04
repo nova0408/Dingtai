@@ -1,0 +1,5 @@
+generated/
+client/
+*.key.pem
+*.csr.pem
+*.srl

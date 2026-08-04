@@ -1,0 +1,270 @@
+openapi: 3.1.0
+info:
+  title: RecordReplay HTTP API
+  version: 1.11.0
+  description: >-
+    双臂记录回放服务 HTTP API。POST /start 可能控制真实设备，必须由现场人员确认安全后调用。
+servers:
+  - url: http://{host}:6300
+    variables:
+      host:
+        default: 192.168.1.128
+externalDocs:
+  description: 完整中文接口说明与安全边界
+  url: ./API%20Reference.md
+paths:
+  /status:
+    get:
+      operationId: get_status
+      summary: 读取回放状态
+      responses:
+        '200':
+          description: 状态快照
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RecordReplayResponse'
+  /config:
+    get:
+      operationId: get_config
+      summary: 读取运行参数
+      responses:
+        '200':
+          description: 状态和完整运行参数
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RecordReplayResponse'
+    post:
+      operationId: update_config
+      summary: 更新运行参数
+      description: 回放线程运行期间拒绝修改；成功后立即持久化并影响下一轮。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConfigChanges'
+      responses:
+        '200':
+          description: 保存后的完整参数
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RecordReplayResponse'
+        '400':
+          $ref: '#/components/responses/ErrorResponse'
+  /device-status:
+    get:
+      operationId: get_device_status
+      summary: 读取现场设备只读状态
+      description: 回放运行期间拒绝并发诊断；不会调用运动、上电或使能命令。
+      responses:
+        '200':
+          description: 设备状态
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeviceStatusResponse'
+        '400':
+          $ref: '#/components/responses/ErrorResponse'
+  /start:
+    post:
+      operationId: start_replay
+      summary: 启动一轮回放
+      description: 先全量校验运行先验；校验通过后可能控制机械臂、AGV、夹爪、M11 和升降机构，必须现场确认安全。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StartRequest'
+      responses:
+        '202':
+          description: 请求已处理；accepted=false 表示已有任务运行
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RecordReplayResponse'
+        '400':
+          $ref: '#/components/responses/ErrorResponse'
+  /prior/ball-pose:
+    post:
+      operationId: replace_ball_pose_prior
+      summary: 替换三球 JSON 先验
+      description: 校验完整 JSON 后原子替换 ball_pose_prior.json；旧文件备份到服务端 .archive。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/JsonObject'
+      responses:
+        '200':
+          description: 先验替换结果
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PriorUploadResponse'
+        '400':
+          $ref: '#/components/responses/ErrorResponse'
+  /prior/charuco:
+    post:
+      operationId: replace_charuco_prior
+      summary: 替换 ChArUco JSON 先验
+      description: 校验完整 JSON 后原子替换 charuco_board_prior.json；旧文件备份到服务端 .archive。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/JsonObject'
+      responses:
+        '200':
+          description: 先验替换结果
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PriorUploadResponse'
+        '400':
+          $ref: '#/components/responses/ErrorResponse'
+components:
+  responses:
+    ErrorResponse:
+      description: 请求或业务错误
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/RecordReplayResponse'
+  schemas:
+    ReplayState:
+      type: string
+      enum: [waiting, navigating_to_start, replaying, failed]
+    CsvFileStatus:
+      type: object
+      required: [name, row_count]
+      properties:
+        name: {type: string}
+        row_count: {type: integer, minimum: 0}
+    ExecutionTaskStatus:
+      type: object
+      required: [sequence, left_csv, right_csv, synchronized]
+      properties:
+        sequence: {type: integer, minimum: 1}
+        left_csv: {type: [string, 'null']}
+        right_csv: {type: [string, 'null']}
+        synchronized: {type: boolean}
+    RuntimeParameters:
+      type: object
+      required: [move_abs_j_end_linear_speed_mm_s, move_abs_j_zone_mm, agv_navigation_timeout_s, agv_navigation_poll_interval_s, non_motion_retry_count, non_motion_retry_delay_s]
+      properties:
+        move_abs_j_end_linear_speed_mm_s: {type: number, minimum: 5, maximum: 4000, default: 1000}
+        move_abs_j_zone_mm: {type: number, minimum: 0, default: 10}
+        agv_navigation_timeout_s: {type: number, exclusiveMinimum: 0, default: 600}
+        agv_navigation_poll_interval_s: {type: number, exclusiveMinimum: 0, default: 1}
+        non_motion_retry_count: {type: integer, minimum: 1, default: 3}
+        non_motion_retry_delay_s: {type: number, minimum: 0, default: 0.5}
+    RecordReplayResponse:
+      type: object
+      required: [state, accepted, left_csv_state, plan_index, error_text, left_csv_files, right_csv_files, execution_tasks, current_task_sequence, current_task_active, total_execution_count, current_left_csv, current_right_csv, current_left_row, current_right_row, current_left_total_rows, current_right_total_rows, parameters]
+      properties:
+        state: {$ref: '#/components/schemas/ReplayState'}
+        accepted: {type: boolean}
+        left_csv_state: {type: [string, 'null']}
+        plan_index: {type: [integer, 'null'], minimum: 0}
+        error_text: {type: [string, 'null']}
+        left_csv_files: {type: array, items: {$ref: '#/components/schemas/CsvFileStatus'}}
+        right_csv_files: {type: array, items: {$ref: '#/components/schemas/CsvFileStatus'}}
+        execution_tasks: {type: array, items: {$ref: '#/components/schemas/ExecutionTaskStatus'}}
+        current_task_sequence: {type: integer, minimum: 0}
+        current_task_active: {type: boolean}
+        total_execution_count: {type: integer, minimum: 0}
+        current_left_csv: {type: [string, 'null']}
+        current_right_csv: {type: [string, 'null']}
+        current_left_row: {type: [integer, 'null'], minimum: 1}
+        current_right_row: {type: [integer, 'null'], minimum: 1}
+        current_left_total_rows: {type: [integer, 'null'], minimum: 0}
+        current_right_total_rows: {type: [integer, 'null'], minimum: 0}
+        parameters:
+          oneOf:
+            - {$ref: '#/components/schemas/RuntimeParameters'}
+            - type: 'null'
+    ConfigChanges:
+      type: object
+      additionalProperties: false
+      description: 允许的字段见下列 properties；boolean 和未知字段会被拒绝。
+      properties:
+        move_abs_j_end_linear_speed_mm_s: {type: number}
+        move_abs_j_zone_mm: {type: number}
+        agv_navigation_timeout_s: {type: number}
+        agv_navigation_poll_interval_s: {type: number}
+        non_motion_retry_count: {type: integer}
+        non_motion_retry_delay_s: {type: number}
+    StartRequest:
+      type: object
+      additionalProperties: false
+      required: [enable_agv_navigation]
+      properties:
+        enable_agv_navigation: {type: boolean}
+    JsonObject:
+      type: object
+      additionalProperties: true
+    PriorUploadResponse:
+      type: object
+      required: [accepted, file_name, backup_file]
+      properties:
+        accepted: {type: boolean}
+        file_name: {type: string}
+        backup_file: {type: [string, 'null']}
+    ArmDeviceStatus:
+      type: object
+      required: [connected, error, ip, expected_type, robot_type, robot_uid, operate_mode, operation_state, power_state, powered_on]
+      properties:
+        connected: {type: boolean}
+        error: {type: [string, 'null']}
+        ip: {type: string}
+        expected_type: {type: string}
+        robot_type: {type: [string, 'null']}
+        robot_uid: {type: [string, 'null']}
+        operate_mode: {type: [string, 'null']}
+        operation_state: {type: [string, 'null']}
+        power_state: {type: [string, 'null']}
+        powered_on: {type: [boolean, 'null']}
+    GripperDeviceStatus:
+      type: object
+      required: [connected, error, online, calibrated, enabled, position, state]
+      properties:
+        connected: {type: boolean}
+        error: {type: [string, 'null']}
+        online: {type: [boolean, 'null']}
+        calibrated: {type: [boolean, 'null']}
+        enabled: {type: [boolean, 'null']}
+        position: {type: [integer, 'null']}
+        state: {type: [string, 'null']}
+    HeadDeviceStatus:
+      type: object
+      required: [connected, error, enabled, yaw_deg, pitch_deg]
+      properties:
+        connected: {type: boolean}
+        error: {type: [string, 'null']}
+        enabled: {type: [boolean, 'null']}
+        yaw_deg: {type: [number, 'null']}
+        pitch_deg: {type: [number, 'null']}
+    LiftDeviceStatus:
+      type: object
+      required: [connected, error, enabled, height_mm]
+      properties:
+        connected: {type: boolean}
+        error: {type: [string, 'null']}
+        enabled: {type: [boolean, 'null']}
+        height_mm: {type: [number, 'null']}
+    DeviceStatusResponse:
+      type: object
+      required: [all_connected, left_arm, right_arm, gripper, head, lift]
+      properties:
+        all_connected: {type: boolean}
+        left_arm: {$ref: '#/components/schemas/ArmDeviceStatus'}
+        right_arm: {$ref: '#/components/schemas/ArmDeviceStatus'}
+        gripper: {$ref: '#/components/schemas/GripperDeviceStatus'}
+        head: {$ref: '#/components/schemas/HeadDeviceStatus'}
+        lift: {$ref: '#/components/schemas/LiftDeviceStatus'}

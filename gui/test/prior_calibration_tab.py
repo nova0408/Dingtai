@@ -24,13 +24,13 @@ from PySide6.QtWidgets import (
 from gui.test.arm_tab import ArmTabWidget
 from gui.test.camera_tab import ImagePreviewLabel
 from gui.test.common import ActivatableTab, BackgroundCall
-from gui.util_components.casia_indicator_light import (
-    CasiaMultiStateIndicator,
-    IndicatorState,
+from gui.util_components.casia_indicator_light import CasiaMultiStateIndicator
+from gui.test.robot_control_clients import (
+    Ar5Snapshot,
+    RobotControlAr5Client,
+    RobotControlHeadClient,
 )
-from src.wuji.ar5_client import Ar5Client, Ar5Snapshot
 from src.wuji.camera_protocol import WujiCameraFrame
-from src.wuji.head_client import WujiHeadClient
 from src.wuji.prior_calibration import (
     BALL_CAMERA_NAME,
     DEFAULT_BALL_COLORS,
@@ -48,11 +48,6 @@ class PriorCalibrationTabWidget(QWidget, ActivatableTab):
     HEAD_YAW_DEG = 60.0
     HEAD_PITCH_DEG = 45.0
     HEAD_POSITION_TOLERANCE_DEG = 1.0
-    DRAG_STATES = (
-        IndicatorState("off", "关闭", "#607d8b"),
-        IndicatorState("drag", "拖动", "#00897b"),
-        IndicatorState("unknown", "未知", "#607d8b"),
-    )
 
     ballSampleReady = Signal(object)
     cameraStreamRequested = Signal(str)
@@ -62,8 +57,8 @@ class PriorCalibrationTabWidget(QWidget, ActivatableTab):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self._arm: Ar5Client | None = None
-        self._head: WujiHeadClient | None = None
+        self._arm: RobotControlAr5Client | None = None
+        self._head: RobotControlHeadClient | None = None
         self._recorder: PriorCalibrationRecorder | None = None
         self._snapshot: Ar5Snapshot | None = None
         self._active = False
@@ -135,7 +130,6 @@ class PriorCalibrationTabWidget(QWidget, ActivatableTab):
     def _connect_signals(self) -> None:
         self.mode_indicator.clicked.connect(self._toggle_mode)
         self.power_indicator.clicked.connect(self._toggle_power)
-        self.drag_indicator.clicked.connect(self._toggle_drag)
         self.move_button.clicked.connect(self._move_joints)
         self.record_ball_button.clicked.connect(self._record_ball_prior)
         self.ball_overlay_checkbox.toggled.connect(self._refresh_preview)
@@ -175,19 +169,12 @@ class PriorCalibrationTabWidget(QWidget, ActivatableTab):
             group,
             interactive=False,
         )
-        self.drag_indicator = CasiaMultiStateIndicator(
-            "拖动状态",
-            self.DRAG_STATES,
-            group,
-        )
         status_layout.addWidget(QLabel("模式", group), 0, 0)
         status_layout.addWidget(self.mode_indicator, 0, 1)
         status_layout.addWidget(QLabel("使能", group), 0, 2)
         status_layout.addWidget(self.power_indicator, 0, 3)
         status_layout.addWidget(QLabel("运行", group), 1, 0)
         status_layout.addWidget(self.operation_indicator, 1, 1)
-        status_layout.addWidget(QLabel("拖动", group), 1, 2)
-        status_layout.addWidget(self.drag_indicator, 1, 3)
         status_layout.setColumnStretch(1, 1)
         status_layout.setColumnStretch(3, 1)
         layout.addLayout(status_layout)
@@ -226,7 +213,6 @@ class PriorCalibrationTabWidget(QWidget, ActivatableTab):
             (
                 self.mode_indicator,
                 self.power_indicator,
-                self.drag_indicator,
                 *self._joint_boxes,
                 self.move_button,
             )
@@ -307,8 +293,8 @@ class PriorCalibrationTabWidget(QWidget, ActivatableTab):
 
     def set_clients(
         self,
-        arm: Ar5Client | None,
-        head: WujiHeadClient | None,
+        arm: RobotControlAr5Client | None,
+        head: RobotControlHeadClient | None,
         recorder: PriorCalibrationRecorder | None,
     ) -> None:
         self._arm = arm
@@ -328,11 +314,16 @@ class PriorCalibrationTabWidget(QWidget, ActivatableTab):
         self.mode_indicator.set_state("unknown")
         self.power_indicator.set_state("unknown")
         self.operation_indicator.set_state("unknown")
-        self.drag_indicator.set_state("unknown")
         for label in self._joint_current_labels:
             label.setText("--")
         self.status_label.setText("等待连接")
         self.preview.clear_preview("等待相机连接")
+
+    @Slot(str)
+    def show_camera_error(self, message: str) -> None:
+        """仅在先验标定页显示相机流错误。"""
+
+        self.status_label.setText(f"相机流失败：{message}")
 
     def set_active(self, active: bool) -> None:
         self._active = active
@@ -373,9 +364,6 @@ class PriorCalibrationTabWidget(QWidget, ActivatableTab):
         )
         self.operation_indicator.set_state(
             ArmTabWidget._operation_indicator_state(payload.operation_state)
-        )
-        self.drag_indicator.set_state(
-            "drag" if payload.operation_state == "drag" else "off"
         )
         for label, value in zip(
             self._joint_current_labels,
@@ -535,26 +523,6 @@ class PriorCalibrationTabWidget(QWidget, ActivatableTab):
         )
 
     @Slot()
-    def _toggle_drag(self) -> None:
-        snapshot = self._snapshot
-        if snapshot is None:
-            return
-        enabled = snapshot.operation_state != "drag"
-        if enabled and (
-            snapshot.operate_mode != "manual"
-        ):
-            QMessageBox.warning(
-                self,
-                "拖动状态不满足",
-                "请先点击模式指示灯，将左 AR5 切换为手动模式。",
-            )
-            return
-        self._run_action(
-            lambda: self._require_arm().set_drag_enabled(enabled),
-            "左 AR5 拖动已开启" if enabled else "左 AR5 拖动已关闭",
-        )
-
-    @Slot()
     def _move_joints(self) -> None:
         snapshot = self._snapshot
         if (
@@ -619,11 +587,11 @@ class PriorCalibrationTabWidget(QWidget, ActivatableTab):
         if self._prior_busy or self._snapshot is None:
             return
         snapshot = self._snapshot
-        if snapshot.operation_state not in {"idle", "drag"}:
+        if snapshot.operation_state != "idle":
             QMessageBox.warning(
                 self,
                 "左臂状态不稳定",
-                "记录三球先验前请停止 Move/Jog，使左臂保持空闲或拖动状态。",
+                "记录三球先验前请停止 Move，使左臂保持空闲状态。",
             )
             return
         self._prior_busy = True
@@ -734,12 +702,12 @@ class PriorCalibrationTabWidget(QWidget, ActivatableTab):
 
     # region 工具
 
-    def _require_arm(self) -> Ar5Client:
+    def _require_arm(self) -> RobotControlAr5Client:
         if self._arm is None:
             raise RuntimeError("左 AR5 未连接")
         return self._arm
 
-    def _require_head(self) -> WujiHeadClient:
+    def _require_head(self) -> RobotControlHeadClient:
         if self._head is None:
             raise RuntimeError("头部未连接")
         return self._head

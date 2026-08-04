@@ -19,7 +19,12 @@ PROJECT_ROOT = Path(__file__).resolve().parents[3]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.rgbd_camera import Gemini305, SessionOptions, set_point_cloud_filter_format, OrbbecSession
+from src.rgbd_camera import (
+    Gemini305,
+    OrbbecSession,
+    SessionOptions,
+    set_point_cloud_filter_format,
+)
 
 # region 默认参数（优先在这里直接改）
 DEFAULT_TIMEOUT_MS = 120  # 等待相机帧超时，单位 ms
@@ -488,7 +493,7 @@ def _plane_worker(
             result = _detect_three_planes(job=job, cfg=cfg, tray_detector=tray_detector)
             _put_latest_result(result_queue, result)
         except Exception as exc:
-            logger.exception(f"帧 {job.frame_idx} 平面检测失败：{exc}")
+            logger.error(f"帧 {job.frame_idx} 平面检测失败：{exc}")
         finally:
             worker_busy.clear()
             job_queue.task_done()
@@ -605,7 +610,7 @@ def _detect_tray_exclusion(
     try:
         detections = detector.detect(base_bgr)
     except Exception as exc:
-        logger.exception(f"料盘识别失败，本帧不执行料盘排除：{exc}")
+        logger.error(f"料盘识别失败，本帧不执行料盘排除：{exc}")
         return excluded, []
     out: list[TrayExclusion] = []
     for det in detections:

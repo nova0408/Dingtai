@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import csv
 import concurrent.futures
+import csv
 import faulthandler
 import queue
 import sys
@@ -22,11 +22,11 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.pointcloud.opening_detection import (
-    OpeningDetectionPipeline,
-    OpeningDetectionEstimator,
-    TemporalFilterState,
     GraspResult,
     OpeningDetection,
+    OpeningDetectionEstimator,
+    OpeningDetectionPipeline,
+    TemporalFilterState,
 )
 from src.pointcloud.tray_detection import TrayDetectionPipeline, TrayRuntimeState
 from src.rgbd_camera import Gemini305, SessionOptions, set_point_cloud_filter_format
@@ -157,7 +157,7 @@ def _enable_fault_logging(log_path: Path) -> None:
         logger.warning(f"faulthandler 启用失败：{exc}")
 
     def _thread_excepthook(args: threading.ExceptHookArgs) -> None:
-        logger.exception(
+        logger.error(
             f"线程未捕获异常 thread={args.thread.name if args.thread is not None else 'unknown'}: {args.exc_value}"
         )
 
@@ -355,7 +355,7 @@ def _run_pipeline(
                 fps_t0 = now
                 preview_frames = 0
     except Exception as exc:
-        logger.exception(f"主循环异常退出：{exc}")
+        logger.error(f"主循环异常退出：{exc}")
         raise
     finally:
         stop_event.set()
@@ -411,7 +411,7 @@ def _worker_loop(
             )
             _put_latest_result(result_queue, result)
         except Exception as exc:
-            logger.exception(f"帧 {job.frame_idx} 计算线程异常：{exc}")
+            logger.error(f"帧 {job.frame_idx} 计算线程异常：{exc}")
         finally:
             busy_event.clear()
             job_queue.task_done()
@@ -553,7 +553,9 @@ def _run_compute_job(
             err = f"OpenCV error: {exc}"
         else:
             err = str(exc)
-    grasp = _time_call(timings, "stabilize_opening_detection_pose", pose_estimator.stabilize_grasp_result, grasp, temporal_state)
+    grasp = _time_call(
+        timings, "stabilize_opening_detection_pose", pose_estimator.stabilize_grasp_result, grasp, temporal_state
+    )
 
     overlay = _safe_draw_overlay_partial(
         base_bgr,

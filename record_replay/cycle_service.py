@@ -6,6 +6,7 @@ import time
 from pathlib import Path
 
 from .agv_navigation import AgvClient, wait_until_arrived
+from .charuco_offset import CharucoOffsetInitializer
 from .context import ReplayContext
 from .contracts import CsvExecutionPlan, ReplayCsvFileStatus, ReplayServiceState
 from .csv_repository import discover_csv_paths, extract_sync_csv_sequence, load_replay_rows
@@ -23,11 +24,13 @@ class RecordReplayCycleService:
         agv_client: AgvClient,
         executor: DualArmExecutor | None = None,
         offset_updater: GlobalOffsetUpdater | None = None,
+        charuco_initializer: CharucoOffsetInitializer | None = None,
     ) -> None:
         self._context = context
         self._agv_client = agv_client
         self._executor = executor if executor is not None else DualArmExecutor()
         self._offset_updater = offset_updater
+        self._charuco_initializer = charuco_initializer
 
     def run_once(self, enable_agv_navigation: bool = True) -> None:
         """执行一轮可选 AGV 导航、双臂回放与返回流程。"""
@@ -46,15 +49,12 @@ class RecordReplayCycleService:
                 )
             if not left_paths:
                 raise RuntimeError(f"没有在目录中发现 CSV: {config.left_record_dir}")
-            self._executor.execute(self._context, plans, self._offset_updater)
-            if enable_agv_navigation:
-                self._context.set_state(ReplayServiceState.NAVIGATING_TO_FINISH)
-                wait_until_arrived(
-                    self._agv_client,
-                    config.finish_station,
-                    timeout_s=config.settings.agv_navigation_timeout_s,
-                    poll_s=config.settings.agv_navigation_poll_interval_s,
-                )
+            self._executor.execute(
+                self._context,
+                plans,
+                self._offset_updater,
+                self._charuco_initializer,
+            )
             self._context.reset_for_next_cycle()
         except Exception as error:
             self._context.set_state(ReplayServiceState.FAILED, error_text=str(error))

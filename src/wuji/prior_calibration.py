@@ -6,7 +6,7 @@ import re
 from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Protocol
 
 import cv2
 import numpy as np
@@ -18,9 +18,28 @@ from camera_pipeline.ball_pose_detection.protocol import (
     BallPoseDetectionResponse,
     BallPosePriorInfo,
 )
-from camera_pipeline.client import CameraName, CameraPipelineClient
+from camera_pipeline.client import CameraName
+from camera_pipeline.service.http_client import CameraPipelineHttpClient
 from camera_pipeline.service.protocol import CharucoDetectionRequest
-from src.wuji.ar5_client import Ar5Snapshot
+
+
+class Ar5SnapshotLike(Protocol):
+    """先验记录所需的 AR5 只读字段。"""
+
+    @property
+    def joint_deg(self) -> tuple[float, ...]: ...
+
+    @property
+    def pose_matrix_m(self) -> tuple[tuple[float, ...], ...]: ...
+
+    @property
+    def xyz_mm(self) -> tuple[float, float, float]: ...
+
+    @property
+    def rpy_deg(self) -> tuple[float, float, float]: ...
+
+    @property
+    def elbow_deg(self) -> float: ...
 
 # region 数据结构
 
@@ -169,7 +188,7 @@ class PriorCalibrationRecorder:
 
     def __init__(
         self,
-        client: CameraPipelineClient,
+        client: CameraPipelineHttpClient,
         config: PriorCalibrationConfig | None = None,
     ) -> None:
         """创建先验记录器。
@@ -195,7 +214,7 @@ class PriorCalibrationRecorder:
 
     def record_ball_prior(
         self,
-        arm_snapshot: Ar5Snapshot,
+        arm_snapshot: Ar5SnapshotLike,
         ball_colors: tuple[str, str, str] = DEFAULT_BALL_COLORS,
         progress: PriorProgressCallback | None = None,
     ) -> PriorCalibrationResult:
@@ -475,7 +494,7 @@ class PriorCalibrationRecorder:
         self,
         aggregation: _BallAggregation,
         transform: np.ndarray,
-        arm_snapshot: Ar5Snapshot,
+        arm_snapshot: Ar5SnapshotLike,
         ball_colors: tuple[str, str, str],
     ) -> PriorCalibrationResult:
         """保存三球 JSON 与 overlay 核验图。"""

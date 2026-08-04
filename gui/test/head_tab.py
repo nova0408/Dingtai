@@ -12,7 +12,7 @@ from gui.test.common import (
 )
 from gui.util_components.casia_indicator_light import CasiaIndicatorLight
 from src.arm.wuji_arm_protocol import WUJI_HEAD_AXIS_LIMITS
-from src.wuji.head_client import WujiHeadClient
+from gui.test.robot_control_clients import RobotControlHeadClient
 
 
 class HeadTabWidget(QWidget, ActivatableTab):
@@ -25,7 +25,7 @@ class HeadTabWidget(QWidget, ActivatableTab):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self._client: WujiHeadClient | None = None
+        self._client: RobotControlHeadClient | None = None
         self._active = False
         self._refresh_busy = False
         self._action_busy = False
@@ -140,7 +140,7 @@ class HeadTabWidget(QWidget, ActivatableTab):
 
     # region 生命周期
 
-    def set_client(self, client: WujiHeadClient | None) -> None:
+    def set_client(self, client: RobotControlHeadClient | None) -> None:
         self._client = client
         self._refresh_busy = False
         self._action_busy = False

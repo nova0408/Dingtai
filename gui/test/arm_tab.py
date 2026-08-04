@@ -1,24 +1,20 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
 from queue import Queue
 from threading import Thread
 
 from loguru import logger
 from PySide6.QtCore import QObject, Qt, QTimer, Signal, Slot
 from PySide6.QtWidgets import (
-    QComboBox,
     QDoubleSpinBox,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
-    QLineEdit,
     QMessageBox,
     QPushButton,
     QScrollArea,
-    QStackedWidget,
     QTabWidget,
     QVBoxLayout,
     QWidget,
@@ -27,17 +23,9 @@ from PySide6.QtWidgets import (
 from gui.test.common import ActivatableTab, BackgroundCall
 from gui.util_components.casia_indicator_light import (
     CasiaMultiStateIndicator,
-    CasiaToggleSwitch,
     IndicatorState,
 )
-from src.wuji.ar5_client import Ar5Client, Ar5JogSpace, Ar5Side, Ar5Snapshot
-
-
-@dataclass(frozen=True, slots=True)
-class _JogAxis:
-    title: str
-    axis_index: int
-    step: float
+from gui.test.robot_control_clients import Ar5Snapshot, Ar5Side, RobotControlAr5Client
 
 
 class _SerialActionWorker(QObject):
@@ -89,36 +77,23 @@ class ArmTabWidget(QWidget, ActivatableTab):
     OPERATION_STATES = (
         IndicatorState("idle", "空闲", "#546e7a"),
         IndicatorState("running", "运行", "#2e7d32"),
-        IndicatorState("drag", "拖动", "#00897b"),
         IndicatorState("demo", "Demo", "#5e35b1"),
         IndicatorState("identify", "辨识", "#6d4c41"),
-        IndicatorState("jog", "Jog", "#0277bd"),
         IndicatorState("collaboration", "协作", "#00838f"),
         IndicatorState("error", "错误", "#c62828"),
         IndicatorState("debug", "调试", "#455a64"),
         IndicatorState("unknown", "未知", "#607d8b"),
     )
-    CARTESIAN_JOG_AXES = (
-        _JogAxis("X", 0, 1000.0),
-        _JogAxis("Y", 1, 1000.0),
-        _JogAxis("Z", 2, 1000.0),
-        _JogAxis("Rx", 3, 360.0),
-        _JogAxis("Ry", 4, 360.0),
-        _JogAxis("Rz", 5, 360.0),
-    )
-    JOINT_JOG_AXES = tuple(_JogAxis(f"J{index}", index - 1, 360.0) for index in range(1, 8))
-
     # region 初始化
 
     def __init__(self, side: Ar5Side, title: str, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.side = side
         self.title = title
-        self._client: Ar5Client | None = None
+        self._client: RobotControlAr5Client | None = None
         self._snapshot: Ar5Snapshot | None = None
         self._active = False
         self._refresh_busy = False
-        self._jog_active = False
         self._control_widgets: list[QWidget] = []
         self._joint_current_labels: list[QLabel] = []
         self._joint_target_boxes: list[QDoubleSpinBox] = []
@@ -144,7 +119,6 @@ class ArmTabWidget(QWidget, ActivatableTab):
         self.control_tabs.setDocumentMode(True)
         self.control_tabs.addTab(self._wrap_scroll(self._build_status_page()), "状态")
         self.control_tabs.addTab(self._wrap_scroll(self._build_move_page()), "Move")
-        self.control_tabs.addTab(self._wrap_scroll(self._build_jog_page()), "Jog")
         root_layout.addWidget(self.control_tabs, 1)
 
         self.setStyleSheet(
@@ -168,31 +142,13 @@ class ArmTabWidget(QWidget, ActivatableTab):
     def _build_header(self) -> QVBoxLayout:
         layout = QVBoxLayout()
         connection_row = QHBoxLayout()
-        self.ip_edit = QLineEdit(self)
-        self.ip_edit.setPlaceholderText(f"{self.title} 控制器 IP")
-        self.ip_edit.setMinimumHeight(self.TOUCH_HEIGHT)
-        self.ip_edit.setMaximumWidth(240)
         self.info_label = QLabel(f"{self.title} 未连接", self)
-        self.drag_switch = CasiaToggleSwitch(
-            self,
-            tooltip_prefix="拖动",
-        )
         self.stop_button = QPushButton("停止运动", self)
         self.stop_button.setStyleSheet(
             "QPushButton { background: #b3261e; color: white; font-weight: 700; }"
         )
-        connection_row.addWidget(QLabel("控制器 IP", self))
-        connection_row.addWidget(self.ip_edit)
         connection_row.addWidget(self.info_label, 1)
-        connection_row.addWidget(QLabel("拖动", self))
-        connection_row.addWidget(self.drag_switch)
         connection_row.addWidget(self.stop_button)
-        self.estop_recover_button = QPushButton("急停恢复", self)
-        self.estop_recover_button.setStyleSheet(
-            "QPushButton { background: #ffffff; color: #000000; "
-            "border: 1px solid #616161; font-weight: 700; }"
-        )
-        connection_row.addWidget(self.estop_recover_button)
         layout.addLayout(connection_row)
 
         state_row = QHBoxLayout()
@@ -221,8 +177,6 @@ class ArmTabWidget(QWidget, ActivatableTab):
             (
                 self.mode_indicator,
                 self.power_indicator,
-                self.estop_recover_button,
-                self.drag_switch,
                 self.stop_button,
             )
         )
@@ -356,59 +310,6 @@ class ArmTabWidget(QWidget, ActivatableTab):
         )
         return page
 
-    def _build_jog_page(self) -> QWidget:
-        page = QWidget(self)
-        layout = QVBoxLayout(page)
-        settings = QHBoxLayout()
-        self.jog_space_combo = QComboBox(page)
-        self.jog_space_combo.addItem("笛卡尔（基坐标）", "cartesian")
-        self.jog_space_combo.addItem("关节", "joint")
-        self.jog_rate_box = self._new_spin_box(0.01, 1.0, 0.08, 0.01, 2)
-        settings.addWidget(QLabel("Jog 空间", page))
-        settings.addWidget(self.jog_space_combo)
-        settings.addWidget(QLabel("速率", page))
-        settings.addWidget(self.jog_rate_box)
-        settings.addStretch(1)
-        layout.addLayout(settings)
-
-        hint = QLabel("按住方向键运动，松开即停止。任何异常请点击顶部“停止运动”。", page)
-        hint.setWordWrap(True)
-        layout.addWidget(hint)
-        self.jog_stack = QStackedWidget(page)
-        self.jog_stack.addWidget(self._build_jog_axis_page(self.CARTESIAN_JOG_AXES, "cartesian"))
-        self.jog_stack.addWidget(self._build_jog_axis_page(self.JOINT_JOG_AXES, "joint"))
-        layout.addWidget(self.jog_stack)
-        layout.addStretch(1)
-        self._control_widgets.extend((self.jog_space_combo, self.jog_rate_box))
-        return page
-
-    def _build_jog_axis_page(self, axes: tuple[_JogAxis, ...], space: Ar5JogSpace) -> QWidget:
-        page = QWidget(self)
-        layout = QGridLayout(page)
-        for row, axis in enumerate(axes):
-            layout.addWidget(QLabel(axis.title, page), row, 0)
-            minus_button = QPushButton(f"{axis.title} −", page)
-            plus_button = QPushButton(f"{axis.title} +", page)
-            minus_button.pressed.connect(self._jog_start_callback(space, axis, False))
-            plus_button.pressed.connect(self._jog_start_callback(space, axis, True))
-            minus_button.released.connect(self._stop_jog)
-            plus_button.released.connect(self._stop_jog)
-            layout.addWidget(minus_button, row, 1)
-            layout.addWidget(plus_button, row, 2)
-            self._control_widgets.extend((minus_button, plus_button))
-        return page
-
-    def _jog_start_callback(
-        self,
-        space: Ar5JogSpace,
-        axis: _JogAxis,
-        direction_positive: bool,
-    ) -> Callable[[], None]:
-        def callback() -> None:
-            self._start_jog(space, axis, direction_positive)
-
-        return callback
-
     @staticmethod
     def _wrap_scroll(content: QWidget) -> QScrollArea:
         scroll = QScrollArea()
@@ -441,14 +342,11 @@ class ArmTabWidget(QWidget, ActivatableTab):
     def _connect_signals(self) -> None:
         self.mode_indicator.clicked.connect(self._toggle_operate_mode)
         self.power_indicator.clicked.connect(self._toggle_power)
-        self.estop_recover_button.clicked.connect(self._recover_estop)
-        self.drag_switch.toggled.connect(self._toggle_drag)
         self.stop_button.clicked.connect(self._stop_motion)
         self.move_joints_button.clicked.connect(self._move_joints)
         self.copy_pose_button.clicked.connect(self._copy_current_pose)
         self.move_pose_button.clicked.connect(self._move_pose)
         self.move_elbow_button.clicked.connect(self._move_elbow)
-        self.jog_space_combo.currentIndexChanged.connect(self.jog_stack.setCurrentIndex)
         self._refresh_call.succeeded.connect(self._on_refresh_succeeded)
         self._refresh_call.failed.connect(self._on_refresh_failed)
         self._refresh_call.finished.connect(self._on_refresh_finished)
@@ -459,36 +357,17 @@ class ArmTabWidget(QWidget, ActivatableTab):
 
     # region 生命周期
 
-    def set_client(self, client: Ar5Client | None) -> None:
+    def set_client(self, client: RobotControlAr5Client | None) -> None:
         self._client = client
-        self.ip_edit.setEnabled(client is None)
         self._snapshot = None
-        self._jog_active = False
         self.set_connection_ready(client is not None)
         if client is None:
             self._refresh_timer.stop()
-
-    def set_connection_ip(self, ip_address: str) -> None:
-        """设置该 AR5 页显示和连接使用的控制器 IP。"""
-
-        self.ip_edit.setText(ip_address.strip())
-
-    def connection_ip(self) -> str:
-        """返回该 AR5 页输入的控制器 IP。"""
-
-        return self.ip_edit.text().strip()
-
-    def set_connection_ip_enabled(self, enabled: bool) -> None:
-        """在连接建立期间锁定控制器 IP，避免显示值与实际连接目标不一致。"""
-
-        self.ip_edit.setEnabled(enabled and self._client is None)
 
     def set_active(self, active: bool) -> None:
         self._active = bool(active)
         if not self._active:
             self._refresh_timer.stop()
-            if self._jog_active:
-                self._stop_jog()
             return
         if self._client is None:
             self.info_label.setText(f"{self.title} 未连接")
@@ -499,17 +378,11 @@ class ArmTabWidget(QWidget, ActivatableTab):
     def set_connection_ready(self, ready: bool) -> None:
         for widget in self._control_widgets:
             widget.setEnabled(ready)
-        self.estop_recover_button.setEnabled(
-            ready
-            and self._snapshot is not None
-            and self._snapshot.power_state == "estop"
-        )
         if ready:
             return
         self.mode_indicator.set_state("unknown")
         self.power_indicator.set_state("unknown")
         self.operation_indicator.set_state("unknown")
-        self.drag_switch.set_checked(False)
         self.info_label.setText(f"{self.title} 未连接")
         self._clear_display()
 
@@ -544,7 +417,6 @@ class ArmTabWidget(QWidget, ActivatableTab):
         self.operation_indicator.set_state(
             self._operation_indicator_state(snapshot.operation_state)
         )
-        self.estop_recover_button.setEnabled(snapshot.power_state == "estop")
         self._state_labels["type"].setText(snapshot.robot_type)
         self._state_labels["uid"].setText(snapshot.robot_uid)
         for index, (label, value) in enumerate(
@@ -559,8 +431,6 @@ class ArmTabWidget(QWidget, ActivatableTab):
         self._pose_current_labels["elbow"].setText(
             f"ELBOW\n{snapshot.elbow_deg:.2f}°"
         )
-        is_dragging = snapshot.operation_state == "drag"
-        self.drag_switch.set_checked(is_dragging)
         self.info_label.setText(f"{self.title} 已连接")
 
     def _clear_display(self) -> None:
@@ -601,25 +471,7 @@ class ArmTabWidget(QWidget, ActivatableTab):
         )
 
     @Slot()
-    def _recover_estop(self) -> None:
-        if self._snapshot is None or self._snapshot.power_state != "estop":
-            return
-        self._run_action(lambda client: client.recover_estop(), "已发送急停恢复请求")
-
-    @Slot(bool)
-    def _toggle_drag(self, enabled: bool) -> None:
-        snapshot = self._snapshot
-        if snapshot is None:
-            self.drag_switch.set_checked(False)
-            return
-        self._run_action(
-            lambda client: client.set_drag_enabled(enabled),
-            "拖动已开启" if enabled else "拖动已关闭",
-        )
-
-    @Slot()
     def _stop_motion(self) -> None:
-        self._jog_active = False
         self._run_action(lambda client: client.stop(), "已发送停止命令")
 
     @Slot()
@@ -721,13 +573,10 @@ class ArmTabWidget(QWidget, ActivatableTab):
             "loadIdentify",
         }:
             return "identify"
-        if operation_state in {"jog", "jogging"}:
-            return "jog"
         if operation_state in {"rtControlling", "collaboration", "collaborate"}:
             return "collaboration"
         if operation_state in {
             "idle",
-            "drag",
             "demo",
             "error",
             "debug",
@@ -736,36 +585,6 @@ class ArmTabWidget(QWidget, ActivatableTab):
         return "unknown"
 
     # endregion
-
-    # region Jog
-
-    def _start_jog(
-        self,
-        space: Ar5JogSpace,
-        axis: _JogAxis,
-        direction_positive: bool,
-    ) -> None:
-        if not self._confirm_motion_state("Jog", "manual"):
-            return
-        self._jog_active = True
-        rate = float(self.jog_rate_box.value())
-        self._run_action(
-            lambda client: client.start_jog(
-                space,
-                axis.axis_index,
-                direction_positive,
-                rate=rate,
-                step=axis.step,
-            ),
-            f"{axis.title} Jog 已启动",
-        )
-
-    @Slot()
-    def _stop_jog(self) -> None:
-        if not self._jog_active:
-            return
-        self._jog_active = False
-        self._run_action(lambda client: client.stop(), "Jog 已停止")
 
     def _confirm_motion_state(
         self,
@@ -786,17 +605,15 @@ class ArmTabWidget(QWidget, ActivatableTab):
             f"请先自主完成以下设置：\n"
             f"1. 点击工作模式指示灯，切换为{mode_text}模式\n"
             "2. 点击使能状态指示灯，切换为上电\n\n"
-            "GUI 不会在 Move 或 Jog 前自动改变机器人状态。",
+            "GUI 不会在 Move 前自动改变机器人状态。",
         )
         return False
-
-    # endregion
 
     # region 后台动作
 
     def _run_action(
         self,
-        callback: Callable[[Ar5Client], object],
+        callback: Callable[[RobotControlAr5Client], object],
         success_message: str,
     ) -> None:
         client = self._client

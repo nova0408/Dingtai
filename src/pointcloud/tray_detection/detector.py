@@ -2,14 +2,25 @@ from __future__ import annotations
 
 import contextlib
 from pathlib import Path
+
 import cv2
 import numpy as np
 import torch
 from loguru import logger
 from PIL import Image
-from transformers import AutoModelForZeroShotObjectDetection, AutoProcessor, SamModel, SamProcessor
+from transformers import (
+    AutoModelForZeroShotObjectDetection,
+    AutoProcessor,
+    SamModel,
+    SamProcessor,
+)
 
-from .model_cache import apply_download_proxy, load_pretrained_with_project_cache, prepare_hf_cache_dir
+from .model_cache import (
+    apply_download_proxy,
+    load_pretrained_with_project_cache,
+    prepare_hf_cache_dir,
+)
+from .projection import collect_indices_in_mask
 from .types import TrayDetection, TrayDetectionConfig, TrayExclusionResult
 from .utils import (
     build_combined_prompt,
@@ -22,7 +33,6 @@ from .utils import (
     scale_box_xyxy,
     suppress_masks_by_iou,
 )
-from .projection import collect_indices_in_mask
 
 # region 默认路径
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -263,7 +273,7 @@ class TrayPointExcluder:
         try:
             detections = self.detect(frame_bgr)
         except Exception as exc:
-            logger.exception(f"料盘识别失败，本帧不执行料盘排除：{exc}")
+            logger.error(f"料盘识别失败，本帧不执行料盘排除：{exc}")
             return TrayExclusionResult(excluded_mask=excluded, detections=[])
 
         for det in detections:

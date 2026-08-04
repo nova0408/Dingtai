@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import threading
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from .arm_gateway import (
     ConnectedArm,
@@ -43,8 +44,14 @@ class ReplayRuntime:
     "尚未 flush 的连续 arm 行，具体类型由 motion 层约束。"
     global_cartesian_offset: object | None = None
     "当前轮次的全局笛卡尔纠偏矩阵。"
+    charuco_cartesian_offset: object | None = None
+    "当前轮次经历史安全门接受的 ChArUco 笛卡尔纠偏矩阵。"
+    offset_record_path: object | None = None
+    "本轮 offset 对比记录路径；仅用于诊断，不参与执行决策。"
     offset_target_sequences: frozenset[int] = frozenset()
     "应用全局笛卡尔纠偏的 CSV 阶段序号，由 OffsetConfig 提供。"
+    preloaded_rows_by_path: dict[Path, tuple[ReplayRow, ...]] = field(default_factory=dict)
+    "启动阶段按执行计划预解析的 CSV 行，执行期不再重新读取文件。"
 
 
 # endregion
@@ -85,6 +92,10 @@ def create_runtime(
 def prepare_runtime(runtime: ReplayRuntime) -> None:
     """准备一侧机械臂回放所需的 NRT 与升降使能状态。"""
 
+    if runtime.hand_body.gripper is not None:
+        from .hand_actions import prepare_gripper_before_replay
+
+        prepare_gripper_before_replay(runtime)
     arm_side = runtime.connected_arm.arm_side
     retry_non_motion_call(
         f"ensure_nrt_motion_ready({arm_side})",

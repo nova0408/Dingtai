@@ -1,0 +1,415 @@
+openapi: 3.1.0
+info:
+  title: CameraPipeline HTTP API
+  version: 1.10.0
+  description: >-
+    CameraPipeline 对外 HTTP/JSON 控制与检测接口。内部 ZMQ CPW1 不通过本 API 暴露。
+  license:
+    name: Internal
+servers:
+  - url: http://{host}:6400
+    variables:
+      host:
+        default: 127.0.0.1
+        description: Orin 主机地址
+externalDocs:
+  description: 完整字段、WebSocket CPWS1 和内部 ZMQ 说明
+  url: ./API%20Reference.md
+paths:
+  /api/v1/health:
+    get:
+      operationId: health
+      summary: HTTP 适配层健康检查
+      responses:
+        '200':
+          description: HTTP 适配层可响应
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthEnvelope'
+  /api/v1/cameras:
+    get:
+      operationId: get_camera_inventory
+      summary: 获取当前可用相机清单
+      responses:
+        '200':
+          description: 仅返回已配置、已连接且已有最新帧的相机
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CameraInventoryEnvelope'
+        '503':
+          $ref: '#/components/responses/ServiceError'
+  /api/v1/cameras/{camera}/status:
+    get:
+      operationId: get_camera_status
+      summary: 查询相机在线和图像尺寸
+      parameters:
+        - $ref: '#/components/parameters/camera'
+        - $ref: '#/components/parameters/TimeoutQuery'
+      responses:
+        '200':
+          description: 相机首帧已就绪
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CameraStatusEnvelope'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '503':
+          $ref: '#/components/responses/ServiceError'
+        '504':
+          $ref: '#/components/responses/Timeout'
+  /api/v1/cameras/{camera}/intrinsics:
+    get:
+      operationId: get_camera_intrinsics
+      summary: 查询相机内参
+      parameters:
+        - $ref: '#/components/parameters/camera'
+        - $ref: '#/components/parameters/TimeoutQuery'
+      responses:
+        '200':
+          description: 相机内参
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CameraIntrinsicsEnvelope'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '503':
+          $ref: '#/components/responses/ServiceError'
+  /api/v1/cameras/{camera}/stable-frame:
+    post:
+      operationId: get_stable_frame
+      summary: 等待并返回稳定窗口中点帧
+      parameters:
+        - $ref: '#/components/parameters/camera'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StableFrameRequest'
+      responses:
+        '200':
+          description: 稳定帧信息
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StableFrameEnvelope'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '503':
+          $ref: '#/components/responses/ServiceError'
+        '504':
+          $ref: '#/components/responses/Timeout'
+  /api/v1/detections/ball:
+    post:
+      operationId: detect_ball
+      summary: 三球颜色、深度和位姿检测
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BallDetectionRequest'
+      responses:
+        '200':
+          description: 检测结果，可能是合法空结果
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BallDetectionEnvelope'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '503':
+          $ref: '#/components/responses/ServiceError'
+  /api/v1/detections/charuco:
+    post:
+      operationId: detect_charuco
+      summary: ChArUco Board 稳定帧和 PnP 位姿检测
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CharucoDetectionRequest'
+      responses:
+        '200':
+          description: 检测结果，status 可能为 missing
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CharucoDetectionEnvelope'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '503':
+          $ref: '#/components/responses/ServiceError'
+        '504':
+          $ref: '#/components/responses/Timeout'
+components:
+  parameters:
+    camera:
+      name: camera
+      in: path
+      required: true
+      schema:
+        $ref: '#/components/schemas/CameraName'
+    TimeoutQuery:
+      name: timeout_s
+      in: query
+      required: false
+      schema:
+        type: number
+        exclusiveMinimum: 0
+        default: 10.0
+  responses:
+    InvalidRequest:
+      description: 请求非法
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    ServiceError:
+      description: 服务或相机不可用
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    Timeout:
+      description: 等待帧超时
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+  schemas:
+    CameraName:
+      type: string
+      enum: [head_camera, chest_camera, left_hand_camera, right_hand_camera]
+    EnvelopeBase:
+      type: object
+      required: [ok, service_version, zmq_protocol_version, data, error]
+      properties:
+        ok:
+          type: boolean
+        service_version:
+          type: string
+          example: 1.10.0
+        zmq_protocol_version:
+          type: integer
+          const: 10
+        error:
+          type: [object, 'null']
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          enum: [invalid_request, not_found, service_error, timeout]
+        message:
+          type: string
+    ErrorEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/EnvelopeBase'
+        - type: object
+          required: [data, error]
+          properties:
+            ok:
+              const: false
+            data:
+              type: 'null'
+            error:
+              $ref: '#/components/schemas/Error'
+    Health:
+      type: object
+      required: [service_version, zmq_protocol_version]
+      properties:
+        service_version:
+          type: string
+        zmq_protocol_version:
+          type: integer
+          const: 10
+    HealthEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/EnvelopeBase'
+        - type: object
+          properties:
+            ok:
+              const: true
+            data:
+              $ref: '#/components/schemas/Health'
+            error:
+              type: 'null'
+    CameraStatus:
+      type: object
+      required: [service_version, camera_name, camera_id, camera_model, width, height, color_enabled, depth_enabled, online, error]
+      properties:
+        service_version: {type: string}
+        camera_name: {$ref: '#/components/schemas/CameraName'}
+        camera_id: {type: string}
+        camera_model: {type: string}
+        width: {type: integer, minimum: 1}
+        height: {type: integer, minimum: 1}
+        color_enabled: {type: boolean}
+        depth_enabled: {type: boolean}
+        online: {type: boolean}
+        error: {type: [string, 'null']}
+    CameraInventory:
+      type: object
+      required: [cameras]
+      properties:
+        cameras:
+          type: array
+          description: 仅包含已配置、已连接且已有最新帧的相机。
+          items: {$ref: '#/components/schemas/CameraStatus'}
+    CameraIntrinsics:
+      type: object
+      required: [camera_name, fx, fy, cx, cy, distortion, width, height, error]
+      properties:
+        camera_name: {$ref: '#/components/schemas/CameraName'}
+        fx: {type: number}
+        fy: {type: number}
+        cx: {type: number}
+        cy: {type: number}
+        distortion:
+          type: array
+          minItems: 8
+          maxItems: 8
+          items: {type: number}
+          description: OpenCV (k1,k2,p1,p2,k3,k4,k5,k6)
+        width: {type: integer, minimum: 1}
+        height: {type: integer, minimum: 1}
+        error: {type: [string, 'null']}
+    StableFrameRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        timeout_s: {type: number, exclusiveMinimum: 0, default: 10.0}
+    StableFrame:
+      type: object
+      required: [frame_id, camera_name, timestamp_ms, error]
+      properties:
+        frame_id: {type: integer}
+        camera_name: {$ref: '#/components/schemas/CameraName'}
+        timestamp_ms: {type: number}
+        error: {type: [string, 'null']}
+    BallPrior:
+      type: object
+      required: [color_hex, diameter_mm, model_center_mm]
+      properties:
+        color_hex: {type: string, pattern: '^#[0-9A-Fa-f]{6}$'}
+        diameter_mm: {type: number, exclusiveMinimum: 0}
+        model_center_mm:
+          type: array
+          minItems: 3
+          maxItems: 3
+          items: {type: number}
+        hsv_ranges:
+          type: array
+          items:
+            type: array
+            minItems: 6
+            maxItems: 6
+            items: {type: integer, minimum: 0}
+    BallDetectionRequest:
+      type: object
+      required: [request_id, camera_name, priors]
+      properties:
+        request_id: {type: integer}
+        camera_name: {$ref: '#/components/schemas/CameraName'}
+        frame_id: {type: integer, default: -1}
+        enable_debug: {type: boolean, default: false}
+        priors:
+          type: array
+          items: {$ref: '#/components/schemas/BallPrior'}
+    Detection:
+      type: object
+      required: [color_hex, detected, center_px, center_mm, diameter_mm, radius_px, center_norm, radius_norm, point_count, status, observed_hsv]
+      properties:
+        color_hex: {type: string}
+        detected: {type: boolean}
+        center_px: {type: array, items: {type: number}}
+        center_mm: {type: array, items: {type: number}}
+        diameter_mm: {type: number}
+        radius_px: {type: number}
+        center_norm: {type: array, items: {type: number}}
+        radius_norm: {type: number}
+        point_count: {type: integer}
+        status: {type: string}
+        observed_hsv: {type: array, items: {type: number}}
+    ImageJson:
+      type: object
+      required: [encoding, dtype, shape, data]
+      properties:
+        encoding: {type: string, const: base64}
+        dtype: {type: string}
+        shape: {type: array, items: {type: integer, minimum: 0}}
+        data: {type: string, format: byte}
+    BallDebugArtifacts:
+      type: object
+      required: [color_bgr, depth_mm, camera_intrinsics, overlay_bgr, detection_overlay_bgr, detections]
+      properties:
+        color_bgr: {$ref: '#/components/schemas/ImageJson'}
+        depth_mm: {$ref: '#/components/schemas/ImageJson'}
+        camera_intrinsics: {type: array, minItems: 4, maxItems: 4, items: {type: number}}
+        overlay_bgr: {$ref: '#/components/schemas/ImageJson'}
+        detection_overlay_bgr: {$ref: '#/components/schemas/ImageJson'}
+        detections: {type: array, items: {$ref: '#/components/schemas/Detection'}}
+    BallDetection:
+      type: object
+      required: [request_id, frame_id, camera_name, timestamp_ms, elapsed_ms, matched_count, detections, debug_artifacts]
+      properties:
+        request_id: {type: integer}
+        frame_id: {type: integer}
+        camera_name: {$ref: '#/components/schemas/CameraName'}
+        timestamp_ms: {type: number}
+        elapsed_ms: {type: number}
+        matched_count: {type: integer, minimum: 0}
+        detections: {type: array, items: {$ref: '#/components/schemas/Detection'}}
+        debug_artifacts: {type: array, items: {$ref: '#/components/schemas/BallDebugArtifacts'}}
+    CharucoDetectionRequest:
+      type: object
+      required: [camera_name, dictionary_name, squares_x, squares_y, square_length_mm, marker_length_mm, min_charuco_corners, max_frames, stable_timeout_s]
+      properties:
+        camera_name: {$ref: '#/components/schemas/CameraName'}
+        dictionary_name: {type: string, enum: [DICT_APRILTAG_16H5]}
+        squares_x: {type: integer, minimum: 2}
+        squares_y: {type: integer, minimum: 2}
+        square_length_mm: {type: number, exclusiveMinimum: 0}
+        marker_length_mm: {type: number, exclusiveMinimum: 0}
+        min_charuco_corners: {type: integer, minimum: 4}
+        max_frames: {type: integer, minimum: 1}
+        stable_timeout_s: {type: number, exclusiveMinimum: 0}
+        enable_debug: {type: boolean, default: false}
+    CharucoDetection:
+      type: object
+      required: [status, camera_name, t_cam_board_mm, error_px, marker_num, charuco_num, overlay_bgr]
+      properties:
+        status: {type: string, enum: [detected, missing]}
+        camera_name: {$ref: '#/components/schemas/CameraName'}
+        t_cam_board_mm:
+          type: array
+          minItems: 0
+          maxItems: 4
+          items:
+            type: array
+            minItems: 4
+            maxItems: 4
+            items: {type: number}
+        error_px: {type: [number, 'null']}
+        marker_num: {type: integer, minimum: 0}
+        charuco_num: {type: integer, minimum: 0}
+        overlay_bgr: {$ref: '#/components/schemas/ImageJson'}
+    CameraStatusEnvelope:
+      allOf: [{ $ref: '#/components/schemas/EnvelopeBase' }, {type: object, properties: {ok: {const: true}, data: {$ref: '#/components/schemas/CameraStatus'}, error: {type: 'null'}}}]
+    CameraInventoryEnvelope:
+      allOf: [{ $ref: '#/components/schemas/EnvelopeBase' }, {type: object, properties: {ok: {const: true}, data: {$ref: '#/components/schemas/CameraInventory'}, error: {type: 'null'}}}]
+    CameraIntrinsicsEnvelope:
+      allOf: [{ $ref: '#/components/schemas/EnvelopeBase' }, {type: object, properties: {ok: {const: true}, data: {$ref: '#/components/schemas/CameraIntrinsics'}, error: {type: 'null'}}}]
+    StableFrameEnvelope:
+      allOf: [{ $ref: '#/components/schemas/EnvelopeBase' }, {type: object, properties: {ok: {const: true}, data: {$ref: '#/components/schemas/StableFrame'}, error: {type: 'null'}}}]
+    BallDetectionEnvelope:
+      allOf: [{ $ref: '#/components/schemas/EnvelopeBase' }, {type: object, properties: {ok: {const: true}, data: {$ref: '#/components/schemas/BallDetection'}, error: {type: 'null'}}}]
+    CharucoDetectionEnvelope:
+      allOf: [{ $ref: '#/components/schemas/EnvelopeBase' }, {type: object, properties: {ok: {const: true}, data: {$ref: '#/components/schemas/CharucoDetection'}, error: {type: 'null'}}}]

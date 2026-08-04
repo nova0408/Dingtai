@@ -57,8 +57,26 @@ class ReplayArmSettings:
     "调用 moveReset 前连续确认 idle 的次数。"
     reset_ready_poll_interval_s: float = 0.2
     "调用 moveReset 前的状态轮询周期，单位 s。"
-    left_zero_zone_sequences: frozenset[int] = frozenset()
-    "左臂 CSV 末尾强制 zone=0 的阶段序号。"
+    left_move_abs_j_end_linear_speed_mm_s_by_csv_sequence: tuple[tuple[int, float], ...] = (
+        (-1, 1000.0),
+        (4, 200.0),
+    )
+    "左臂按 CSV 数字序号覆盖 MoveAbsJ 末端线速度；-1 为左臂默认值。"
+    right_move_abs_j_end_linear_speed_mm_s_by_csv_sequence: tuple[tuple[int, float], ...] = (
+        (-1, 1000.0),
+    )
+    "右臂按 CSV 数字序号覆盖 MoveAbsJ 末端线速度；-1 为右臂默认值。"
+    left_move_abs_j_zone_mm_by_csv_sequence: tuple[tuple[int, float], ...] = (
+        (-1, 10.0),
+        (2, 40.0),
+        (4, 0.0),
+        (15, 40.0),
+    )
+    "左臂按 CSV 数字序号覆盖连续 MoveAbsJ 中间点 zone；-1 为左臂默认值。"
+    right_move_abs_j_zone_mm_by_csv_sequence: tuple[tuple[int, float], ...] = (
+        (-1, 10.0),
+    )
+    "右臂按 CSV 数字序号覆盖连续 MoveAbsJ 中间点 zone；-1 为右臂默认值。"
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,15 +103,21 @@ class ReplayHandSettings:
     "M11 根部执行器索引。"
     m11_tip_actuator_ids: tuple[int, ...] = (4, 6, 8, 10)
     "M11 指尖执行器索引。"
+    gripper_calibration_wait_s: float = 3.0
+    "夹爪校准命令后的固定等待时间，单位 s。"
+    gripper_zero_position: int = 0
+    "回放开始前夹爪归零位置。"
+    gripper_zero_poll_interval_s: float = 0.2
+    "夹爪归零状态轮询间隔，单位 s。"
 
 
 @dataclass(frozen=True, slots=True)
 class ReplayOffsetSettings:
     """三球全局纠偏的触发、采样与鲁棒聚合参数。"""
 
-    target_sequences: frozenset[int] = frozenset({4, 6})
+    target_sequences: frozenset[int] = frozenset({5, 12})
     "需要应用全局笛卡尔纠偏的 CSV 阶段序号。"
-    calculate_at_sequence: int = 3
+    calculate_at_sequence: int = 4
     "完成该左臂 CSV 后计算新的全局纠偏。"
     sample_count: int = 2
     "单次全局纠偏连续采样次数。"
@@ -101,8 +125,6 @@ class ReplayOffsetSettings:
     "单次三球检测 RPC 超时，单位 ms。"
     detection_attempts_per_sample: int = 3
     "每个宽 HSV 或窄 HSV 阶段获得完整三球结果的最大尝试次数。"
-    trigger_move_abs_j_end_linear_speed_mm_s: float = 700.0
-    "纠偏触发 CSV 临时使用的末端线速度，单位 mm/s。"
     capture_settle_delay_s: float = 0.0
     "纠偏触发 CSV 完成后、采集三球前的等待时间，单位 s。"
     mad_scale: float = 3.5
@@ -111,6 +133,40 @@ class ReplayOffsetSettings:
     "MAD 过小时采用的最小异常距离阈值，单位 mm。"
     narrow_consistency_tolerance_mm: float = 8.0
     "窄 HSV 与宽 HSV 同色球心允许的最大差异，单位 mm。"
+    left_charuco_target_sequences: frozenset[int] = frozenset({2, 15})
+    "左臂应用 ChArUco offset 的 CSV 数字序号。"
+    right_charuco_target_sequences: frozenset[int] = frozenset({2, 3})
+    "右臂应用 ChArUco offset 的 CSV 数字序号。"
+    charuco_head_yaw_deg: float = 60.0
+    "ChArUco 检测前头部 yaw 目标角度，单位 deg。"
+    charuco_head_pitch_deg: float = 45.0
+    "ChArUco 检测前头部 pitch 目标角度，单位 deg。"
+    charuco_head_settle_s: float = 1.0
+    "头部到达 ChArUco 检测姿态后的稳定等待时间，单位 s。"
+    charuco_camera_timeout_s: float = 10.0
+    "ChArUco 每次稳定帧请求的超时时间，单位 s。"
+    charuco_max_frame_count: int = 5
+    "单次 ChArUco 检测允许检查的稳定帧数量。"
+    charuco_min_corners: int = 6
+    "进入 ChArUco PnP 的最少角点数量。"
+    charuco_rpc_timeout_s: float = 55.0
+    "ChArUco RPC 单次接收超时时间，单位 s。"
+    charuco_timeout_retry_count: int = 3
+    "ChArUco RPC 超时重试次数。"
+    charuco_timeout_retry_delay_s: float = 1.0
+    "ChArUco RPC 超时重试间隔，单位 s。"
+    charuco_safety_attempt_count: int = 3
+    "ChArUco offset 历史安全检查失败后的重新检测次数。"
+    charuco_safety_retry_delay_s: float = 1.0
+    "ChArUco offset 安全检查失败后的重新检测间隔，单位 s。"
+    charuco_history_min_accepted_samples: int = 6
+    "允许使用 ChArUco offset 的同侧有效历史最少条数。"
+    charuco_sigma_limit: float = 4.0
+    "ChArUco 历史分量与模长统计的标准差倍数。"
+    charuco_max_translation_norm_mm: float = 60.0
+    "ChArUco offset 平移模长绝对上限，单位 mm。"
+    charuco_max_rotation_norm_deg: float = 5.0
+    "ChArUco offset 旋转模长绝对上限，单位 deg。"
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,6 +179,14 @@ class OffsetConfig:
     "手眼标定结果路径。"
     camera_name: str = "left_hand_camera"
     "球位姿检测相机名称。"
+    charuco_prior_path: Path | None = None
+    "ChArUco T_camera_board 先验路径。"
+    charuco_history_path: Path | None = None
+    "人工确认的 ChArUco offset 历史 CSV 路径。"
+    left_head_base_camera_path: Path | None = None
+    "左臂基坐标系下的 T_base_camera 路径。"
+    right_head_base_camera_path: Path | None = None
+    "右臂基坐标系下的 T_base_camera 路径。"
 
 
 @dataclass(frozen=True, slots=True)
@@ -165,10 +229,8 @@ class ReplayCycleConfig:
     "双臂、手部和升降设备的现场连接参数。"
     settings: ReplayServiceSettings = field(default_factory=ReplayServiceSettings)
     "服务运行参数的唯一配置对象。"
-    start_station: str = "3"
-    "执行前 AGV 目标站点。"
-    finish_station: str = "1"
-    "执行完成后 AGV 目标站点。"
+    start_station: str = "1"
+    "启用 AGV 时，执行前导航到的目标站点。"
     state_prefix: str = "left_"
     "左臂 CSV 状态名需要删除的文件名前缀。"
     trigger_file: Path | None = None

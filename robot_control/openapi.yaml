@@ -1,0 +1,482 @@
+openapi: 3.1.0
+info:
+  title: RobotControl HTTP API
+  version: 0.6.0
+  description: >-
+    qmlinker 与 AR5 xCoreSDK 统一服务。GET 状态接口可用于只读诊断；POST 控制接口可能
+    使真实设备动作，只能由现场人员手动发起。
+servers:
+  - url: http://127.0.0.1:6500
+paths:
+  /api/v1/health:
+    get:
+      operationId: get_health
+      responses:
+        '200':
+          description: Service health without hardware access
+          content:
+            application/json: {schema: {$ref: '#/components/schemas/HealthResponse'}}
+  /api/v1/status:
+    get:
+      operationId: get_status
+      responses:
+        '200':
+          description: qmlinker and AR5 read-only device states
+          content:
+            application/json: {schema: {$ref: '#/components/schemas/StatusResponse'}}
+        '503': {description: Service or device read failure}
+  /api/v1/status/stream:
+    get:
+      operationId: subscribe_status
+      description: >-
+        只读 Server-Sent Events 状态流。连接建立后立即推送完整设备快照，之后按间隔
+        持续推送；不会发送任何控制请求。
+      parameters:
+        - name: interval_s
+          in: query
+          required: false
+          description: 推送间隔，范围 0.05 到 5.0 秒，默认 0.2 秒。
+          schema: {type: number, minimum: 0.05, maximum: 5.0, default: 0.2}
+      responses:
+        '200':
+          description: SSE robot_status event stream
+          content:
+            text/event-stream:
+              schema: {type: string}
+        '400': {description: Invalid interval_s}
+  /api/v1/devices:
+    get:
+      operationId: get_devices
+      responses:
+        '200':
+          description: Alias of status read
+          content:
+             application/json: {schema: {$ref: '#/components/schemas/StatusResponse'}}
+  /api/v1/qmlinker/agv/targets:
+    get:
+      operationId: get_qmlinker_agv_navigation_targets
+      description: >-
+        只读读取 Woosh 当前地图和可用导航点，不发送导航、停止、使能或速度控制请求。
+      responses:
+        '200':
+          description: Current AGV map and available navigation targets
+          content:
+            application/json: {schema: {$ref: '#/components/schemas/AgvNavigationTargetsResponse'}}
+        '503': {description: Map service or device read failure}
+  /api/v1/qmlinker/arms/{device}/joints:
+    post:
+      operationId: set_qmlinker_arm_joints
+      description: 现场人工控制接口，可能使机械臂运动。
+      parameters:
+        - {$ref: '#/components/parameters/QmlinkerArmDevice'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/QmlinkerArmJointsRequest'}
+      responses:
+        '202': {description: Control request accepted}
+  /api/v1/qmlinker/arms/{device}/joint:
+    post:
+      operationId: set_qmlinker_arm_joint
+      description: 现场人工控制接口，可能使机械臂运动。
+      parameters:
+        - {$ref: '#/components/parameters/QmlinkerArmDevice'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/QmlinkerSingleJointRequest'}
+      responses:
+        '202': {description: Control request accepted}
+  /api/v1/qmlinker/head:
+    post:
+      operationId: set_qmlinker_head
+      description: 现场人工控制接口。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/QmlinkerHeadRequest'}
+      responses:
+        '202': {description: Control request accepted}
+  /api/v1/qmlinker/lift:
+    post:
+      operationId: set_qmlinker_lift
+      description: 现场人工控制接口，可能使升降机构动作。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/QmlinkerLiftRequest'}
+      responses:
+        '202': {description: Control request accepted}
+  /api/v1/qmlinker/gripper:
+    post:
+      operationId: set_qmlinker_gripper
+      description: 现场人工控制接口，可能使夹爪动作。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/QmlinkerGripperRequest'}
+      responses:
+        '202': {description: Control request accepted}
+  /api/v1/qmlinker/gripper/enable:
+    post:
+      operationId: set_qmlinker_gripper_enabled
+      description: 现场人工控制接口，可能改变夹爪使能状态。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/EnabledRequest'}
+      responses:
+        '202':
+          description: Control request accepted
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ActionResponse'}
+  /api/v1/qmlinker/gripper/calibrate:
+    post:
+      operationId: calibrate_qmlinker_gripper
+      description: 现场人工控制接口，可能使夹爪动作；校准完成状态需另行读取。
+      responses:
+        '202': {description: Calibration request accepted}
+  /api/v1/qmlinker/right-hand:
+    post:
+      operationId: set_qmlinker_right_hand
+      description: 现场人工控制接口，可能使右手动作。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/QmlinkerRightHandRequest'}
+      responses:
+        '202': {description: Control request accepted}
+  /api/v1/qmlinker/right-hand/enable:
+    post:
+      operationId: set_qmlinker_right_hand_enabled
+      description: 现场人工控制接口，可能改变右手使能状态。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/EnabledRequest'}
+      responses:
+        '202': {description: Control request accepted}
+  /api/v1/qmlinker/agv/navigate:
+    post:
+      operationId: navigate_qmlinker_agv
+      description: 现场人工控制接口，可能使 AGV 移动。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/QmlinkerNavigateRequest'}
+      responses:
+        '202': {description: Control request accepted}
+  /api/v1/qmlinker/agv/enable:
+    post:
+      operationId: set_qmlinker_agv_enabled
+      description: 现场人工控制接口，可能改变 AGV 使能状态。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/EnabledRequest'}
+      responses:
+        '202': {description: Control request accepted}
+  /api/v1/qmlinker/agv/translate:
+    post:
+      operationId: translate_qmlinker_agv
+      description: >-
+        现场人工控制接口，启动持续实时平移。必须显式调用 agv/stop 停止；该停止是软件停止，
+        不等同于硬件急停。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/QmlinkerAgvTranslateRequest'}
+      responses:
+        '202': {description: Real-time translation request accepted}
+  /api/v1/qmlinker/agv/stop:
+    post:
+      operationId: stop_qmlinker_agv
+      description: 停止当前 AGV 导航或实时平移请求；不等同于硬件急停。
+      responses:
+        '202': {description: AGV stop request accepted}
+  /api/v1/ar5/{side}/power:
+    post:
+      operationId: set_ar5_power
+      description: 现场人工控制接口，可能改变真实电机状态。
+      parameters:
+        - {$ref: '#/components/parameters/Ar5Side'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/Ar5PowerRequest'}
+      responses:
+        '202': {description: Control request accepted}
+  /api/v1/ar5/{side}/recover-estop:
+    post:
+      operationId: recover_ar5_estop
+      description: 现场人工控制接口，恢复急停状态但不自动上电。
+      parameters:
+        - {$ref: '#/components/parameters/Ar5Side'}
+      responses:
+        '202': {description: E-stop recovery request accepted}
+  /api/v1/ar5/{side}/drag:
+    post:
+      operationId: set_ar5_drag_enabled
+      description: 现场人工控制接口，可能改变 AR5 电源/工作模式状态。
+      parameters:
+        - {$ref: '#/components/parameters/Ar5Side'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/EnabledRequest'}
+      responses:
+        '202': {description: Drag request accepted}
+  /api/v1/ar5/{side}/jog:
+    post:
+      operationId: jog_ar5
+      description: 现场人工控制接口，启动 AR5 单轴 Jog。
+      parameters:
+        - {$ref: '#/components/parameters/Ar5Side'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/Ar5JogRequest'}
+      responses:
+        '202': {description: Jog request accepted}
+  /api/v1/ar5/{side}/mode:
+    post:
+      operationId: set_ar5_mode
+      description: 现场人工控制接口。
+      parameters:
+        - {$ref: '#/components/parameters/Ar5Side'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/Ar5ModeRequest'}
+      responses:
+        '202': {description: Control request accepted}
+  /api/v1/ar5/{side}/stop:
+    post:
+      operationId: stop_ar5
+      description: 现场人工停止接口，不等同于硬件急停。
+      parameters:
+        - {$ref: '#/components/parameters/Ar5Side'}
+      responses:
+        '202': {description: Stop request accepted}
+  /api/v1/ar5/{side}/move-joints:
+    post:
+      operationId: move_ar5_joints
+      description: 现场人工控制接口，可能使 AR5 运动。
+      parameters:
+        - {$ref: '#/components/parameters/Ar5Side'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/Ar5MoveJointsRequest'}
+      responses:
+        '202': {description: Control request accepted}
+  /api/v1/ar5/{side}/move-cartesian:
+    post:
+      operationId: move_ar5_cartesian
+      description: 现场人工控制接口，可能使 AR5 运动。
+      parameters:
+        - {$ref: '#/components/parameters/Ar5Side'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/Ar5MoveCartesianRequest'}
+      responses:
+        '202': {description: Control request accepted}
+  /api/v1/ar5/{side}/move-elbow:
+    post:
+      operationId: move_ar5_elbow
+      description: 现场人工控制接口，可能使 AR5 运动。
+      parameters:
+        - {$ref: '#/components/parameters/Ar5Side'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/Ar5MoveElbowRequest'}
+      responses:
+        '202': {description: Control request accepted}
+components:
+  schemas:
+    HealthResponse:
+      type: object
+      required: [service_version, api_version, hardware_access]
+      properties:
+        service_version: {type: string}
+        api_version: {type: string}
+        hardware_access: {type: string, enum: [lazy]}
+    DeviceState:
+      type: object
+      required: [name, backend, connected, error, data]
+      properties:
+        name: {type: string}
+        backend: {type: string, enum: [qmlinker, xcoresdk]}
+        connected: {type: boolean}
+        error: {type: [string, 'null']}
+        data:
+          type: object
+          additionalProperties: true
+          description: >-
+            设备专属只读字段。qmlinker_waist 为可选能力；不支持时 connected=false、error=null、
+            data.available=false，不会创建腰部客户端。
+    StatusResponse:
+      type: object
+      required: [service_version, api_version, devices]
+      properties:
+        service_version: {type: string}
+        api_version: {type: string}
+        devices:
+          type: array
+          items: {$ref: '#/components/schemas/DeviceState'}
+    AgvNavigationTarget:
+      type: object
+      required: [name, id, x_m, y_m, yaw_rad]
+      properties:
+        name: {type: string}
+        id: {type: integer, minimum: 0}
+        x_m: {type: number, description: X coordinate in meters}
+        y_m: {type: number, description: Y coordinate in meters}
+        yaw_rad: {type: number, description: Heading in radians}
+    AgvNavigationMap:
+      type: object
+      required: [name, id, resolution]
+      properties:
+        name: {type: string}
+        id: {type: integer, minimum: 0}
+        resolution: {type: number, description: Raw Woosh map resolution value}
+    AgvNavigationTargetsResponse:
+      type: object
+      required: [map, targets]
+      properties:
+        map: {$ref: '#/components/schemas/AgvNavigationMap'}
+        targets:
+          type: array
+          items: {$ref: '#/components/schemas/AgvNavigationTarget'}
+    ActionResponse:
+      type: object
+      required: [service_version, api_version, accepted, data]
+      properties:
+        service_version: {type: string}
+        api_version: {type: string}
+        accepted: {type: boolean}
+        data: {type: object, additionalProperties: true}
+    QmlinkerArmJointsRequest:
+      type: object
+      required: [joint_deg]
+      properties:
+        joint_deg: {type: array, items: {type: number}, minItems: 1}
+    QmlinkerSingleJointRequest:
+      type: object
+      required: [joint_index, target_angle_deg]
+      properties:
+        joint_index: {type: integer, minimum: 1}
+        target_angle_deg: {type: number}
+    QmlinkerHeadRequest:
+      type: object
+      minProperties: 1
+      properties:
+        enable: {type: boolean}
+        yaw_deg: {type: number}
+        pitch_deg: {type: number}
+    QmlinkerLiftRequest:
+      type: object
+      minProperties: 1
+      properties:
+        enable: {type: boolean}
+        height_mm: {type: number}
+    QmlinkerGripperRequest:
+      type: object
+      required: [position]
+      properties:
+        position: {type: integer}
+    QmlinkerRightHandRequest:
+      type: object
+      required: [positions]
+      properties:
+        positions: {type: array, items: {type: number}, minItems: 1}
+    QmlinkerNavigateRequest:
+      type: object
+      required: [target]
+      properties:
+        target: {type: string, minLength: 1}
+    EnabledRequest:
+      type: object
+      required: [enabled]
+      properties:
+        enabled: {type: boolean}
+    QmlinkerAgvTranslateRequest:
+      type: object
+      required: [speed_mps, direction_deg]
+      properties:
+        speed_mps: {type: number, exclusiveMinimum: 0}
+        direction_deg: {type: number}
+    Ar5PowerRequest:
+      type: object
+      required: [enabled]
+      properties:
+        enabled: {type: boolean}
+    Ar5ModeRequest:
+      type: object
+      required: [automatic]
+      properties:
+        automatic: {type: boolean}
+    Ar5JogRequest:
+      type: object
+      required: [space, axis_index, direction_positive, rate, step]
+      properties:
+        space: {type: string, enum: [cartesian, joint]}
+        axis_index: {type: integer, minimum: 0}
+        direction_positive: {type: boolean}
+        rate: {type: number, minimum: 0.01, maximum: 1.0}
+        step: {type: number}
+    Ar5MoveJointsRequest:
+      type: object
+      required: [joint_deg, speed_mm_s, zone_mm]
+      properties:
+        joint_deg: {type: array, items: {type: number}, minItems: 1}
+        speed_mm_s: {type: number}
+        zone_mm: {type: number}
+    Ar5MoveCartesianRequest:
+      type: object
+      required: [xyz_mm, rpy_deg, elbow_deg, speed_mm_s, zone_mm]
+      properties:
+        xyz_mm: {type: array, items: {type: number}, minItems: 3, maxItems: 3}
+        rpy_deg: {type: array, items: {type: number}, minItems: 3, maxItems: 3}
+        elbow_deg: {type: number}
+        speed_mm_s: {type: number}
+        zone_mm: {type: number}
+    Ar5MoveElbowRequest:
+      type: object
+      required: [elbow_deg, speed_mm_s, zone_mm]
+      properties:
+        elbow_deg: {type: number}
+        speed_mm_s: {type: number}
+        zone_mm: {type: number}
+  parameters:
+    QmlinkerArmDevice:
+      name: device
+      in: path
+      required: true
+      schema: {type: string, enum: [left_arm, right_arm]}
+    Ar5Side:
+      name: side
+      in: path
+      required: true
+      schema: {type: string, enum: [left, right]}

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Linux service restart helper; keep this file LF-encoded for remote execution.
 set -euo pipefail
 
 SERVICE_UNIT="camera-pipeline.service"

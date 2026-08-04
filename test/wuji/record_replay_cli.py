@@ -89,6 +89,9 @@ from sdk.xcoresdk import xCoreSDK_python
 from src.wuji.agv_client import WujiAgvClient
 from src.wuji.head_client import WujiHeadClient
 
+RECORD_REPLAY_CLI_VERSION = "1.10.0"
+"与 record_replay 服务对齐的人工回放语义版本。"
+
 # region CSV 序号配置
 
 LEFT_REPLAY_MOVE_ABS_J_END_LINEAR_SPEED_MM_S_BY_CSV_SEQUENCE: dict[int, float] = {
@@ -104,9 +107,9 @@ RIGHT_REPLAY_MOVE_ABS_J_END_LINEAR_SPEED_MM_S_BY_CSV_SEQUENCE: dict[int, float] 
 
 LEFT_REPLAY_MOVE_ABS_J_ZONE_MM_BY_CSV_SEQUENCE: dict[int, float] = {
     -1: DEFAULT_JOINT_ZONE,
-    2:40.0,
-    4:0,
-    15:40.0,
+    2: 40.0,
+    4: 0,
+    15: 40.0,
 }
 "左臂各 CSV 连续 MoveAbsJ 中间点的转弯区半径，单位 mm；-1 为左臂默认值。"
 
@@ -209,12 +212,12 @@ DEFAULT_REPLAY_LIFT_PULSE_INTERVAL_S = 0.5
 DEFAULT_REPLAY_LIFT_HEIGHT_TOLERANCE_MM = 4.0
 "回放 lift 到位误差容忍，单位 mm。"
 
-LEFT_HEAD_BASE_CAMERA_PATH: Path  = (
+LEFT_HEAD_BASE_CAMERA_PATH: Path = (
     PROJECT_ROOT / "experiments" / "hand_eye" / "runs" / "L_EtH_20260717_141031" / "L_EtH_T_base_camera.npy"
 )
 "左臂基坐标系下的 T_base_camera.npy；启用左臂 ChArUco offset 时必须配置 Path。"
 
-RIGHT_HEAD_BASE_CAMERA_PATH: Path  = (
+RIGHT_HEAD_BASE_CAMERA_PATH: Path = (
     PROJECT_ROOT / "experiments" / "hand_eye" / "runs" / "R_EtH_20260717_142024" / "R_EtH_T_base_camera.npy"
 )
 "右臂基坐标系下的 T_base_camera.npy；启用右臂 ChArUco offset 时必须配置 Path。"
@@ -296,9 +299,7 @@ CHARUCO_DETECTION_MAX_FRAME_COUNT = 5
 CHARUCO_DETECTION_MIN_CORNERS = DEFAULT_MIN_CHARUCO_CORNERS
 "目标板位姿检测要求的最少 ChArUco 角点数量。"
 
-CHARUCO_DETECTION_RPC_TIMEOUT_S = (
-    CHARUCO_DETECTION_CAMERA_TIMEOUT_S * CHARUCO_DETECTION_MAX_FRAME_COUNT + 5.0
-)
+CHARUCO_DETECTION_RPC_TIMEOUT_S = CHARUCO_DETECTION_CAMERA_TIMEOUT_S * CHARUCO_DETECTION_MAX_FRAME_COUNT + 5.0
 "ChArUco RPC 接收超时时间，覆盖服务端完整稳定帧检测窗口，单位 s。"
 
 CHARUCO_DETECTION_TIMEOUT_RETRY_COUNT = 3
@@ -411,9 +412,7 @@ class ReplayRuntime:
     offset_prior_capture_path: Path = DEFAULT_OFFSET_PRIOR_CAPTURE_PATH
     hand_eye_result_path: Path = DEFAULT_HAND_EYE_RESULT_PATH
     stop_event: threading.Event | None = None
-    move_abs_j_end_linear_speed_mm_s: float = (
-        LEFT_REPLAY_MOVE_ABS_J_END_LINEAR_SPEED_MM_S_BY_CSV_SEQUENCE[-1]
-    )
+    move_abs_j_end_linear_speed_mm_s: float = LEFT_REPLAY_MOVE_ABS_J_END_LINEAR_SPEED_MM_S_BY_CSV_SEQUENCE[-1]
     pending_arm_rows: list[ReplayRow] = field(default_factory=list)
     preloaded_rows_by_path: dict[Path, tuple[ReplayRow, ...]] = field(default_factory=dict)
 
@@ -468,9 +467,7 @@ def _discover_csv_paths(record_dir: Path, max_files: int | None) -> list[Path]:
     numbered_paths = [
         (int(path.name.split("_", maxsplit=1)[0]), path.name, path)
         for path in record_dir.iterdir()
-        if path.is_file()
-        and path.suffix.lower() == ".csv"
-        and path.name.split("_", maxsplit=1)[0].isdigit()
+        if path.is_file() and path.suffix.lower() == ".csv" and path.name.split("_", maxsplit=1)[0].isdigit()
     ]
     numbered_paths.sort(key=lambda item: (item[0], item[1]))
     csv_paths = [path for _, _, path in numbered_paths]
@@ -580,9 +577,7 @@ def _parse_pose_values(pose_text: str) -> ParsedArmPose:
             pose_rpy_rad_values[2],
         ),
         has_elbow=parsed_pose.has_elbow,
-        elbow_rad=(
-            None if parsed_pose.elbow_deg is None else _deg_to_rad([parsed_pose.elbow_deg])[0]
-        ),
+        elbow_rad=(None if parsed_pose.elbow_deg is None else _deg_to_rad([parsed_pose.elbow_deg])[0]),
         conf_data=parsed_pose.conf_data,
     )
 
@@ -720,8 +715,7 @@ def _ensure_lift_enabled(body: WujiBodyClient, label: str) -> None:
                 f"attempt={attempt} last_state={last_enable_state!r}"
             )
         logger.warning(
-            "lift enable 尚未生效，等待后重新下发 label={} attempt={} "
-            "command_return={} state={} remaining={:.1f} s",
+            "lift enable 尚未生效，等待后重新下发 label={} attempt={} " "command_return={} state={} remaining={:.1f} s",
             label,
             attempt,
             command_result,
@@ -977,9 +971,7 @@ def _navigate_agv_before_replay(tunnel_group: ReplaySharedTunnelGroup) -> None:
             logger.success("AGV 导航结束 target={} raw_status={!r}", DEFAULT_AGV_POINT, raw_status)
             return
         time.sleep(DEFAULT_AGV_NAVIGATION_POLL_INTERVAL_S)
-    raise TimeoutError(
-        f"AGV 导航到位超时：target={DEFAULT_AGV_POINT}, observed_busy={observed_busy}"
-    )
+    raise TimeoutError(f"AGV 导航到位超时：target={DEFAULT_AGV_POINT}, observed_busy={observed_busy}")
 
 
 def _resolve_record_dir(arm_side: str, record_dir: Path | None) -> Path:
@@ -1127,9 +1119,7 @@ def _build_cartesian_target(runtime: ReplayRuntime, row: ReplayRow) -> xCoreSDK_
     _print_sdk_result("cartPosture(endInRef)", ec)
     if ec.get("ec", 0) != 0:
         raise RuntimeError("读取当前笛卡尔位姿失败")
-    target_pose = xCoreSDK_python.CartesianPosition(
-        list(parsed_pose.translation_m + parsed_pose.pose_rpy_rad)
-    )
+    target_pose = xCoreSDK_python.CartesianPosition(list(parsed_pose.translation_m + parsed_pose.pose_rpy_rad))
     _copy_cartesian_pose_context(current_pose, target_pose)
     if parsed_pose.has_elbow is not None:
         target_pose.hasElbow = parsed_pose.has_elbow
@@ -1552,8 +1542,7 @@ def _head_base_camera_path(arm_side: str) -> Path:
     configured_path = LEFT_HEAD_BASE_CAMERA_PATH if arm_side == "left" else RIGHT_HEAD_BASE_CAMERA_PATH
     if configured_path is None:
         raise RuntimeError(
-            f"{arm_side} 臂已配置 ChArUco offset CSV，但对应 T_base_camera 路径仍为 None；"
-            "请在文件顶部填写 Path"
+            f"{arm_side} 臂已配置 ChArUco offset CSV，但对应 T_base_camera 路径仍为 None；" "请在文件顶部填写 Path"
         )
     return configured_path
 
@@ -1623,8 +1612,7 @@ def _detect_current_camera_board_transform_m(head_channel: object) -> np.ndarray
                 if attempt == CHARUCO_DETECTION_TIMEOUT_RETRY_COUNT:
                     break
                 logger.warning(
-                    "ChArUco RPC 接收超时，等待后重试 attempt={}/{} "
-                    "rpc_timeout={:.1f}s delay={:.1f}s",
+                    "ChArUco RPC 接收超时，等待后重试 attempt={}/{} " "rpc_timeout={:.1f}s delay={:.1f}s",
                     attempt,
                     CHARUCO_DETECTION_TIMEOUT_RETRY_COUNT,
                     CHARUCO_DETECTION_RPC_TIMEOUT_S,
@@ -1649,9 +1637,7 @@ def _detect_current_camera_board_transform_m(head_channel: object) -> np.ndarray
             return matrix_m
     finally:
         client.close()
-    raise RuntimeError(
-        f"连续 {CHARUCO_DETECTION_MAX_FRAME_COUNT} 帧未检测到有效 ChArUco 目标板位姿"
-    )
+    raise RuntimeError(f"连续 {CHARUCO_DETECTION_MAX_FRAME_COUNT} 帧未检测到有效 ChArUco 目标板位姿")
 
 
 def _calculate_charuco_cartesian_offset(
@@ -1730,8 +1716,7 @@ def _evaluate_charuco_offset(
     if sample_count < CHARUCO_OFFSET_HISTORY_MIN_ACCEPTED_SAMPLES:
         return (
             False,
-            f"{arm_side} 臂有效历史样本不足："
-            f"{sample_count} < {CHARUCO_OFFSET_HISTORY_MIN_ACCEPTED_SAMPLES}",
+            f"{arm_side} 臂有效历史样本不足：" f"{sample_count} < {CHARUCO_OFFSET_HISTORY_MIN_ACCEPTED_SAMPLES}",
         )
 
     means = np.mean(accepted_history, axis=0)
@@ -1755,28 +1740,20 @@ def _evaluate_charuco_offset(
     history_rotation_norms = np.linalg.norm(accepted_history[:, 3:], axis=1)
     translation_limit_mm = min(
         float(
-            np.mean(history_translation_norms)
-            + CHARUCO_OFFSET_SIGMA_LIMIT * np.std(history_translation_norms, ddof=1)
+            np.mean(history_translation_norms) + CHARUCO_OFFSET_SIGMA_LIMIT * np.std(history_translation_norms, ddof=1)
         ),
         CHARUCO_OFFSET_MAX_TRANSLATION_NORM_MM,
     )
     rotation_limit_deg = min(
-        float(
-            np.mean(history_rotation_norms)
-            + CHARUCO_OFFSET_SIGMA_LIMIT * np.std(history_rotation_norms, ddof=1)
-        ),
+        float(np.mean(history_rotation_norms) + CHARUCO_OFFSET_SIGMA_LIMIT * np.std(history_rotation_norms, ddof=1)),
         CHARUCO_OFFSET_MAX_ROTATION_NORM_DEG,
     )
     translation_norm_mm = float(np.linalg.norm(values[:3]))
     rotation_norm_deg = float(np.linalg.norm(values[3:]))
     if translation_norm_mm > translation_limit_mm:
-        violations.append(
-            f"translation_norm_mm={translation_norm_mm:.3f} > {translation_limit_mm:.3f}"
-        )
+        violations.append(f"translation_norm_mm={translation_norm_mm:.3f} > {translation_limit_mm:.3f}")
     if rotation_norm_deg > rotation_limit_deg:
-        violations.append(
-            f"rotation_norm_deg={rotation_norm_deg:.3f} > {rotation_limit_deg:.3f}"
-        )
+        violations.append(f"rotation_norm_deg={rotation_norm_deg:.3f} > {rotation_limit_deg:.3f}")
     summary = (
         f"arm_side={arm_side} history_count={sample_count} sigma={CHARUCO_OFFSET_SIGMA_LIMIT:.1f} "
         f"translation_limit_mm={translation_limit_mm:.3f} "
@@ -1832,9 +1809,7 @@ def _initialize_charuco_cartesian_offsets(runtimes: list[ReplayRuntime]) -> None
     )
     rejected_attempts: list[str] = []
     for attempt in range(1, CHARUCO_OFFSET_SAFETY_ATTEMPT_COUNT + 1):
-        current_camera_board_m = _detect_current_camera_board_transform_m(
-            runtimes[0].body_channel
-        )
+        current_camera_board_m = _detect_current_camera_board_transform_m(runtimes[0].body_channel)
         rejection_reasons: list[str] = []
         for runtime in runtimes:
             accepted, decision_reason = _precheck_charuco_cartesian_offset(
@@ -1890,9 +1865,7 @@ def _create_offset_record(
         record_path = PROJECT_ROOT / f"{OFFSET_RECORD_NAME_PREFIX}{duplicate_marker}_{timestamp}.txt"
         try:
             with record_path.open("x", encoding="utf-8", newline="\n") as record_file:
-                record_file.write(
-                    f'{_format_matrix_xyzrpy_mm_deg("T_charuco_off", charuco_matrix_m)}\n'
-                )
+                record_file.write(f'{_format_matrix_xyzrpy_mm_deg("T_charuco_off", charuco_matrix_m)}\n')
         except FileExistsError:
             duplicate_index += 1
             continue
@@ -1913,9 +1886,7 @@ def _append_three_ball_offset_and_delta(
         record_path = _create_offset_record(charuco_offset)
         runtime.offset_record_path = record_path
     with record_path.open("a", encoding="utf-8", newline="\n") as record_file:
-        record_file.write(
-            f'{_format_matrix_xyzrpy_mm_deg("T_three_ball_off", three_ball_matrix_m)}\n'
-        )
+        record_file.write(f'{_format_matrix_xyzrpy_mm_deg("T_three_ball_off", three_ball_matrix_m)}\n')
         record_file.write(f'{_format_matrix_xyzrpy_mm_deg("T_delta", delta_matrix_m)}\n')
     logger.info(
         "THREE_BALL_OFFSET_READY {}",
@@ -2072,17 +2043,11 @@ def _execute_m11_row(runtime: ReplayRuntime, row: ReplayRow) -> None:
         row.csv_name,
         row.row_index,
         _format_sequence(
-            [
-                current_positions[actuator_id]
-                for actuator_id in RIGHT_HAND_M11_ROOT_ACTUATOR_IDS
-            ],
+            [current_positions[actuator_id] for actuator_id in RIGHT_HAND_M11_ROOT_ACTUATOR_IDS],
             decimals=4,
         ),
         _format_sequence(
-            [
-                current_positions[actuator_id]
-                for actuator_id in RIGHT_HAND_M11_TIP_ACTUATOR_IDS
-            ],
+            [current_positions[actuator_id] for actuator_id in RIGHT_HAND_M11_TIP_ACTUATOR_IDS],
             decimals=4,
         ),
     )
@@ -2153,8 +2118,7 @@ def _wait_replay_lift_until_near_target(body: WujiBodyClient, target_height_mm: 
                     )
                 if invalid_read_count == 1 or invalid_read_count % 20 == 0:
                     logger.warning(
-                        "lift 返回无效高度，判定为通信失败并立即重读 "
-                        "invalid_read={} value={:.1f} mm",
+                        "lift 返回无效高度，判定为通信失败并立即重读 " "invalid_read={} value={:.1f} mm",
                         invalid_read_count,
                         current_height_mm,
                     )
@@ -2411,7 +2375,7 @@ def _execute_parallel_csv_pair(
             )
         except BaseException as exc:  # noqa: BLE001
             stop_event.set()
-            logger.exception(
+            logger.error(
                 "并行执行线程失败 arm_side={} file={} phase={} exc={}",
                 runtime.connected_arm.arm_side,
                 csv_path.name,
@@ -2584,14 +2548,8 @@ def _print_csv_summary(
         f"left={move_abs_j_end_linear_speed_mm_s_by_arm_side['left']:.2f} mm/s，"
         f"right={move_abs_j_end_linear_speed_mm_s_by_arm_side['right']:.2f} mm/s"
     )
-    print(
-        "左臂 MoveAbsJ CSV 速度配置："
-        f"{LEFT_REPLAY_MOVE_ABS_J_END_LINEAR_SPEED_MM_S_BY_CSV_SEQUENCE}"
-    )
-    print(
-        "右臂 MoveAbsJ CSV 速度配置："
-        f"{RIGHT_REPLAY_MOVE_ABS_J_END_LINEAR_SPEED_MM_S_BY_CSV_SEQUENCE}"
-    )
+    print("左臂 MoveAbsJ CSV 速度配置：" f"{LEFT_REPLAY_MOVE_ABS_J_END_LINEAR_SPEED_MM_S_BY_CSV_SEQUENCE}")
+    print("右臂 MoveAbsJ CSV 速度配置：" f"{RIGHT_REPLAY_MOVE_ABS_J_END_LINEAR_SPEED_MM_S_BY_CSV_SEQUENCE}")
     print(f"左臂 MoveAbsJ CSV zone 配置：{LEFT_REPLAY_MOVE_ABS_J_ZONE_MM_BY_CSV_SEQUENCE}")
     print(f"右臂 MoveAbsJ CSV zone 配置：{RIGHT_REPLAY_MOVE_ABS_J_ZONE_MM_BY_CSV_SEQUENCE}")
     print(
@@ -2710,9 +2668,7 @@ def main(
             offset_camera_name=offset_camera_name,
             offset_prior_capture_path=offset_prior_capture_path,
             hand_eye_result_path=hand_eye_result_path,
-            move_abs_j_end_linear_speed_mm_s_by_arm_side=(
-                selected_move_abs_j_end_linear_speed_mm_s_by_arm_side
-            ),
+            move_abs_j_end_linear_speed_mm_s_by_arm_side=(selected_move_abs_j_end_linear_speed_mm_s_by_arm_side),
         )
         if config_choice == "quit":
             logger.info("用户在配置阶段取消执行")
@@ -2734,11 +2690,7 @@ def main(
             selected_record_dir = DEFAULT_RECORD_DIR
             continue
         if config_choice == "speed":
-            configured_arm_sides = (
-                ("left", "right")
-                if selected_execution_mode == "parallel"
-                else (selected_arm_side,)
-            )
+            configured_arm_sides = ("left", "right") if selected_execution_mode == "parallel" else (selected_arm_side,)
             for configured_arm_side in configured_arm_sides:
                 selected_move_abs_j_end_linear_speed_mm_s_by_arm_side[configured_arm_side] = (
                     _configure_end_linear_speed_value(
@@ -2799,11 +2751,9 @@ def main(
             _prepare_runtime(right_runtime)
         runtimes = [runtime] if right_runtime is None else [runtime, right_runtime]
         for configured_runtime in runtimes:
-            configured_runtime.move_abs_j_end_linear_speed_mm_s = (
-                selected_move_abs_j_end_linear_speed_mm_s_by_arm_side[
-                    configured_runtime.connected_arm.arm_side
-                ]
-            )
+            configured_runtime.move_abs_j_end_linear_speed_mm_s = selected_move_abs_j_end_linear_speed_mm_s_by_arm_side[
+                configured_runtime.connected_arm.arm_side
+            ]
         _initialize_charuco_cartesian_offsets(runtimes)
         for plan in execution_plans:
             _execute_csv_execution_plan(

@@ -152,13 +152,22 @@ class Ar5Client:
     - 不继承业务基类，作为官方 SDK 的窄适配器使用
     """
 
-    def __init__(self, config: Ar5ConnectionConfig) -> None:
+    def __init__(
+        self,
+        config: Ar5ConnectionConfig,
+        *,
+        initialize_toolset: bool = False,
+    ) -> None:
         """连接并校验一台 AR5。
 
         Parameters
         ----------
         config:
             SDK 端点和预期左右侧配置。
+        initialize_toolset:
+            是否在连接阶段写入默认工具/工件坐标系。默认值 ``False``，控制客户端
+            不因建立连接而改变控制器上下文；RecordReplay 等需要固定坐标系的业务
+            必须显式传入 ``True`` 或执行自己的显式配置流程。
 
         Raises
         ------
@@ -189,9 +198,10 @@ class Ar5Client:
         self._robot_type = str(robot_info.type)
         self._robot_uid = str(robot_info.id)
         try:
-            self._apply_default_toolset_locked()
+            if initialize_toolset:
+                self._apply_default_toolset_locked()
         except Exception:
-            logger.exception(
+            logger.error(
                 "AR5 SDK connection initialization failed: side={} robot_ip={}",
                 config.side,
                 config.robot_ip,
@@ -252,10 +262,7 @@ class Ar5Client:
                 operate_mode=operate_mode.name,
                 power_state=power_state.name,
                 joint_deg=tuple(math.degrees(float(value)) for value in joint_rad[:7]),
-                pose_matrix_m=tuple(
-                    tuple(float(value) for value in row)
-                    for row in pose_matrix_m
-                ),
+                pose_matrix_m=tuple(tuple(float(value) for value in row) for row in pose_matrix_m),
                 xyz_mm=(
                     translation_m[0] * 1000.0,
                     translation_m[1] * 1000.0,
@@ -269,6 +276,18 @@ class Ar5Client:
                 elbow_deg=math.degrees(float(cartesian_pose.elbow)),
                 has_elbow=bool(cartesian_pose.hasElbow),
             )
+
+    def configure_motion_context(self) -> None:
+        """为后续运动显式配置已验证的默认工具与工件坐标系。
+
+        Notes
+        -----
+        该方法会向控制器写入配置，只能由人工确认后的控制流程调用。只读状态路径
+        不应调用本方法。
+        """
+
+        with self._lock:
+            self._apply_default_toolset_locked()
 
     def set_power(self, enabled: bool) -> None:
         """设置电机上下电状态。
@@ -289,11 +308,7 @@ class Ar5Client:
                 f"setPowerState({enabled})",
                 lambda ec: self._robot.setPowerState(enabled, ec),
             )
-            target_state = (
-                xCoreSDK_python.PowerState.on
-                if enabled
-                else xCoreSDK_python.PowerState.off
-            )
+            target_state = xCoreSDK_python.PowerState.on if enabled else xCoreSDK_python.PowerState.off
             self._wait_power_state_locked(target_state)
 
     def set_operate_mode(self, automatic: bool) -> None:
@@ -310,11 +325,7 @@ class Ar5Client:
         根据最新状态决定切换方向，本方法不读取或猜测当前模式。
         """
 
-        target_mode = (
-            xCoreSDK_python.OperateMode.automatic
-            if automatic
-            else xCoreSDK_python.OperateMode.manual
-        )
+        target_mode = xCoreSDK_python.OperateMode.automatic if automatic else xCoreSDK_python.OperateMode.manual
         with self._lock:
             self._call_none(
                 f"setOperateMode({target_mode.name})",
@@ -613,10 +624,7 @@ class Ar5Client:
         """固定已验证的工具和工件坐标系，避免双臂继承不同控制器上下文。"""
 
         self._call_control_value(
-            (
-                f"setToolset({AR5_DEFAULT_TOOL_NAME}, "
-                f"{AR5_DEFAULT_WOBJ_NAME})"
-            ),
+            (f"setToolset({AR5_DEFAULT_TOOL_NAME}, " f"{AR5_DEFAULT_WOBJ_NAME})"),
             lambda ec: self._robot.setToolset(
                 AR5_DEFAULT_TOOL_NAME,
                 AR5_DEFAULT_WOBJ_NAME,
@@ -685,9 +693,8 @@ class Ar5Client:
             callback(self._ec)
             self._raise_for_error(action)
         except Exception:
-            logger.exception(
-                "AR5 SDK request failed: side={} robot_ip={} action={} "
-                "elapsed_ms={:.3f} ec={}",
+            logger.error(
+                "AR5 SDK request failed: side={} robot_ip={} action={} " "elapsed_ms={:.3f} ec={}",
                 self._config.side,
                 self._config.robot_ip,
                 action,
@@ -696,8 +703,7 @@ class Ar5Client:
             )
             raise
         logger.info(
-            "AR5 SDK response: side={} robot_ip={} action={} "
-            "elapsed_ms={:.3f} ec={}",
+            "AR5 SDK response: side={} robot_ip={} action={} " "elapsed_ms={:.3f} ec={}",
             self._config.side,
             self._config.robot_ip,
             action,
@@ -728,9 +734,8 @@ class Ar5Client:
             value = callback(self._ec)
             self._raise_for_error(action)
         except Exception:
-            logger.exception(
-                "AR5 SDK request failed: side={} robot_ip={} action={} "
-                "elapsed_ms={:.3f} ec={}",
+            logger.error(
+                "AR5 SDK request failed: side={} robot_ip={} action={} " "elapsed_ms={:.3f} ec={}",
                 self._config.side,
                 self._config.robot_ip,
                 action,
@@ -739,8 +744,7 @@ class Ar5Client:
             )
             raise
         logger.info(
-            "AR5 SDK response: side={} robot_ip={} action={} "
-            "elapsed_ms={:.3f} ec={} value={}",
+            "AR5 SDK response: side={} robot_ip={} action={} " "elapsed_ms={:.3f} ec={} value={}",
             self._config.side,
             self._config.robot_ip,
             action,
@@ -756,9 +760,7 @@ class Ar5Client:
         error_code = self._ec.get("ec", 0)
         if error_code == 0:
             return
-        raise RuntimeError(
-            f"{action} 失败: ec={error_code}, message={self._ec.get('message', '')}"
-        )
+        raise RuntimeError(f"{action} 失败: ec={error_code}, message={self._ec.get('message', '')}")
 
     # endregion
 

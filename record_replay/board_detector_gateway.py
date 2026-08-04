@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 
+import zmq
 from camera_pipeline.client import CameraName, CameraPipelineClient
 from camera_pipeline.service.protocol import CharucoDetectionRequest
 
@@ -19,8 +21,12 @@ class BoardDetectionConfig:
     square_length_mm: float = 20.0
     marker_length_mm: float = 14.0
     min_charuco_corners: int = 6
-    max_frames: int = 300
+    max_frames: int = 5
     stable_timeout_s: float = 10.0
+    rpc_timeout_s: float = 55.0
+    timeout_retry_count: int = 3
+    timeout_retry_delay_s: float = 1.0
+    service_addr: str = "tcp://127.0.0.1:6200"
 
 
 class CameraPipelineBoardDetector:
@@ -33,21 +39,38 @@ class CameraPipelineBoardDetector:
         """返回有效的 T_camera_board；未检测到 Board 时抛出明确异常。"""
 
         config = self._config
-        client = CameraPipelineClient()
+        client = CameraPipelineClient(
+            service_addr=config.service_addr,
+            timeout_ms=int(config.rpc_timeout_s * 1000.0),
+        )
         try:
-            response = client.detect_charuco(
-                CharucoDetectionRequest(
-                    camera_name=config.camera_name,
-                    dictionary_name=config.dictionary_name,
-                    squares_x=config.squares_x,
-                    squares_y=config.squares_y,
-                    square_length_mm=config.square_length_mm,
-                    marker_length_mm=config.marker_length_mm,
-                    min_charuco_corners=config.min_charuco_corners,
-                    max_frames=config.max_frames,
-                    stable_timeout_s=config.stable_timeout_s,
-                )
+            request = CharucoDetectionRequest(
+                camera_name=config.camera_name,
+                dictionary_name=config.dictionary_name,
+                squares_x=config.squares_x,
+                squares_y=config.squares_y,
+                square_length_mm=config.square_length_mm,
+                marker_length_mm=config.marker_length_mm,
+                min_charuco_corners=config.min_charuco_corners,
+                max_frames=config.max_frames,
+                stable_timeout_s=config.stable_timeout_s,
             )
+            response = None
+            last_timeout: zmq.Again | None = None
+            for attempt in range(1, config.timeout_retry_count + 1):
+                try:
+                    response = client.detect_charuco(request)
+                    break
+                except zmq.Again as error:
+                    last_timeout = error
+                    if attempt == config.timeout_retry_count:
+                        break
+                    time.sleep(config.timeout_retry_delay_s)
+            if response is None:
+                raise TimeoutError(
+                    f"ChArUco RPC 连续超时 attempts={config.timeout_retry_count} "
+                    f"timeout={config.rpc_timeout_s:.1f}s"
+                ) from last_timeout
         finally:
             client.close()
         if response.status != "detected" or len(response.t_cam_board_mm) != 4:

@@ -46,7 +46,14 @@ def parse_pose_values(pose_text: str) -> ParsedArmPose:
 
     if pose_text.strip().lower() == "nan":
         raise ValueError("pose 列为 NaN，不能解析为笛卡尔目标")
-    parsed = ast.literal_eval(pose_text)
+    stripped_text = pose_text.strip()
+    if "[" not in stripped_text and "]" not in stripped_text:
+        values = [float(token) for token in stripped_text.replace(",", " ").split() if token]
+        if len(values) != 6:
+            raise ValueError("笛卡尔目标必须包含 6 个数值")
+        parsed = values
+    else:
+        parsed = ast.literal_eval(stripped_text)
     if not isinstance(parsed, list):
         raise ValueError("笛卡尔目标必须是 list 格式")
     if len(parsed) == 6:
