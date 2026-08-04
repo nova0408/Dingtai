@@ -107,9 +107,9 @@ RIGHT_REPLAY_MOVE_ABS_J_END_LINEAR_SPEED_MM_S_BY_CSV_SEQUENCE: dict[int, float] 
 
 LEFT_REPLAY_MOVE_ABS_J_ZONE_MM_BY_CSV_SEQUENCE: dict[int, float] = {
     -1: DEFAULT_JOINT_ZONE,
-    2: 40.0,
+    2: 80.0,
     4: 0,
-    15: 40.0,
+    15: 80.0,
 }
 "左臂各 CSV 连续 MoveAbsJ 中间点的转弯区半径，单位 mm；-1 为左臂默认值。"
 
@@ -2502,7 +2502,7 @@ def _confirm_runtime_config(
         if execution_mode == "parallel":
             print(
                 "当前 MoveAbsJ 默认末端线速度："
-                f"left={move_abs_j_end_linear_speed_mm_s_by_arm_side['left']:.2f} mm/s，"
+                f"left={move_abs_j_end_linear_speed_mm_s_by_arm_side['left']:.2f} mm/s,"
                 f"right={move_abs_j_end_linear_speed_mm_s_by_arm_side['right']:.2f} mm/s"
             )
         else:
@@ -2545,7 +2545,7 @@ def _print_csv_summary(
         print(f"  {index:02d}. {csv_path.name}")
     print(
         "本轮 MoveAbsJ 默认末端线速度："
-        f"left={move_abs_j_end_linear_speed_mm_s_by_arm_side['left']:.2f} mm/s，"
+        f"left={move_abs_j_end_linear_speed_mm_s_by_arm_side['left']:.2f} mm/s,"
         f"right={move_abs_j_end_linear_speed_mm_s_by_arm_side['right']:.2f} mm/s"
     )
     print("左臂 MoveAbsJ CSV 速度配置：" f"{LEFT_REPLAY_MOVE_ABS_J_END_LINEAR_SPEED_MM_S_BY_CSV_SEQUENCE}")
