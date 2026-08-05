@@ -744,7 +744,7 @@ fi
 camera_import_output=""
 if ! camera_import_output="$(
   cd "${workspace}"
-  "/home/wuji-brain/miniconda3/envs/wuji/bin/python" -c 'import camera_pipeline.service'
+  "/home/wuji-brain/miniconda3/envs/wuji/bin/python" -c 'import camera_pipeline.service.__main__'
 )"; then
   echo "[deploy] refused: CameraPipeline import preflight failed"
   printf '%s\n' "${camera_import_output}"
