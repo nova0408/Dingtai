@@ -13,12 +13,10 @@ from .motion_parsing import ParsedArmPose
 
 
 class ReplayServiceState(str, Enum):
-    """常态化服务的可观测状态。"""
+    """常态化服务的可观测运行状态。"""
 
-    WAITING = "waiting"
-    NAVIGATING_TO_START = "navigating_to_start"
-    REPLAYING = "replaying"
-    FAILED = "failed"
+    IDLE = "idle"
+    BUSY = "busy"
 
     def __str__(self) -> str:
         """保持 Python 3.11 ``StrEnum`` 的字符串表现。"""

@@ -36,8 +36,6 @@ class ReplayRuntime:
     "双臂同步失败时共享的停止事件。"
     settings: ReplayServiceSettings
     "服务运行参数，由总配置页统一提供。"
-    move_abs_j_end_linear_speed_mm_s: float
-    "当前连续 MoveAbsJ 的末端线速度，单位 mm/s。"
     auto_execute_remaining: bool = True
     "自动服务固定为 True，保留执行期语义。"
     pending_arm_rows: list[ReplayRow] = field(default_factory=list)
@@ -85,7 +83,6 @@ def create_runtime(
         hand_body,
         stop_event,
         settings,
-        settings.arm.move_abs_j_end_linear_speed_mm_s,
     )
 
 

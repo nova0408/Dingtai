@@ -8,6 +8,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from .application import RecordReplayApplication
+from .config_store import RuntimeParameterValue
 from ..device_status import DeviceStatusResponse
 from .protocol import PriorUploadResponse, RecordReplayResponse
 
@@ -91,13 +92,26 @@ class RecordReplayServer:
             def log_message(self, format: str, *args: object) -> None:
                 del format, args
 
-            def _read_changes(self) -> dict[str, float | int]:
+            def _read_changes(self) -> dict[str, RuntimeParameterValue]:
                 payload = self._read_json_object()
-                changes: dict[str, float | int] = {}
+                changes: dict[str, RuntimeParameterValue] = {}
                 for key, value in payload.items():
-                    if isinstance(value, bool) or not isinstance(value, int | float):
-                        raise ValueError("配置值必须是数字")
-                    changes[key] = value
+                    if isinstance(value, bool):
+                        raise ValueError("配置值不能是 bool")
+                    if isinstance(value, int | float):
+                        changes[key] = value
+                        continue
+                    if isinstance(value, dict):
+                        levels: dict[str, float | int] = {}
+                        for sequence, level in value.items():
+                            if not isinstance(sequence, str):
+                                raise ValueError("速度/zone 的 CSV 序号键必须是字符串")
+                            if isinstance(level, bool) or not isinstance(level, int | float):
+                                raise ValueError("速度/zone 的值必须是数字")
+                            levels[sequence] = level
+                        changes[key] = levels
+                        continue
+                    raise ValueError("配置值必须是数字或 CSV 序号映射")
                 return changes
 
             def _read_start_options(self) -> bool:

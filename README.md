@@ -10,6 +10,8 @@
 - PySide6 6.11.x
 - plyfile < 1.1.0
 
+全新 Orin 部署当前 CameraPipeline、RecordReplay、RobotControl 和 API Gateway 的环境、网络、证书、systemd 与验收流程见：[Orin 四服务部署指南](docs/服务部署指南.md)。
+
 如果把 `numpy` 升到 2.x，当前项目常用的 `plyfile 1.0.x` 约束会被破坏；如果回退到 `open3d 0.18.0`，在本机 `PySide6 6.11.x` 环境下又复现过嵌入窗口初始化崩溃，因此当前仓库统一按上述组合维护。
 
 ## Open3D GUI 已知问题与修复

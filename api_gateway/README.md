@@ -1,7 +1,7 @@
 # Dingtai 统一客户端入口
 
 `api_gateway` 是三个业务服务之上的外部客户端统一入口。它使用 aiohttp 直接终止 TLS，默认
-监听 `0.0.0.0:443`，不需要再部署一层反向代理。
+同时监听 IPv4 `0.0.0.0:443` 与 IPv6 `[::]:443`，不需要再部署一层反向代理。
 
 完整访问契约见 [`API Reference.md`](API%20Reference.md)，机器可读契约见
 [`openapi.yaml`](openapi.yaml)。
@@ -84,7 +84,7 @@ python -m api_gateway.service --host 0.0.0.0 --port 443 \
   --tls-key /etc/dingtai/api-gateway/tls/api-gateway.key.pem
 ```
 
-Gateway 默认绑定所有网卡，供外部客户端通过 Orin 的内网地址访问。应在 Orin 防火墙或网络
+Gateway 默认绑定所有 IPv4/IPv6 网卡，供外部客户端通过 Orin 的内网地址访问。应在 Orin 防火墙或网络
 边界仅放行可信客户端访问 443；不要把内部 CameraPipeline、RecordReplay、RobotControl
 端口暴露给外部。Gateway 不主动启动、停止或探测三个后端服务。
 

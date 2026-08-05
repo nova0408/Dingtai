@@ -67,7 +67,7 @@ if ss -ltn "( sport = :${SERVICE_PORT} )" | grep -q LISTEN; then
     echo "[restart] refused: running service returned invalid status"
     exit 1
   }
-  if [[ "${service_state}" != "waiting" ]]; then
+  if [[ "${service_state}" != "idle" ]]; then
     echo "[restart] refused: current service state is ${service_state}"
     exit 1
   fi

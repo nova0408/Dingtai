@@ -16,6 +16,7 @@ DEFAULT_TLS_CERT_PATH = Path(
     "/etc/dingtai/api-gateway/tls/api-gateway.fullchain.pem"
 )
 DEFAULT_TLS_KEY_PATH = Path("/etc/dingtai/api-gateway/tls/api-gateway.key.pem")
+_DEFAULT_LISTEN_HOSTS = ("0.0.0.0", "::")
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -27,9 +28,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     app = create_app(settings)
     app.on_startup.append(on_startup)
     app.on_cleanup.append(on_cleanup)
+    listen_host: str | tuple[str, ...] = settings.host
+    if settings.host == "0.0.0.0":
+        listen_host = _DEFAULT_LISTEN_HOSTS
     web.run_app(
         app,
-        host=settings.host,
+        host=listen_host,
         port=settings.port,
         handle_signals=True,
         ssl_context=ssl_context,

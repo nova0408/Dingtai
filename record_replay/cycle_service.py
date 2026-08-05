@@ -40,7 +40,7 @@ class RecordReplayCycleService:
             self._context.reset_run_progress()
             left_paths, plans = self.refresh_deployment_status()
             if enable_agv_navigation:
-                self._context.set_state(ReplayServiceState.NAVIGATING_TO_START)
+                self._context.set_state(ReplayServiceState.BUSY)
                 wait_until_arrived(
                     self._agv_client,
                     config.start_station,
@@ -57,7 +57,8 @@ class RecordReplayCycleService:
             )
             self._context.reset_for_next_cycle()
         except Exception as error:
-            self._context.set_state(ReplayServiceState.FAILED, error_text=str(error))
+            self._context.reset_run_progress()
+            self._context.set_state(ReplayServiceState.IDLE, error_text=str(error))
             raise
 
     def refresh_deployment_status(

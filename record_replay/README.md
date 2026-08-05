@@ -76,14 +76,13 @@ Orin HTTP 服务只读取已部署到 `/home/wuji-brain/workspace/record_replay/
 ## 循环状态
 
 ```text
-waiting
-  -> navigating_to_start (AGV navigate_to("1") + raw_status 从 busy 变为 idel)
-  -> replaying          (按左/右 CSV 执行计划回放)
-  -> waiting
+idle
+  -> busy               (AGV、设备准备、CSV 执行和资源清理)
+  -> idle
 ```
 
-任一阶段失败时，状态进入 `failed`，错误文本写入 `ReplayContext.snapshot()`。
-下一轮必须重新发出触发指令。
+任一阶段失败时，服务先完成运行资源清理，再回到 `idle`，并将错误文本写入
+`ReplayContext.snapshot()`。下一轮必须重新发出触发指令。
 
 ## 模块职责
 
@@ -172,8 +171,8 @@ python test/record_replay/local/record_replay_local_manual.py
 
 ### 运行策略参数
 
-所有会影响执行时序、速度、重试、容差、三球采样和 AGV 轮询的参数只定义在
-`settings.py`：
+所有会影响执行时序、速度、重试、容差、三球采样和 AGV 轮询的默认策略定义在
+`settings.py`；允许现场修改的运行参数由 `service/config_store.py` 持久化：
 
 - `ReplayArmSettings`：NRT、tool/wobj、MoveAbsJ、reset 与机械臂型号；
 - `ReplayHandSettings`：夹爪/M11/升降动作与容差；
@@ -184,13 +183,15 @@ python test/record_replay/local/record_replay_local_manual.py
 业务模块通过 `ReplayContext.config.settings` 或 `ReplayRuntime.settings` 读取这些数据，
 禁止重新声明模块级调试常量。若需现场调参，请在本机入口构造
 `ReplayServiceSettings` 的定制实例，再传入 `ReplayCycleConfig`。
-MoveAbsJ 末端线速度和中间点 zone 按左右臂及 CSV 数字序号配置；offset 触发 CSV
-不再使用独立临时速度。
+MoveAbsJ 末端线速度和中间点 zone 按左右臂及 CSV 数字序号配置；`-1` 是本侧默认级别，
+其余序号覆盖对应 CSV。offset 触发 CSV 不再使用独立临时速度。Orin 服务通过 `/config`
+读取和修改这四组映射，只有 `idle` 状态允许修改。
 
 ## Orin 服务 API
 
 服务入口为 `python -m record_replay.service`，默认监听 `http://0.0.0.0:6300`。
-进程启动只建立 API 监听，不会自动执行机械臂动作。调用 `start` 后，业务线程执行
+进程启动只建立 API 监听，不会自动执行机械臂动作，并处于 `idle` 状态。调用 `start` 被接受后
+立即进入 `busy`，直到 AGV、设备准备、CSV 回放和资源清理全部结束，再恢复 `idle`。业务线程执行
 一轮既有的 AGV、CSV、双臂和 offset 流程；重复 `start` 会返回 `accepted=false`，
 不会并发控制同一组设备。`status` 可查询当前阶段、部署的左右臂 CSV、左右臂对齐的
 实际执行任务、当前任务序号、服务累计执行次数、各臂当前 CSV、源数据行进度、计划下标
@@ -200,7 +201,7 @@ GUI 可按 1 秒周期轮询该只读接口；不需要维持 SSE/WebSocket 长�
 
 HTTP API：`GET /status`、`GET /config`、`GET /device-status`、`POST /config`、
 `POST /prior/ball-pose`、`POST /prior/charuco`、`POST /start`。配置更新 body
-是字段到数值的 JSON object；服务执行期间拒绝修改配置。两个 prior 接口接收完整 JSON，
+是字段到数值或 CSV 序号映射的 JSON object；服务 `busy` 期间拒绝修改配置。两个 prior 接口接收完整 JSON，
 校验通过后原子替换并将旧文件备份到服务端 `.archive/prior_data/<时间戳>/`。`POST /start` 必须提供
 `{"enable_agv_navigation": true|false}`；为 `false` 时不执行回放前导航，双臂 CSV
 回放仍会执行；为 `true` 时只在回放前导航到站点 `1`，回放完成后不自动返航，与已验证
@@ -271,7 +272,7 @@ bash scripts/restart_record_replay_service.sh
 
 脚本显示 `我已确认现场安全并同意重启RecordReplay服务 [Y/n]`，输入 `Y`、`y` 或
 直接回车继续，输入 `n` 取消；非交互环境直接拒绝。它会检查左右臂 CSV，
-并在已有服务状态不是 `waiting` 或状态不可查询时拒绝停止进程。停止阶段只发送 SIGTERM；
+并在已有服务状态不是 `idle` 或状态不可查询时拒绝停止进程。停止阶段只发送 SIGTERM；
 若服务不能干净退出则停止操作，不使用 SIGKILL。脚本只重启 HTTP API 服务，不发送
 `POST /start`，因此不会主动开始一轮回放。
 

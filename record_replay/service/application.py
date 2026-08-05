@@ -8,9 +8,10 @@ from collections.abc import Callable
 from loguru import logger
 
 from ..context import ReplayContext
+from ..contracts import ReplayServiceState
 from ..cycle_service import RecordReplayCycleService
 from ..device_status import DeviceStatusReader, DeviceStatusResponse
-from .config_store import RuntimeConfigStore
+from .config_store import RuntimeConfigStore, RuntimeParameterValue
 from .prior_store import PriorKind, PriorReplacement, RecordReplayPriorStore
 from .protocol import PriorUploadResponse, RecordReplayResponse
 
@@ -48,10 +49,16 @@ class RecordReplayApplication:
                     accepted=False,
                     error_text=prior_result.error_text(),
                 )
+            self._context.reset_for_next_cycle()
+            self._context.set_state(ReplayServiceState.BUSY)
             try:
                 cycle_service = self._cycle_service_factory()
                 cycle_service.refresh_deployment_status()
             except Exception as exc:
+                self._context.set_state(
+                    ReplayServiceState.IDLE,
+                    error_text=f"回放初始化失败：{type(exc).__name__}: {exc}",
+                )
                 return self.status(
                     accepted=False,
                     error_text=f"回放初始化失败：{type(exc).__name__}: {exc}",
@@ -122,7 +129,7 @@ class RecordReplayApplication:
             parameters=self._config_store.load(),
         )
 
-    def update_parameters(self, changes: dict[str, float | int]) -> RecordReplayResponse:
+    def update_parameters(self, changes: dict[str, RuntimeParameterValue]) -> RecordReplayResponse:
         """校验、保存参数，并更新下一轮业务配置。"""
 
         with self._lock:

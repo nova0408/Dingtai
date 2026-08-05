@@ -46,7 +46,7 @@ class ReplayContext:
         self.resources = ReplayRuntimeResources()
         self.stop_event = threading.Event()
         self._lock = threading.Lock()
-        self._snapshot = ReplayStatusSnapshot(state=ReplayServiceState.WAITING)
+        self._snapshot = ReplayStatusSnapshot(state=ReplayServiceState.IDLE)
 
     # endregion
 
@@ -220,13 +220,13 @@ class ReplayContext:
 
         self.stop_event.clear()
         self.reset_run_progress()
-        self.set_state(ReplayServiceState.WAITING)
+        self.set_state(ReplayServiceState.IDLE)
 
     def update_settings(self, settings: ReplayServiceSettings) -> None:
         """仅在未执行硬件任务时替换后续轮次使用的运行参数。"""
 
         with self._lock:
-            if self._snapshot.state not in (ReplayServiceState.WAITING, ReplayServiceState.FAILED):
+            if self._snapshot.state is not ReplayServiceState.IDLE:
                 raise RuntimeError("回放正在执行，不能修改运行参数")
             self.config = replace(self.config, settings=settings)
 

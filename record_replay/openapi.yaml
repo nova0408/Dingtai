@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: RecordReplay HTTP API
-  version: 1.11.0
+  version: 1.12.0
   description: >-
     双臂记录回放服务 HTTP API。POST /start 可能控制真实设备，必须由现场人员确认安全后调用。
 servers:
@@ -139,7 +139,7 @@ components:
   schemas:
     ReplayState:
       type: string
-      enum: [waiting, navigating_to_start, replaying, failed]
+      enum: [idle, busy]
     CsvFileStatus:
       type: object
       required: [name, row_count]
@@ -156,10 +156,12 @@ components:
         synchronized: {type: boolean}
     RuntimeParameters:
       type: object
-      required: [move_abs_j_end_linear_speed_mm_s, move_abs_j_zone_mm, agv_navigation_timeout_s, agv_navigation_poll_interval_s, non_motion_retry_count, non_motion_retry_delay_s]
+      required: [left_move_abs_j_end_linear_speed_mm_s_by_csv_sequence, right_move_abs_j_end_linear_speed_mm_s_by_csv_sequence, left_move_abs_j_zone_mm_by_csv_sequence, right_move_abs_j_zone_mm_by_csv_sequence, agv_navigation_timeout_s, agv_navigation_poll_interval_s, non_motion_retry_count, non_motion_retry_delay_s]
       properties:
-        move_abs_j_end_linear_speed_mm_s: {type: number, minimum: 5, maximum: 4000, default: 1000}
-        move_abs_j_zone_mm: {type: number, minimum: 0, default: 10}
+        left_move_abs_j_end_linear_speed_mm_s_by_csv_sequence: {$ref: '#/components/schemas/MotionLevelMap'}
+        right_move_abs_j_end_linear_speed_mm_s_by_csv_sequence: {$ref: '#/components/schemas/MotionLevelMap'}
+        left_move_abs_j_zone_mm_by_csv_sequence: {$ref: '#/components/schemas/ZoneLevelMap'}
+        right_move_abs_j_zone_mm_by_csv_sequence: {$ref: '#/components/schemas/ZoneLevelMap'}
         agv_navigation_timeout_s: {type: number, exclusiveMinimum: 0, default: 600}
         agv_navigation_poll_interval_s: {type: number, exclusiveMinimum: 0, default: 1}
         non_motion_retry_count: {type: integer, minimum: 1, default: 3}
@@ -194,12 +196,22 @@ components:
       additionalProperties: false
       description: 允许的字段见下列 properties；boolean 和未知字段会被拒绝。
       properties:
-        move_abs_j_end_linear_speed_mm_s: {type: number}
-        move_abs_j_zone_mm: {type: number}
+        left_move_abs_j_end_linear_speed_mm_s_by_csv_sequence: {$ref: '#/components/schemas/MotionLevelMap'}
+        right_move_abs_j_end_linear_speed_mm_s_by_csv_sequence: {$ref: '#/components/schemas/MotionLevelMap'}
+        left_move_abs_j_zone_mm_by_csv_sequence: {$ref: '#/components/schemas/ZoneLevelMap'}
+        right_move_abs_j_zone_mm_by_csv_sequence: {$ref: '#/components/schemas/ZoneLevelMap'}
         agv_navigation_timeout_s: {type: number}
         agv_navigation_poll_interval_s: {type: number}
         non_motion_retry_count: {type: integer}
         non_motion_retry_delay_s: {type: number}
+    MotionLevelMap:
+      type: object
+      additionalProperties: {type: number, minimum: 5, maximum: 4000}
+      description: CSV 数字序号到 MoveAbsJ 末端线速度的映射；必须包含 -1 默认级别。
+    ZoneLevelMap:
+      type: object
+      additionalProperties: {type: number, minimum: 0}
+      description: CSV 数字序号到 MoveAbsJ zone 的映射；必须包含 -1 默认级别。
     StartRequest:
       type: object
       additionalProperties: false

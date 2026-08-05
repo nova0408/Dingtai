@@ -33,7 +33,7 @@ class RecordReplayClient:
 
         return self._request("GET", "/device-status", timeout_s=timeout_s)
 
-    def update_config(self, changes: dict[str, float | int]) -> dict[str, object]:
+    def update_config(self, changes: Mapping[str, object]) -> dict[str, object]:
         return self._request("POST", "/config", changes)
 
     def upload_ball_pose_prior(self, payload: Mapping[str, object]) -> dict[str, object]:

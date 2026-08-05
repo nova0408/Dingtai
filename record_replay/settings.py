@@ -45,10 +45,6 @@ class ReplayArmSettings:
     "等待控制器确认上电的超时，单位 s。"
     power_on_poll_interval_s: float = 0.1
     "等待控制器确认上电的状态轮询周期，单位 s。"
-    move_abs_j_end_linear_speed_mm_s: float = 1000.0
-    "普通连续 MoveAbsJ 段末端线速度，单位 mm/s。"
-    move_abs_j_zone_mm: float = 10.0
-    "连续 MoveAbsJ 中间点转弯区半径，单位 mm。"
     motion_state_poll_interval_s: float = 0.1
     "等待机械臂运动完成的轮询周期，单位 s。"
     reset_ready_timeout_s: float = 2.0
@@ -68,9 +64,9 @@ class ReplayArmSettings:
     "右臂按 CSV 数字序号覆盖 MoveAbsJ 末端线速度；-1 为右臂默认值。"
     left_move_abs_j_zone_mm_by_csv_sequence: tuple[tuple[int, float], ...] = (
         (-1, 10.0),
-        (2, 40.0),
+        (2, 80.0),
         (4, 0.0),
-        (15, 40.0),
+        (15, 80.0),
     )
     "左臂按 CSV 数字序号覆盖连续 MoveAbsJ 中间点 zone；-1 为左臂默认值。"
     right_move_abs_j_zone_mm_by_csv_sequence: tuple[tuple[int, float], ...] = (

@@ -54,7 +54,7 @@ class DualArmExecutor:
                 )
             for index, plan in enumerate(plans):
                 context.set_state(
-                    ReplayServiceState.REPLAYING,
+                    ReplayServiceState.BUSY,
                     left_csv_state=state_name_from_left_csv(plan.left_csv_path.name, context.config.state_prefix),
                     plan_index=index,
                 )

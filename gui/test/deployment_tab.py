@@ -420,7 +420,7 @@ class DeploymentTabWidget(QWidget, ActivatableTab):
         can_start = (
             bool(self._service_host)
             and not self._command_busy
-            and self._latest_state in {"waiting", "failed"}
+            and self._latest_state == "idle"
         )
         self.agv_navigation_checkbox.setEnabled(can_start)
         self.start_button.setEnabled(can_start)
@@ -563,9 +563,6 @@ def _format_progress(current_row: int | None, total_rows: int | None) -> str:
 
 def _translate_state(state: str) -> str:
     return {
-        "waiting": "等待启动",
-        "navigating_to_start": "前往起点",
-        "replaying": "正在回放",
-        "navigating_to_finish": "返回终点",
-        "failed": "执行失败",
+        "idle": "空闲",
+        "busy": "正在执行",
     }.get(state, state)

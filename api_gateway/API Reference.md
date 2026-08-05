@@ -1,11 +1,11 @@
 # Dingtai API Gateway API Reference
 
-文档版本：`1.2.0`（2026-08-03）
-Gateway 服务版本：`0.2.1`
+文档版本：`1.3.0`（2026-08-04）
+Gateway 服务版本：`0.2.2`
 正式客户端入口：`https://<orin-host>`（标准 HTTPS 端口 `443`）
 
-Gateway 使用 aiohttp 直接终止 TLS 并监听外部客户端；默认绑定 `0.0.0.0:443`，不需要
-额外部署一层反向代理。CameraPipeline、RecordReplay 和
+Gateway 使用 aiohttp 直接终止 TLS 并监听外部客户端；默认绑定 `0.0.0.0:443`，同时在
+同一端口监听 `[::]:443`，不需要额外部署一层反向代理。CameraPipeline、RecordReplay 和
 RobotControl 仍是 Orin 内部服务，Gateway 通过 `127.0.0.1` 访问它们的内部端口。
 
 所有正式客户端在首次使用前都必须安装并信任 `CasiaHand Root CA`。平台安装方法见
@@ -117,6 +117,7 @@ RobotControl 的控制 POST 和 RecordReplay 的 `/start` 仍必须由现场人�
 
 | 文档版本 | 日期 | 内容 |
 | --- | --- | --- |
+| `1.3.0` | 2026-08-04 | Gateway 默认同时监听 IPv4 `0.0.0.0:443` 与 IPv6 `[::]:443`；后端 loopback、hostname 证书和 CORS 约束不变。 |
 | `1.2.0` | 2026-08-03 | 修复 OpenSSL 1.1.1f CA 扩展兼容性，增加 Orin 一键注册脚本 |
 | `1.1.0` | 2026-08-03 | Gateway 由 aiohttp 直接提供 443/TLS；增加 CasiaHand CA 安装前置要求 |
 | `1.0.0` | 2026-08-03 | 明确三个功能性服务正式访问 Gateway，独立端口仅用于测试和诊断 |

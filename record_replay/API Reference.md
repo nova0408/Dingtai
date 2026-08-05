@@ -1,7 +1,7 @@
 # RecordReplay API Reference
 
-文档版本：`1.0.4`（2026-08-03）
-服务业务版本：`1.11.0`  
+文档版本：`1.0.5`（2026-08-05）
+服务业务版本：`1.12.0`
 默认监听：`http://<orin>:6300`
 
 机器可读文件：[OpenAPI 3.1](openapi.yaml)。
@@ -54,7 +54,7 @@ GET /status
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
-| `state` | enum | `waiting`、`navigating_to_start`、`replaying`、`failed` |
+| `state` | enum | `idle` 或 `busy`；接受 start 后立即为 `busy`，本轮执行和资源清理完成后为 `idle` |
 | `accepted` | boolean | 请求是否被接受；正常查询为 `true` |
 | `left_csv_state` | string/null | 当前左臂 CSV 去掉 `left_` 前缀后的状态名 |
 | `plan_index` | integer/null | 当前执行计划索引，从 `0` 开始 |
@@ -93,8 +93,8 @@ GET /status
 状态流程：
 
 ```text
-waiting -> navigating_to_start -> replaying -> waiting
-任一阶段异常 -> failed
+    idle -> busy -> idle
+    任一阶段异常在清理完成后回到 idle，并在 error_text 保留错误
 ```
 
 启用 AGV 时只在回放前导航到站点 `1`；回放完成后不自动导航到终点。
@@ -109,8 +109,10 @@ GET /config
 
 | 参数 | 类型 | 默认值 | 范围/说明 |
 | --- | --- | ---: | --- |
-| `move_abs_j_end_linear_speed_mm_s` | number | 1000.0 | `5.0` 至 `4000.0` mm/s |
-| `move_abs_j_zone_mm` | number | 10.0 | 不小于 `0` mm |
+| `left_move_abs_j_end_linear_speed_mm_s_by_csv_sequence` | object | `{"-1":1000,"4":200}` | 左臂速度级别；键为 CSV 数字序号，`-1` 为默认值，范围 `5.0` 至 `4000.0` mm/s |
+| `right_move_abs_j_end_linear_speed_mm_s_by_csv_sequence` | object | `{"-1":1000}` | 右臂速度级别；键为 CSV 数字序号，`-1` 为默认值，范围 `5.0` 至 `4000.0` mm/s |
+| `left_move_abs_j_zone_mm_by_csv_sequence` | object | `{"-1":10,"2":80,"4":0,"15":80}` | 左臂 zone 级别；键为 CSV 数字序号，`-1` 为默认值，不能小于 `0` mm |
+| `right_move_abs_j_zone_mm_by_csv_sequence` | object | `{"-1":10}` | 右臂 zone 级别；键为 CSV 数字序号，`-1` 为默认值，不能小于 `0` mm |
 | `agv_navigation_timeout_s` | number | 600.0 | 大于 `0` 秒 |
 | `agv_navigation_poll_interval_s` | number | 1.0 | 大于 `0` 秒 |
 | `non_motion_retry_count` | integer | 3 | 大于 `0` |
@@ -124,17 +126,17 @@ GET /config
 
 ```json
 {
-  "move_abs_j_zone_mm": 15.0,
+  "left_move_abs_j_zone_mm_by_csv_sequence": {"-1": 10.0, "2": 60.0},
   "non_motion_retry_count": 4
 }
 ```
 
 约束：
 
-- value 只能是 JSON number；boolean 会被拒绝。
+- 速度/zone 参数是“CSV 数字序号到 JSON number”的 object；其它参数是 JSON number，boolean 会被拒绝。
 - 未知字段被拒绝。
 - 空 object 表示保存当前配置并返回完整配置。
-- 回放线程运行期间修改会被拒绝。
+- `state=busy` 期间修改会被拒绝；只有 `state=idle` 时允许修改。
 - 校验通过后立即以 UTF-8 JSON 原子写入 `record_replay/config.json`，并更新下一轮运行配置。
 
 成功返回 HTTP `200` 和完整 `RecordReplayResponse`，其中 `parameters` 为保存后的值。
@@ -266,6 +268,7 @@ print(client.get_config())
 
 | 文档版本 | 日期 | 内容 |
 | --- | --- | --- |
+| `1.0.5` | 2026-08-05 | 增加左右臂/CSV 分级速度与 zone 配置，并统一 `idle`/`busy` 状态 |
 | `1.0.4` | 2026-08-03 | 正式 Gateway 入口改为 HTTPS 443，并要求客户端安装 CasiaHand CA |
 | `1.0.3` | 2026-08-03 | 明确正式客户端必须通过 API Gateway，6300 独立端口仅用于测试和诊断 |
 | `1.0.2` | 2026-08-03 | 增加先验替换接口，明确启动时不加载先验、`/start` 全量校验及 `.archive` 备份语义 |
