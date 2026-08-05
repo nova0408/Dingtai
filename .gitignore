@@ -22,7 +22,6 @@ Logs/*
 *.txt
 *.bak
 *.npy
-sync_and_restart_services.ps1
 opening_detection_pipeline_package/
 
 # Byte-compiled / optimized / DLL files

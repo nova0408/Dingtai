@@ -9,7 +9,7 @@
 
 ## 当前边界
 
-- qmlinker：左右 arm、head、lift、可选的腰部 Pitch 只读状态、左夹爪、右手和 AGV。
+- qmlinker：head、lift、可选的腰部 Pitch 只读状态、左夹爪、右手和 AGV；不再提供 qmlinker 左右臂部件。
 - AR5：左右控制器状态、上下电、工作模式、急停恢复、拖动、Jog、MoveAbsJ、MoveL、elbow 和 stop。
 - HTTP：默认监听 `127.0.0.1:6500`，适合由 SSH 隧道或现场人工配置的内网访问。
 - 硬件客户端：第一次 GET 或人工控制请求到达时才延迟创建。
@@ -28,8 +28,7 @@ python -m robot_control.service --host 127.0.0.1 --port 6500
 python -m robot_control.service --host 127.0.0.1 --port 6500 --no-qmlinker-waist
 ```
 
-关闭后不会创建腰部客户端，状态仍保留 `qmlinker_waist` 记录，并返回
-`connected=false`、`error=null`、`data.available=false`。
+关闭后不会创建腰部客户端，状态订阅的 `devices` 数组中也不会出现 `qmlinker_waist`。
 
 启动服务本身不会执行运动。RobotControl 也不会在运动请求前自动写入默认 tool/wobj；
 服务部署前必须由现场人员确认控制器当前坐标系、网络、SDK 环境和设备安全边界。
@@ -67,8 +66,9 @@ GET /api/v1/status/stream?interval_s=0.2
 
 `/status/stream` 是只读 Server-Sent Events（SSE）订阅接口。连接建立后立即推送一条
 完整状态快照，之后默认每 `0.2` 秒推送一条 `event: robot_status`；可通过
-`interval_s` 指定 `0.05` 到 `5.0` 秒的间隔。每条 `data` 都包含全部 qmlinker、AR5、头部、
-升降、可选腰部 Pitch、夹爪、右手和 AGV 状态。客户端断开后服务会停止该订阅线程。
+`interval_s` 指定 `0.05` 到 `5.0` 秒的间隔。每条 `data` 都包含当前启用的 qmlinker、AR5、
+头部、升降、可选腰部 Pitch、夹爪、右手和 AGV 状态。AR5 状态按 `identity`、`joints`、
+`tcp`、`elbow` 和 `status` 分组；客户端断开后服务会停止该订阅线程。
 
 `/qmlinker/agv/targets` 通过 qmlinker 的只读地图服务读取当前 Woosh 地图和可用导航点，
 不会发送导航或其他运动请求。返回的 `x_m`、`y_m` 单位为 m，`yaw_rad` 单位为 rad；
@@ -87,11 +87,12 @@ for snapshot in client.subscribe_status(interval_s=0.2):
 
 ## 控制接口
 
-控制接口统一位于 `/api/v1/qmlinker/...` 和 `/api/v1/ar5/...`，使用 POST。新增的夹爪、右手、
+控制接口统一位于 `/api/v1/qmlinker/...` 和 `/api/v1/ar5/...`，使用 POST。qmlinker 不再提供左右臂
+控制接口；新增的夹爪、右手、
 AGV、AR5 急停恢复、拖动和 Jog 路径及字段见 `openapi.yaml` 与 `API Reference.md`。
 
-腰部不提供任何控制接口；支持该能力时，`qmlinker_waist` 报告 `available`、`enabled` 和
-`pitch_deg`。不支持时只报告 `available=false`，因为设计上将取消腰部这个自由度。AGV
+腰部不提供任何控制接口；支持该能力时，`qmlinker_waist` 报告 `enabled` 和 `pitch_deg`。
+不支持时完全省略 `qmlinker_waist` 设备，因为设计上将取消腰部这个自由度。AGV
 `translate` 是持续实时平移请求，必须由现场人员显式调用
 `/api/v1/qmlinker/agv/stop` 停止；该停止语义是 qmlinker 的软件停止，不等同于硬件急停。
 

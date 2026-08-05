@@ -51,28 +51,6 @@ class RobotControlClient:
 
         return self._request("GET", "/api/v1/qmlinker/agv/targets", timeout_s=timeout_s)
 
-    def qmlinker_set_joints(
-        self, device_name: str, joint_deg: list[float] | tuple[float, ...]
-    ) -> dict[str, Any]:
-        """设置 qmlinker 机械臂整臂关节角。"""
-
-        return self._request(
-            "POST",
-            f"/api/v1/qmlinker/arms/{device_name}/joints",
-            {"joint_deg": joint_deg},
-        )
-
-    def qmlinker_set_joint(
-        self, device_name: str, joint_index: int, target_angle_deg: float
-    ) -> dict[str, Any]:
-        """设置 qmlinker 机械臂单关节角。"""
-
-        return self._request(
-            "POST",
-            f"/api/v1/qmlinker/arms/{device_name}/joint",
-            {"joint_index": joint_index, "target_angle_deg": target_angle_deg},
-        )
-
     def qmlinker_set_head(
         self,
         *,

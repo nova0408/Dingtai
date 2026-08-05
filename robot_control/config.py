@@ -46,6 +46,3 @@ class RobotControlSettings:
 
     right_ar5_ip: str = "192.168.100.160"
     "右侧 AR5 控制器地址。"
-
-    qmlinker_default_speed_ratio: float = 0.3
-    "qmlinker 机械臂默认速度比例，单位为归一化比例。"

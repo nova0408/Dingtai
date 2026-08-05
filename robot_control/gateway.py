@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import threading
 from collections.abc import Callable, Sequence
-from dataclasses import asdict
 from typing import Any, Literal, cast
 
 from .config import RobotControlSettings
@@ -60,16 +59,9 @@ class RobotControlGateway:
         请求写入工具或工件坐标系。
         """
 
-        devices = (
-            self._read_device(
-                "qmlinker_left_arm", "qmlinker", self._read_qmlinker_left_arm
-            ),
-            self._read_device(
-                "qmlinker_right_arm", "qmlinker", self._read_qmlinker_right_arm
-            ),
+        devices = [
             self._read_device("qmlinker_head", "qmlinker", self._read_qmlinker_head),
             self._read_device("qmlinker_lift", "qmlinker", self._read_qmlinker_lift),
-            self._read_qmlinker_waist_state(),
             self._read_device(
                 "qmlinker_gripper", "qmlinker", self._read_qmlinker_gripper
             ),
@@ -79,8 +71,15 @@ class RobotControlGateway:
             self._read_device("qmlinker_agv", "qmlinker", self._read_qmlinker_agv),
             self._read_device("ar5_left", "xcoresdk", lambda: self._read_ar5("left")),
             self._read_device("ar5_right", "xcoresdk", lambda: self._read_ar5("right")),
-        )
-        return RobotControlStatus(ROBOT_CONTROL_VERSION, API_VERSION, devices)
+        ]
+        if self._settings.qmlinker_waist_available:
+            devices.insert(
+                2,
+                self._read_device(
+                    "qmlinker_waist", "qmlinker", self._read_qmlinker_waist
+                ),
+            )
+        return RobotControlStatus(ROBOT_CONTROL_VERSION, API_VERSION, tuple(devices))
 
     def _read_device(
         self,
@@ -95,52 +94,6 @@ class RobotControlGateway:
                 return DeviceState(name, backend, True, None, reader())
         except Exception as exc:
             return DeviceState(name, backend, False, f"{type(exc).__name__}: {exc}", {})
-
-    @staticmethod
-    def _unavailable_device(name: str, backend: str) -> DeviceState:
-        """构造已声明但当前机型不支持的可选设备状态。"""
-
-        return DeviceState(name, backend, False, None, {"available": False})
-
-    def _read_qmlinker_waist_state(self) -> DeviceState:
-        """按机型能力开关读取 qmlinker 腰部状态。"""
-
-        if not self._settings.qmlinker_waist_available:
-            return self._unavailable_device("qmlinker_waist", "qmlinker")
-        return self._read_device(
-            "qmlinker_waist", "qmlinker", self._read_qmlinker_waist
-        )
-
-    def _read_qmlinker_left_arm(self) -> dict[str, JsonValue]:
-        """读取 qmlinker 左臂状态。"""
-
-        return self._read_qmlinker_arm("left_arm")
-
-    def _read_qmlinker_right_arm(self) -> dict[str, JsonValue]:
-        """读取 qmlinker 右臂状态。"""
-
-        return self._read_qmlinker_arm("right_arm")
-
-    def _read_qmlinker_arm(self, device_name: str) -> dict[str, JsonValue]:
-        """读取 qmlinker 机械臂关节与 FK 状态。"""
-
-        client = self._qmlinker_client(device_name)
-        states = client.get_joint_states()
-        joints: list[JsonValue] = []
-        for state in states:
-            joints.append(
-                {
-                    "joint_id": int(state.joint_id),
-                    "angle_deg": float(state.angle_deg),
-                }
-            )
-        pose = client.current_fk_xyzrpy()
-        return {
-            "joint_count": len(joints),
-            "joints": joints,
-            "xyz_m": [float(value) for value in pose[:3]],
-            "rpy_deg": [float(value) for value in pose[3:]],
-        }
 
     def _read_qmlinker_head(self) -> dict[str, JsonValue]:
         """读取 qmlinker 头部状态。"""
@@ -171,7 +124,6 @@ class RobotControlGateway:
         if pitch_deg is None:
             raise RuntimeError("waist pitch unavailable")
         return {
-            "available": True,
             "enabled": bool(waist.get_enable()),
             "pitch_deg": float(pitch_deg),
         }
@@ -235,28 +187,37 @@ class RobotControlGateway:
         }
 
     def _read_ar5(self, side: str) -> dict[str, JsonValue]:
-        """读取 AR5 状态快照。"""
+        """读取结构化 AR5 状态，按关节、TCP、臂角和控制器状态分组。"""
 
         snapshot = self._ar5_client(side).read_snapshot()
-        return cast(dict[str, JsonValue], asdict(snapshot))
+        return {
+            "identity": {
+                "robot_type": snapshot.robot_type,
+                "robot_uid": snapshot.robot_uid,
+            },
+            "joints": {
+                "count": len(snapshot.joint_deg),
+                "angle_deg": list(snapshot.joint_deg),
+            },
+            "tcp": {
+                "pose_matrix_m": [list(row) for row in snapshot.pose_matrix_m],
+                "xyz_mm": list(snapshot.xyz_mm),
+                "rpy_deg": list(snapshot.rpy_deg),
+            },
+            "elbow": {
+                "angle_deg": snapshot.elbow_deg,
+                "available": snapshot.has_elbow,
+            },
+            "status": {
+                "operation_state": snapshot.operation_state,
+                "operate_mode": snapshot.operate_mode,
+                "power_state": snapshot.power_state,
+            },
+        }
 
     # endregion
 
     # region qmlinker 控制
-
-    def qmlinker_set_joints(self, device_name: str, joint_deg: Sequence[float]) -> None:
-        """下发 qmlinker 机械臂整臂关节角，单位 deg。"""
-
-        self._require_qmlinker_arm(device_name).set_joints(
-            tuple(float(value) for value in joint_deg)
-        )
-
-    def qmlinker_set_joint(
-        self, device_name: str, joint_index: int, target_angle_deg: float
-    ) -> None:
-        """下发 qmlinker 机械臂单关节目标，角度单位 deg。"""
-
-        self._require_qmlinker_arm(device_name).set_joint(joint_index, target_angle_deg)
 
     def qmlinker_set_head(
         self, *, enable: bool | None, yaw_deg: float | None, pitch_deg: float | None
@@ -471,7 +432,6 @@ class RobotControlGateway:
         from qmlinker import create_channel
 
         from src.wuji.agv_client import WujiAgvClient
-        from src.wuji.arm_client import WujiArmClient
         from src.wuji.body_client import WujiBodyClient
         from src.wuji.dahuan_gripper_client import DahuanGripperClient
         from src.wuji.head_client import WujiHeadClient
@@ -488,16 +448,6 @@ class RobotControlGateway:
         )
         self._qmlinker_clients.update(
             {
-                "left_arm": WujiArmClient(
-                    self._qmlinker_channel,
-                    "left_arm",
-                    self._settings.qmlinker_default_speed_ratio,
-                ),
-                "right_arm": WujiArmClient(
-                    self._qmlinker_channel,
-                    "right_arm",
-                    self._settings.qmlinker_default_speed_ratio,
-                ),
                 "body": WujiBodyClient(self._qmlinker_channel),
                 "head": WujiHeadClient(self._qmlinker_channel),
                 "gripper": DahuanGripperClient(self._gripper_channel),
@@ -528,12 +478,5 @@ class RobotControlGateway:
             )
             self._ar5_clients[side] = client
             return client
-
-    def _require_qmlinker_arm(self, device_name: str) -> Any:
-        """校验并返回 qmlinker 左右臂客户端。"""
-
-        if device_name not in {"left_arm", "right_arm"}:
-            raise ValueError(f"不支持的 qmlinker 机械臂：{device_name}")
-        return self._qmlinker_client(device_name)
 
     # endregion

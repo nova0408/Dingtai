@@ -36,22 +36,6 @@ class RobotControlApplication:
 
         return self._gateway.read_qmlinker_agv_navigation_map()
 
-    def qmlinker_set_joints(
-        self, device_name: str, joint_deg: Sequence[float]
-    ) -> ActionResponse:
-        """转发 qmlinker 整臂关节控制请求。"""
-
-        self._gateway.qmlinker_set_joints(device_name, joint_deg)
-        return self._accepted("qmlinker_set_joints", device_name)
-
-    def qmlinker_set_joint(
-        self, device_name: str, joint_index: int, target_angle_deg: float
-    ) -> ActionResponse:
-        """转发 qmlinker 单关节控制请求。"""
-
-        self._gateway.qmlinker_set_joint(device_name, joint_index, target_angle_deg)
-        return self._accepted("qmlinker_set_joint", device_name)
-
     def qmlinker_set_head(
         self, enable: bool | None, yaw_deg: float | None, pitch_deg: float | None
     ) -> ActionResponse:

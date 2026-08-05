@@ -1,6 +1,6 @@
 # RobotControl 版本日志
 
-当前版本：`0.6.0`
+当前版本：`0.7.0`
 
 ## 版本号规则
 
@@ -9,6 +9,15 @@
 - `a`：重大架构或部署边界变化。
 - `b`：HTTP API、设备能力或控制语义变化。
 - `c`：不改变控制边界的缺陷修复和文档改进。
+
+## 0.7.0 - 2026-08-05
+
+### 变更
+
+- 移除 qmlinker 左右臂状态设备、控制路由、客户端和延迟客户端创建；当前可用机械臂状态统一由 `ar5_left`/`ar5_right` 提供。
+- AR5 状态由扁平快照字段改为 `identity`、`joints`、`tcp`、`elbow` 和 `status` 分组，保留完整关节、TCP、臂角、控制器状态和身份数据。
+- qmlinker 腰部改为真正的可选设备：未启用时从 `devices` 和 SSE 状态订阅中完全省略，不再返回 `available=false` 占位记录。
+- 同步更新 RobotControl README、API Reference 和 OpenAPI 契约。
 
 ## 0.6.0 - 2026-08-03
 

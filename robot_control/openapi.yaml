@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: RobotControl HTTP API
-  version: 0.6.0
+  version: 0.7.0
   description: >-
     qmlinker 与 AR5 xCoreSDK 统一服务。GET 状态接口可用于只读诊断；POST 控制接口可能
     使真实设备动作，只能由现场人员手动发起。
@@ -63,32 +63,6 @@ paths:
           content:
             application/json: {schema: {$ref: '#/components/schemas/AgvNavigationTargetsResponse'}}
         '503': {description: Map service or device read failure}
-  /api/v1/qmlinker/arms/{device}/joints:
-    post:
-      operationId: set_qmlinker_arm_joints
-      description: 现场人工控制接口，可能使机械臂运动。
-      parameters:
-        - {$ref: '#/components/parameters/QmlinkerArmDevice'}
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: {$ref: '#/components/schemas/QmlinkerArmJointsRequest'}
-      responses:
-        '202': {description: Control request accepted}
-  /api/v1/qmlinker/arms/{device}/joint:
-    post:
-      operationId: set_qmlinker_arm_joint
-      description: 现场人工控制接口，可能使机械臂运动。
-      parameters:
-        - {$ref: '#/components/parameters/QmlinkerArmDevice'}
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: {$ref: '#/components/schemas/QmlinkerSingleJointRequest'}
-      responses:
-        '202': {description: Control request accepted}
   /api/v1/qmlinker/head:
     post:
       operationId: set_qmlinker_head
@@ -334,8 +308,8 @@ components:
           type: object
           additionalProperties: true
           description: >-
-            设备专属只读字段。qmlinker_waist 为可选能力；不支持时 connected=false、error=null、
-            data.available=false，不会创建腰部客户端。
+            设备专属只读字段。qmlinker_waist 为可选能力；未启用时不会出现在 devices 数组中，
+            也不会创建腰部客户端。ar5_* 的 data 按 identity、joints、tcp、elbow 和 status 分组。
     StatusResponse:
       type: object
       required: [service_version, api_version, devices]
@@ -377,17 +351,6 @@ components:
         api_version: {type: string}
         accepted: {type: boolean}
         data: {type: object, additionalProperties: true}
-    QmlinkerArmJointsRequest:
-      type: object
-      required: [joint_deg]
-      properties:
-        joint_deg: {type: array, items: {type: number}, minItems: 1}
-    QmlinkerSingleJointRequest:
-      type: object
-      required: [joint_index, target_angle_deg]
-      properties:
-        joint_index: {type: integer, minimum: 1}
-        target_angle_deg: {type: number}
     QmlinkerHeadRequest:
       type: object
       minProperties: 1
@@ -470,11 +433,6 @@ components:
         speed_mm_s: {type: number}
         zone_mm: {type: number}
   parameters:
-    QmlinkerArmDevice:
-      name: device
-      in: path
-      required: true
-      schema: {type: string, enum: [left_arm, right_arm]}
     Ar5Side:
       name: side
       in: path

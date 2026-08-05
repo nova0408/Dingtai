@@ -1,6 +1,6 @@
 # RobotControl API Reference
 
-当前契约版本：`0.6.0`  
+当前契约版本：`0.7.0`
 HTTP API 主版本：`1`
 
 本文档描述 `robot_control` 对外 HTTP API 的实际调用方式、状态字段、单位和安全边界。
@@ -36,7 +36,7 @@ Gateway 只移除 `/api/v1/robot-control` 前缀后转发到 RobotControl 的
 
 ```json
 {
-  "service_version": "0.6.0",
+  "service_version": "0.7.0",
   "api_version": "1",
   "hardware_access": "lazy"
 }
@@ -48,15 +48,21 @@ Gateway 只移除 `/api/v1/robot-control` 前缀后转发到 RobotControl 的
 
 ```json
 {
-  "service_version": "0.6.0",
+  "service_version": "0.7.0",
   "api_version": "1",
   "devices": [
     {
-      "name": "qmlinker_left_arm",
-      "backend": "qmlinker",
+      "name": "ar5_left",
+      "backend": "xcoresdk",
       "connected": true,
       "error": null,
-      "data": {}
+      "data": {
+        "identity": {"robot_type": "AR5", "robot_uid": "left"},
+        "joints": {"count": 7, "angle_deg": [0, 0, 0, 0, 0, 0, 0]},
+        "tcp": {"pose_matrix_m": [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]], "xyz_mm": [0, 0, 0], "rpy_deg": [0, 0, 0]},
+        "elbow": {"angle_deg": 0, "available": true},
+        "status": {"operation_state": "idle", "operate_mode": "manual", "power_state": "off"}
+      }
     }
   ]
 }
@@ -144,7 +150,7 @@ Accept: text/event-stream
 ```text
 event: robot_status
 id: 0
-data: {"service_version":"0.6.0","api_version":"1","devices":[]}
+data: {"service_version":"0.7.0","api_version":"1","devices":[]}
 
 ```
 
@@ -167,48 +173,40 @@ for snapshot in client.subscribe_status(interval_s=0.2):
 
 | name | backend | `data` 内容 |
 | --- | --- | --- |
-| `qmlinker_left_arm` | `qmlinker` | `joint_count`、`joints`、`xyz_m`、`rpy_deg` |
-| `qmlinker_right_arm` | `qmlinker` | `joint_count`、`joints`、`xyz_m`、`rpy_deg` |
 | `qmlinker_head` | `qmlinker` | `enabled`、`yaw_deg`、`pitch_deg` |
 | `qmlinker_lift` | `qmlinker` | `enabled`、`height_mm` |
-| `qmlinker_waist` | `qmlinker` | `available`、`enabled`、`pitch_deg`（可选） |
+| `qmlinker_waist` | `qmlinker` | `enabled`、`pitch_deg`（仅启用腰部能力时出现） |
 | `qmlinker_gripper` | `qmlinker` | `online`、`calibrated`、`enabled`、`position`、`state` |
 | `qmlinker_right_hand` | `qmlinker` | `actuator_count`、`enabled`、`positions` |
 | `qmlinker_agv` | `qmlinker` | `enabled`、`runtime` |
-| `ar5_left` | `xcoresdk` | AR5 快照字段 |
-| `ar5_right` | `xcoresdk` | AR5 快照字段 |
+| `ar5_left` | `xcoresdk` | `identity`、`joints`、`tcp`、`elbow`、`status` |
+| `ar5_right` | `xcoresdk` | `identity`、`joints`、`tcp`、`elbow`、`status` |
 
-### 4.1 qmlinker 机械臂
+### 4.1 AR5
 
-`joints` 是数组，每项包含：
+AR5 `data` 使用结构化分组，完整示例：
 
 ```json
-{"joint_id": 1, "angle_deg": 0.0}
+{
+  "identity": {"robot_type": "AR5", "robot_uid": "left"},
+  "joints": {"count": 7, "angle_deg": [0, 0, 0, 0, 0, 0, 0]},
+  "tcp": {
+    "pose_matrix_m": [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]],
+    "xyz_mm": [0, 0, 0],
+    "rpy_deg": [0, 0, 0]
+  },
+  "elbow": {"angle_deg": 0, "available": true},
+  "status": {"operation_state": "idle", "operate_mode": "manual", "power_state": "off"}
+}
 ```
 
-- `angle_deg`：关节角，单位 deg；
-- `xyz_m`：当前末端位置，单位 m；
-- `rpy_deg`：当前末端姿态，单位 deg。
+- `identity`：控制器型号和唯一标识；
+- `joints.angle_deg`：七个关节角，单位 deg；
+- `tcp.pose_matrix_m`：4×4 齐次矩阵，平移单位 m；`xyz_mm` 和 `rpy_deg` 分别为 mm、deg，姿态使用 SciPy 小写外禀 xyz；
+- `elbow.angle_deg`：臂角，单位 deg；`available` 表示当前点位是否携带臂角约束；
+- `status`：操作状态、工作模式和电机状态。
 
-### 4.2 AR5
-
-AR5 `data` 包含：
-
-| 字段 | 说明 |
-| --- | --- |
-| `robot_type` | 控制器上报的机器人型号 |
-| `robot_uid` | 控制器唯一标识 |
-| `operation_state` | 例如 `idle`、`moving`、`jogging`、`drag` |
-| `operate_mode` | 例如 `manual`、`automatic` |
-| `power_state` | 例如 `on`、`off`、`estop`、`gstop` |
-| `joint_deg` | 七个关节角，单位 deg |
-| `pose_matrix_m` | 4×4 齐次矩阵，平移单位 m |
-| `xyz_mm` | 末端位置，单位 mm，顺序 X/Y/Z |
-| `rpy_deg` | 末端姿态，单位 deg，SciPy 小写外禀 xyz |
-| `elbow_deg` | 臂角，单位 deg |
-| `has_elbow` | 当前点位是否携带臂角约束 |
-
-### 4.3 qmlinker 腰部可选能力
+### 4.2 qmlinker 腰部可选能力
 
 RobotControl 默认按当前机型声明腰部能力可用。后续不支持腰部的机型应使用：
 
@@ -216,50 +214,15 @@ RobotControl 默认按当前机型声明腰部能力可用。后续不支持腰�
 python -m robot_control.service --no-qmlinker-waist
 ```
 
-不支持时仍返回稳定设备记录：
-
-```json
-{
-  "name": "qmlinker_waist",
-  "backend": "qmlinker",
-  "connected": false,
-  "error": null,
-  "data": {"available": false}
-}
-```
-
-支持时 `data` 包含 `available=true`、`enabled` 和 `pitch_deg`。腰部始终没有使能或角度控制接口。
+不支持时 `devices` 数组中不包含 `qmlinker_waist`。支持时才出现该设备，`data` 包含
+`enabled` 和 `pitch_deg`。腰部始终没有使能或角度控制接口。
 
 ## 5. qmlinker 控制接口
 
 以下接口均为 `POST`，可能操作真实设备，只能由现场人员明确手动发起。RobotControl、
 Codex、CI、hook 和自动化测试不得调用这些接口。
 
-### 5.1 整臂关节
-
-```text
-POST /api/v1/qmlinker/arms/{device}/joints
-```
-
-`device`：`left_arm` 或 `right_arm`。
-
-```json
-{"joint_deg": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]}
-```
-
-`joint_deg` 单位为 deg，至少包含一个数值。
-
-### 5.2 单关节
-
-```text
-POST /api/v1/qmlinker/arms/{device}/joint
-```
-
-```json
-{"joint_index": 1, "target_angle_deg": 0.0}
-```
-
-### 5.3 头部
+### 5.1 头部
 
 ```text
 POST /api/v1/qmlinker/head
@@ -273,7 +236,7 @@ POST /api/v1/qmlinker/head
 
 可用字段为 `enable`、`yaw_deg`、`pitch_deg`。
 
-### 5.4 升降
+### 5.2 升降
 
 ```text
 POST /api/v1/qmlinker/lift
@@ -287,7 +250,7 @@ POST /api/v1/qmlinker/lift
 
 可用字段为 `enable`、`height_mm`；高度单位 mm。
 
-### 5.5 左夹爪
+### 5.3 左夹爪
 
 ```text
 POST /api/v1/qmlinker/gripper
@@ -315,7 +278,7 @@ POST /api/v1/qmlinker/gripper/calibrate
 
 请求体可为空对象 `{}`。校准是否完成必须通过状态读取确认。
 
-### 5.6 右手
+### 5.4 右手
 
 ```text
 POST /api/v1/qmlinker/right-hand
@@ -337,7 +300,7 @@ POST /api/v1/qmlinker/right-hand/enable
 {"enabled": true}
 ```
 
-### 5.7 AGV 导航
+### 5.5 AGV 导航
 
 ```text
 POST /api/v1/qmlinker/agv/navigate
@@ -506,7 +469,7 @@ POST /api/v1/ar5/{side}/move-elbow
 
 ```json
 {
-  "service_version": "0.6.0",
+  "service_version": "0.7.0",
   "api_version": "1",
   "accepted": true,
   "data": {

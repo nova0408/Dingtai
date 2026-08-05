@@ -152,18 +152,6 @@ class RobotControlServer:
             ) -> Any:
                 """分发 qmlinker 控制路径。"""
 
-                if len(parts) == 3 and parts[0] == "arms":
-                    device_name = parts[1]
-                    if parts[2] == "joints":
-                        return application.qmlinker_set_joints(
-                            device_name, _number_sequence(payload, "joint_deg")
-                        )
-                    if parts[2] == "joint":
-                        return application.qmlinker_set_joint(
-                            device_name,
-                            _int_field(payload, "joint_index"),
-                            _number_field(payload, "target_angle_deg"),
-                        )
                 if parts == ["head"]:
                     return application.qmlinker_set_head(
                         _optional_bool(payload, "enable"),
