@@ -6,6 +6,7 @@ param(
     [switch]$RecordReplayOnly,
     [switch]$RobotControlOnly,
     [switch]$ApiGatewayOnly,
+    [switch]$CalibrationServiceOnly,
     [switch]$RestartOnly
 )
 
@@ -87,6 +88,8 @@ $cameraPipelinePath = Join-Path $projectRoot "camera_pipeline"
 $recordReplayPath = Join-Path $projectRoot "record_replay"
 $robotControlPath = Join-Path $projectRoot "robot_control"
 $apiGatewayPath = Join-Path $projectRoot "api_gateway"
+$calibrationServicePath = Join-Path $projectRoot "calibration_service"
+$calibrationServiceServicePath = Join-Path $calibrationServicePath "service/calibration.service"
 $apiGatewayServicePath = Join-Path $apiGatewayPath "service/api-gateway.service"
 $robotControlServicePath = Join-Path $robotControlPath "service/robot-control.service"
 $cameraPipelineVersionPath = Join-Path $cameraPipelinePath "service/protocol.py"
@@ -103,6 +106,7 @@ $restartScriptPaths = @(
     (Join-Path $projectRoot "scripts/restart_camera_pipeline_service.sh"),
     (Join-Path $projectRoot "scripts/restart_record_replay_service.sh"),
     (Join-Path $projectRoot "scripts/restart_robot_control_service.sh"),
+    (Join-Path $projectRoot "scripts/restart_calibration_service.sh"),
     (Join-Path $projectRoot "scripts/restart_api_gateway_service.sh")
 )
 if (-not (Test-Path -LiteralPath $cameraPipelinePath -PathType Container)) {
@@ -116,6 +120,12 @@ if (-not (Test-Path -LiteralPath $robotControlPath -PathType Container)) {
 }
 if (-not (Test-Path -LiteralPath $apiGatewayPath -PathType Container)) {
     throw "缺少本机 API Gateway 目录：$apiGatewayPath"
+}
+if (-not (Test-Path -LiteralPath $calibrationServicePath -PathType Container)) {
+    throw "缺少本机 Calibration Service 目录：$calibrationServicePath"
+}
+if (-not (Test-Path -LiteralPath $calibrationServiceServicePath -PathType Leaf)) {
+    throw "缺少本机 Calibration Service systemd 服务文件：$calibrationServiceServicePath"
 }
 if (-not (Test-Path -LiteralPath $apiGatewayServicePath -PathType Leaf)) {
     throw "缺少本机 API Gateway systemd 服务文件：$apiGatewayServicePath"
@@ -140,37 +150,45 @@ $expectedCameraPipelineVersion = Get-SourceVersion -Path $cameraPipelineVersionP
 $expectedRecordReplayVersion = Get-SourceVersion -Path $recordReplayVersionPath -Symbol "RECORD_REPLAY_VERSION"
 $expectedRobotControlVersion = Get-SourceVersion -Path $robotControlVersionPath -Symbol "ROBOT_CONTROL_VERSION"
 $expectedApiGatewayVersion = Get-SourceVersion -Path $apiGatewayVersionPath -Symbol "API_GATEWAY_VERSION"
-Write-Host "本地部署版本：CameraPipeline=$expectedCameraPipelineVersion RecordReplay=$expectedRecordReplayVersion RobotControl=$expectedRobotControlVersion ApiGateway=$expectedApiGatewayVersion"
+$calibrationServiceVersionPath = Join-Path $calibrationServicePath "__init__.py"
+$expectedCalibrationServiceVersion = Get-SourceVersion -Path $calibrationServiceVersionPath -Symbol "CALIBRATION_SERVICE_VERSION"
+Write-Host "本地部署版本：CameraPipeline=$expectedCameraPipelineVersion RecordReplay=$expectedRecordReplayVersion RobotControl=$expectedRobotControlVersion Calibration=$expectedCalibrationServiceVersion ApiGateway=$expectedApiGatewayVersion"
 
 if ($CameraPipelineOnly -and -not $RestartOnly) {
-    throw (
-        "-CameraPipelineOnly 仅用于 -RestartOnly 模式。" +
-        "分阶段部署请使用对应的 -RobotControlOnly 或 -ApiGatewayOnly 选项。"
-    )
+    Write-Host "-CameraPipelineOnly 执行 CameraPipeline 单服务同步部署。"
 }
-if ($CameraPipelineOnly -and $RobotControlOnly) {
-    throw "-CameraPipelineOnly 与 -RobotControlOnly 不能同时使用。"
+if ($CameraPipelineOnly -and ($RecordReplayOnly -or $RobotControlOnly -or $ApiGatewayOnly -or $CalibrationServiceOnly)) {
+    throw "CameraPipelineOnly 不能与其它 *Only 选项同时使用。"
 }
-if ($RecordReplayOnly -and ($CameraPipelineOnly -or $RobotControlOnly -or $ApiGatewayOnly)) {
+if ($CalibrationServiceOnly -and -not $RestartOnly) {
+    Write-Host "-CalibrationServiceOnly 执行 Calibration Service 单服务同步部署。"
+}
+if ($RecordReplayOnly -and ($CameraPipelineOnly -or $RobotControlOnly -or $ApiGatewayOnly -or $CalibrationServiceOnly)) {
     throw "-RecordReplayOnly 不能与其他 *Only 选项同时使用。"
 }
-if ($ApiGatewayOnly -and ($CameraPipelineOnly -or $RecordReplayOnly -or $RobotControlOnly)) {
+if ($ApiGatewayOnly -and ($CameraPipelineOnly -or $RecordReplayOnly -or $RobotControlOnly -or $CalibrationServiceOnly)) {
     throw "-ApiGatewayOnly 不能与其他 *Only 选项同时使用。"
 }
+if ($RobotControlOnly -and ($CameraPipelineOnly -or $RecordReplayOnly -or $ApiGatewayOnly -or $CalibrationServiceOnly)) {
+    throw "-RobotControlOnly 不能与其他 *Only 选项同时使用。"
+}
 if ($RestartOnly) {
-    # 下游服务依赖：CameraPipeline -> RecordReplay -> API Gateway；RobotControl -> API Gateway。
+    # 下游服务依赖：CameraPipeline -> RecordReplay；RobotControl/Calibration Service -> API Gateway。
     # 只重启上游时必须显式重启受影响的下游；只重启下游时不反向重启无变化的上游。
     $selectedRestartScripts = if ($CameraPipelineOnly) {
-        @($restartScriptPaths[0], $restartScriptPaths[1], $restartScriptPaths[3])
+        @($restartScriptPaths[0], $restartScriptPaths[1], $restartScriptPaths[3], $restartScriptPaths[4])
     }
     elseif ($RecordReplayOnly) {
         @($restartScriptPaths[1], $restartScriptPaths[3])
     }
     elseif ($RobotControlOnly) {
-        @($restartScriptPaths[2], $restartScriptPaths[3])
+        @($restartScriptPaths[2], $restartScriptPaths[3], $restartScriptPaths[4])
+    }
+    elseif ($CalibrationServiceOnly) {
+        @($restartScriptPaths[3], $restartScriptPaths[4])
     }
     elseif ($ApiGatewayOnly) {
-        @($restartScriptPaths[3])
+        @($restartScriptPaths[4])
     }
     else {
         $restartScriptPaths
@@ -210,6 +228,105 @@ if ($RestartOnly) {
         }
         finally {
             & ssh.exe @SshOptions $SshTarget "rm -f '$remoteRestartScript'"
+        }
+    }
+    return
+}
+
+if ($CameraPipelineOnly -or $CalibrationServiceOnly) {
+    $isCameraPipelineDeployment = $CameraPipelineOnly
+    $serviceLabel = if ($isCameraPipelineDeployment) { "CameraPipeline" } else { "Calibration Service" }
+    $packageName = if ($isCameraPipelineDeployment) { "camera_pipeline" } else { "calibration_service" }
+    $serviceUnit = if ($isCameraPipelineDeployment) { "camera-pipeline.service" } else { "calibration.service" }
+    $serviceFileName = if ($isCameraPipelineDeployment) { "camera-pipeline.service" } else { "calibration.service" }
+    $expectedVersion = if ($isCameraPipelineDeployment) {
+        $expectedCameraPipelineVersion
+    }
+    else {
+        $expectedCalibrationServiceVersion
+    }
+    $readinessMode = if ($isCameraPipelineDeployment) { "camera" } else { "calibration" }
+    $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
+    $localTempBase = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath())
+    $localTempRoot = Join-Path $localTempBase "dingtai-$packageName-deploy-$timestamp"
+    $archivePath = Join-Path $localTempRoot "$packageName.tar"
+    $manifestPath = Join-Path $localTempRoot "$packageName.sha256"
+    $remoteStagePath = "$RemoteStageRoot/$($packageName -replace '_', '-')-$timestamp"
+    $remoteArchivePath = "$remoteStagePath/$packageName.tar"
+    $remoteManifestPath = "$remoteStagePath/$packageName.sha256"
+    $singleServiceDeployScript = Join-Path $projectRoot "scripts/deploy_single_service.sh"
+
+    New-Item -ItemType Directory -Path $localTempRoot | Out-Null
+    try {
+        $packagePath = Join-Path $projectRoot $packageName
+        $deployFiles = @(
+            Get-ChildItem -LiteralPath $packagePath -Recurse -File |
+                Where-Object { Test-DeployFile -File $_ }
+        )
+        if ($deployFiles.Count -eq 0) {
+            throw "$serviceLabel 部署清单为空"
+        }
+        $manifestLines = foreach ($file in ($deployFiles | Sort-Object FullName)) {
+            $relativePath = [System.IO.Path]::GetRelativePath(
+                $projectRoot,
+                $file.FullName
+            ).Replace("\", "/")
+            $hash = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash  $relativePath"
+        }
+        [System.IO.File]::WriteAllText(
+            $manifestPath,
+            (($manifestLines -join "`n") + "`n"),
+            [System.Text.UTF8Encoding]::new($false)
+        )
+        Invoke-CheckedCommand -FilePath "tar.exe" -ArgumentList @(
+            "-cf", $archivePath,
+            "--exclude=*/__pycache__/*",
+            "--exclude=*/.archive",
+            "--exclude=*/.archive/*",
+            "--exclude=*.pyc",
+            "--exclude=*.log",
+            "-C", $projectRoot, $packageName
+        )
+
+        Write-Host "即将同步 $($deployFiles.Count) 个 $serviceLabel 文件到 $SshTarget"
+        Write-Host "远端旧版本会备份到：$RemoteWorkspace/.archive/service_deploy/$($packageName -replace '_', '-')-$timestamp"
+        Invoke-CheckedCommand -FilePath "ssh.exe" -ArgumentList @(
+            $SshOptions + @($SshTarget, "mkdir -p '$remoteStagePath'")
+        )
+        Invoke-CheckedCommand -FilePath "scp.exe" -ArgumentList @(
+            $SshOptions + @($archivePath, "${SshTarget}:$remoteArchivePath")
+        )
+        Invoke-CheckedCommand -FilePath "scp.exe" -ArgumentList @(
+            $SshOptions + @($manifestPath, "${SshTarget}:$remoteManifestPath")
+        )
+        Invoke-CheckedCommand -FilePath "scp.exe" -ArgumentList @(
+            $SshOptions + @($singleServiceDeployScript, "${SshTarget}:/tmp/dingtai_single_service_deploy.sh")
+        )
+        Invoke-CheckedCommand -FilePath "ssh.exe" -ArgumentList @(
+            $SshOptions + @($SshTarget, "tar -xf '$remoteArchivePath' -C '$remoteStagePath'")
+        )
+        $remoteCommand = "sudo -S -p '' bash '/tmp/dingtai_single_service_deploy.sh' " +
+            "'$RemoteWorkspace' '$remoteStagePath' '$remoteManifestPath' '$packageName' " +
+            "'$serviceUnit' '$serviceFileName' '$expectedVersion' '$readinessMode'"
+        $RemoteSudoPassword | & ssh.exe @SshOptions $SshTarget $remoteCommand
+        if ($LASTEXITCODE -ne 0) {
+            throw "$serviceLabel 同步或重启失败，请检查上方日志。"
+        }
+    }
+    finally {
+        if (Test-Path -LiteralPath $localTempRoot) {
+            $resolvedTempRoot = [System.IO.Path]::GetFullPath($localTempRoot)
+            if (
+                -not $resolvedTempRoot.StartsWith(
+                    $localTempBase,
+                    [System.StringComparison]::OrdinalIgnoreCase
+                ) -or
+                [System.IO.Path]::GetFileName($resolvedTempRoot) -notlike "dingtai-$packageName-deploy-*"
+            ) {
+                throw "拒绝清理非预期临时目录：$resolvedTempRoot"
+            }
+            Remove-Item -LiteralPath $localTempRoot -Recurse -Force
         }
     }
     return
@@ -670,6 +787,14 @@ if ss -ltn '( sport = :6300 )' | grep -q LISTEN; then
     exit 1
   fi
 fi
+if ss -ltn '( sport = :6600 )' | grep -q LISTEN; then
+  calibration_payload="$(curl -fsS --max-time 5 http://127.0.0.1:6600/api/v1/status)"
+  calibration_state="$(printf '%s' "${calibration_payload}" | /home/wuji-brain/miniconda3/envs/wuji/bin/python -c 'import json, sys; print(json.load(sys.stdin)["state"])')"
+  if [[ "${calibration_state}" != "idle" ]]; then
+    echo "[deploy] refused: Calibration Service current state is ${calibration_state}"
+    exit 1
+  fi
+fi
 
 echo "[deploy] stopping ${unit}"
 systemctl stop --no-block "${unit}" || true
@@ -801,6 +926,8 @@ try {
             Where-Object { Test-DeployFile -File $_ }
         Get-ChildItem -LiteralPath $recordReplayPath -Recurse -File |
             Where-Object { Test-DeployFile -File $_ }
+        Get-ChildItem -LiteralPath $calibrationServicePath -Recurse -File |
+            Where-Object { Test-DeployFile -File $_ }
         Get-ChildItem -LiteralPath $robotControlPath -Recurse -File |
             Where-Object { Test-DeployFile -File $_ }
         Get-ChildItem -LiteralPath $apiGatewayPath -Recurse -File |
@@ -810,6 +937,10 @@ try {
             Get-ChildItem -LiteralPath $_ -Recurse -File |
                 Where-Object { Test-DeployFile -File $_ }
         }
+        Get-ChildItem -LiteralPath (Join-Path $projectRoot "src/calibration") -Recurse -File |
+            Where-Object { Test-DeployFile -File $_ }
+        Get-ChildItem -LiteralPath (Join-Path $projectRoot "src/utils") -Recurse -File |
+            Where-Object { Test-DeployFile -File $_ }
         $restartScriptPaths | ForEach-Object { Get-Item -LiteralPath $_ }
     )
     if ($deployFiles.Count -eq 0) {
@@ -848,16 +979,20 @@ try {
         $projectRoot,
         "camera_pipeline",
         "record_replay",
+        "calibration_service",
         "robot_control",
         "api_gateway",
         "src/__init__.py",
         "src/wuji",
         "src/arm",
         "src/robotics",
+        "src/calibration",
+        "src/utils",
         "scripts/restart_camera_pipeline_service.sh",
         "scripts/restart_record_replay_service.sh",
         "scripts/restart_robot_control_service.sh",
-        "scripts/restart_api_gateway_service.sh"
+        "scripts/restart_api_gateway_service.sh",
+        "scripts/restart_calibration_service.sh"
     )
 
     $remoteScript = @'
@@ -870,7 +1005,8 @@ manifest_path="$3"
 expected_camera_version="$4"
 expected_record_version="$5"
 expected_robot_version="$6"
-expected_gateway_version="$7"
+expected_calibration_version="$7"
+expected_gateway_version="$8"
 legacy_camera_units=(
   "camera_pipeline_service.service"
   "orin-camera-pipeline.service"
@@ -878,12 +1014,13 @@ legacy_camera_units=(
 camera_unit="camera-pipeline.service"
 record_unit="record-replay.service"
 robot_unit="robot-control.service"
+calibration_unit="calibration.service"
 gateway_unit="api-gateway.service"
 archive_root="${workspace}/.archive/service_deploy/$(basename "${stage_path}")"
 deploy_log_since="$(date '+%Y-%m-%d %H:%M:%S')"
 
 print_deploy_logs() {
-  journalctl -u "${camera_unit}" -u "${record_unit}" -u "${robot_unit}" -u "${gateway_unit}" \
+  journalctl -u "${camera_unit}" -u "${record_unit}" -u "${robot_unit}" -u "${calibration_unit}" -u "${gateway_unit}" \
     --since "${deploy_log_since}" --no-pager -o short-precise || true
 }
 
@@ -934,11 +1071,12 @@ trap cleanup EXIT
 
 expected_count="$(wc -l < "${manifest_path}")"
 actual_stage_count="$(
-  find "${stage_path}/camera_pipeline" "${stage_path}/record_replay" "${stage_path}/robot_control" "${stage_path}/api_gateway" "${stage_path}/src" \
+  find "${stage_path}/camera_pipeline" "${stage_path}/record_replay" "${stage_path}/calibration_service" "${stage_path}/robot_control" "${stage_path}/api_gateway" "${stage_path}/src" \
     "${stage_path}/scripts/restart_camera_pipeline_service.sh" \
     "${stage_path}/scripts/restart_record_replay_service.sh" \
     "${stage_path}/scripts/restart_robot_control_service.sh" \
     "${stage_path}/scripts/restart_api_gateway_service.sh" \
+    "${stage_path}/scripts/restart_calibration_service.sh" \
     -type f ! -name '*.pyc' ! -name '*.log' ! -path '*/__pycache__/*' |
     wc -l
 )"
@@ -986,6 +1124,8 @@ echo "[deploy] stopping RecordReplay before replacing service files"
 stop_service "${record_unit}" 10
 echo "[deploy] stopping RobotControl before replacing service files"
 stop_service "${robot_unit}" 10
+echo "[deploy] stopping Calibration Service before replacing service files"
+stop_service "${calibration_unit}" 10
 echo "[deploy] stopping API Gateway before replacing service files"
 stop_service "${gateway_unit}" 10
 
@@ -1020,6 +1160,9 @@ fi
 if [[ -d "${workspace}/record_replay" ]]; then
   mv "${workspace}/record_replay" "${archive_root}/record_replay"
 fi
+if [[ -d "${workspace}/calibration_service" ]]; then
+  mv "${workspace}/calibration_service" "${archive_root}/calibration_service"
+fi
 if [[ -d "${workspace}/robot_control" ]]; then
   mv "${workspace}/robot_control" "${archive_root}/robot_control"
 fi
@@ -1033,7 +1176,8 @@ for restart_script_name in \
   "restart_camera_pipeline_service.sh" \
   "restart_record_replay_service.sh" \
   "restart_robot_control_service.sh" \
-  "restart_api_gateway_service.sh"; do
+  "restart_api_gateway_service.sh" \
+  "restart_calibration_service.sh"; do
   if [[ -f "${workspace}/scripts/${restart_script_name}" ]]; then
     mv "${workspace}/scripts/${restart_script_name}" \
       "${archive_root}/scripts/${restart_script_name}"
@@ -1041,6 +1185,7 @@ for restart_script_name in \
 done
 mv "${stage_path}/camera_pipeline" "${workspace}/camera_pipeline"
 mv "${stage_path}/record_replay" "${workspace}/record_replay"
+mv "${stage_path}/calibration_service" "${workspace}/calibration_service"
 mv "${stage_path}/robot_control" "${workspace}/robot_control"
 mv "${stage_path}/api_gateway" "${workspace}/api_gateway"
 mv "${stage_path}/src" "${workspace}/src"
@@ -1053,11 +1198,14 @@ mv "${stage_path}/scripts/restart_robot_control_service.sh" \
   "${workspace}/scripts/restart_robot_control_service.sh"
 mv "${stage_path}/scripts/restart_api_gateway_service.sh" \
   "${workspace}/scripts/restart_api_gateway_service.sh"
+mv "${stage_path}/scripts/restart_calibration_service.sh" \
+  "${workspace}/scripts/restart_calibration_service.sh"
 chmod 0755 \
   "${workspace}/scripts/restart_camera_pipeline_service.sh" \
   "${workspace}/scripts/restart_record_replay_service.sh" \
   "${workspace}/scripts/restart_robot_control_service.sh" \
-  "${workspace}/scripts/restart_api_gateway_service.sh"
+  "${workspace}/scripts/restart_api_gateway_service.sh" \
+  "${workspace}/scripts/restart_calibration_service.sh"
 
 install -m 0644 \
   "${workspace}/camera_pipeline/service/camera-pipeline.service" \
@@ -1069,11 +1217,14 @@ install -m 0644 \
   "${workspace}/robot_control/service/robot-control.service" \
   "/etc/systemd/system/${robot_unit}"
 install -m 0644 \
+  "${workspace}/calibration_service/service/calibration.service" \
+  "/etc/systemd/system/${calibration_unit}"
+install -m 0644 \
   "${workspace}/api_gateway/service/api-gateway.service" \
   "/etc/systemd/system/${gateway_unit}"
 "/home/wuji-brain/miniconda3/envs/wuji/bin/python" -m pip install --disable-pip-version-check --no-input -r "${workspace}/api_gateway/requirements.txt"
 systemctl daemon-reload
-systemctl enable "${camera_unit}" "${record_unit}" "${robot_unit}" "${gateway_unit}"
+systemctl enable "${camera_unit}" "${record_unit}" "${robot_unit}" "${calibration_unit}" "${gateway_unit}"
 
 (
   cd "${workspace}"
@@ -1160,6 +1311,32 @@ if [[ "${robot_version}" != "${expected_robot_version}" ]]; then
   exit 1
 fi
 echo "[deploy] RobotControl ready; version=${robot_version}"
+echo "[deploy] starting Calibration Service"
+systemctl restart --no-block "${calibration_unit}"
+calibration_ready=false
+calibration_deadline=$((SECONDS + 10))
+while ((SECONDS < calibration_deadline)); do
+  if systemctl is-active --quiet "${calibration_unit}" &&
+     ss -ltn '( sport = :6600 )' | grep -q LISTEN &&
+     calibration_payload="$(curl -fsS --max-time 5 http://127.0.0.1:6600/api/v1/status)"; then
+    calibration_ready=true
+    printf '%s\n' "${calibration_payload}"
+    break
+  fi
+  sleep 1
+done
+if [[ "${calibration_ready}" != "true" ]]; then
+  echo "[deploy] Calibration Service was not HTTP-ready within 10s"
+  systemctl status "${calibration_unit}" --no-pager -l || true
+  print_deploy_logs
+  exit 1
+fi
+calibration_version="$(cd "${workspace}" && /home/wuji-brain/miniconda3/envs/wuji/bin/python -c 'from calibration_service import CALIBRATION_SERVICE_VERSION; print(CALIBRATION_SERVICE_VERSION)')"
+if [[ "${calibration_version}" != "${expected_calibration_version}" ]]; then
+  echo "[deploy] Calibration Service version mismatch expected=${expected_calibration_version} actual=${calibration_version}"
+  exit 1
+fi
+echo "[deploy] Calibration Service ready; version=${calibration_version}"
 echo "[deploy] starting API Gateway"
 systemctl restart --no-block "${gateway_unit}"
 gateway_ready=false
@@ -1189,7 +1366,7 @@ if [[ "${gateway_version}" != "${expected_gateway_version}" ]]; then
 fi
 echo "[deploy] API Gateway ready; version=${gateway_version}"
 print_deploy_logs
-echo "[deploy] four services updated, restarted and version-verified: CameraPipeline=${camera_status} RecordReplay=${record_version} RobotControl=${robot_version} ApiGateway=${gateway_version}"
+echo "[deploy] five services updated, restarted and version-verified: CameraPipeline=${camera_status} RecordReplay=${record_version} RobotControl=${robot_version} Calibration=${calibration_version} ApiGateway=${gateway_version}"
 '@
     [System.IO.File]::WriteAllText(
         $remoteScriptPath,
@@ -1235,7 +1412,7 @@ echo "[deploy] four services updated, restarted and version-verified: CameraPipe
     $remoteCommand = "sudo -S -p '' bash '$RemoteDeployScript' " +
         "'$RemoteWorkspace' '$remoteStagePath' '$remoteManifestPath' " +
         "'$expectedCameraPipelineVersion' '$expectedRecordReplayVersion' " +
-        "'$expectedRobotControlVersion' '$expectedApiGatewayVersion'"
+        "'$expectedRobotControlVersion' '$expectedCalibrationServiceVersion' '$expectedApiGatewayVersion'"
     $RemoteSudoPassword | & ssh.exe @SshOptions $SshTarget $remoteCommand
     if ($LASTEXITCODE -ne 0) {
         throw "远端同步或重启失败，请检查上方日志。"

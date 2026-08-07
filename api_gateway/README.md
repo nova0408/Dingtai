@@ -1,6 +1,6 @@
 # Dingtai 统一客户端入口
 
-`api_gateway` 是三个业务服务之上的外部客户端统一入口。它使用 aiohttp 直接终止 TLS，默认
+`api_gateway` 是五个业务服务之上的外部客户端统一入口。它使用 aiohttp 直接终止 TLS，默认
 同时监听 IPv4 `0.0.0.0:443` 与 IPv6 `[::]:443`，不需要再部署一层反向代理。
 
 完整访问契约见 [`API Reference.md`](API%20Reference.md)，机器可读契约见
@@ -22,7 +22,8 @@ Windows 客户端可在仓库根目录直接执行
 
 Orin 本机访问示例：CameraPipeline HTTP `http://127.0.0.1:6400`、CameraPipeline WebSocket
 `ws://127.0.0.1:6401`、RecordReplay `http://127.0.0.1:6300`、RobotControl
-`http://127.0.0.1:6500`。外部客户端才使用 `https://<orin-host>` 和下方统一 URL 前缀。
+`http://127.0.0.1:6500`、Calibration Service `http://127.0.0.1:6600`。外部客户端才使用
+`https://<orin-host>` 和下方统一 URL 前缀。
 
 ## URL 映射
 
@@ -33,6 +34,7 @@ Orin 本机访问示例：CameraPipeline HTTP `http://127.0.0.1:6400`、CameraPi
 | `/api/v1/record-replay/*` | RecordReplay HTTP | `/*` | 6300 |
 | `/api/v1/record-replay-ws` | RecordReplay 状态 WebSocket | `/api/v1/ws` | 6301 |
 | `/api/v1/robot-control/*` | RobotControl HTTP | `/api/v1/*` | 6500 |
+| `/api/v1/calibration/*` | Calibration Service HTTP | `/api/v1/*` | 6600 |
 
 例如：
 
@@ -41,6 +43,7 @@ GET  https://<orin-host>/api/v1/camera/health
 GET  https://<orin-host>/api/v1/camera/cameras/head_camera/status
 GET  https://<orin-host>/api/v1/record-replay/status
 GET  https://<orin-host>/api/v1/robot-control/health
+GET  https://<orin-host>/api/v1/calibration/status
 SSE  https://<orin-host>/api/v1/robot-control/status/stream?interval_s=0.2
 WS   wss://<orin-host>/api/v1/camera-ws/cameras/head_camera/color
 WS   wss://<orin-host>/api/v1/record-replay-ws
@@ -56,6 +59,7 @@ WS   wss://<orin-host>/api/v1/record-replay-ws
 from camera_pipeline.service.http_client import CameraPipelineHttpClient
 from record_replay.service.client import RecordReplayClient
 from robot_control.service.client import RobotControlClient
+from calibration_service.service.client import CalibrationServiceClient
 
 camera = CameraPipelineHttpClient(
     "https://<orin-host>",
@@ -71,9 +75,13 @@ robot = RobotControlClient(
     "https://<orin-host>",
     api_prefix="/api/v1/robot-control",
 )
+calibration = CalibrationServiceClient(
+    "https://<orin-host>",
+    api_prefix="/api/v1/calibration",
+)
 ```
 
-正式客户端必须设置上述服务前缀并访问 Gateway；三个 typed client 的空前缀仅保留给人工测试、
+正式客户端必须设置上述服务前缀并访问 Gateway；typed client 的空前缀仅保留给人工测试、
 Orin 本地只读诊断和故障排查，不能作为 GUI 或其它正式客户端的默认配置。
 RobotControl 的 SSE 状态流也沿用同一个 `/api/v1/robot-control` 前缀，Gateway 会保持
 事件流连接，不会把它转换成一次性 JSON 响应。
@@ -88,7 +96,7 @@ python -m api_gateway.service --host 0.0.0.0 --port 443 \
 
 Gateway 默认绑定所有 IPv4/IPv6 网卡，供外部客户端通过 Orin 的内网地址访问。应在 Orin 防火墙或网络
 边界仅放行可信客户端访问 443；不要把内部 CameraPipeline、RecordReplay、RobotControl
-端口暴露给外部。Gateway 不主动启动、停止或探测三个后端服务。
+端口暴露给外部。Gateway 不主动启动、停止或探测五个后端服务。
 
 运行依赖 `aiohttp`。部署脚本会将它安装到 Orin 的 `wuji` 环境，不安装到系统 Python：
 

@@ -28,6 +28,9 @@ description: 安全维护、迁移、部署、版本管理和评审 Dingtai 根�
    - action/executor/cycle 模块负责业务动作与编排。
    - `service/` 只负责 API、进程生命周期和业务桥接，不复制运动逻辑。
 5. `record_replay` 可依赖同级 `camera_pipeline` 公共协议与 Orin 已安装第三方包，运行时禁止导入仓库 `src` 或 `test`。
+   先验拍摄和手眼计算由同级 `calibration_service` 提供；该服务只读取 RobotControl 状态、
+   请求 CameraPipeline 拍摄和执行计算，不提供任何设备控制接口，默认使用 Orin 本机 6600 端口。
+   Calibration Service 有独立版本和变更日志；仅新增该独立服务不升级 RecordReplay 版本。
 6. 业务行为以 `test/wuji/record_replay_cli.py` 的最新人工验证语义为基准；迁移实现与 CLI 不一致时必须显式列出差异，禁止声称完全等价。
 7. 服务数据目录固定，不提供路径参数或环境变量覆盖：
    - `record_replay/prior_data/ball_pose_prior.json` 与 `charuco_board_prior.json` 保存 `test/wuji/prior_record.py` 的人工采集结果。
@@ -58,6 +61,9 @@ description: 安全维护、迁移、部署、版本管理和评审 Dingtai 根�
    `scripts/sync_and_restart_services.ps1`，不要手写 sudo 或拆分部署步骤。
 6. 总控脚本允许向 RecordReplay 重启脚本传递 `--non-interactive`，但该模式仅允许
    systemd 重启和只读 `/status` 就绪检查；不得扩展为 `/start` 或任何执行授权。
+7. 五服务完整部署的启动顺序为 CameraPipeline、RecordReplay、RobotControl、
+   Calibration Service、API Gateway；Calibration Service 只做 6600 端口状态检查，
+   不触发拍摄、标定或设备控制。
 
 ## 本机与 Orin 同步
 
@@ -103,7 +109,7 @@ Windows 与 Linux 输出路径不同，比较前只保留相对于 `record_repla
 
 ## 版本与变更日志
 
-1. `record_replay/CHANGELOG.md` 是服务功能版本号的唯一权威来源，当前基线版本为 `1.0.0`。
+1. `record_replay/CHANGELOG.md` 是服务功能版本号的唯一权威来源，当前基线版本为 `2.2.0`。
 2. 版本号必须使用 `a.b.c`：
    - `a`：重大重构或重大更新。
    - `b`：功能调整，包括新增、删除或改变 HTTP API、回放流程及设备行为。
@@ -111,6 +117,10 @@ Windows 与 Linux 输出路径不同，比较前只保留相对于 `record_repla
 3. 修改公共 client、HTTP API、请求响应字段、回放功能、设备行为、配置语义或部署行为时，必须在同一批改动中升级版本号，并在 CHANGELOG 顶部追加带日期的记录。
 4. 同一批改动只升级一次；同时包含多类改动时按影响最大的版本位升级，不得为每个文件分别升级。
 5. CHANGELOG 属于 RecordReplay 部署源文件，必须同步到 Orin，并参与相对路径清单和 SHA-256 一致性校验。API 或功能已改变但版本号或日志未更新时，不得报告完成。
+6. `RECORD_REPLAY_VERSION` 发生变化后，在用户授权远端部署且本机静态/契约检查通过时，必须尝试执行
+   `scripts/sync_and_restart_services.ps1 -RecordReplayOnly`；必须记录本机期望版本、远端实际版本、
+   同步文件清单、SHA-256、远端备份、只读 `/status` 和服务状态。远端不可达或同步失败时不得报告
+   RecordReplay 版本已更新；整个流程仍不得发送 `/start` 或运行回放测试。
 
 ## 测试环境必须分离
 

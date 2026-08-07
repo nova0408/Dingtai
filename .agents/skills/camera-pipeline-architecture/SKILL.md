@@ -99,6 +99,11 @@ description: Dingtai 项目 `camera_pipeline` 构造与版本维护原则。用�
    消费端作为同一批次同步并重启。停止 RecordReplay 只能是文件替换期间的临时
    步骤；完成部署前必须恢复并验证两个服务，禁止留下加载旧客户端的常驻进程。
 8. 双服务重启不授权发送 RecordReplay `/start`，也不授权运行任何回放测试。
+9. `SERVICE_VERSION` 发生变化后，在用户授权远端部署且本机静态/契约检查通过时，必须尝试执行
+   `scripts/sync_and_restart_services.ps1 -CameraPipelineOnly` 的单服务同步部署。必须记录本机期望版本、
+   远端实际版本、同步文件清单、SHA-256、备份和只读就绪结果；远端不可达或同步失败时不得报告版本
+   已更新。若公共 client、API 或线协议也发生变化，必须按双服务部署规则联动 RecordReplay，必要时使用
+   五服务完整部署。
 
 ## 评审检查点
 

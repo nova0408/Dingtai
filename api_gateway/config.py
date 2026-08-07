@@ -44,3 +44,9 @@ class GatewaySettings:
 
     robot_control_port: int = 6500
     "RobotControl HTTP 后端端口。"
+
+    calibration_host: str = "127.0.0.1"
+    "手眼标定与先验记录服务地址。"
+
+    calibration_port: int = 6600
+    "手眼标定与先验记录服务 HTTP 端口。"

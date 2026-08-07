@@ -1,0 +1,122 @@
+openapi: 3.1.0
+info:
+  title: Dingtai Calibration Service
+  version: 1.1.0
+  description: >-
+    手眼标定与先验记录服务。只读取 RobotControl 状态，只请求 CameraPipeline
+    拍摄和检测，不发送设备控制请求。计算结果先进入临时缓存，二次确认后写入
+    RecordReplay 的 prior_data；旧文件只改名保留，不执行删除。
+servers:
+  - url: http://127.0.0.1:6600
+paths:
+  /api/v1/status:
+    get:
+      operationId: get_calibration_status
+      description: 读取服务任务状态，不访问设备。
+      responses:
+        '200': {description: 服务状态}
+  /api/v1/results/hand-eye:
+    get:
+      operationId: get_hand_eye_result
+      description: 读取左手眼在手上 T_tool_cam 结果。
+      responses: {'200': {description: 标定结果}}
+  /api/v1/results/head-eye/{arm_side}:
+    parameters:
+      - name: arm_side
+        in: path
+        required: true
+        schema: {type: string, enum: [left, right]}
+    get:
+      operationId: get_head_eye_result
+      description: 读取对应侧头部眼在手外 T_base_camera 结果。
+      responses: {'200': {description: 标定结果}}
+  /api/v1/results/prior/head:
+    get:
+      operationId: get_head_prior
+      description: 读取头部 ChArUco 先验 JSON。
+      responses: {'200': {description: 先验结果}}
+  /api/v1/results/prior/hand:
+    get:
+      operationId: get_hand_prior
+      description: 读取手部三球先验 JSON。
+      responses: {'200': {description: 先验结果}}
+  /api/v1/start:
+    post:
+      operationId: start_calibration
+      description: 提示开始采样并清空对应内存样本，不控制设备。
+      responses: {'200': {description: 会话已开始}}
+  /api/v1/end:
+    post:
+      operationId: end_calibration
+      description: 提示结束采样，不自动求解或控制设备。
+      responses: {'200': {description: 会话已结束}}
+  /api/v1/cancel:
+    post:
+      operationId: cancel_calibration
+      description: 丢弃当前样本和待确认计算结果，不替换任何 RecordReplay 正式文件。
+      responses: {'200': {description: 缓存已丢弃}}
+  /api/v1/replacements/confirm:
+    post:
+      operationId: confirm_calibration_replacement
+      description: 二次确认后替换正式先验；旧文件会改名保留，不执行删除。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [replacement_id, confirmed]
+              properties:
+                replacement_id: {type: string}
+                confirmed: {type: boolean, const: true}
+      responses:
+        '200': {description: 正式文件已替换}
+        '409': {description: 未确认、标识不匹配或当前无待确认结果}
+  /api/v1/prior/head:
+    post:
+      operationId: record_head_prior
+      description: 按需触发头部 ChArUco 拍摄和计算，结果先缓存，需 confirm 接口二次确认后保存 charuco_board_prior.json。
+      responses:
+        '200': {description: 先验已计算并进入待确认缓存}
+        '409': {description: 已有任务执行}
+  /api/v1/prior/hand:
+    post:
+      operationId: record_hand_prior
+      description: 只读当前 AR5 状态，按需触发手部三球拍摄和计算，结果先缓存，需 confirm 接口二次确认后保存 ball_pose_prior.json。
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                arm_side: {type: string, enum: [left, right], default: left}
+      responses:
+        '200': {description: 先验已计算并进入待确认缓存}
+        '409': {description: 已有任务执行}
+  /api/v1/hand-eye/sample:
+    post:
+      operationId: capture_hand_eye_sample
+      description: 只读当前 AR5 状态并拍摄一组手眼 ChArUco 样本。
+      responses:
+        '200': {description: 样本已加入当前服务内存}
+  /api/v1/head-eye/sample:
+    post:
+      operationId: capture_head_eye_sample
+      description: 只读当前 AR5 状态并使用头部相机拍摄眼在手外样本。
+      responses:
+        '200': {description: 样本已加入当前服务内存}
+  /api/v1/hand-eye/solve:
+    post:
+      operationId: solve_hand_eye
+      description: 计算当前内存样本或请求 body 中的样本并缓存结果，需 confirm 接口二次确认后保存 hand_eye_result.txt。
+      responses:
+        '200': {description: 手眼结果已计算并进入待确认缓存}
+        '400': {description: 样本或计算失败}
+  /api/v1/head-eye/solve:
+    post:
+      operationId: solve_head_eye
+      description: 计算 T_base_camera 并缓存结果，需 confirm 接口二次确认后保存对应侧 npy 文件。
+      responses:
+        '200': {description: 手眼结果已计算并进入待确认缓存}
+        '400': {description: 样本或计算失败}

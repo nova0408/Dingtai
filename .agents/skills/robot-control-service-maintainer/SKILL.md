@@ -49,6 +49,8 @@ description: 安全维护 Dingtai 根目录 robot_control 统一机器人控制�
    必须记录同步文件、远端备份、服务状态、`GET /api/v1/health` 和远端实际版本结果。
    该流程只检查
    `GET /api/v1/health`，不得用 `/status` 做启动就绪检查，也不得发送控制 POST。
+13. 版本变化仅以本机源码为依据时不得报告远端已更新；Orin 不可达、同步失败、SHA-256
+   或远端实际版本不一致时，必须明确报告 RobotControl 未完成远端同步。
 
 ## 修改流程
 

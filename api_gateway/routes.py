@@ -79,4 +79,10 @@ def build_routes(settings: GatewaySettings) -> tuple[GatewayRoute, ...]:
             upstream_port=settings.robot_control_port,
             upstream_prefix="/api/v1",
         ),
+        GatewayRoute(
+            public_prefix="/api/v1/calibration",
+            upstream_host=settings.calibration_host,
+            upstream_port=settings.calibration_port,
+            upstream_prefix="/api/v1",
+        ),
     )

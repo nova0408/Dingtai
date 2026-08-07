@@ -1,10 +1,10 @@
 openapi: 3.1.0
 info:
   title: Dingtai API Gateway
-  version: 0.3.0
+  version: 0.4.0
   description: >-
-    统一客户端入口。业务请求按 URL 前缀转发到 CameraPipeline、RecordReplay 或
-    RobotControl；Gateway 由 aiohttp 直接提供 TLS，并默认同时监听 IPv4
+    统一客户端入口。业务请求按 URL 前缀转发到 CameraPipeline、RecordReplay、RobotControl 或
+    Calibration Service；Gateway 由 aiohttp 直接提供 TLS，并默认同时监听 IPv4
     `0.0.0.0:443` 与 IPv6 `[::]:443`。客户端必须预先安装并信任
     CasiaHand Root CA。后端服务的完整协议仍以各自目录中的 OpenAPI/AsyncAPI 为准。
 servers:
@@ -84,3 +84,16 @@ paths:
           content:
             text/event-stream:
               schema: {type: string}
+  /api/v1/calibration/{path}:
+    parameters:
+      - name: path
+        in: path
+        required: true
+        schema: {type: string}
+    get:
+      summary: 转发 Calibration Service GET
+      responses: {'200': {description: 后端响应}}
+    post:
+      summary: 转发 Calibration Service 拍摄、计算或确认请求
+      description: 不发送设备控制请求；正式先验替换必须经过 Calibration Service 二次确认，旧文件改名保留。
+      responses: {'200': {description: 后端响应}}

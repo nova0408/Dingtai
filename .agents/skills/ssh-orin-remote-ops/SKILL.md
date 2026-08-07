@@ -1,6 +1,6 @@
 ---
 name: ssh-orin-remote-ops
-description: Reliable workflow for working with the `orin` host from Windows PowerShell in the Dingtai project. Use when Codex needs to deploy files to `/home/wuji-brain/workspace`, restart CameraPipeline or RecordReplay through project scripts, run remote Python or bash commands over SSH, create temporary remote scripts, manage long-running Orin services, diagnose quoting or here-doc failures, handle CRLF/LF issues, or avoid PowerShell-to-SSH command mangling.
+description: Reliable workflow for working with the `orin` host from Windows PowerShell in the Dingtai project. Use when Codex needs to deploy files to `/home/wuji-brain/workspace`, synchronize or restart CameraPipeline, RecordReplay, RobotControl, Calibration Service or API Gateway through project scripts, run remote Python or bash commands over SSH, create temporary remote scripts, manage long-running Orin services, diagnose quoting or here-doc failures, handle CRLF/LF issues, or avoid PowerShell-to-SSH command mangling.
 ---
 
 # SSH Orin Remote Ops
@@ -62,6 +62,16 @@ Restart only the unified API Gateway without syncing files:
 pwsh -NoProfile -File .\scripts\sync_and_restart_services.ps1 -RestartOnly -ApiGatewayOnly
 ```
 
+Restart only Calibration Service and then the dependent API Gateway without syncing files:
+
+```powershell
+pwsh -NoProfile -File .\scripts\sync_and_restart_services.ps1 -RestartOnly -CalibrationServiceOnly
+```
+
+Calibration Service uses the Orin-local `http://127.0.0.1:6600/api/v1/status` read-only check.
+Restarting it does not capture a frame, calculate a prior, start calibration, control a device,
+or start RecordReplay.
+
 Use the all-service command only when the user explicitly authorizes restarting RecordReplay.
 Restarting a service does not authorize sending RecordReplay `/start` or running a replay test.
 
@@ -94,16 +104,58 @@ Gateway deployment health is the exception because it checks Gateway itself. Bac
 Orin remain direct: CameraPipeline HTTP/WebSocket, RecordReplay, and RobotControl use their own
 `localhost` ports and are not probed through Gateway.
 
-Deploy CameraPipeline, RecordReplay, RobotControl and the API Gateway as one version-aligned unit:
+Deploy and restart only CameraPipeline:
+
+```powershell
+pwsh -NoProfile -File .\scripts\sync_and_restart_services.ps1 -CameraPipelineOnly
+```
+
+This synchronizes only the `camera_pipeline/` package, verifies its SHA-256 manifest, backs up the
+remote package, and performs a read-only camera status/version check. Public CameraPipeline
+protocol changes still require the documented dependent RecordReplay deployment.
+
+Deploy and restart only Calibration Service:
+
+```powershell
+pwsh -NoProfile -File .\scripts\sync_and_restart_services.ps1 -CalibrationServiceOnly
+```
+
+This synchronizes only the `calibration_service/` package, verifies its SHA-256 manifest, backs up
+the remote package, and checks `GET /api/v1/status` is idle with the expected version. It does not
+restart API Gateway, capture frames, calculate priors, or control devices.
+
+Deploy CameraPipeline, RecordReplay, RobotControl, Calibration Service and the API Gateway as one version-aligned unit when the change spans services:
 
 ```powershell
 pwsh -NoProfile -File .\scripts\sync_and_restart_services.ps1
 ```
 
+## Five-service version synchronization rule
+
+The five deployed services have independent version sources and must not be reported as remotely
+updated based only on local edits:
+
+| Service | Local version source | Version-change sync command |
+| --- | --- | --- |
+| CameraPipeline | `camera_pipeline/service/protocol.py: SERVICE_VERSION` | `-CameraPipelineOnly` |
+| RecordReplay | `record_replay/__init__.py: RECORD_REPLAY_VERSION` | `-RecordReplayOnly` |
+| RobotControl | `robot_control/__init__.py: ROBOT_CONTROL_VERSION` | `-RobotControlOnly` |
+| Calibration Service | `calibration_service/__init__.py: CALIBRATION_SERVICE_VERSION` | `-CalibrationServiceOnly` |
+| API Gateway | `api_gateway/__init__.py: API_GATEWAY_VERSION` | `-ApiGatewayOnly` |
+
+After changing any service version, first complete the relevant local static and contract checks,
+then attempt the corresponding authorized synchronization command. The result must record the
+local expected version, remote actual version, file manifest and SHA-256 result, remote backup,
+service readiness, and the service's read-only version/health response. If Orin is unreachable,
+the user has not authorized restart/deployment, or any synchronization/readiness/version check
+fails, report the service as not remotely updated; never infer remote state from the local file.
+For changes spanning multiple services, use the full five-service deployment. Single-service
+CameraPipeline or Calibration Service changes use their corresponding `*Only` deployment. These operations never
+authorize RecordReplay `/start`, replay tests, device-control POSTs, or calibration capture.
+
 RecordReplay service startup no longer depends on `ball_debug_overlay.jpg` or any other prior file.
 Missing or invalid runtime priors are reported only when现场人员 explicitly calls `POST /start`;
-the synchronization script must not add an overlay-artifact precondition. `-CameraPipelineOnly` is
-valid only together with `-RestartOnly` and is rejected for deployment.
+the synchronization script must not add an overlay-artifact precondition.
 
 Before deployment, verify RecordReplay is waiting and that restarting it is in scope. Treat script
 success and its business-readiness output as the primary result; use short read-only status checks

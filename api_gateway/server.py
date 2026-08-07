@@ -71,6 +71,12 @@ def create_app(settings: GatewaySettings | None = None) -> web.Application:
         _make_http_handler(routes[4]),
     )
     app.router.add_route("*", "/api/v1/robot-control", _make_http_handler(routes[4]))
+    app.router.add_route(
+        "*",
+        "/api/v1/calibration/{tail:.*}",
+        _make_http_handler(routes[5]),
+    )
+    app.router.add_route("*", "/api/v1/calibration", _make_http_handler(routes[5]))
     return app
 
 
@@ -87,6 +93,7 @@ async def _gateway_health(request: web.Request) -> web.Response:
                 "record_replay": routes[2].upstream_port,
                 "record_replay_websocket": routes[3].upstream_port,
                 "robot_control": routes[4].upstream_port,
+                "calibration": routes[5].upstream_port,
             },
             "backend_probe": False,
         }

@@ -1,0 +1,19 @@
+[Unit]
+Description=Dingtai Hand-Eye Calibration and Prior Recording Service
+After=network-online.target camera-pipeline.service robot-control.service
+Wants=network-online.target
+Requires=camera-pipeline.service robot-control.service
+
+[Service]
+Type=simple
+User=wuji-brain
+WorkingDirectory=/home/wuji-brain/workspace
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/wuji-brain/miniconda3/envs/wuji/bin/python -m calibration_service.service --host 0.0.0.0 --port 6600
+Restart=on-failure
+RestartSec=2
+TimeoutStartSec=10
+TimeoutStopSec=10
+
+[Install]
+WantedBy=multi-user.target

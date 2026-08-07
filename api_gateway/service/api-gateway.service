@@ -1,6 +1,6 @@
 [Unit]
 Description=Dingtai unified API gateway
-After=network.target camera-pipeline.service record-replay.service robot-control.service
+After=network.target camera-pipeline.service record-replay.service robot-control.service calibration.service
 
 [Service]
 Type=simple
