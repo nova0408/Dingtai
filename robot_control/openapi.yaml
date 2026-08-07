@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: RobotControl HTTP API
-  version: 0.7.0
+  version: 0.10.0
   description: >-
     qmlinker 与 AR5 xCoreSDK 统一服务。GET 状态接口可用于只读诊断；POST 控制接口可能
     使真实设备动作，只能由现场人员手动发起。
@@ -63,6 +63,51 @@ paths:
           content:
             application/json: {schema: {$ref: '#/components/schemas/AgvNavigationTargetsResponse'}}
         '503': {description: Map service or device read failure}
+  /api/v1/qmlinker/agv/base-state:
+    get:
+      operationId: get_qmlinker_agv_base_state
+      description: 按 Woosh SDK 原生状态对象读取 AGV 底盘状态。
+      responses:
+        '200':
+          description: Current AGV base state
+          content: {application/json: {schema: {$ref: '#/components/schemas/AgvBaseStateResponse'}}}
+        '503': {description: Base state read failure}
+  /api/v1/qmlinker/agv/base-mode:
+    get:
+      operationId: get_qmlinker_agv_base_mode
+      description: 按 Woosh SDK 原生状态对象读取 AGV 控制模式和工作模式。
+      responses:
+        '200':
+          description: Current AGV base modes
+          content: {application/json: {schema: {$ref: '#/components/schemas/AgvBaseModeResponse'}}}
+        '503': {description: Base mode read failure}
+  /api/v1/qmlinker/agv/base-operation-state:
+    get:
+      operationId: get_qmlinker_agv_base_operation_state
+      description: 读取 AGV 底盘原始运行状态位。
+      responses:
+        '200':
+          description: Current AGV base operation bits
+          content: {application/json: {schema: {$ref: '#/components/schemas/AgvBaseOperationStateResponse'}}}
+        '503': {description: Base operation state read failure}
+  /api/v1/qmlinker/agv/base-task-process:
+    get:
+      operationId: get_qmlinker_agv_base_task_process
+      description: 读取 AGV 当前任务与动作进度。
+      responses:
+        '200':
+          description: Current AGV task process
+          content: {application/json: {schema: {$ref: '#/components/schemas/AgvBaseTaskProcessResponse'}}}
+        '503': {description: Base task process read failure}
+  /api/v1/qmlinker/agv/base-battery:
+    get:
+      operationId: get_qmlinker_agv_base_battery
+      description: 读取 AGV 电量和充电状态。
+      responses:
+        '200':
+          description: Current AGV battery
+          content: {application/json: {schema: {$ref: '#/components/schemas/AgvBaseBatteryResponse'}}}
+        '503': {description: Base battery read failure}
   /api/v1/qmlinker/head:
     post:
       operationId: set_qmlinker_head
@@ -193,6 +238,22 @@ paths:
             schema: {$ref: '#/components/schemas/Ar5PowerRequest'}
       responses:
         '202': {description: Control request accepted}
+  /api/v1/ar5/{side}/soft-limits:
+    get:
+      operationId: get_ar5_soft_limits
+      description: >-
+        只读读取指定 AR5 控制器七个轴的软限位和软限位使能状态。上下限单位为 rad；不会改变
+        电源、工作模式或拖动状态。
+      parameters:
+        - {$ref: '#/components/parameters/Ar5Side'}
+      responses:
+        '200':
+          description: Current seven-axis AR5 soft limits
+          content:
+            application/json: {schema: {$ref: '#/components/schemas/Ar5SoftLimitsResponse'}}
+        '503':
+          description: AR5 SDK or hardware read failure; response preserves the original error
+          content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}
   /api/v1/ar5/{side}/recover-estop:
     post:
       operationId: recover_ar5_estop
@@ -214,6 +275,12 @@ paths:
             schema: {$ref: '#/components/schemas/EnabledRequest'}
       responses:
         '202': {description: Drag request accepted}
+        '400':
+          description: Invalid drag request
+          content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}
+        '503':
+          description: AR5 SDK or hardware control failure; response preserves the original error
+          content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}
   /api/v1/ar5/{side}/jog:
     post:
       operationId: jog_ar5
@@ -309,7 +376,9 @@ components:
           additionalProperties: true
           description: >-
             设备专属只读字段。qmlinker_waist 为可选能力；未启用时不会出现在 devices 数组中，
-            也不会创建腰部客户端。ar5_* 的 data 按 identity、joints、tcp、elbow 和 status 分组。
+            也不会创建腰部客户端。qmlinker_right_hand 的 positions 必须与 actuator_count 的
+            运行时执行器集合完整一致；不完整时设备返回 connected=false、error 详情和空 data。
+            ar5_* 的 data 按 identity、joints、tcp、elbow 和 status 分组。
     StatusResponse:
       type: object
       required: [service_version, api_version, devices]
@@ -343,6 +412,42 @@ components:
         targets:
           type: array
           items: {$ref: '#/components/schemas/AgvNavigationTarget'}
+    AgvBaseStateResponse:
+      type: object
+      required: [robot_state]
+      properties:
+        robot_state: {type: integer, description: Woosh robot state enum}
+    AgvBaseModeResponse:
+      type: object
+      required: [robot_mode, work_mode]
+      properties:
+        robot_mode: {type: integer, description: Woosh control mode enum}
+        work_mode: {type: integer, description: Woosh work mode enum}
+    AgvBaseOperationStateResponse:
+      type: object
+      required: [nav_bits, robot_bits]
+      properties:
+        nav_bits: {type: integer, minimum: 0}
+        robot_bits: {type: integer, minimum: 0}
+    AgvBaseTaskProcessResponse:
+      type: object
+      required: [task_id, task_type, task_state, action_type, action_state, wait_id, dest, msg, time]
+      properties:
+        task_id: {type: integer, minimum: 0}
+        task_type: {type: integer}
+        task_state: {type: integer}
+        action_type: {type: integer}
+        action_state: {type: integer}
+        wait_id: {type: integer}
+        dest: {type: string}
+        msg: {type: string}
+        time: {type: integer}
+    AgvBaseBatteryResponse:
+      type: object
+      required: [power, charge_state]
+      properties:
+        power: {type: integer}
+        charge_state: {type: integer}
     ActionResponse:
       type: object
       required: [service_version, api_version, accepted, data]
@@ -351,6 +456,36 @@ components:
         api_version: {type: string}
         accepted: {type: boolean}
         data: {type: object, additionalProperties: true}
+    ErrorResponse:
+      type: object
+      required: [ok, error, error_type, message, status, method, path, stage]
+      properties:
+        ok: {const: false}
+        error: {type: string, description: Copyable full error summary}
+        error_type: {type: string}
+        message: {type: string, description: Original exception or SDK error text}
+        status: {type: integer}
+        method: {type: string, enum: [GET, POST]}
+        path: {type: string}
+        stage: {type: string, enum: [request_validation, hardware_read, hardware_control]}
+    Ar5SoftLimitsResponse:
+      type: object
+      required: [side, enabled, axis_count, limits_rad]
+      properties:
+        side: {type: string, enum: [left, right]}
+        enabled: {type: boolean}
+        axis_count: {type: integer, const: 7}
+        limits_rad:
+          type: array
+          minItems: 7
+          maxItems: 7
+          items:
+            type: object
+            required: [axis_index, lower_rad, upper_rad]
+            properties:
+              axis_index: {type: integer, minimum: 0, maximum: 6}
+              lower_rad: {type: number}
+              upper_rad: {type: number}
     QmlinkerHeadRequest:
       type: object
       minProperties: 1

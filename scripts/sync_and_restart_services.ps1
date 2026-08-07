@@ -3,6 +3,7 @@
 [CmdletBinding()]
 param(
     [switch]$CameraPipelineOnly,
+    [switch]$RecordReplayOnly,
     [switch]$RobotControlOnly,
     [switch]$ApiGatewayOnly,
     [switch]$RestartOnly
@@ -44,7 +45,7 @@ function Test-DeployFile {
         [System.IO.FileInfo]$File
     )
 
-    if ($File.Extension -in @(".pyc", ".log") -or $File.Name -eq "ball_debug_overlay.jpg") {
+    if ($File.Extension -in @(".pyc", ".log") -or $File.Name -in @("ball_debug_overlay.jpg", "runtime_state.json")) {
         return $false
     }
     if (
@@ -100,7 +101,9 @@ $robotControlSourceDirectories = @(
 )
 $restartScriptPaths = @(
     (Join-Path $projectRoot "scripts/restart_camera_pipeline_service.sh"),
-    (Join-Path $projectRoot "scripts/restart_record_replay_service.sh")
+    (Join-Path $projectRoot "scripts/restart_record_replay_service.sh"),
+    (Join-Path $projectRoot "scripts/restart_robot_control_service.sh"),
+    (Join-Path $projectRoot "scripts/restart_api_gateway_service.sh")
 )
 if (-not (Test-Path -LiteralPath $cameraPipelinePath -PathType Container)) {
     throw "缺少本机 camera_pipeline 目录：$cameraPipelinePath"
@@ -148,53 +151,37 @@ if ($CameraPipelineOnly -and -not $RestartOnly) {
 if ($CameraPipelineOnly -and $RobotControlOnly) {
     throw "-CameraPipelineOnly 与 -RobotControlOnly 不能同时使用。"
 }
-if ($ApiGatewayOnly -and ($CameraPipelineOnly -or $RobotControlOnly)) {
+if ($RecordReplayOnly -and ($CameraPipelineOnly -or $RobotControlOnly -or $ApiGatewayOnly)) {
+    throw "-RecordReplayOnly 不能与其他 *Only 选项同时使用。"
+}
+if ($ApiGatewayOnly -and ($CameraPipelineOnly -or $RecordReplayOnly -or $RobotControlOnly)) {
     throw "-ApiGatewayOnly 不能与其他 *Only 选项同时使用。"
 }
 if ($RestartOnly) {
-    if ($ApiGatewayOnly) {
-        Write-Host "仅重启 API Gateway；不会同步文件或操作三个后端服务。"
-        $remoteCommand = "test -r /etc/dingtai/api-gateway/tls/casiahand-root-ca.crt.pem " +
-            "-a -r /etc/dingtai/api-gateway/tls/api-gateway.fullchain.pem " +
-            "-a -r /etc/dingtai/api-gateway/tls/api-gateway.key.pem && " +
-            "sudo -S -p '' systemctl restart --no-block api-gateway.service"
-        $RemoteSudoPassword | & ssh.exe @SshOptions $SshTarget $remoteCommand
-        if ($LASTEXITCODE -ne 0) {
-            throw "远端 API Gateway 服务重启失败。"
-        }
-        $healthCommand = 'gateway_hostname="$(hostname)"; for attempt in $(seq 1 20); do if systemctl is-active --quiet api-gateway.service && ss -ltn "( sport = :443 )" | grep -q LISTEN && curl -fsS --max-time 5 --cacert /etc/dingtai/api-gateway/tls/casiahand-root-ca.crt.pem --resolve "${gateway_hostname}:443:127.0.0.1" "https://${gateway_hostname}/api/v1/gateway/health"; then echo; exit 0; fi; sleep 1; done; systemctl status api-gateway.service --no-pager -l || true; journalctl -u api-gateway.service --since "2 minutes ago" --no-pager -o short-precise || true; exit 1'
-        & ssh.exe @SshOptions $SshTarget $healthCommand
-        if ($LASTEXITCODE -ne 0) {
-            throw "远端 API Gateway 服务未通过 /api/v1/gateway/health 就绪检查。"
-        }
-        return
-    }
-    if ($RobotControlOnly) {
-        Write-Host "仅重启 RobotControl；不会同步文件或操作 CameraPipeline/RecordReplay。"
-        $remoteCommand = "sudo -S -p '' systemctl restart --no-block robot-control.service"
-        $RemoteSudoPassword | & ssh.exe @SshOptions $SshTarget $remoteCommand
-        if ($LASTEXITCODE -ne 0) {
-            throw "远端 RobotControl 服务重启失败。"
-        }
-        $healthCommand = 'for attempt in $(seq 1 20); do if systemctl is-active --quiet robot-control.service && ss -ltn "( sport = :6500 )" | grep -q LISTEN && curl -fsS --max-time 5 http://127.0.0.1:6500/api/v1/health; then echo; exit 0; fi; sleep 1; done; systemctl status robot-control.service --no-pager -l || true; journalctl -u robot-control.service --since "2 minutes ago" --no-pager -o short-precise || true; exit 1'
-        & ssh.exe @SshOptions $SshTarget $healthCommand
-        if ($LASTEXITCODE -ne 0) {
-            throw "远端 RobotControl 服务未通过 /api/v1/health 就绪检查。"
-        }
-        return
-    }
+    # 下游服务依赖：CameraPipeline -> RecordReplay -> API Gateway；RobotControl -> API Gateway。
+    # 只重启上游时必须显式重启受影响的下游；只重启下游时不反向重启无变化的上游。
     $selectedRestartScripts = if ($CameraPipelineOnly) {
-        @($restartScriptPaths[0])
+        @($restartScriptPaths[0], $restartScriptPaths[1], $restartScriptPaths[3])
+    }
+    elseif ($RecordReplayOnly) {
+        @($restartScriptPaths[1], $restartScriptPaths[3])
+    }
+    elseif ($RobotControlOnly) {
+        @($restartScriptPaths[2], $restartScriptPaths[3])
+    }
+    elseif ($ApiGatewayOnly) {
+        @($restartScriptPaths[3])
     }
     else {
         $restartScriptPaths
     }
-    if ($CameraPipelineOnly) {
-        Write-Host "仅重启 CameraPipeline；不会同步文件或操作 RecordReplay。"
-    }
-    else {
-        Write-Warning "本次会依次重启 CameraPipeline 和 RecordReplay，但不会发送 /start 请求。"
-    }
+    $selectedRestartNames = @(
+        $selectedRestartScripts | ForEach-Object { [System.IO.Path]::GetFileName($_) }
+    )
+    Write-Warning (
+        "按服务依赖顺序重启：" + ($selectedRestartNames -join " -> ") +
+        "；仅执行 systemd 重启和只读就绪检查，不会发送 /start 请求。"
+    )
     foreach ($restartScriptPath in $selectedRestartScripts) {
         $restartScriptName = [System.IO.Path]::GetFileName($restartScriptPath)
         $remoteRestartScript = "/tmp/dingtai-agent-$restartScriptName"
@@ -579,6 +566,224 @@ echo "[deploy] RobotControl updated and restarted; version=${robot_version}; GET
     return
 }
 
+if ($RecordReplayOnly) {
+    $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
+    $localTempBase = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath())
+    $localTempRoot = Join-Path $localTempBase "dingtai-record-replay-deploy-$timestamp"
+    $archivePath = Join-Path $localTempRoot "record_replay.tar"
+    $manifestPath = Join-Path $localTempRoot "record_replay.sha256"
+    $remoteScriptPath = Join-Path $localTempRoot "deploy_record_replay.sh"
+    $remoteStagePath = "$RemoteStageRoot/record-replay-$timestamp"
+    $remoteArchivePath = "$remoteStagePath/record_replay.tar"
+    $remoteManifestPath = "$remoteStagePath/record_replay.sha256"
+
+    New-Item -ItemType Directory -Path $localTempRoot | Out-Null
+    try {
+        $deployFiles = @(
+            Get-ChildItem -LiteralPath $recordReplayPath -Recurse -File |
+                Where-Object { Test-DeployFile -File $_ }
+        )
+        if ($deployFiles.Count -eq 0) {
+            throw "RecordReplay 部署清单为空"
+        }
+
+        $manifestLines = foreach ($file in ($deployFiles | Sort-Object FullName)) {
+            $relativePath = [System.IO.Path]::GetRelativePath(
+                $projectRoot,
+                $file.FullName
+            ).Replace("\", "/")
+            $hash = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash  $relativePath"
+        }
+        [System.IO.File]::WriteAllText(
+            $manifestPath,
+            (($manifestLines -join "`n") + "`n"),
+            [System.Text.UTF8Encoding]::new($false)
+        )
+
+        Invoke-CheckedCommand -FilePath "tar.exe" -ArgumentList @(
+            "-cf",
+            $archivePath,
+            "--exclude=*/__pycache__/*",
+            "--exclude=*/.archive",
+            "--exclude=*/.archive/*",
+            "--exclude=*.pyc",
+            "--exclude=*.log",
+            "--exclude=record_replay/prior_data/ball_debug_overlay.jpg",
+            "-C",
+            $projectRoot,
+            "record_replay"
+        )
+
+        $remoteScript = @'
+#!/usr/bin/env bash
+set -euo pipefail
+
+workspace="$1"
+stage_path="$2"
+manifest_path="$3"
+expected_record_version="$4"
+unit="record-replay.service"
+archive_root="${workspace}/.archive/service_deploy/$(basename "${stage_path}")"
+deploy_log_since="$(date '+%Y-%m-%d %H:%M:%S')"
+
+cleanup() {
+  rm -rf -- "${stage_path}"
+  rm -f -- "/tmp/dingtai_record_replay_deploy.sh"
+}
+trap cleanup EXIT
+
+case "${stage_path}" in
+  "${workspace}/.deploy_stage/record-replay-"*) ;;
+  *) echo "[deploy] invalid RecordReplay stage path: ${stage_path}"; exit 1 ;;
+esac
+
+expected_count="$(wc -l < "${manifest_path}")"
+actual_stage_count="$(find "${stage_path}/record_replay" -type f ! -name '*.pyc' ! -name '*.log' ! -path '*/__pycache__/*' ! -path '*/.archive/*' | wc -l)"
+if [[ "${actual_stage_count}" -ne "${expected_count}" ]]; then
+  echo "[deploy] RecordReplay staged file count mismatch expected=${expected_count} actual=${actual_stage_count}"
+  exit 1
+fi
+(
+  cd "${stage_path}"
+  sha256sum --check "${manifest_path}"
+)
+
+if ! systemctl is-active --quiet camera-pipeline.service ||
+   ! ss -ltn '( sport = :6200 )' | grep -q LISTEN; then
+  echo "[deploy] refused: CameraPipeline is not active and listening on 6200"
+  systemctl status camera-pipeline.service --no-pager -l || true
+  exit 1
+fi
+
+json_field() {
+  local field="$1"
+  /home/wuji-brain/miniconda3/envs/wuji/bin/python -c \
+    'import json, sys; print(json.load(sys.stdin)[sys.argv[1]])' "${field}"
+}
+
+if ss -ltn '( sport = :6300 )' | grep -q LISTEN; then
+  status_payload="$(curl -fsS --max-time 5 http://127.0.0.1:6300/status)"
+  service_state="$(printf '%s' "${status_payload}" | json_field state)"
+  if [[ "${service_state}" != "idle" && "${service_state}" != "waiting" ]]; then
+    echo "[deploy] refused: RecordReplay current state is ${service_state}"
+    exit 1
+  fi
+fi
+
+echo "[deploy] stopping ${unit}"
+systemctl stop --no-block "${unit}" || true
+for attempt in $(seq 1 15); do
+  active_state="$(systemctl show "${unit}" -p ActiveState --value 2>/dev/null || true)"
+  if [[ -z "${active_state}" || "${active_state}" == "inactive" || "${active_state}" == "failed" ]]; then
+    systemctl reset-failed "${unit}" || true
+    break
+  fi
+  sleep 1
+done
+
+mkdir -p "${archive_root}"
+if [[ -e "${stage_path}/record_replay/.archive" ]]; then
+  echo "[deploy] staged RecordReplay package must not contain runtime .archive"
+  exit 1
+fi
+if [[ -d "${workspace}/record_replay/.archive" ]]; then
+  mkdir -p "${stage_path}/record_replay"
+  mv "${workspace}/record_replay/.archive" "${stage_path}/record_replay/.archive"
+fi
+if [[ -d "${workspace}/record_replay" ]]; then
+  mv "${workspace}/record_replay" "${archive_root}/record_replay"
+fi
+mv "${stage_path}/record_replay" "${workspace}/record_replay"
+
+install -m 0644 \
+  "${workspace}/record_replay/service/record-replay.service" \
+  "/etc/systemd/system/${unit}"
+systemctl daemon-reload
+systemctl enable "${unit}"
+systemctl restart --no-block "${unit}"
+
+record_ready=false
+for attempt in $(seq 1 20); do
+  if systemctl is-active --quiet "${unit}" &&
+     systemctl is-active --quiet camera-pipeline.service &&
+     ss -ltn '( sport = :6200 )' | grep -q LISTEN &&
+     ss -ltn '( sport = :6300 )' | grep -q LISTEN &&
+     status_payload="$(curl -fsS --max-time 5 http://127.0.0.1:6300/status)"; then
+    record_ready=true
+    printf '%s\n' "${status_payload}"
+    break
+  fi
+  sleep 1
+done
+if [[ "${record_ready}" != "true" ]]; then
+  echo "[deploy] RecordReplay was not HTTP-ready within 20s"
+  systemctl status "${unit}" --no-pager -l || true
+  journalctl -u "${unit}" --since "${deploy_log_since}" --no-pager -o short-precise || true
+  exit 1
+fi
+
+record_version="$(cd "${workspace}" && /home/wuji-brain/miniconda3/envs/wuji/bin/python -c 'from record_replay import RECORD_REPLAY_VERSION; print(RECORD_REPLAY_VERSION)')"
+if [[ "${record_version}" != "${expected_record_version}" ]]; then
+  echo "[deploy] RecordReplay version mismatch expected=${expected_record_version} actual=${record_version}"
+  exit 1
+fi
+(
+  cd "${workspace}"
+  sha256sum --check "${manifest_path}"
+)
+echo "[deploy] RecordReplay updated and restarted; version=${record_version}; GET /status passed"
+'@
+
+        [System.IO.File]::WriteAllText(
+            $remoteScriptPath,
+            ($remoteScript.Replace([Environment]::NewLine, [string][char]10) + [char]10),
+            [System.Text.UTF8Encoding]::new($false)
+        )
+
+        Write-Host "即将同步 $($deployFiles.Count) 个 RecordReplay 文件到 $SshTarget"
+        Write-Host "远端旧版本会备份到：$RemoteWorkspace/.archive/service_deploy/record-replay-$timestamp"
+        Invoke-CheckedCommand -FilePath "ssh.exe" -ArgumentList @(
+            $SshOptions + @($SshTarget, "mkdir -p '$remoteStagePath'")
+        )
+        Invoke-CheckedCommand -FilePath "scp.exe" -ArgumentList @(
+            $SshOptions + @($archivePath, "${SshTarget}:$remoteArchivePath")
+        )
+        Invoke-CheckedCommand -FilePath "scp.exe" -ArgumentList @(
+            $SshOptions + @($manifestPath, "${SshTarget}:$remoteManifestPath")
+        )
+        Invoke-CheckedCommand -FilePath "scp.exe" -ArgumentList @(
+            $SshOptions + @($remoteScriptPath, "${SshTarget}:/tmp/dingtai_record_replay_deploy.sh")
+        )
+        Invoke-CheckedCommand -FilePath "ssh.exe" -ArgumentList @(
+            $SshOptions + @($SshTarget, "tar -xf '$remoteArchivePath' -C '$remoteStagePath'")
+        )
+
+        $remoteCommand = "sudo -S -p '' bash '/tmp/dingtai_record_replay_deploy.sh' " +
+            "'$RemoteWorkspace' '$remoteStagePath' '$remoteManifestPath' '$expectedRecordReplayVersion'"
+        $RemoteSudoPassword | & ssh.exe @SshOptions $SshTarget $remoteCommand
+        if ($LASTEXITCODE -ne 0) {
+            throw "远端 RecordReplay 同步或重启失败，请检查上方日志。"
+        }
+    }
+    finally {
+        if (Test-Path -LiteralPath $localTempRoot) {
+            $resolvedTempRoot = [System.IO.Path]::GetFullPath($localTempRoot)
+            if (
+                -not $resolvedTempRoot.StartsWith(
+                    $localTempBase,
+                    [System.StringComparison]::OrdinalIgnoreCase
+                ) -or
+                [System.IO.Path]::GetFileName($resolvedTempRoot) -notlike "dingtai-record-replay-deploy-*"
+            ) {
+                throw "拒绝清理非预期临时目录：$resolvedTempRoot"
+            }
+            Remove-Item -LiteralPath $localTempRoot -Recurse -Force
+        }
+    }
+    return
+}
+
 $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
 $localTempBase = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath())
 $localTempRoot = Join-Path $localTempBase "dingtai-deploy-$timestamp"
@@ -650,7 +855,9 @@ try {
         "src/arm",
         "src/robotics",
         "scripts/restart_camera_pipeline_service.sh",
-        "scripts/restart_record_replay_service.sh"
+        "scripts/restart_record_replay_service.sh",
+        "scripts/restart_robot_control_service.sh",
+        "scripts/restart_api_gateway_service.sh"
     )
 
     $remoteScript = @'
@@ -730,6 +937,8 @@ actual_stage_count="$(
   find "${stage_path}/camera_pipeline" "${stage_path}/record_replay" "${stage_path}/robot_control" "${stage_path}/api_gateway" "${stage_path}/src" \
     "${stage_path}/scripts/restart_camera_pipeline_service.sh" \
     "${stage_path}/scripts/restart_record_replay_service.sh" \
+    "${stage_path}/scripts/restart_robot_control_service.sh" \
+    "${stage_path}/scripts/restart_api_gateway_service.sh" \
     -type f ! -name '*.pyc' ! -name '*.log' ! -path '*/__pycache__/*' |
     wc -l
 )"
@@ -743,10 +952,11 @@ fi
 )
 camera_import_output=""
 if ! camera_import_output="$(
-  cd "${workspace}"
+  cd "${stage_path}"
+  export PYTHONPATH="${stage_path}"
   "/home/wuji-brain/miniconda3/envs/wuji/bin/python" -c 'import camera_pipeline.service.__main__'
 )"; then
-  echo "[deploy] refused: CameraPipeline import preflight failed"
+  echo "[deploy] refused: staged CameraPipeline import preflight failed"
   printf '%s\n' "${camera_import_output}"
   exit 1
 fi
@@ -821,7 +1031,9 @@ if [[ -d "${workspace}/src" ]]; then
 fi
 for restart_script_name in \
   "restart_camera_pipeline_service.sh" \
-  "restart_record_replay_service.sh"; do
+  "restart_record_replay_service.sh" \
+  "restart_robot_control_service.sh" \
+  "restart_api_gateway_service.sh"; do
   if [[ -f "${workspace}/scripts/${restart_script_name}" ]]; then
     mv "${workspace}/scripts/${restart_script_name}" \
       "${archive_root}/scripts/${restart_script_name}"
@@ -837,9 +1049,15 @@ mv "${stage_path}/scripts/restart_camera_pipeline_service.sh" \
   "${workspace}/scripts/restart_camera_pipeline_service.sh"
 mv "${stage_path}/scripts/restart_record_replay_service.sh" \
   "${workspace}/scripts/restart_record_replay_service.sh"
+mv "${stage_path}/scripts/restart_robot_control_service.sh" \
+  "${workspace}/scripts/restart_robot_control_service.sh"
+mv "${stage_path}/scripts/restart_api_gateway_service.sh" \
+  "${workspace}/scripts/restart_api_gateway_service.sh"
 chmod 0755 \
   "${workspace}/scripts/restart_camera_pipeline_service.sh" \
-  "${workspace}/scripts/restart_record_replay_service.sh"
+  "${workspace}/scripts/restart_record_replay_service.sh" \
+  "${workspace}/scripts/restart_robot_control_service.sh" \
+  "${workspace}/scripts/restart_api_gateway_service.sh"
 
 install -m 0644 \
   "${workspace}/camera_pipeline/service/camera-pipeline.service" \

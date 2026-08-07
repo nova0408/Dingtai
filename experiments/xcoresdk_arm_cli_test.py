@@ -21,8 +21,8 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 if str(SDK_ROOT) not in sys.path:
     sys.path.insert(0, str(SDK_ROOT))
-    
-LOCAL_IP = "192.168.1.116"
+
+LOCAL_IP = "192.168.100.160"
 MM_PER_M = 1000.0
 DEFAULT_CARTESIAN_SPEED = 50.0
 DEFAULT_CARTESIAN_ZONE = 1.0
@@ -36,9 +36,11 @@ EXPECTED_ARM_TYPES = {
     "right": "AR5-5_0.8R-W4C1C9-ZY2",
 }
 
-from sdk.xcoresdk import xCoreSDK_python 
-DEFAULT_LEFT_ANGLE=[-85.00, -100.00, 45.00, -50.00, -10.00, -15.00, -5.00]
-DEFAULT_RIGHT_ANGLE=[-100.00, 100.00, 135.00, -55.00, 0.00, -15.00, 10.00]
+from sdk.xcoresdk import xCoreSDK_python
+
+DEFAULT_LEFT_ANGLE = [-85.00, -100.00, 45.00, -50.00, -10.00, -15.00, -5.00]
+DEFAULT_RIGHT_ANGLE = [-100.00, 100.00, 135.00, -55.00, 0.00, -15.00, 10.00]
+
 
 # region 数据结构
 @dataclass(frozen=True, slots=True)
@@ -263,7 +265,7 @@ def _ensure_nrt_motion_ready(robot: xCoreSDK_python.xMateErProRobot, ec: dict[st
     if ec.get("ec", 0) != 0:
         return False
     current_power_state = robot.powerState(ec)
-    print(f"当前电机状态: {current_power_state} ({_describe_power_state(current_power_state)})")
+    print(f"当前电机状态：{current_power_state} ({_describe_power_state(current_power_state)})")
     return current_power_state == xCoreSDK_python.PowerState.on
 
 
@@ -277,7 +279,7 @@ def _wait_for_power_on(
     deadline = time.time() + timeout_s
     while time.time() < deadline:
         power_state = robot.powerState(ec)
-        print(f"当前电机状态: {power_state} ({_describe_power_state(power_state)})")
+        print(f"当前电机状态：{power_state} ({_describe_power_state(power_state)})")
         if power_state == xCoreSDK_python.PowerState.on:
             return True
         time.sleep(0.1)
@@ -297,7 +299,7 @@ def _validate_cartesian_target(
     _print_sdk_result("checkPath", ec)
     if ec.get("ec", 0) != 0:
         return False
-    print(f"checkPath 目标关节(deg): {_format_sequence(_rad_to_deg(result_joint))}")
+    print(f"checkPath 目标关节 (deg): {_format_sequence(_rad_to_deg(result_joint))}")
     return True
 
 
@@ -313,20 +315,20 @@ def _print_cartesian_ik_preview(
     toolset = xCoreSDK_python.Toolset()
     target_joint = robot_model.calcIk(target_pose, toolset, ec)
     _print_sdk_result("calcIk", ec)
-    print(f"当前关节值(deg): {_format_sequence(current_joint_deg)}")
+    print(f"当前关节值 (deg): {_format_sequence(current_joint_deg)}")
     if ec.get("ec", 0) != 0:
         return
-    print(f"目标逆解值(deg): {_format_sequence(_rad_to_deg(target_joint))}")
+    print(f"目标逆解值 (deg): {_format_sequence(_rad_to_deg(target_joint))}")
 
 
 def _select_cartesian_motion_type() -> str | None:
     """选择笛卡尔目标的执行方式。"""
 
-    print("笛卡尔运动方式:")
+    print("笛卡尔运动方式：")
     print("  1. MoveL 直线运动")
     print("  2. MoveJ 关节插补到笛卡尔目标")
     print("  q. 返回上一级")
-    choice = input("请选择运动方式: ").strip().lower()
+    choice = input("请选择运动方式：").strip().lower()
     if choice == "1":
         return "movel"
     if choice == "2":
@@ -340,8 +342,8 @@ def _prompt_motion_speed(current_speed: float, label: str) -> float:
     """调整当前模式下的速度参数。"""
 
     while True:
-        print(f"当前{label}速度: {current_speed:.2f}")
-        raw_text = input(f"请输入新的{label}速度，或输入 q 返回: ").strip().lower()
+        print(f"当前{label}速度：{current_speed:.2f}")
+        raw_text = input(f"请输入新的{label}速度，或输入 q 返回：").strip().lower()
         if raw_text == "q":
             return current_speed
         try:
@@ -359,9 +361,9 @@ def _print_motion_speed_status(label: str, speed: float, zone: float | None = No
     """打印当前运动参数，方便在进入模式后直接确认。"""
 
     if zone is None:
-        print(f"当前{label}速度: {speed:.2f}")
+        print(f"当前{label}速度：{speed:.2f}")
         return
-    print(f"当前{label}速度: {speed:.2f}, zone: {zone:.2f}")
+    print(f"当前{label}速度：{speed:.2f}, zone: {zone:.2f}")
 
 
 def _recover_estop(robot: xCoreSDK_python.xMateErProRobot, ec: dict[str, object]) -> None:
@@ -382,11 +384,11 @@ def _toggle_soft_limit(robot: xCoreSDK_python.xMateErProRobot, ec: dict[str, obj
         [-2.0543261909900767, 2.0543261909900767],
         [-2.0543261909900767, 2.0543261909900767],
     ]
-    print("软限位开关:")
+    print("软限位开关：")
     print("  1. 打开软限位")
     print("  2. 关闭软限位")
     print("  q. 返回主菜单")
-    choice = input("请选择: ").strip().lower()
+    choice = input("请选择：").strip().lower()
     if choice == "q":
         return
     if choice not in {"1", "2"}:
@@ -428,14 +430,16 @@ def _print_robot_snapshot(robot: xCoreSDK_python.xMateErProRobot, ec: dict[str, 
     cart_pose = robot.cartPosture(xCoreSDK_python.endInRef, ec)
     robot_info = robot.robotInfo(ec)
 
-    print("当前模式:", operate_mode)
-    print("当前状态:", operation_state)
-    print(f"电机状态: {power_state} ({_describe_power_state(power_state)})")
-    print("机器人型号:", robot_info.type)
-    print(f"当前关节值(deg): {_format_sequence(_rad_to_deg(joint_values))}")
-    print(f"当前笛卡尔位姿(mm/deg): trans={_format_sequence(_m_to_mm(cart_pose.trans))} rpy={_format_sequence(_rad_to_deg(cart_pose.rpy))}")
+    print("当前模式：", operate_mode)
+    print("当前状态：", operation_state)
+    print(f"电机状态：{power_state} ({_describe_power_state(power_state)})")
+    print("机器人型号：", robot_info.type)
+    print(f"当前关节值 (deg): {_format_sequence(_rad_to_deg(joint_values))}")
     print(
-        "当前笛卡尔上下文: "
+        f"当前笛卡尔位姿 (mm/deg): trans={_format_sequence(_m_to_mm(cart_pose.trans))} rpy={_format_sequence(_rad_to_deg(cart_pose.rpy))}"
+    )
+    print(
+        "当前笛卡尔上下文："
         f"hasElbow={cart_pose.hasElbow}, "
         f"elbow(deg)={math.degrees(cart_pose.elbow):.2f}, "
         f"confData={cart_pose.confData}"
@@ -446,7 +450,7 @@ def _print_connected_arm_snapshot(connected_arm: ConnectedArm) -> None:
     """打印当前选中机械臂的连接信息与状态快照。"""
 
     print(
-        f"当前机械臂: {connected_arm.arm_side} "
+        f"当前机械臂：{connected_arm.arm_side} "
         f"(ip={connected_arm.config.robot_ip}, type={connected_arm.robot_type}, uid={connected_arm.robot_uid})"
     )
     _print_robot_snapshot(connected_arm.robot, connected_arm.ec)
@@ -456,7 +460,7 @@ def _print_cartesian_pose(robot: xCoreSDK_python.xMateErProRobot, ec: dict[str, 
     """打印当前笛卡尔空间位姿。"""
 
     pose = robot.cartPosture(xCoreSDK_python.endInRef, ec)
-    print("当前笛卡尔空间位姿:")
+    print("当前笛卡尔空间位姿：")
     print(f"  trans(mm): {_format_sequence(_m_to_mm(pose.trans))}")
     print(f"  rpy(deg): {_format_sequence(_rad_to_deg(pose.rpy))}")
     print(f"  hasElbow: {pose.hasElbow}, elbow(deg): {math.degrees(pose.elbow):.2f}, confData: {pose.confData}")
@@ -508,7 +512,7 @@ def _wait_for_power_off(
     deadline = time.time() + timeout_s
     while time.time() < deadline:
         power_state = robot.powerState(ec)
-        print(f"当前电机状态: {power_state} ({_describe_power_state(power_state)})")
+        print(f"当前电机状态：{power_state} ({_describe_power_state(power_state)})")
         if power_state == xCoreSDK_python.PowerState.off:
             return True
         time.sleep(0.2)
@@ -528,7 +532,7 @@ def _prepare_predefined_joint_motion_loop(
     if ec.get("ec", 0) != 0:
         return False
     operation_state = robot.operationState(ec)
-    print(f"循环开始前操作状态: {operation_state}")
+    print(f"循环开始前操作状态：{operation_state}")
     return operation_state in (
         xCoreSDK_python.OperationState.idle,
         xCoreSDK_python.OperationState.unknown,
@@ -573,7 +577,7 @@ def _drag_record_loop(
     print("直接回车记录当前信息，输入 q 退出并保存。")
     try:
         while True:
-            raw_text = input("请输入: ").strip().lower()
+            raw_text = input("请输入：").strip().lower()
             if raw_text == "q":
                 print("退出记录模式")
                 return records
@@ -609,11 +613,11 @@ def _drag_record_loop(
             }
             records.append(record)
             print(f"已记录第 {len(records)} 条")
-            print(f"  臂别: {record['side']}, 时间: {record['timestamp']}")
-            print(f"  关节(deg): {_format_sequence(joint_values_deg)}")
-            print(f"  位姿(mm/deg): trans={_format_sequence(trans_mm)} rpy={_format_sequence(rpy_deg)}")
+            print(f"  臂别：{record['side']}, 时间：{record['timestamp']}")
+            print(f"  关节 (deg): {_format_sequence(joint_values_deg)}")
+            print(f"  位姿 (mm/deg): trans={_format_sequence(trans_mm)} rpy={_format_sequence(rpy_deg)}")
             print(
-                "  上下文: "
+                "  上下文："
                 f"hasElbow={cart_pose.hasElbow}, "
                 f"elbow(deg)={math.degrees(float(cart_pose.elbow)):.2f}, "
                 f"confData={list(cart_pose.confData)}"
@@ -684,7 +688,7 @@ def _detect_arm_side(robot_type: str) -> str:
     for arm_side, expected_robot_type in EXPECTED_ARM_TYPES.items():
         if robot_type == expected_robot_type:
             return arm_side
-    raise ValueError(f"未识别的机器人型号: {robot_type}")
+    raise ValueError(f"未识别的机器人型号：{robot_type}")
 
 
 def _connect_arms(configs: list[RobotConnectionConfig]) -> dict[str, ConnectedArm]:
@@ -698,11 +702,11 @@ def _connect_arms(configs: list[RobotConnectionConfig]) -> dict[str, ConnectedAr
             robot_info = robot.robotInfo(ec)
             _print_sdk_result(f"robotInfo({config.robot_ip})", ec)
             if ec.get("ec", 0) != 0:
-                raise RuntimeError(f"读取机器人信息失败: ip={config.robot_ip}")
+                raise RuntimeError(f"读取机器人信息失败：ip={config.robot_ip}")
             arm_side = _detect_arm_side(robot_info.type)
             if arm_side in connected_arms:
                 raise RuntimeError(
-                    f"检测到重复的 {arm_side} 机械臂: "
+                    f"检测到重复的 {arm_side} 机械臂："
                     f"existing={connected_arms[arm_side].config.robot_ip}, current={config.robot_ip}"
                 )
             connected_arm = ConnectedArm(
@@ -715,13 +719,10 @@ def _connect_arms(configs: list[RobotConnectionConfig]) -> dict[str, ConnectedAr
             )
             _prepare_robot(robot, ec)
             connected_arms[arm_side] = connected_arm
-            print(
-                f"已连接 {arm_side} arm: ip={config.robot_ip}, "
-                f"type={robot_info.type}, uid={robot_info.id}"
-            )
+            print(f"已连接 {arm_side} arm: ip={config.robot_ip}, " f"type={robot_info.type}, uid={robot_info.id}")
         missing_arm_sides = [arm_side for arm_side in EXPECTED_ARM_TYPES if arm_side not in connected_arms]
         if missing_arm_sides:
-            raise RuntimeError(f"缺少目标机械臂连接: {', '.join(missing_arm_sides)}")
+            raise RuntimeError(f"缺少目标机械臂连接：{', '.join(missing_arm_sides)}")
         return connected_arms
     except Exception:
         for connected_arm in connected_arms.values():
@@ -764,10 +765,10 @@ def _set_motor_state(robot: xCoreSDK_python.xMateErProRobot, ec: dict[str, objec
 
 
 def _switch_mode(robot: xCoreSDK_python.xMateErProRobot, ec: dict[str, object]) -> None:
-    print("可选模式:")
+    print("可选模式：")
     print("  1. manual")
     print("  2. automatic")
-    choice = input("请选择模式: ").strip()
+    choice = input("请选择模式：").strip()
     if choice == "1":
         robot.setOperateMode(xCoreSDK_python.OperateMode.manual, ec)
     elif choice == "2":
@@ -788,7 +789,7 @@ def _toggle_drag(connected_arm: ConnectedArm) -> None:
             int(xCoreSDK_python.DragParameterSpace.cartesianSpace),
             int(xCoreSDK_python.DragParameterType.freely),
             ec,
-            enable_drag_button=False
+            enable_drag_button=False,
         )
         _print_sdk_result("enableDrag(cartesianSpace, freely, ec)", ec)
 
@@ -802,7 +803,7 @@ def _toggle_drag(connected_arm: ConnectedArm) -> None:
     if csv_path is None:
         print("没有记录到任何数据，已关闭拖动")
     else:
-        print(f"已保存到: {csv_path}")
+        print(f"已保存到：{csv_path}")
         print("拖动已关闭")
 
 
@@ -829,7 +830,7 @@ def _cartesian_control_loop(robot: xCoreSDK_python.xMateErProRobot, ec: dict[str
         try:
             target_values = _parse_float_list(raw_text, expected_len=6)
         except ValueError as exc:
-            print(f"输入格式错误: {exc}")
+            print(f"输入格式错误：{exc}")
             continue
         current_pose = robot.cartPosture(xCoreSDK_python.endInRef, ec)
         target_pose = _make_cartesian_position(_mm_to_m(target_values[:3]) + _deg_to_rad(target_values[3:]))
@@ -843,7 +844,7 @@ def _cartesian_control_loop(robot: xCoreSDK_python.xMateErProRobot, ec: dict[str
         if motion_type is None:
             continue
         print(
-            "目标笛卡尔位姿: "
+            "目标笛卡尔位姿："
             f"trans(mm)={_format_sequence(target_values[:3])}, "
             f"rpy(deg)={_format_sequence(target_values[3:])}, "
             f"speed={cartesian_speed:.2f}, "
@@ -883,9 +884,9 @@ def _cartesian_control_loop(robot: xCoreSDK_python.xMateErProRobot, ec: dict[str
             current_power_state = robot.powerState(ec)
             current_operate_mode = robot.operateMode(ec)
             current_operation_state = robot.operationState(ec)
-            print(f"moveStart 失败时电机状态: {current_power_state} ({_describe_power_state(current_power_state)})")
-            print(f"moveStart 失败时模式: {current_operate_mode}")
-            print(f"moveStart 失败时操作状态: {current_operation_state}")
+            print(f"moveStart 失败时电机状态：{current_power_state} ({_describe_power_state(current_power_state)})")
+            print(f"moveStart 失败时模式：{current_operate_mode}")
+            print(f"moveStart 失败时操作状态：{current_operation_state}")
             continue
         print(f"已下发笛卡尔运动，cmd_id={cmd_id.content()}")
         _wait_until_idle(robot, ec, "等待笛卡尔运动")
@@ -903,11 +904,11 @@ def _joint_control_loop(robot: xCoreSDK_python.xMateErProRobot, ec: dict[str, ob
     joint_zone = DEFAULT_JOINT_ZONE
     while True:
         joint_values = robot.jointPos(ec)
-        print(f"当前关节值(deg): {_format_sequence(_rad_to_deg(joint_values))}")
+        print(f"当前关节值 (deg): {_format_sequence(_rad_to_deg(joint_values))}")
         _print_motion_speed_status("关节", joint_speed, joint_zone)
         print("输入新的关节值，单位 deg，支持空格、英文逗号或中文逗号分隔")
         print("输入 s 调整速度，输入 q 返回主菜单")
-        raw_text = input("目标关节值: ").strip()
+        raw_text = input("目标关节值：").strip()
         if raw_text.lower() == "s":
             joint_speed = _prompt_motion_speed(joint_speed, "关节")
             continue
@@ -916,7 +917,7 @@ def _joint_control_loop(robot: xCoreSDK_python.xMateErProRobot, ec: dict[str, ob
         try:
             target_values = _parse_float_list(raw_text, expected_len=len(joint_values))
         except ValueError as exc:
-            print(f"输入格式错误: {exc}")
+            print(f"输入格式错误：{exc}")
             continue
         target_joint = _make_joint_position(_deg_to_rad(target_values))
         cmd_id = xCoreSDK_python.PyString()
@@ -934,9 +935,9 @@ def _joint_control_loop(robot: xCoreSDK_python.xMateErProRobot, ec: dict[str, ob
             current_power_state = robot.powerState(ec)
             current_operate_mode = robot.operateMode(ec)
             current_operation_state = robot.operationState(ec)
-            print(f"moveStart 失败时电机状态: {current_power_state} ({_describe_power_state(current_power_state)})")
-            print(f"moveStart 失败时模式: {current_operate_mode}")
-            print(f"moveStart 失败时操作状态: {current_operation_state}")
+            print(f"moveStart 失败时电机状态：{current_power_state} ({_describe_power_state(current_power_state)})")
+            print(f"moveStart 失败时模式：{current_operate_mode}")
+            print(f"moveStart 失败时操作状态：{current_operation_state}")
             return
         print(f"已下发关节运动，cmd_id={cmd_id.content()}")
         _wait_until_idle(robot, ec, "等待关节运动")
@@ -953,7 +954,7 @@ def _single_joint_control_loop(robot: xCoreSDK_python.xMateErProRobot, ec: dict[
     single_joint_zone = DEFAULT_JOINT_ZONE
     while True:
         joint_values = robot.jointPos(ec)
-        print(f"当前关节值(deg): {_format_sequence(_rad_to_deg(joint_values))}")
+        print(f"当前关节值 (deg): {_format_sequence(_rad_to_deg(joint_values))}")
         _print_motion_speed_status("单关节", single_joint_speed, single_joint_zone)
         print("输入 q 返回主菜单")
         print("输入 s 调整速度")
@@ -972,10 +973,10 @@ def _single_joint_control_loop(robot: xCoreSDK_python.xMateErProRobot, ec: dict[
             print("轴编号超出范围")
             continue
         while True:
-            print(f"当前所选轴 J{axis_index} 值(deg): {math.degrees(joint_values[axis_index - 1]):.2f}")
+            print(f"当前所选轴 J{axis_index} 值 (deg): {math.degrees(joint_values[axis_index - 1]):.2f}")
             print("输入当前轴的目标值，单位 deg")
             print("输入 q 返回前一级选轴")
-            raw_text = input("目标轴值: ").strip()
+            raw_text = input("目标轴值：").strip()
             if raw_text.lower() == "q":
                 break
             try:
@@ -992,22 +993,24 @@ def _single_joint_control_loop(robot: xCoreSDK_python.xMateErProRobot, ec: dict[
             _print_sdk_result("moveReset", ec)
             if ec.get("ec", 0) != 0:
                 continue
-            robot.moveAppend([xCoreSDK_python.MoveAbsJCommand(target_joint, single_joint_speed, single_joint_zone)], cmd_id, ec)
+            robot.moveAppend(
+                [xCoreSDK_python.MoveAbsJCommand(target_joint, single_joint_speed, single_joint_zone)], cmd_id, ec
+            )
             _print_sdk_result("moveAppend(MoveAbsJ)", ec)
             if ec.get("ec", 0) != 0:
                 continue
             robot.moveStart(ec)
             _print_sdk_result("moveStart", ec)
         except Exception as exc:
-            print(f"单关节运动指令执行异常: {exc}")
+            print(f"单关节运动指令执行异常：{exc}")
             continue
         if ec.get("ec", 0) != 0:
             current_power_state = robot.powerState(ec)
             current_operate_mode = robot.operateMode(ec)
             current_operation_state = robot.operationState(ec)
-            print(f"moveStart 失败时电机状态: {current_power_state} ({_describe_power_state(current_power_state)})")
-            print(f"moveStart 失败时模式: {current_operate_mode}")
-            print(f"moveStart 失败时操作状态: {current_operation_state}")
+            print(f"moveStart 失败时电机状态：{current_power_state} ({_describe_power_state(current_power_state)})")
+            print(f"moveStart 失败时模式：{current_operate_mode}")
+            print(f"moveStart 失败时操作状态：{current_operation_state}")
             continue
         print(f"已下发单关节运动，cmd_id={cmd_id.content()}")
         if not _wait_until_idle(robot, ec, "等待单关节运动"):
@@ -1036,10 +1039,7 @@ def _loop_predefined_joint_motion(robot: xCoreSDK_python.xMateErProRobot, ec: di
     joint_count = len(robot.jointPos(ec))
     for index, target_values in enumerate(waypoints, start=1):
         if len(target_values) != joint_count:
-            print(
-                f"第 {index} 个 waypoint 关节数不匹配，"
-                f"expected={joint_count}, actual={len(target_values)}"
-            )
+            print(f"第 {index} 个 waypoint 关节数不匹配，" f"expected={joint_count}, actual={len(target_values)}")
             return
 
     print("开始循环移动。按 Ctrl+C 中断并退出。")
@@ -1047,19 +1047,23 @@ def _loop_predefined_joint_motion(robot: xCoreSDK_python.xMateErProRobot, ec: di
         while True:
             _print_motion_speed_status("循环关节", predefined_joint_speed, predefined_joint_zone)
             print("输入 s 调整速度，或直接按回车继续执行预设轨迹")
-            raw_text = input("继续/调整: ").strip().lower()
+            raw_text = input("继续/调整：").strip().lower()
             if raw_text == "s":
                 predefined_joint_speed = _prompt_motion_speed(predefined_joint_speed, "循环关节")
                 continue
             for target_values in waypoints:
-                print(f"移动到关节值(deg): {_format_sequence(target_values)}")
+                print(f"移动到关节值 (deg): {_format_sequence(target_values)}")
                 target_joint = _make_joint_position(_deg_to_rad(list(target_values)))
                 cmd_id = xCoreSDK_python.PyString()
                 robot.moveReset(ec)
                 _print_sdk_result("moveReset", ec)
                 if ec.get("ec", 0) != 0:
                     return
-                robot.moveAppend([xCoreSDK_python.MoveAbsJCommand(target_joint, predefined_joint_speed, predefined_joint_zone)], cmd_id, ec)
+                robot.moveAppend(
+                    [xCoreSDK_python.MoveAbsJCommand(target_joint, predefined_joint_speed, predefined_joint_zone)],
+                    cmd_id,
+                    ec,
+                )
                 _print_sdk_result("moveAppend(MoveAbsJ)", ec)
                 if ec.get("ec", 0) != 0:
                     return
@@ -1069,9 +1073,11 @@ def _loop_predefined_joint_motion(robot: xCoreSDK_python.xMateErProRobot, ec: di
                     current_power_state = robot.powerState(ec)
                     current_operate_mode = robot.operateMode(ec)
                     current_operation_state = robot.operationState(ec)
-                    print(f"moveStart 失败时电机状态: {current_power_state} ({_describe_power_state(current_power_state)})")
-                    print(f"moveStart 失败时模式: {current_operate_mode}")
-                    print(f"moveStart 失败时操作状态: {current_operation_state}")
+                    print(
+                        f"moveStart 失败时电机状态：{current_power_state} ({_describe_power_state(current_power_state)})"
+                    )
+                    print(f"moveStart 失败时模式：{current_operate_mode}")
+                    print(f"moveStart 失败时操作状态：{current_operation_state}")
                     return
                 print(f"已下发循环关节运动，cmd_id={cmd_id.content()}")
                 _wait_until_idle(robot, ec, "等待循环关节运动")
@@ -1086,11 +1092,11 @@ def _loop_predefined_joint_motion(robot: xCoreSDK_python.xMateErProRobot, ec: di
 def _select_active_arm(connected_arms: dict[str, ConnectedArm], current_arm_side: str) -> str:
     """在主菜单中切换当前控制的机械臂。"""
 
-    print("可选机械臂:")
+    print("可选机械臂：")
     print("  1. left")
     print("  2. right")
     print("  q. 返回主菜单")
-    choice = input("请选择机械臂: ").strip().lower()
+    choice = input("请选择机械臂：").strip().lower()
     if choice == "1":
         return "left"
     if choice == "2":
@@ -1110,10 +1116,10 @@ def _main_menu(connected_arms: dict[str, ConnectedArm]) -> None:
         robot = connected_arm.robot
         ec = connected_arm.ec
         print(
-            f"\n当前机械臂: {current_arm_side} "
+            f"\n当前机械臂：{current_arm_side} "
             f"(ip={connected_arm.config.robot_ip}, type={connected_arm.robot_type})"
         )
-        print("可选操作:")
+        print("可选操作：")
         print("  0. 切换机械臂")
         print("  1. 打开电机")
         print("  2. 关闭电机")
@@ -1127,7 +1133,7 @@ def _main_menu(connected_arms: dict[str, ConnectedArm]) -> None:
         print("  11. 软限位开关")
         print("  13. 打印当前机械臂状态")
         print("  q. 退出")
-        choice = input("请选择: ").strip().lower()
+        choice = input("请选择：").strip().lower()
         if choice == "0":
             current_arm_side = _select_active_arm(connected_arms, current_arm_side)
         elif choice == "1":

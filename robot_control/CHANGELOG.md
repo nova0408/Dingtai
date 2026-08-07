@@ -1,6 +1,37 @@
 # RobotControl 版本日志
 
-当前版本：`0.7.0`
+当前版本：`0.10.0`
+
+## 0.10.0 - 2026-08-07
+
+### 新增
+
+- 新增只读 `GET /api/v1/ar5/{side}/soft-limits`，读取左右 AR5 控制器七个轴的软限位上下限和
+  软限位使能状态，单位为 rad。
+- xCoreSDK 返回软限位数量异常时，服务返回包含具体轴数和读取阶段的结构化错误，不暴露不完整数据。
+
+## 0.9.1 - 2026-08-06
+
+### 修复
+
+- M6 右手状态读取新增执行器集合完整性校验；实际位置数量与运行时规格不一致时，
+  `qmlinker_right_hand` 返回设备读取错误，不再以 `connected=true` 暴露部分状态。
+- 错误信息包含 expected、actual、missing 和 unexpected，便于定位 qmlinker 状态响应缺失。
+
+## 0.9.0 - 2026-08-06
+
+### 变更
+
+- HTTP 错误响应新增 `error_type`、`message`、`status`、`method`、`path` 和 `stage` 字段。
+- RobotControl 服务记录控制请求失败的路径、阶段和完整异常；AR5 SDK 原始错误信息不再只表现为裸 `503`。
+- 客户端将结构化错误上下文合并到可复制的异常文本中。
+
+## 0.8.0 - 2026-08-06
+
+### 新增
+
+- 新增按 Woosh SDK 状态对象拆分的 AGV 只读查询：底盘状态、底盘模式、底盘运行位、底盘任务进度和底盘电池。
+- qmlinker 客户端、RobotControl HTTP GET、README、API Reference 和 OpenAPI 同步新增上述接口。
 
 ## 版本号规则
 

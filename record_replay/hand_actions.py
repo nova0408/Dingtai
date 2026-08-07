@@ -23,6 +23,7 @@ RIGHT_HAND_FORCE_LIMIT = 0.5
 def execute_gripper_row(runtime: ReplayRuntime, row: ReplayRow) -> None:
     """下发左夹爪位置，不等待机械到位。"""
 
+    _raise_if_stopped(runtime)
     gripper = runtime.hand_body.gripper
     if gripper is None:
         raise RuntimeError("当前 runtime 未配置左手夹爪客户端")
@@ -34,13 +35,16 @@ def execute_gripper_row(runtime: ReplayRuntime, row: ReplayRow) -> None:
         lambda: gripper.set_pos(target_value),
         runtime.settings.non_motion_retry_count,
         runtime.settings.non_motion_retry_delay_s,
+        runtime.stop_event,
     ):
         raise RuntimeError("夹爪 set_pos 下发失败")
+    _raise_if_stopped(runtime)
     status_payload = retry_non_motion_call(
         f"gripper.status({row.csv_name}:{row.row_index})",
         lambda: gripper._send_control(QMGripper.STATUS),
         runtime.settings.non_motion_retry_count,
         runtime.settings.non_motion_retry_delay_s,
+        runtime.stop_event,
     )
     if not isinstance(status_payload, Mapping):
         raise RuntimeError(f"夹爪状态读取失败：{status_payload!r}")
@@ -59,6 +63,7 @@ def prepare_gripper_before_replay(runtime: ReplayRuntime) -> None:
     gripper = runtime.hand_body.gripper
     if gripper is None:
         return
+    _raise_if_stopped(runtime)
     settings = runtime.settings.hand
 
     def read_status() -> Mapping[str, object]:
@@ -67,6 +72,7 @@ def prepare_gripper_before_replay(runtime: ReplayRuntime) -> None:
             lambda: gripper._send_control(QMGripper.STATUS),
             runtime.settings.non_motion_retry_count,
             runtime.settings.non_motion_retry_delay_s,
+            runtime.stop_event,
         )
         if not isinstance(payload, Mapping):
             raise RuntimeError(f"夹爪状态读取失败：{payload!r}")
@@ -75,14 +81,16 @@ def prepare_gripper_before_replay(runtime: ReplayRuntime) -> None:
     status = read_status()
     calibrated = bool(status.get("calibrated", False))
     if not calibrated:
+        _raise_if_stopped(runtime)
         if not retry_non_motion_call(
             "gripper.calibrate(pre-replay)",
             gripper.calibrate,
             runtime.settings.non_motion_retry_count,
             runtime.settings.non_motion_retry_delay_s,
+            runtime.stop_event,
         ):
             raise RuntimeError("回放前夹爪校准命令下发失败")
-        time.sleep(settings.gripper_calibration_wait_s)
+        _wait_or_raise(runtime, settings.gripper_calibration_wait_s)
         if not bool(read_status().get("calibrated", False)):
             raise RuntimeError("回放前夹爪校准后仍未进入已校准状态")
 
@@ -94,14 +102,16 @@ def prepare_gripper_before_replay(runtime: ReplayRuntime) -> None:
 
     current_position = read_position()
     while current_position != settings.gripper_zero_position:
+        _raise_if_stopped(runtime)
         if not retry_non_motion_call(
             "gripper.set_pos(pre-replay)",
             lambda: gripper.set_pos(settings.gripper_zero_position),
             runtime.settings.non_motion_retry_count,
             runtime.settings.non_motion_retry_delay_s,
+            runtime.stop_event,
         ):
             raise RuntimeError("回放前夹爪运动到零位的命令下发失败")
-        time.sleep(settings.gripper_zero_poll_interval_s)
+        _wait_or_raise(runtime, settings.gripper_zero_poll_interval_s)
         current_position = read_position()
 
 
@@ -128,6 +138,7 @@ def execute_m11_row(runtime: ReplayRuntime, row: ReplayRow) -> None:
     才会把 CSV 目标覆盖到当前状态并整体下发。
     """
 
+    _raise_if_stopped(runtime)
     right_hand = runtime.hand_body.right_hand
     if right_hand is None:
         raise RuntimeError("当前 runtime 未配置右手 M11 客户端")
@@ -137,11 +148,13 @@ def execute_m11_row(runtime: ReplayRuntime, row: ReplayRow) -> None:
     for actuator_id, target_value in enumerate(row.joint_values):
         positions[actuator_id] = target_value
     commands = [_build_m11_command(actuator_id, value) for actuator_id, value in enumerate(positions)]
+    _raise_if_stopped(runtime)
     if not retry_non_motion_call(
         f"right_hand.set_hand_state({row.csv_name}:{row.row_index})",
         lambda: right_hand.set_hand_state(commands),
         runtime.settings.non_motion_retry_count,
         runtime.settings.non_motion_retry_delay_s,
+        runtime.stop_event,
     ):
         raise RuntimeError("右手 M11 下发失败")
 
@@ -195,6 +208,7 @@ def _read_valid_m11_positions(runtime: ReplayRuntime) -> list[float]:
     read_index = 0
     last_invalid_reason = "尚未读取"
     while True:
+        _raise_if_stopped(runtime)
         read_index += 1
         positions: list[float] = []
         try:
@@ -203,6 +217,7 @@ def _read_valid_m11_positions(runtime: ReplayRuntime) -> list[float]:
                 lambda: right_hand.get_hand_state(include_tactile=False),
                 runtime.settings.non_motion_retry_count,
                 runtime.settings.non_motion_retry_delay_s,
+                runtime.stop_event,
             )
         except Exception as exc:
             last_invalid_reason = f"RPC 失败：{exc}"
@@ -244,7 +259,7 @@ def _read_valid_m11_positions(runtime: ReplayRuntime) -> list[float]:
             last_invalid_reason,
             remaining_s,
         )
-        time.sleep(min(hand_settings.m11_state_read_poll_interval_s, remaining_s))
+        _wait_or_raise(runtime, min(hand_settings.m11_state_read_poll_interval_s, remaining_s))
 
 
 # endregion
@@ -275,6 +290,7 @@ def execute_lift_row(runtime: ReplayRuntime, row: ReplayRow) -> None:
     本函数同步阻塞当前 CSV 执行流。等待函数成功返回前，不会放行后续机械臂轨迹。
     """
 
+    _raise_if_stopped(runtime)
     if row.pose_value is None:
         raise RuntimeError(f"lift pose 未在启动阶段完成预解析 file={row.csv_name} row={row.row_index}")
     target_height_mm = int(round(row.pose_value))
@@ -316,6 +332,7 @@ def _ensure_lift_enabled(runtime: ReplayRuntime, label: str) -> None:
     attempt = 0
     last_enable_state: object = None
     while True:
+        _raise_if_stopped(runtime)
         attempt += 1
         try:
             command_result = retry_non_motion_call(
@@ -323,6 +340,7 @@ def _ensure_lift_enabled(runtime: ReplayRuntime, label: str) -> None:
                 lambda: lift.set_enable(True),
                 runtime.settings.non_motion_retry_count,
                 runtime.settings.non_motion_retry_delay_s,
+                runtime.stop_event,
             )
         except Exception as exc:
             command_result = f"调用异常：{exc}"
@@ -332,6 +350,7 @@ def _ensure_lift_enabled(runtime: ReplayRuntime, label: str) -> None:
                 lift.get_enable,
                 runtime.settings.non_motion_retry_count,
                 runtime.settings.non_motion_retry_delay_s,
+                runtime.stop_event,
             )
         except Exception as exc:
             last_enable_state = f"读取异常：{exc}"
@@ -354,7 +373,7 @@ def _ensure_lift_enabled(runtime: ReplayRuntime, label: str) -> None:
             last_enable_state,
             remaining_s,
         )
-        time.sleep(min(hand_settings.lift_enable_retry_interval_s, remaining_s))
+        _wait_or_raise(runtime, min(hand_settings.lift_enable_retry_interval_s, remaining_s))
 
 
 def wait_lift_until_near_target(runtime: ReplayRuntime, target_height_mm: int) -> float:
@@ -392,6 +411,7 @@ def wait_lift_until_near_target(runtime: ReplayRuntime, target_height_mm: int) -
     last_logged_height_mm: float | None = None
     while True:
         now = time.monotonic()
+        _raise_if_stopped(runtime)
         if now >= next_command_time:
             try:
                 command_result = retry_non_motion_call(
@@ -399,6 +419,7 @@ def wait_lift_until_near_target(runtime: ReplayRuntime, target_height_mm: int) -
                     lambda: lift.set_lift_physical_height(target_height_mm),
                     runtime.settings.non_motion_retry_count,
                     runtime.settings.non_motion_retry_delay_s,
+                    runtime.stop_event,
                 )
             except Exception as exc:
                 command_result = f"调用异常：{exc}"
@@ -414,6 +435,7 @@ def wait_lift_until_near_target(runtime: ReplayRuntime, target_height_mm: int) -
                 lift.get_lift_physical_height,
                 runtime.settings.non_motion_retry_count,
                 runtime.settings.non_motion_retry_delay_s,
+                runtime.stop_event,
             )
         )
         if current_height_mm < 0.0:
@@ -450,7 +472,7 @@ def wait_lift_until_near_target(runtime: ReplayRuntime, target_height_mm: int) -
                 f"等待 lift 到位超时 target={target_height_mm} mm actual={current_height_mm:.1f} mm "
                 f"error={current_error_mm:.1f} mm timeout={hand_settings.lift_motion_timeout_s:.1f} s"
             )
-        time.sleep(min(hand_settings.lift_poll_interval_s, remaining_s))
+        _wait_or_raise(runtime, min(hand_settings.lift_poll_interval_s, remaining_s))
 
 
 def _read_lift_height(result: object) -> float:
@@ -461,6 +483,20 @@ def _read_lift_height(result: object) -> float:
     if isinstance(result, int | float):
         return float(result)
     raise TypeError(f"lift 返回值类型无效：{type(result)!r}")
+
+
+def _raise_if_stopped(runtime: ReplayRuntime) -> None:
+    """阻止停止锁存后的夹爪、M11、升降普通指令。"""
+
+    if runtime.stop_event.is_set():
+        raise RuntimeError("检测到停止请求，禁止继续发送手部或升降指令")
+
+
+def _wait_or_raise(runtime: ReplayRuntime, timeout_s: float) -> None:
+    """等待期间响应停止请求，避免停止后继续轮询或下发普通指令。"""
+
+    if runtime.stop_event.wait(timeout=max(0.0, timeout_s)):
+        raise RuntimeError("检测到停止请求，已中断手部或升降等待")
 
 
 # endregion

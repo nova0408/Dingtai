@@ -3,52 +3,18 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass, field, replace
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
 from ..settings import ReplayArmSettings, ReplayOffsetSettings, ReplayServiceSettings
 
 NumericValue = float | int
-MotionLevelMap = dict[str, NumericValue]
-RuntimeParameterValue = NumericValue | MotionLevelMap
-
-
-def _default_left_speed_levels() -> MotionLevelMap:
-    return _to_json_level_map(ReplayArmSettings().left_move_abs_j_end_linear_speed_mm_s_by_csv_sequence)
-
-
-def _default_right_speed_levels() -> MotionLevelMap:
-    return _to_json_level_map(ReplayArmSettings().right_move_abs_j_end_linear_speed_mm_s_by_csv_sequence)
-
-
-def _default_left_zone_levels() -> MotionLevelMap:
-    return _to_json_level_map(ReplayArmSettings().left_move_abs_j_zone_mm_by_csv_sequence)
-
-
-def _default_right_zone_levels() -> MotionLevelMap:
-    return _to_json_level_map(ReplayArmSettings().right_move_abs_j_zone_mm_by_csv_sequence)
+RuntimeParameterValue = NumericValue
 
 
 @dataclass(frozen=True, slots=True)
 class RuntimeParameters:
-    """允许本机 API 读取和修改的持久化运行参数。
-
-    MoveAbsJ 的速度和 zone 按机械臂侧别、CSV 数字序号分别保存；键 ``-1``
-    是对应侧别的默认级别，其余键覆盖指定 CSV 阶段。
-    """
-
-    left_move_abs_j_end_linear_speed_mm_s_by_csv_sequence: MotionLevelMap = field(
-        default_factory=_default_left_speed_levels
-    )
-    right_move_abs_j_end_linear_speed_mm_s_by_csv_sequence: MotionLevelMap = field(
-        default_factory=_default_right_speed_levels
-    )
-    left_move_abs_j_zone_mm_by_csv_sequence: MotionLevelMap = field(
-        default_factory=_default_left_zone_levels
-    )
-    right_move_abs_j_zone_mm_by_csv_sequence: MotionLevelMap = field(
-        default_factory=_default_right_zone_levels
-    )
+    """允许本机 API 读取和修改的非动作运行参数。"""
     agv_navigation_timeout_s: float = 600.0
     agv_navigation_poll_interval_s: float = 1.0
     non_motion_retry_count: int = 3
@@ -57,28 +23,6 @@ class RuntimeParameters:
     def validate(self) -> None:
         """校验全部可调参数，拒绝缺少默认级别或危险运动参数。"""
 
-        _validate_motion_levels(
-            "left_move_abs_j_end_linear_speed_mm_s_by_csv_sequence",
-            self.left_move_abs_j_end_linear_speed_mm_s_by_csv_sequence,
-            minimum=5.0,
-            maximum=4000.0,
-        )
-        _validate_motion_levels(
-            "right_move_abs_j_end_linear_speed_mm_s_by_csv_sequence",
-            self.right_move_abs_j_end_linear_speed_mm_s_by_csv_sequence,
-            minimum=5.0,
-            maximum=4000.0,
-        )
-        _validate_motion_levels(
-            "left_move_abs_j_zone_mm_by_csv_sequence",
-            self.left_move_abs_j_zone_mm_by_csv_sequence,
-            minimum=0.0,
-        )
-        _validate_motion_levels(
-            "right_move_abs_j_zone_mm_by_csv_sequence",
-            self.right_move_abs_j_zone_mm_by_csv_sequence,
-            minimum=0.0,
-        )
         if self.agv_navigation_timeout_s <= 0.0 or self.agv_navigation_poll_interval_s <= 0.0:
             raise ValueError("AGV 超时和轮询周期必须大于 0")
         if self.non_motion_retry_count <= 0 or self.non_motion_retry_delay_s < 0.0:
@@ -92,18 +36,6 @@ class RuntimeParameters:
             defaults,
             arm=replace(
                 ReplayArmSettings(),
-                left_move_abs_j_end_linear_speed_mm_s_by_csv_sequence=_to_level_entries(
-                    self.left_move_abs_j_end_linear_speed_mm_s_by_csv_sequence
-                ),
-                right_move_abs_j_end_linear_speed_mm_s_by_csv_sequence=_to_level_entries(
-                    self.right_move_abs_j_end_linear_speed_mm_s_by_csv_sequence
-                ),
-                left_move_abs_j_zone_mm_by_csv_sequence=_to_level_entries(
-                    self.left_move_abs_j_zone_mm_by_csv_sequence
-                ),
-                right_move_abs_j_zone_mm_by_csv_sequence=_to_level_entries(
-                    self.right_move_abs_j_zone_mm_by_csv_sequence
-                ),
             ),
             offset=ReplayOffsetSettings(),
             agv_navigation_timeout_s=self.agv_navigation_timeout_s,
@@ -111,45 +43,6 @@ class RuntimeParameters:
             non_motion_retry_count=self.non_motion_retry_count,
             non_motion_retry_delay_s=self.non_motion_retry_delay_s,
         )
-
-
-def _validate_motion_levels(
-    name: str,
-    levels: MotionLevelMap,
-    *,
-    minimum: float,
-    maximum: float | None = None,
-) -> None:
-    """校验一个 JSON 形式的 CSV 数字序号到数值映射。"""
-
-    if not isinstance(levels, dict) or "-1" not in levels:
-        raise ValueError(f"{name} 必须是包含 -1 默认级别的 JSON object")
-    for sequence_text, value in levels.items():
-        if not isinstance(sequence_text, str):
-            raise ValueError(f"{name} 的 CSV 序号键必须是字符串")
-        try:
-            sequence = int(sequence_text)
-        except ValueError as error:
-            raise ValueError(f"{name} 的 CSV 序号无效：{sequence_text}") from error
-        if sequence < -1:
-            raise ValueError(f"{name} 的 CSV 序号不能小于 -1：{sequence}")
-        if isinstance(value, bool) or not isinstance(value, int | float):
-            raise ValueError(f"{name}[{sequence_text}] 必须是数字")
-        if not minimum <= float(value) or (maximum is not None and float(value) > maximum):
-            limit_text = f" 至 {maximum}" if maximum is not None else ""
-            raise ValueError(f"{name}[{sequence_text}] 必须在 {minimum}{limit_text} 范围内")
-
-
-def _to_level_entries(levels: MotionLevelMap) -> tuple[tuple[int, float], ...]:
-    """将 JSON 字符串键映射转换为业务层的有序整数键元组。"""
-
-    return tuple(sorted((int(sequence), float(value)) for sequence, value in levels.items()))
-
-
-def _to_json_level_map(entries: tuple[tuple[int, float], ...]) -> MotionLevelMap:
-    """将 settings.py 的默认级别转换为 JSON object 的字符串键。"""
-
-    return {str(sequence): value for sequence, value in entries}
 
 
 class RuntimeConfigStore:

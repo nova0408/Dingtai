@@ -33,6 +33,12 @@ class GatewaySettings:
     record_replay_port: int = 6300
     "RecordReplay HTTP 后端端口。"
 
+    record_replay_websocket_host: str = "127.0.0.1"
+    "RecordReplay 状态 WebSocket 后端地址。"
+
+    record_replay_websocket_port: int = 6301
+    "RecordReplay 状态 WebSocket 后端端口。"
+
     robot_control_host: str = "127.0.0.1"
     "RobotControl HTTP 后端地址。"
 

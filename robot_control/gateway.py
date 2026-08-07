@@ -144,11 +144,22 @@ class RobotControlGateway:
         """读取 qmlinker 右手执行器状态。"""
 
         client = self._qmlinker_client("right_hand")
+        actuator_specs = client.get_right_hand_instance_specs()
         values = client.get_right_hand_values()
+        expected_names = tuple(spec.axis_name for spec in actuator_specs)
+        expected_name_set = set(expected_names)
+        missing_names = tuple(name for name in expected_names if name not in values)
+        unexpected_names = tuple(name for name in values if name not in expected_name_set)
+        if missing_names or unexpected_names or len(values) != len(expected_names):
+            raise RuntimeError(
+                "右手执行器状态不完整: "
+                f"expected={len(expected_names)} actual={len(values)} "
+                f"missing={list(missing_names)} unexpected={list(unexpected_names)}"
+            )
         return {
-            "actuator_count": int(client.get_right_hand_actuator_count()),
+            "actuator_count": len(expected_names),
             "enabled": bool(client.get_enable()),
-            "positions": {name: float(value) for name, value in values.items()},
+            "positions": {name: float(values[name]) for name in expected_names},
         }
 
     def _read_qmlinker_agv(self) -> dict[str, JsonValue]:
@@ -186,6 +197,51 @@ class RobotControlGateway:
             ],
         }
 
+    def read_qmlinker_agv_base_state(self) -> dict[str, JsonValue]:
+        """读取 qmlinker AGV 底盘状态。"""
+
+        with self._lock:
+            return cast(
+                dict[str, JsonValue],
+                self._qmlinker_client("agv").get_base_state(),
+            )
+
+    def read_qmlinker_agv_base_mode(self) -> dict[str, JsonValue]:
+        """读取 qmlinker AGV 底盘控制模式和工作模式。"""
+
+        with self._lock:
+            return cast(
+                dict[str, JsonValue],
+                self._qmlinker_client("agv").get_base_mode(),
+            )
+
+    def read_qmlinker_agv_base_operation_state(self) -> dict[str, JsonValue]:
+        """读取 qmlinker AGV 底盘原始运行状态位。"""
+
+        with self._lock:
+            return cast(
+                dict[str, JsonValue],
+                self._qmlinker_client("agv").get_base_operation_state(),
+            )
+
+    def read_qmlinker_agv_base_task_process(self) -> dict[str, JsonValue]:
+        """读取 qmlinker AGV 当前任务和动作进度。"""
+
+        with self._lock:
+            return cast(
+                dict[str, JsonValue],
+                self._qmlinker_client("agv").get_base_task_process(),
+            )
+
+    def read_qmlinker_agv_base_battery(self) -> dict[str, JsonValue]:
+        """读取 qmlinker AGV 电量和充电状态。"""
+
+        with self._lock:
+            return cast(
+                dict[str, JsonValue],
+                self._qmlinker_client("agv").get_base_battery(),
+            )
+
     def _read_ar5(self, side: str) -> dict[str, JsonValue]:
         """读取结构化 AR5 状态，按关节、TCP、臂角和控制器状态分组。"""
 
@@ -213,6 +269,25 @@ class RobotControlGateway:
                 "operate_mode": snapshot.operate_mode,
                 "power_state": snapshot.power_state,
             },
+        }
+
+    def read_ar5_soft_limits(self, side: str) -> dict[str, JsonValue]:
+        """读取指定 AR5 七个轴的软限位上下限和使能状态。"""
+
+        with self._lock:
+            snapshot = self._ar5_client(side).read_soft_limits()
+        return {
+            "side": side,
+            "enabled": snapshot.enabled,
+            "axis_count": len(snapshot.limits_rad),
+            "limits_rad": [
+                {
+                    "axis_index": axis_index,
+                    "lower_rad": lower_rad,
+                    "upper_rad": upper_rad,
+                }
+                for axis_index, (lower_rad, upper_rad) in enumerate(snapshot.limits_rad)
+            ],
         }
 
     # endregion

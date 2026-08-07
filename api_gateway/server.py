@@ -61,10 +61,16 @@ def create_app(settings: GatewaySettings | None = None) -> web.Application:
     app.router.add_route("*", "/api/v1/record-replay", _make_http_handler(routes[2]))
     app.router.add_route(
         "*",
-        "/api/v1/robot-control/{tail:.*}",
-        _make_http_handler(routes[3]),
+        "/api/v1/record-replay-ws/{tail:.*}",
+        _make_websocket_handler(routes[3]),
     )
-    app.router.add_route("*", "/api/v1/robot-control", _make_http_handler(routes[3]))
+    app.router.add_route("*", "/api/v1/record-replay-ws", _make_websocket_handler(routes[3]))
+    app.router.add_route(
+        "*",
+        "/api/v1/robot-control/{tail:.*}",
+        _make_http_handler(routes[4]),
+    )
+    app.router.add_route("*", "/api/v1/robot-control", _make_http_handler(routes[4]))
     return app
 
 
@@ -79,7 +85,8 @@ async def _gateway_health(request: web.Request) -> web.Response:
                 "camera_http": routes[1].upstream_port,
                 "camera_websocket": routes[0].upstream_port,
                 "record_replay": routes[2].upstream_port,
-                "robot_control": routes[3].upstream_port,
+                "record_replay_websocket": routes[3].upstream_port,
+                "robot_control": routes[4].upstream_port,
             },
             "backend_probe": False,
         }

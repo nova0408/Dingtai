@@ -1,6 +1,6 @@
 # RobotControl API Reference
 
-当前契约版本：`0.7.0`
+当前契约版本：`0.10.0`
 HTTP API 主版本：`1`
 
 本文档描述 `robot_control` 对外 HTTP API 的实际调用方式、状态字段、单位和安全边界。
@@ -36,7 +36,7 @@ Gateway 只移除 `/api/v1/robot-control` 前缀后转发到 RobotControl 的
 
 ```json
 {
-  "service_version": "0.7.0",
+  "service_version": "0.10.0",
   "api_version": "1",
   "hardware_access": "lazy"
 }
@@ -48,7 +48,7 @@ Gateway 只移除 `/api/v1/robot-control` 前缀后转发到 RobotControl 的
 
 ```json
 {
-  "service_version": "0.7.0",
+  "service_version": "0.10.0",
   "api_version": "1",
   "devices": [
     {
@@ -76,9 +76,18 @@ Gateway 只移除 `/api/v1/robot-control` 前缀后转发到 RobotControl 的
 ```json
 {
   "ok": false,
-  "error": "错误摘要"
+  "error": "RuntimeError: setPowerState(False) 失败: ec=-2, message=General failure",
+  "error_type": "RuntimeError",
+  "message": "setPowerState(False) 失败: ec=-2, message=General failure",
+  "status": 503,
+  "method": "POST",
+  "path": "/api/v1/ar5/right/drag",
+  "stage": "hardware_control"
 }
 ```
+
+`error` 保留完整错误摘要；`message` 是原始异常文本，`stage` 表示失败阶段，`path` 是实际服务路径。
+控制失败时服务日志还会记录完整异常堆栈。客户端应同时保留 HTTP 状态码和响应体，不能只显示 `503`。
 
 常见 HTTP 状态：`200` 成功，`202` 控制请求已接受，`400` 请求字段错误，`404` 路径不支持，
 `503` 服务或设备读取/控制失败。
@@ -127,7 +136,30 @@ Gateway 只移除 `/api/v1/robot-control` 前缀后转发到 RobotControl 的
 m；`yaw_rad` 单位为 rad；`resolution` 保留 Woosh 地图接口的原始值。若远端地图服务
 不可用或尚未获得地图数据，HTTP 返回 `503`。
 
-### 3.5 `GET /api/v1/status/stream`
+### 3.5 `GET /api/v1/qmlinker/agv/base-state`
+
+读取 Woosh SDK 的底盘状态枚举，返回字段 `robot_state`。状态枚举值沿用 Woosh 协议，查询失败返回 `503`。
+
+### 3.6 `GET /api/v1/qmlinker/agv/base-mode`
+
+读取 Woosh SDK 的底盘控制模式和工作模式，返回 `robot_mode`、`work_mode`。
+
+### 3.7 `GET /api/v1/qmlinker/agv/base-operation-state`
+
+读取底盘原始运行位，返回 `nav_bits`、`robot_bits`；业务可按 Woosh SDK 位定义自行解析。
+
+### 3.8 `GET /api/v1/qmlinker/agv/base-task-process`
+
+读取当前任务和动作进度，返回 `task_id`、`task_type`、`task_state`、`action_type`、`action_state`、
+`wait_id`、`dest`、`msg`、`time`。
+
+### 3.9 `GET /api/v1/qmlinker/agv/base-battery`
+
+读取底盘电量和充电状态，返回 `power`、`charge_state`。
+
+以上接口均为独立只读 GET，按需调用，不发送导航、停止、使能或速度控制请求。
+
+### 3.10 `GET /api/v1/status/stream`
 
 以 Server-Sent Events（SSE）持续推送完整状态快照。连接建立后立即推送第一条消息，
 之后按间隔推送；这是只读 GET，不发送控制请求。
@@ -150,7 +182,7 @@ Accept: text/event-stream
 ```text
 event: robot_status
 id: 0
-data: {"service_version":"0.7.0","api_version":"1","devices":[]}
+data: {"service_version":"0.10.0","api_version":"1","devices":[]}
 
 ```
 
@@ -167,6 +199,46 @@ for snapshot in client.subscribe_status(interval_s=0.2):
     update_dashboard(snapshot)
 ```
 
+### 3.11 `GET /api/v1/ar5/{side}/soft-limits`
+
+读取指定 AR5 控制器的七个轴软限位。`side` 必须为 `left` 或 `right`；上下限沿用 xCoreSDK
+单位，为弧度 rad。该接口只读，不切换电源、工作模式或拖动状态。
+
+请求示例：
+
+```text
+GET /api/v1/ar5/right/soft-limits
+Accept: application/json
+```
+
+响应示例：
+
+```json
+{
+  "side": "right",
+  "enabled": true,
+  "axis_count": 7,
+  "limits_rad": [
+    {"axis_index": 0, "lower_rad": -3.14, "upper_rad": 3.14},
+    {"axis_index": 1, "lower_rad": -2.0, "upper_rad": 2.0},
+    {"axis_index": 2, "lower_rad": -2.0, "upper_rad": 2.0},
+    {"axis_index": 3, "lower_rad": -3.14, "upper_rad": 3.14},
+    {"axis_index": 4, "lower_rad": -3.14, "upper_rad": 3.14},
+    {"axis_index": 5, "lower_rad": -3.14, "upper_rad": 3.14},
+    {"axis_index": 6, "lower_rad": -3.14, "upper_rad": 3.14}
+  ]
+}
+```
+
+`limits_rad` 固定包含七项，`axis_index` 从 0 到 6。若 SDK 读取失败或控制器返回的轴数不为
+七个，服务返回 `503`，响应中的 `error`、`message` 和 `stage=hardware_read` 保留具体错误。
+
+Python 客户端：
+
+```python
+limits = client.get_ar5_soft_limits("right")
+```
+
 ## 4. 设备状态字段
 
 `devices` 中的 `name` 是稳定设备标识，当前包括：
@@ -181,6 +253,11 @@ for snapshot in client.subscribe_status(interval_s=0.2):
 | `qmlinker_agv` | `qmlinker` | `enabled`、`runtime` |
 | `ar5_left` | `xcoresdk` | `identity`、`joints`、`tcp`、`elbow`、`status` |
 | `ar5_right` | `xcoresdk` | `identity`、`joints`、`tcp`、`elbow`、`status` |
+
+`qmlinker_right_hand.data.actuator_count` 是运行时手部规格中的期望数量，`positions` 必须完整包含
+对应的 `right_hand_a0` 到 `right_hand_aN`。如果 qmlinker 返回的执行器集合不完整或包含未知轴，
+该设备会返回 `connected=false`、带有 `expected`、`actual`、`missing`、`unexpected` 详情的
+`error`，并将 `data` 置为空对象；客户端不得继续使用部分位置数据。
 
 ### 4.1 AR5
 
@@ -469,7 +546,7 @@ POST /api/v1/ar5/{side}/move-elbow
 
 ```json
 {
-  "service_version": "0.7.0",
+  "service_version": "0.10.0",
   "api_version": "1",
   "accepted": true,
   "data": {

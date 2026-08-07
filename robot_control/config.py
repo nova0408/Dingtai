@@ -35,8 +35,8 @@ class RobotControlSettings:
     qmlinker_waist_available: bool = True
     "是否声明当前机型支持 qmlinker 腰部状态能力；不支持的机型设为 False。"
 
-    agv_host: str = "192.168.100.70"
-    "AGV qmlinker 服务地址。"
+    agv_host: str = "192.168.100.60"
+    "AGV qmlinker 服务地址；当前由 wuyou 上的 QMFramework 提供。"
 
     gripper_port: int = 50066
     "大寰夹爪 qmlinker 服务端口。"

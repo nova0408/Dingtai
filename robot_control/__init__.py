@@ -6,6 +6,6 @@
 
 from .config import RobotControlSettings
 
-ROBOT_CONTROL_VERSION = "0.7.0"
+ROBOT_CONTROL_VERSION = "0.10.0"
 
 __all__ = ["ROBOT_CONTROL_VERSION", "RobotControlSettings"]

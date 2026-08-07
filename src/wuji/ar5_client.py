@@ -79,6 +79,21 @@ class Ar5Snapshot:
     "当前笛卡尔点位是否携带臂角约束。"
 
 
+@dataclass(frozen=True, slots=True)
+class Ar5SoftLimitSnapshot:
+    """AR5 七个轴的软限位只读快照。
+
+    软限位上下限沿用 xCoreSDK 的原始单位 rad。``enabled`` 表示控制器当前是否
+    启用软限位功能；该结构不包含任何写入控制器的操作。
+    """
+
+    enabled: bool
+    "控制器当前是否启用软限位。"
+
+    limits_rad: tuple[tuple[float, float], ...]
+    "七个轴的下限和上限，顺序与控制器轴号一致，单位 rad。"
+
+
 # endregion
 
 
@@ -276,6 +291,60 @@ class Ar5Client:
                 elbow_deg=math.degrees(float(cartesian_pose.elbow)),
                 has_elbow=bool(cartesian_pose.hasElbow),
             )
+
+    def read_soft_limits(self) -> Ar5SoftLimitSnapshot:
+        """读取控制器当前七个轴的软限位配置。
+
+        Returns
+        -------
+        snapshot:
+            七个轴的软限位上下限和控制器软限位使能状态。上下限单位为 rad。
+
+        Raises
+        ------
+        RuntimeError
+            xCoreSDK 返回错误，或控制器返回的软限位不是完整七轴数据。
+
+        Notes
+        -----
+        该方法只调用 xCoreSDK 的 ``getSoftLimit``，不会切换电源、工作模式或拖动状态。
+        """
+
+        with self._lock:
+            limits = xCoreSDK_python.PyTypeVectorArrayDouble2()
+            enabled = bool(
+                self._call_value(
+                    "getSoftLimit",
+                    lambda ec: self._robot.getSoftLimit(limits, ec),
+                )
+            )
+            raw_limits = limits.content()
+            if len(raw_limits) != 7:
+                raise RuntimeError(
+                    f"AR5 软限位数量异常: expected=7 actual={len(raw_limits)}"
+                )
+
+            parsed_limits: list[tuple[float, float]] = []
+            for axis_index, pair in enumerate(raw_limits):
+                if len(pair) != 2:
+                    raise RuntimeError(
+                        "AR5 软限位轴数据异常: "
+                        f"axis_index={axis_index} expected=2 actual={len(pair)}"
+                    )
+                lower_rad = float(pair[0])
+                upper_rad = float(pair[1])
+                if (
+                    not math.isfinite(lower_rad)
+                    or not math.isfinite(upper_rad)
+                    or lower_rad > upper_rad
+                ):
+                    raise RuntimeError(
+                        "AR5 软限位范围异常: "
+                        f"axis_index={axis_index} lower_rad={lower_rad} upper_rad={upper_rad}"
+                    )
+                parsed_limits.append((lower_rad, upper_rad))
+
+            return Ar5SoftLimitSnapshot(enabled, tuple(parsed_limits))
 
     def configure_motion_context(self) -> None:
         """为后续运动显式配置已验证的默认工具与工件坐标系。

@@ -31,6 +31,7 @@ Orin 本机访问示例：CameraPipeline HTTP `http://127.0.0.1:6400`、CameraPi
 | `/api/v1/camera/*` | CameraPipeline HTTP | `/api/v1/*` | 6400 |
 | `/api/v1/camera-ws/*` | CameraPipeline WebSocket | `/api/v1/ws/*` | 6401 |
 | `/api/v1/record-replay/*` | RecordReplay HTTP | `/*` | 6300 |
+| `/api/v1/record-replay-ws` | RecordReplay 状态 WebSocket | `/api/v1/ws` | 6301 |
 | `/api/v1/robot-control/*` | RobotControl HTTP | `/api/v1/*` | 6500 |
 
 例如：
@@ -42,6 +43,7 @@ GET  https://<orin-host>/api/v1/record-replay/status
 GET  https://<orin-host>/api/v1/robot-control/health
 SSE  https://<orin-host>/api/v1/robot-control/status/stream?interval_s=0.2
 WS   wss://<orin-host>/api/v1/camera-ws/cameras/head_camera/color
+WS   wss://<orin-host>/api/v1/record-replay-ws
 ```
 
 `GET /api/v1/gateway/health` 只表示 Gateway 自身能够响应，并返回后端端口配置；它不会探测后端服务、相机或机器人。后端服务健康检查必须访问对应的带前缀 URL。

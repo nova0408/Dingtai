@@ -1,20 +1,4 @@
 {
-  "left_move_abs_j_end_linear_speed_mm_s_by_csv_sequence": {
-    "-1": 1000.0,
-    "4": 200.0
-  },
-  "right_move_abs_j_end_linear_speed_mm_s_by_csv_sequence": {
-    "-1": 1000.0
-  },
-  "left_move_abs_j_zone_mm_by_csv_sequence": {
-    "-1": 10.0,
-    "2": 80.0,
-    "4": 0.0,
-    "15": 80.0
-  },
-  "right_move_abs_j_zone_mm_by_csv_sequence": {
-    "-1": 10.0
-  },
   "agv_navigation_timeout_s": 600.0,
   "agv_navigation_poll_interval_s": 1.0,
   "non_motion_retry_count": 3,

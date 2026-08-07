@@ -51,6 +51,52 @@ class RobotControlClient:
 
         return self._request("GET", "/api/v1/qmlinker/agv/targets", timeout_s=timeout_s)
 
+    def get_agv_base_state(self, timeout_s: float = 5.0) -> dict[str, Any]:
+        """读取 AGV 底盘状态。"""
+
+        return self._request(
+            "GET", "/api/v1/qmlinker/agv/base-state", timeout_s=timeout_s
+        )
+
+    def get_agv_base_mode(self, timeout_s: float = 5.0) -> dict[str, Any]:
+        """读取 AGV 底盘控制模式和工作模式。"""
+
+        return self._request(
+            "GET", "/api/v1/qmlinker/agv/base-mode", timeout_s=timeout_s
+        )
+
+    def get_agv_base_operation_state(self, timeout_s: float = 5.0) -> dict[str, Any]:
+        """读取 AGV 底盘原始运行状态位。"""
+
+        return self._request(
+            "GET",
+            "/api/v1/qmlinker/agv/base-operation-state",
+            timeout_s=timeout_s,
+        )
+
+    def get_agv_base_task_process(self, timeout_s: float = 5.0) -> dict[str, Any]:
+        """读取 AGV 当前任务和动作进度。"""
+
+        return self._request(
+            "GET",
+            "/api/v1/qmlinker/agv/base-task-process",
+            timeout_s=timeout_s,
+        )
+
+    def get_agv_base_battery(self, timeout_s: float = 5.0) -> dict[str, Any]:
+        """读取 AGV 底盘电量和充电状态。"""
+
+        return self._request(
+            "GET", "/api/v1/qmlinker/agv/base-battery", timeout_s=timeout_s
+        )
+
+    def get_ar5_soft_limits(self, side: str, timeout_s: float = 5.0) -> dict[str, Any]:
+        """读取指定 AR5 七个轴的软限位。"""
+
+        return self._request(
+            "GET", f"/api/v1/ar5/{side}/soft-limits", timeout_s=timeout_s
+        )
+
     def qmlinker_set_head(
         self,
         *,
@@ -321,12 +367,10 @@ class RobotControlClient:
                 error_payload = json.loads(exc.read().decode("utf-8"))
             except (UnicodeDecodeError, json.JSONDecodeError):
                 error_payload = None
-            if isinstance(error_payload, dict) and isinstance(
-                error_payload.get("error"), str
-            ):
-                raise RuntimeError(
-                    f"HTTP {exc.code}: {error_payload['error']}"
-                ) from exc
+            if isinstance(error_payload, dict):
+                error_text = _format_error_payload(error_payload)
+                if error_text is not None:
+                    raise RuntimeError(f"HTTP {exc.code}: {error_text}") from exc
             raise RuntimeError(f"HTTP {exc.code}: {exc.reason}") from exc
         if not isinstance(payload, dict):
             raise RuntimeError("RobotControl 响应不是 JSON object")
@@ -345,3 +389,25 @@ def _normalize_prefix(value: str) -> str:
 
     normalized = value.strip().strip("/")
     return f"/{normalized}" if normalized else ""
+
+
+def _format_error_payload(payload: Mapping[str, object]) -> str | None:
+    """将服务端结构化错误转换为可复制的客户端异常文本。"""
+
+    error_value = payload.get("error")
+    message_value = payload.get("message")
+    if isinstance(error_value, str):
+        text = error_value
+    elif isinstance(message_value, str):
+        text = message_value
+    else:
+        return None
+
+    context: list[str] = []
+    for key in ("stage", "method", "path", "error_type"):
+        value = payload.get(key)
+        if isinstance(value, str) and value:
+            context.append(f"{key}={value}")
+    if context:
+        return f"{text} ({', '.join(context)})"
+    return text

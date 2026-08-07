@@ -123,6 +123,82 @@ class WujiAgvClient(QMMoveBase):
             return None
         return bool(response.status.success and response.current_state)
 
+    def get_base_state(self) -> dict[str, object]:
+        """读取 Woosh 底盘机器人状态枚举。"""
+
+        response = self.stub.GetBaseState(
+            empty_pb2.Empty(),
+            timeout=self._request_timeout_s,
+        )
+        if not response.success:
+            raise RuntimeError(response.message or "base state request failed")
+        return {"robot_state": int(response.robot_state)}
+
+    def get_base_mode(self) -> dict[str, object]:
+        """读取 Woosh 底盘控制模式和工作模式。"""
+
+        response = self.stub.GetBaseMode(
+            empty_pb2.Empty(),
+            timeout=self._request_timeout_s,
+        )
+        if not response.success:
+            raise RuntimeError(response.message or "base mode request failed")
+        return {
+            "robot_mode": int(response.robot_mode),
+            "work_mode": int(response.work_mode),
+        }
+
+    def get_base_operation_state(self) -> dict[str, object]:
+        """读取 Woosh 底盘原始运行状态位。"""
+
+        response = self.stub.GetBaseOperationState(
+            empty_pb2.Empty(),
+            timeout=self._request_timeout_s,
+        )
+        if not response.success:
+            raise RuntimeError(
+                response.message or "base operation state request failed"
+            )
+        return {
+            "nav_bits": int(response.nav_bits),
+            "robot_bits": int(response.robot_bits),
+        }
+
+    def get_base_task_process(self) -> dict[str, object]:
+        """读取底盘当前任务及动作进度。"""
+
+        response = self.stub.GetBaseTaskProcess(
+            empty_pb2.Empty(),
+            timeout=self._request_timeout_s,
+        )
+        if not response.success:
+            raise RuntimeError(response.message or "base task process request failed")
+        return {
+            "task_id": int(response.task_id),
+            "task_type": int(response.task_type),
+            "task_state": int(response.task_state),
+            "action_type": int(response.action_type),
+            "action_state": int(response.action_state),
+            "wait_id": int(response.wait_id),
+            "dest": str(response.dest),
+            "msg": str(response.msg),
+            "time": int(response.time),
+        }
+
+    def get_base_battery(self) -> dict[str, object]:
+        """读取底盘电量和充电状态。"""
+
+        response = self.stub.GetBaseBattery(
+            empty_pb2.Empty(),
+            timeout=self._request_timeout_s,
+        )
+        if not response.success:
+            raise RuntimeError(response.message or "base battery request failed")
+        return {
+            "power": int(response.power),
+            "charge_state": int(response.charge_state),
+        }
+
     def get_navigation_map(self) -> WujiAgvNavigationMap:
         """读取当前 Woosh 地图及其可导航目标点。
 

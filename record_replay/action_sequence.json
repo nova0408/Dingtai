@@ -1,0 +1,80 @@
+{
+  "schema_version": 2,
+  "loop_count": 1,
+  "deployment": {
+    "prior_files": {
+      "ball_pose": "prior_data/ball_pose_prior.json",
+      "hand_eye_result": "prior_data/hand_eye_result.txt",
+      "charuco_board": "prior_data/charuco_board_prior.json",
+      "charuco_history": "prior_data/charuco_offset_history.csv",
+      "left_head_base_camera": "prior_data/left_head_base_camera.npy",
+      "right_head_base_camera": "prior_data/right_head_base_camera.npy"
+    },
+    "offset": {
+      "camera_name": "left_hand_camera",
+      "calculate_after_action_name": "calibration",
+      "target_action_names": ["get_tray", "put_new_tray"],
+      "sample_count": 2,
+      "detection_timeout_ms": 30000,
+      "detection_attempts_per_sample": 3,
+      "capture_settle_delay_s": 0.0,
+      "mad_scale": 3.5,
+      "min_outlier_threshold_mm": 2.0,
+      "narrow_consistency_tolerance_mm": 8.0,
+      "left_charuco_target_action_names": ["open_door", "close_door"],
+      "right_charuco_target_action_names": ["open_door", "close_door"],
+      "charuco_head_yaw_deg": 60.0,
+      "charuco_head_pitch_deg": 45.0,
+      "charuco_head_settle_s": 1.0,
+      "charuco_camera_timeout_s": 10.0,
+      "charuco_max_frame_count": 5,
+      "charuco_min_corners": 6,
+      "charuco_rpc_timeout_s": 55.0,
+      "charuco_timeout_retry_count": 3,
+      "charuco_timeout_retry_delay_s": 1.0,
+      "charuco_safety_attempt_count": 3,
+      "charuco_safety_retry_delay_s": 1.0,
+      "charuco_history_min_accepted_samples": 6,
+      "charuco_sigma_limit": 4.0,
+      "charuco_max_translation_norm_mm": 60.0,
+      "charuco_max_rotation_norm_deg": 5.0
+    }
+  },
+  "left": [
+    {"function_name": "go_out", "type": "fast", "speed": 1000.0, "zone": 10.0},
+    {"function_name": "open_door", "type": "fast", "speed": 1000.0, "zone": 80.0},
+    {"function_name": "before_calibration", "type": "fast", "speed": 1000.0, "zone": 10.0},
+    {
+      "function_name": "calibration",
+      "type": "capture",
+      "speed": 1000.0,
+      "zone": 10.0,
+      "final_speed": 200.0,
+      "settle_delay": 0.0
+    },
+    {"function_name": "get_tray", "type": "precise", "speed": 200.0, "zone": 0.0, "index": 1},
+    {"function_name": "after_get_tray", "type": "fast", "speed": 1000.0, "zone": 10.0},
+    {"function_name": "put_tray", "type": "precise", "speed": 200.0, "zone": 0.0, "index": 4},
+    {"function_name": "before_get_new_tray", "type": "fast", "speed": 1000.0, "zone": 10.0},
+    {"function_name": "get_new_tray", "type": "precise", "speed": 200.0, "zone": 0.0, "index": 1},
+    {"function_name": "before_put_new_tray", "type": "fast", "speed": 1000.0, "zone": 10.0},
+    {"function_name": "put_new_tray", "type": "precise", "speed": 200.0, "zone": 0.0, "index": 1},
+    {
+      "function_name": "calibration_new_tray",
+      "type": "capture",
+      "speed": 1000.0,
+      "zone": 10.0,
+      "final_speed": 200.0,
+      "settle_delay": 0.0
+    },
+    {"function_name": "after_put_new_tray", "type": "fast", "speed": 1000.0, "zone": 10.0},
+    {"function_name": "close_door", "type": "fast", "speed": 1000.0, "zone": 80.0},
+    {"function_name": "go_home", "type": "fast", "speed": 1000.0, "zone": 10.0}
+  ],
+  "right": [
+    {"function_name": "go_out", "type": "fast", "speed": 1000.0, "zone": 10.0},
+    {"function_name": "open_door", "type": "fast", "speed": 1000.0, "zone": 10.0},
+    {"function_name": "close_door", "type": "fast", "speed": 1000.0, "zone": 10.0},
+    {"function_name": "go_home", "type": "fast", "speed": 1000.0, "zone": 10.0}
+  ]
+}

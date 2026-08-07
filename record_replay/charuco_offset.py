@@ -45,6 +45,7 @@ class CharucoOffsetInitializer:
 
         if not runtimes:
             raise ValueError("初始化 ChArUco offset 时缺少活动 runtime")
+        _raise_if_stopped(runtimes)
         if any(runtime.charuco_cartesian_offset is not None for runtime in runtimes):
             raise RuntimeError("本轮 ChArUco offset 已初始化，拒绝重复检测目标板")
         settings = self._settings.offset
@@ -60,6 +61,7 @@ class CharucoOffsetInitializer:
         )
         rejected: list[str] = []
         for attempt in range(1, settings.charuco_safety_attempt_count + 1):
+            _raise_if_stopped(runtimes)
             current_camera_board_m = self._detect_current_board(detector, runtimes[0])
             decisions = [
                 self._precheck(runtime, current_camera_board_m)
@@ -75,7 +77,7 @@ class CharucoOffsetInitializer:
                         detail,
                         settings.charuco_safety_retry_delay_s,
                     )
-                    time.sleep(settings.charuco_safety_retry_delay_s)
+                    _wait_or_raise(runtimes, settings.charuco_safety_retry_delay_s)
                     continue
                 raise RuntimeError(
                     "ChArUco offset 连续安全检查均被拒绝：" + "; ".join(rejected)
@@ -99,16 +101,21 @@ class CharucoOffsetInitializer:
         runtime: ReplayRuntime,
     ) -> np.ndarray:
         head = QMHead(runtime.hand_body.body_channel)
+        _raise_if_stopped([runtime])
         head_settings = self._settings.offset
         head.set_head_yaw(head_settings.charuco_head_yaw_deg)
+        _raise_if_stopped([runtime])
         head.set_head_pitch(head_settings.charuco_head_pitch_deg)
-        time.sleep(head_settings.charuco_head_settle_s)
+        _raise_if_stopped([runtime])
+        _wait_or_raise([runtime], head_settings.charuco_head_settle_s)
+        _raise_if_stopped([runtime])
         logger.info(
             "头部 ChArUco 检测姿态已设置 yaw={:.1f} deg pitch={:.1f} deg",
             head.get_head_yaw(),
             head.get_head_pitch(),
         )
         board_mm = np.asarray(detector.detect_t_camera_board_mm(), dtype=np.float64)
+        _raise_if_stopped([runtime])
         if board_mm.shape != (4, 4) or not np.all(np.isfinite(board_mm)):
             raise ValueError(f"CameraPipeline 返回的 T_camera_board 无效：shape={board_mm.shape}")
         board_m = board_mm.copy()
@@ -253,3 +260,22 @@ def _xyzrpy_mm_deg(matrix: np.ndarray) -> np.ndarray:
 
 def _matrix_to_tuple(matrix: np.ndarray) -> tuple[tuple[float, float, float, float], ...]:
     return tuple(tuple(float(value) for value in row) for row in matrix.tolist())  # type: ignore[return-value]
+
+
+def _raise_if_stopped(runtimes: list[ReplayRuntime]) -> None:
+    """阻止停止锁存后的头部和相机算法继续发送普通请求。"""
+
+    if any(runtime.stop_event.is_set() for runtime in runtimes):
+        raise RuntimeError("检测到停止请求，禁止继续执行 ChArUco 拍摄")
+
+
+def _wait_or_raise(runtimes: list[ReplayRuntime], timeout_s: float) -> None:
+    """等待期间响应任一 runtime 的停止请求。"""
+
+    deadline = time.monotonic() + max(0.0, timeout_s)
+    while True:
+        _raise_if_stopped(runtimes)
+        remaining_s = deadline - time.monotonic()
+        if remaining_s <= 0.0:
+            return
+        runtimes[0].stop_event.wait(timeout=min(0.1, remaining_s))

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import csv
 import math
-import re
 from pathlib import Path
 
 from .contracts import ReplayRow
@@ -12,19 +11,18 @@ from .motion_parsing import parse_joint_values, parse_pose_values
 
 
 def discover_csv_paths(record_dir: Path, max_files: int | None = None) -> list[Path]:
-    """发现并按文件名排序 CSV 路径。"""
+    """发现新命名 CSV；执行顺序由 action_sequence.json 决定。"""
 
     if not record_dir.is_dir():
         raise FileNotFoundError(f"CSV 目录不存在：{record_dir}")
-    numbered_paths = [
-        (int(path.name.split("_", maxsplit=1)[0]), path.name, path)
-        for path in record_dir.iterdir()
-        if path.is_file()
-        and path.suffix.lower() == ".csv"
-        and path.name.split("_", maxsplit=1)[0].isdigit()
-    ]
-    numbered_paths.sort(key=lambda item: (item[0], item[1]))
-    paths = [path for _, _, path in numbered_paths]
+    paths = sorted(
+        (
+            path
+            for path in record_dir.iterdir()
+            if path.is_file() and path.suffix.lower() == ".csv"
+        ),
+        key=lambda path: path.name,
+    )
     return paths if max_files is None else paths[:max_files]
 
 
@@ -67,24 +65,3 @@ def load_replay_rows(csv_path: Path) -> list[ReplayRow]:
                 )
             )
     return rows
-
-
-def extract_csv_sequence(csv_name: str) -> int:
-    """解析文件名前缀的阶段序号。"""
-
-    return int(csv_name.split("_", maxsplit=1)[0])
-
-
-def extract_sync_csv_sequence(csv_name: str) -> int | None:
-    """解析第二段 `Sxx` 声明的右臂同步序号。"""
-
-    parts = csv_name.split("_")
-    match = re.fullmatch(r"S(\d+)", parts[1]) if len(parts) >= 2 else None
-    return None if match is None else int(match.group(1))
-
-
-def state_name_from_left_csv(csv_name: str, prefix: str) -> str:
-    """生成服务对外发布的左臂 CSV 状态名。"""
-
-    stem = Path(csv_name).stem
-    return stem[len(prefix) :] if stem.startswith(prefix) else stem

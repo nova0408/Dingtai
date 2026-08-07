@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Dingtai API Gateway
-  version: 0.2.2
+  version: 0.3.0
   description: >-
     统一客户端入口。业务请求按 URL 前缀转发到 CameraPipeline、RecordReplay 或
     RobotControl；Gateway 由 aiohttp 直接提供 TLS，并默认同时监听 IPv4
@@ -50,6 +50,12 @@ paths:
     post:
       summary: 转发 RecordReplay 请求
       responses: {'200': {description: 后端响应}}
+  /api/v1/record-replay-ws:
+    get:
+      summary: 转发 RecordReplay 状态 WebSocket 握手
+      description: 只读状态订阅；Gateway 对外提供 WSS，后端连接 RecordReplay 内部 WebSocket。
+      responses:
+        '101': {description: Switching Protocols}
   /api/v1/robot-control/{path}:
     parameters:
       - name: path

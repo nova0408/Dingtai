@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import time
 from collections.abc import Mapping
+from concurrent.futures import ThreadPoolExecutor, TimeoutError
+import threading
 from typing import Protocol, cast
 
 from loguru import logger
@@ -22,6 +24,11 @@ class AgvClient(Protocol):
 
         ...
 
+    def stop(self) -> object:
+        """停止当前 AGV 导航。"""
+
+        ...
+
 
 class _AgvBaseStatusProtocol(Protocol):
     """qmlinker GetBaseStatus 响应的最小字段。"""
@@ -29,7 +36,14 @@ class _AgvBaseStatusProtocol(Protocol):
     navi_status: str
 
 
-def wait_until_arrived(client: AgvClient, target: str, timeout_s: float, poll_s: float) -> None:
+def wait_until_arrived(
+    client: AgvClient,
+    target: str,
+    timeout_s: float,
+    poll_s: float,
+    stop_event: threading.Event | None = None,
+    command_lock: threading.Lock | None = None,
+) -> None:
     """导航到目标站点并等待 AGV 从运动状态恢复为空闲状态。
 
     Parameters
@@ -54,10 +68,20 @@ def wait_until_arrived(client: AgvClient, target: str, timeout_s: float, poll_s:
     ``busy`` 才接受后续的 ``idel``，避免把命令刚下发时尚未切换的空闲状态误判为到位。
     """
 
-    client.navigate_to(target)
+    if stop_event is not None and stop_event.is_set():
+        raise RuntimeError("检测到停止请求，禁止下发 AGV 导航")
+    if command_lock is None:
+        client.navigate_to(target)
+    else:
+        with command_lock:
+            if stop_event is not None and stop_event.is_set():
+                raise RuntimeError("检测到停止请求，禁止下发 AGV 导航")
+            client.navigate_to(target)
     deadline = time.monotonic() + timeout_s
     observed_busy = False
     while time.monotonic() < deadline:
+        if stop_event is not None and stop_event.is_set():
+            raise RuntimeError("检测到停止请求，终止 AGV 到位等待")
         payload = client.get_base_status()
         raw_status = _read_navigation_status(payload)
         logger.info("AGV 导航状态 target={} raw_status={!r}", target, raw_status)
@@ -66,8 +90,36 @@ def wait_until_arrived(client: AgvClient, target: str, timeout_s: float, poll_s:
         elif observed_busy and raw_status == "idel":
             logger.success("AGV 导航结束 target={} raw_status={!r}", target, raw_status)
             return
-        time.sleep(poll_s)
+        if stop_event is not None and stop_event.wait(timeout=poll_s):
+            raise RuntimeError("检测到停止请求，终止 AGV 到位等待")
+        if stop_event is None:
+            time.sleep(poll_s)
     raise TimeoutError(f"AGV 导航到位超时：target={target}, observed_busy={observed_busy}")
+
+
+def stop_navigation(
+    client: AgvClient,
+    timeout_s: float,
+    command_lock: threading.Lock | None = None,
+) -> None:
+    """显式调用 AGV Stop RPC，在固定超时内检查返回值。"""
+
+    def stop_command() -> object:
+        if command_lock is None:
+            return client.stop()
+        with command_lock:
+            return client.stop()
+
+    executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="record-replay-agv-stop")
+    future = executor.submit(stop_command)
+    try:
+        result = future.result(timeout=timeout_s)
+    except TimeoutError as error:
+        raise TimeoutError(f"AGV Stop RPC 超时：{timeout_s:.1f}s") from error
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
+    if result is not True:
+        raise RuntimeError(f"AGV Stop RPC 未确认成功：{result!r}")
 
 
 def _read_navigation_status(payload: object) -> str:

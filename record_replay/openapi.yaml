@@ -1,9 +1,10 @@
 openapi: 3.1.0
 info:
   title: RecordReplay HTTP API
-  version: 1.12.0
+  version: 2.2.0
   description: >-
     双臂记录回放服务 HTTP API。POST /start 可能控制真实设备，必须由现场人员确认安全后调用。
+    状态 WebSocket 通过 API Gateway 的 /api/v1/record-replay-ws 提供 WSS 入口。
 servers:
   - url: http://{host}:6300
     variables:
@@ -38,7 +39,7 @@ paths:
     post:
       operationId: update_config
       summary: 更新运行参数
-      description: 回放线程运行期间拒绝修改；成功后立即持久化并影响下一轮。
+      description: 回放线程运行期间拒绝修改；动作顺序、speed、zone 和 index 由 idle 时读取的 action_sequence.json 承载。
       requestBody:
         required: true
         content:
@@ -72,7 +73,7 @@ paths:
     post:
       operationId: start_replay
       summary: 启动一轮回放
-      description: 先全量校验运行先验；校验通过后可能控制机械臂、AGV、夹爪、M11 和升降机构，必须现场确认安全。
+      description: 先全量校验先验、命名动作 JSON 和 CSV 唯一映射；校验通过后可能控制机械臂、AGV、夹爪、M11 和升降机构，必须现场确认安全。
       requestBody:
         required: true
         content:
@@ -88,11 +89,35 @@ paths:
                 $ref: '#/components/schemas/RecordReplayResponse'
         '400':
           $ref: '#/components/responses/ErrorResponse'
+  /stop:
+    post:
+      operationId: stop_replay
+      summary: 停止当前回放并锁存 rapid_stop
+      description: 显式停止 AGV 与已连接的左右 AR5；不停止其它设备子系统，不允许后续普通动作。
+      responses:
+        '200':
+          description: 停止结果
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RecordReplayResponse'
+  /reset:
+    post:
+      operationId: reset_replay
+      summary: 人工复位服务状态
+      description: 只清除 rapid_stop 状态，不自动上电、导航、恢复动作或续跑。
+      responses:
+        '200':
+          description: 复位结果
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RecordReplayResponse'
   /prior/ball-pose:
     post:
       operationId: replace_ball_pose_prior
       summary: 替换三球 JSON 先验
-      description: 校验完整 JSON 后原子替换 ball_pose_prior.json；旧文件备份到服务端 .archive。
+      description: 仅 idle 且无活动回放线程时，校验完整 JSON 后原子替换 ball_pose_prior.json；旧文件备份到服务端 .archive。
       requestBody:
         required: true
         content:
@@ -112,7 +137,7 @@ paths:
     post:
       operationId: replace_charuco_prior
       summary: 替换 ChArUco JSON 先验
-      description: 校验完整 JSON 后原子替换 charuco_board_prior.json；旧文件备份到服务端 .archive。
+      description: 仅 idle 且无活动回放线程时，校验完整 JSON 后原子替换 charuco_board_prior.json；旧文件备份到服务端 .archive。
       requestBody:
         required: true
         content:
@@ -139,7 +164,7 @@ components:
   schemas:
     ReplayState:
       type: string
-      enum: [idle, busy]
+      enum: [idle, busy, rapid_stop]
     CsvFileStatus:
       type: object
       required: [name, row_count]
@@ -156,22 +181,19 @@ components:
         synchronized: {type: boolean}
     RuntimeParameters:
       type: object
-      required: [left_move_abs_j_end_linear_speed_mm_s_by_csv_sequence, right_move_abs_j_end_linear_speed_mm_s_by_csv_sequence, left_move_abs_j_zone_mm_by_csv_sequence, right_move_abs_j_zone_mm_by_csv_sequence, agv_navigation_timeout_s, agv_navigation_poll_interval_s, non_motion_retry_count, non_motion_retry_delay_s]
+      required: [agv_navigation_timeout_s, agv_navigation_poll_interval_s, non_motion_retry_count, non_motion_retry_delay_s]
       properties:
-        left_move_abs_j_end_linear_speed_mm_s_by_csv_sequence: {$ref: '#/components/schemas/MotionLevelMap'}
-        right_move_abs_j_end_linear_speed_mm_s_by_csv_sequence: {$ref: '#/components/schemas/MotionLevelMap'}
-        left_move_abs_j_zone_mm_by_csv_sequence: {$ref: '#/components/schemas/ZoneLevelMap'}
-        right_move_abs_j_zone_mm_by_csv_sequence: {$ref: '#/components/schemas/ZoneLevelMap'}
         agv_navigation_timeout_s: {type: number, exclusiveMinimum: 0, default: 600}
         agv_navigation_poll_interval_s: {type: number, exclusiveMinimum: 0, default: 1}
         non_motion_retry_count: {type: integer, minimum: 1, default: 3}
         non_motion_retry_delay_s: {type: number, minimum: 0, default: 0.5}
     RecordReplayResponse:
       type: object
-      required: [state, accepted, left_csv_state, plan_index, error_text, left_csv_files, right_csv_files, execution_tasks, current_task_sequence, current_task_active, total_execution_count, current_left_csv, current_right_csv, current_left_row, current_right_row, current_left_total_rows, current_right_total_rows, parameters]
+      required: [state, accepted, action_sequence_sha256, left_csv_state, plan_index, error_text, left_csv_files, right_csv_files, execution_tasks, current_task_sequence, current_task_active, total_execution_count, current_left_csv, current_left_action_name, current_left_action_index, current_right_csv, current_right_action_name, current_right_action_index, current_left_row, current_right_row, current_left_total_rows, current_right_total_rows, offset_statuses, parameters]
       properties:
         state: {$ref: '#/components/schemas/ReplayState'}
         accepted: {type: boolean}
+        action_sequence_sha256: {type: [string, 'null']}
         left_csv_state: {type: [string, 'null']}
         plan_index: {type: [integer, 'null'], minimum: 0}
         error_text: {type: [string, 'null']}
@@ -182,36 +204,36 @@ components:
         current_task_active: {type: boolean}
         total_execution_count: {type: integer, minimum: 0}
         current_left_csv: {type: [string, 'null']}
+        current_left_action_name: {type: [string, 'null']}
+        current_left_action_index: {type: [integer, 'null'], minimum: 1}
         current_right_csv: {type: [string, 'null']}
+        current_right_action_name: {type: [string, 'null']}
+        current_right_action_index: {type: [integer, 'null'], minimum: 1}
         current_left_row: {type: [integer, 'null'], minimum: 1}
         current_right_row: {type: [integer, 'null'], minimum: 1}
         current_left_total_rows: {type: [integer, 'null'], minimum: 0}
         current_right_total_rows: {type: [integer, 'null'], minimum: 0}
+        offset_statuses: {type: array, items: {$ref: '#/components/schemas/OffsetStatus'}}
         parameters:
           oneOf:
             - {$ref: '#/components/schemas/RuntimeParameters'}
             - type: 'null'
+    OffsetStatus:
+      type: object
+      required: [source, available, applied]
+      properties:
+        source: {type: string, enum: [head, three_ball]}
+        available: {type: boolean}
+        applied: {type: boolean}
     ConfigChanges:
       type: object
       additionalProperties: false
       description: 允许的字段见下列 properties；boolean 和未知字段会被拒绝。
       properties:
-        left_move_abs_j_end_linear_speed_mm_s_by_csv_sequence: {$ref: '#/components/schemas/MotionLevelMap'}
-        right_move_abs_j_end_linear_speed_mm_s_by_csv_sequence: {$ref: '#/components/schemas/MotionLevelMap'}
-        left_move_abs_j_zone_mm_by_csv_sequence: {$ref: '#/components/schemas/ZoneLevelMap'}
-        right_move_abs_j_zone_mm_by_csv_sequence: {$ref: '#/components/schemas/ZoneLevelMap'}
         agv_navigation_timeout_s: {type: number}
         agv_navigation_poll_interval_s: {type: number}
         non_motion_retry_count: {type: integer}
         non_motion_retry_delay_s: {type: number}
-    MotionLevelMap:
-      type: object
-      additionalProperties: {type: number, minimum: 5, maximum: 4000}
-      description: CSV 数字序号到 MoveAbsJ 末端线速度的映射；必须包含 -1 默认级别。
-    ZoneLevelMap:
-      type: object
-      additionalProperties: {type: number, minimum: 0}
-      description: CSV 数字序号到 MoveAbsJ zone 的映射；必须包含 -1 默认级别。
     StartRequest:
       type: object
       additionalProperties: false

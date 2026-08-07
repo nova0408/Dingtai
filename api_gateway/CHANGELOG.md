@@ -1,6 +1,10 @@
 # API Gateway 版本日志
 
-当前版本：`0.2.2`
+当前版本：`0.3.0`
+
+## 0.3.0 - 2026-08-07
+
+- 新增 RecordReplay 状态 WebSocket 转发：`/api/v1/record-replay-ws` -> Orin 内部 6301。
 
 ## 0.2.2 - 2026-08-04
 

@@ -20,10 +20,8 @@ if str(PROJECT_ROOT) not in sys.path:
 from sdk.xcoresdk import xCoreSDK_python
 
 # 机械臂控制器位于 Orin 所连交换机的新网段。
-# LEFT_ARM_CONTROLLER_IP = "192.168.100.161"
-# RIGHT_ARM_CONTROLLER_IP = "192.168.100.160"
-LEFT_ARM_CONTROLLER_IP = "192.168.100.218"
-RIGHT_ARM_CONTROLLER_IP = "192.168.100.181"
+LEFT_ARM_CONTROLLER_IP = "192.168.100.161"
+RIGHT_ARM_CONTROLLER_IP = "192.168.100.160"
 MM_PER_M = 1000.0
 DEFAULT_CARTESIAN_SPEED = 50.0
 DEFAULT_CARTESIAN_ZONE = 1.0
@@ -42,10 +40,10 @@ PREDEFINED_JOINT_SKIP_TOLERANCE_DEG = 0.01
 DEFAULT_TOOL_NAME = "g_tool_0"
 DEFAULT_WOBJ_NAME = "g_wobj_0"
 EXPECTED_ARM_TYPES = {
-    "left": "AR5-5_0.8L-W4C6C11",
-    "right": "AR5-5_0.8R-W4C6C11",
-    # "left": "AR5-5_0.8L-W4C1C9-ZY2",
-    # "right": "AR5-5_0.8R-W4C1C9-ZY2",
+    # "left": "AR5-5_0.8L-W4C6C11",
+    # "right": "AR5-5_0.8R-W4C6C11",
+    "left": "AR5-5_0.8L-W4C1C9-ZY2",
+    "right": "AR5-5_0.8R-W4C1C9-ZY2",
 }
 # 左臂硬编码循环轨迹，每个 waypoint 为 J1-J7 关节角，单位 deg。
 LEFT_ARM_PREDEFINED_JOINT_WAYPOINTS_DEG: tuple[tuple[float, ...], ...] = (
@@ -497,7 +495,7 @@ def _wait_until_idle(
             print(f"{prompt}已结束：{state}")
             return True
         if state != last_state:
-            print(f"{prompt}：{state}")
+            print(f"{prompt}:{state}")
             last_state = state
         if time.monotonic() >= deadline:
             print(f"{prompt} 超时：超过 {timeout_s:.1f} 秒仍未结束")

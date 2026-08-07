@@ -67,6 +67,13 @@ def build_routes(settings: GatewaySettings) -> tuple[GatewayRoute, ...]:
             upstream_prefix="",
         ),
         GatewayRoute(
+            public_prefix="/api/v1/record-replay-ws",
+            upstream_host=settings.record_replay_websocket_host,
+            upstream_port=settings.record_replay_websocket_port,
+            upstream_prefix="/api/v1/ws",
+            websocket=True,
+        ),
+        GatewayRoute(
             public_prefix="/api/v1/robot-control",
             upstream_host=settings.robot_control_host,
             upstream_port=settings.robot_control_port,

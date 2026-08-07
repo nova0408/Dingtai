@@ -10,6 +10,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
 from typing import Any
 
+from loguru import logger
+
 from .application import RobotControlApplication
 
 
@@ -75,13 +77,85 @@ class RobotControlServer:
                             HTTPStatus.OK, application.qmlinker_get_agv_targets()
                         )
                         return
+                    if path == "/api/v1/qmlinker/agv/base-state":
+                        self._send(
+                            HTTPStatus.OK, application.qmlinker_get_agv_base_state()
+                        )
+                        return
+                    if path == "/api/v1/qmlinker/agv/base-mode":
+                        self._send(
+                            HTTPStatus.OK, application.qmlinker_get_agv_base_mode()
+                        )
+                        return
+                    if path == "/api/v1/qmlinker/agv/base-operation-state":
+                        self._send(
+                            HTTPStatus.OK,
+                            application.qmlinker_get_agv_base_operation_state(),
+                        )
+                        return
+                    if path == "/api/v1/qmlinker/agv/base-task-process":
+                        self._send(
+                            HTTPStatus.OK,
+                            application.qmlinker_get_agv_base_task_process(),
+                        )
+                        return
+                    if path == "/api/v1/qmlinker/agv/base-battery":
+                        self._send(
+                            HTTPStatus.OK,
+                            application.qmlinker_get_agv_base_battery(),
+                        )
+                        return
+                    if path.startswith("/api/v1/ar5/") and path.endswith(
+                        "/soft-limits"
+                    ):
+                        parts = [part for part in path.split("/") if part]
+                        if len(parts) != 5 or parts[:3] != ["api", "v1", "ar5"]:
+                            raise ValueError(
+                                "AR5 soft-limit path must contain side and soft-limits"
+                            )
+                        side = parts[3]
+                        if side not in {"left", "right"}:
+                            raise ValueError("AR5 side must be left or right")
+                        self._send(
+                            HTTPStatus.OK,
+                            application.ar5_get_soft_limits(side),
+                        )
+                        return
                     if path == "/api/v1/status/stream":
                         self._stream_status()
                         return
-                    self._send_error(HTTPStatus.NOT_FOUND, "unsupported GET path")
-                except Exception as exc:
                     self._send_error(
-                        HTTPStatus.SERVICE_UNAVAILABLE, f"{type(exc).__name__}: {exc}"
+                        HTTPStatus.NOT_FOUND,
+                        ValueError("unsupported GET path"),
+                        method="GET",
+                        path=path,
+                        stage="request_validation",
+                    )
+                except ValueError as exc:
+                    logger.warning(
+                        "RobotControl GET rejected: path={} error_type={} message={}",
+                        path,
+                        type(exc).__name__,
+                        str(exc),
+                    )
+                    self._send_error(
+                        HTTPStatus.BAD_REQUEST,
+                        exc,
+                        method="GET",
+                        path=path,
+                        stage="request_validation",
+                    )
+                except Exception as exc:
+                    logger.exception(
+                        "RobotControl GET failed: path={} stage=hardware_read",
+                        path,
+                    )
+                    self._send_error(
+                        HTTPStatus.SERVICE_UNAVAILABLE,
+                        exc,
+                        method="GET",
+                        path=path,
+                        stage="hardware_read",
                     )
 
             def do_POST(self) -> None:
@@ -96,10 +170,30 @@ class RobotControlServer:
                     response = self._dispatch_control(path, payload)
                     self._send(HTTPStatus.ACCEPTED, asdict(response))
                 except ValueError as exc:
-                    self._send_error(HTTPStatus.BAD_REQUEST, str(exc))
-                except Exception as exc:
+                    logger.warning(
+                        "RobotControl POST rejected: path={} error_type={} message={}",
+                        path,
+                        type(exc).__name__,
+                        str(exc),
+                    )
                     self._send_error(
-                        HTTPStatus.SERVICE_UNAVAILABLE, f"{type(exc).__name__}: {exc}"
+                        HTTPStatus.BAD_REQUEST,
+                        exc,
+                        method="POST",
+                        path=path,
+                        stage="request_validation",
+                    )
+                except Exception as exc:
+                    logger.exception(
+                        "RobotControl POST failed: path={} stage=hardware_control",
+                        path,
+                    )
+                    self._send_error(
+                        HTTPStatus.SERVICE_UNAVAILABLE,
+                        exc,
+                        method="POST",
+                        path=path,
+                        stage="hardware_control",
                     )
 
             def log_message(self, format: str, *args: object) -> None:
@@ -277,10 +371,32 @@ class RobotControlServer:
                 self.end_headers()
                 self.wfile.write(body)
 
-            def _send_error(self, status: HTTPStatus, message: str) -> None:
-                """发送统一错误响应。"""
+            def _send_error(
+                self,
+                status: HTTPStatus,
+                error: Exception,
+                *,
+                method: str,
+                path: str,
+                stage: str,
+            ) -> None:
+                """发送包含阶段和原始异常信息的统一错误响应。"""
 
-                self._send(status, {"ok": False, "error": message})
+                error_type = type(error).__name__
+                message = str(error).strip() or error_type
+                self._send(
+                    status,
+                    {
+                        "ok": False,
+                        "error": f"{error_type}: {message}",
+                        "error_type": error_type,
+                        "message": message,
+                        "status": int(status),
+                        "method": method,
+                        "path": path,
+                        "stage": stage,
+                    },
+                )
 
         return Handler
 

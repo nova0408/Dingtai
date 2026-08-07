@@ -59,10 +59,21 @@ GET /api/v1/health
 GET /api/v1/status
 GET /api/v1/devices
 GET /api/v1/qmlinker/agv/targets
+GET /api/v1/qmlinker/agv/base-state
+GET /api/v1/qmlinker/agv/base-mode
+GET /api/v1/qmlinker/agv/base-operation-state
+GET /api/v1/qmlinker/agv/base-task-process
+GET /api/v1/qmlinker/agv/base-battery
+GET /api/v1/ar5/{side}/soft-limits
 GET /api/v1/status/stream?interval_s=0.2
 ```
 
 `/status` 和 `/devices` 会读取现场设备状态；它们不是离线接口。只有用户明确授权现场只读检查时，才可调用这些 GET 接口；本回合未连接现场服务。
+
+`qmlinker_right_hand` 的 `actuator_count` 来自运行时手部规格，`positions` 必须完整包含对应的
+`right_hand_a0` 到 `right_hand_aN`。如果 qmlinker 返回的实际执行器集合不完整或包含未知轴，
+该设备会以 `connected=false`、`error` 带有 expected/actual/missing/unexpected 详情、空 `data`
+返回，避免客户端误用部分 M6 状态。
 
 `/status/stream` 是只读 Server-Sent Events（SSE）订阅接口。连接建立后立即推送一条
 完整状态快照，之后默认每 `0.2` 秒推送一条 `event: robot_status`；可通过
@@ -73,6 +84,14 @@ GET /api/v1/status/stream?interval_s=0.2
 `/qmlinker/agv/targets` 通过 qmlinker 的只读地图服务读取当前 Woosh 地图和可用导航点，
 不会发送导航或其他运动请求。返回的 `x_m`、`y_m` 单位为 m，`yaw_rad` 单位为 rad；
 `resolution` 保留底盘地图接口的原始值。
+
+AGV 的 `base-state`、`base-mode`、`base-operation-state`、`base-task-process` 和
+`base-battery` 是按 Woosh SDK 状态对象拆分的只读查询，业务可按需调用；不会发送运动或控制请求。
+
+`/api/v1/ar5/{side}/soft-limits` 读取指定 AR5 控制器的七个轴软限位，`side` 为 `left` 或
+`right`。返回 `enabled`、`axis_count` 和 `limits_rad`；每个轴包含 `axis_index`、`lower_rad`
+和 `upper_rad`，上下限单位为 rad。接口只调用 xCoreSDK `getSoftLimit`，不会改变电源、工作模式
+或拖动状态；控制器返回的软限位数量不是七个时，服务会返回带原始错误信息的 `503`。
 
 统一 Gateway 访问路径为：
 `GET https://<orin-host>/api/v1/robot-control/status/stream?interval_s=0.2`。
@@ -97,6 +116,9 @@ AGV、AR5 急停恢复、拖动和 Jog 路径及字段见 `openapi.yaml` 与 `AP
 `/api/v1/qmlinker/agv/stop` 停止；该停止语义是 qmlinker 的软件停止，不等同于硬件急停。
 
 这些接口可能使机械臂、AGV、夹爪、头部或升降机构动作。禁止 Codex、CI、hook 或自动化脚本发送控制 POST；只能由现场人员手动发起和验证。
+
+控制或设备读取失败时，服务不会只返回裸 `503`。JSON 响应包含 `error`、`error_type`、`message`、
+`status`、`method`、`path` 和 `stage`；其中 `message` 保留底层 SDK 的原始错误文本，服务日志记录完整异常堆栈。
 
 ## 部署依赖
 

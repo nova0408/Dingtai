@@ -70,6 +70,12 @@ class RecordReplayServer:
                         )
                         self._send(response_status, response)
                         return
+                    if self.path == "/stop":
+                        self._send(HTTPStatus.OK, application.stop())
+                        return
+                    if self.path == "/reset":
+                        self._send(HTTPStatus.OK, application.reset())
+                        return
                     if self.path == "/config":
                         self._send(HTTPStatus.OK, application.update_parameters(self._read_changes()))
                         return
@@ -101,17 +107,7 @@ class RecordReplayServer:
                     if isinstance(value, int | float):
                         changes[key] = value
                         continue
-                    if isinstance(value, dict):
-                        levels: dict[str, float | int] = {}
-                        for sequence, level in value.items():
-                            if not isinstance(sequence, str):
-                                raise ValueError("速度/zone 的 CSV 序号键必须是字符串")
-                            if isinstance(level, bool) or not isinstance(level, int | float):
-                                raise ValueError("速度/zone 的值必须是数字")
-                            levels[sequence] = level
-                        changes[key] = levels
-                        continue
-                    raise ValueError("配置值必须是数字或 CSV 序号映射")
+                    raise ValueError("运行参数值必须是数字；动作 speed/zone 请修改 action_sequence.json")
                 return changes
 
             def _read_start_options(self) -> bool:
@@ -148,6 +144,7 @@ class RecordReplayServer:
                 payload = RecordReplayResponse(
                     state=response.state,
                     accepted=False,
+                    action_sequence_sha256=response.action_sequence_sha256,
                     left_csv_state=response.left_csv_state,
                     plan_index=response.plan_index,
                     error_text=message,
@@ -158,11 +155,16 @@ class RecordReplayServer:
                     current_task_active=response.current_task_active,
                     total_execution_count=response.total_execution_count,
                     current_left_csv=response.current_left_csv,
+                    current_left_action_name=response.current_left_action_name,
+                    current_left_action_index=response.current_left_action_index,
                     current_right_csv=response.current_right_csv,
+                    current_right_action_name=response.current_right_action_name,
+                    current_right_action_index=response.current_right_action_index,
                     current_left_row=response.current_left_row,
                     current_right_row=response.current_right_row,
                     current_left_total_rows=response.current_left_total_rows,
                     current_right_total_rows=response.current_right_total_rows,
+                    offset_statuses=response.offset_statuses,
                 )
                 self._send(status, payload)
 

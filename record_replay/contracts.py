@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from pathlib import Path
 
 from .motion_parsing import ParsedArmPose
 
@@ -17,6 +16,7 @@ class ReplayServiceState(str, Enum):
 
     IDLE = "idle"
     BUSY = "busy"
+    RAPID_STOP = "rapid_stop"
 
     def __str__(self) -> str:
         """保持 Python 3.11 ``StrEnum`` 的字符串表现。"""
@@ -55,24 +55,6 @@ class ReplayRow:
 
 
 @dataclass(frozen=True, slots=True)
-class CsvExecutionPlan:
-    """一个左臂阶段及其关联右臂阶段。"""
-
-    left_csv_path: Path
-    "左臂主 CSV 路径。"
-    right_start_csv_path: Path | None = None
-    "启动时与左臂并行的右臂 CSV。"
-    right_pre_stage_csv_paths: tuple[Path, ...] = ()
-    "左臂前需要顺序执行的右臂 CSV。"
-    right_sync_csv_path: Path | None = None
-    "与左臂同步执行的右臂 CSV。"
-    right_post_stage_csv_paths: tuple[Path, ...] = ()
-    "最后一个左臂阶段后执行的右臂 CSV。"
-    start_together: bool = False
-    "是否在启动阶段并行执行左右 CSV。"
-
-
-@dataclass(frozen=True, slots=True)
 class ReplayCsvFileStatus:
     """一个已部署回放 CSV 的只读摘要。"""
 
@@ -97,13 +79,29 @@ class ReplayExecutionTaskStatus:
 
 
 @dataclass(frozen=True, slots=True)
+class ReplayOffsetStatus:
+    """一个 offset 来源在当前轮次的可观测状态。"""
+
+    source: str
+    "来源名称：head 或 three_ball。"
+    available: bool
+    "本轮是否已经得到该来源的有效 offset。"
+    applied: bool
+    "当前命名动作是否正在使用该来源；两个来源不能同时为 True。"
+
+
+@dataclass(frozen=True, slots=True)
 class ReplayStatusSnapshot:
     """可跨线程读取的当前执行状态快照。"""
 
     state: ReplayServiceState
     "服务阶段。"
+    total_execution_count: int = 0
+    "服务进程内已接受的回放轮次；HTTP 与 WebSocket 共用该值。"
+    action_sequence_sha256: str | None = None
+    "当前冻结动作顺序 JSON 的 SHA-256。"
     left_csv_state: str | None = None
-    "当前左臂 CSV 去前缀后的状态名。"
+    "当前左臂命名动作对应的 CSV 文件 stem。"
     plan_index: int | None = None
     "当前执行计划索引，从 0 开始。"
     error_text: str | None = None
@@ -120,8 +118,16 @@ class ReplayStatusSnapshot:
     "current_task_index 对应任务是否仍在执行。"
     current_left_csv: str | None = None
     "左臂当前正在处理的 CSV 文件名。"
+    current_left_action_name: str | None = None
+    "左臂当前命名动作。"
+    current_left_action_index: int | None = None
+    "左臂当前多目标动作 index。"
     current_right_csv: str | None = None
     "右臂当前正在处理的 CSV 文件名。"
+    current_right_action_name: str | None = None
+    "右臂当前命名动作。"
+    current_right_action_index: int | None = None
+    "右臂当前多目标动作 index。"
     current_left_row: int | None = None
     "左臂当前处理到的 CSV 数据行，从 1 开始。"
     current_right_row: int | None = None
@@ -130,6 +136,11 @@ class ReplayStatusSnapshot:
     "左臂当前 CSV 的总数据行数。"
     current_right_total_rows: int | None = None
     "右臂当前 CSV 的总数据行数。"
+    offset_statuses: tuple[ReplayOffsetStatus, ...] = (
+        ReplayOffsetStatus("head", False, False),
+        ReplayOffsetStatus("three_ball", False, False),
+    )
+    "头部 offset 与三球 offset 的列表状态。"
 
 
 # endregion

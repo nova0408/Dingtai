@@ -1,6 +1,6 @@
 # RecordReplay 版本日志
 
-当前版本：`1.12.0`
+当前版本：`2.2.0`
 
 ## 版本号规则
 
@@ -11,6 +11,149 @@
 - `c`：缺陷修复和不改变功能边界的优化。
 
 每次更新 API 或功能时，必须同步更新当前版本号，并在本文件顶部追加带日期的版本记录。同一批改动只升级一次，按影响最大的改动选择版本位。
+
+## 2.2.0 - 2026-08-07
+
+### 修复
+
+- 修正拍摄动作的 zone 语义：前置拍摄点直接使用动作 JSON 中配置的 zone，最终拍摄点固定使用 `zone=0`；拍摄动作的最终点仍使用 `final_speed`。
+
+## 2.1.10 - 2026-08-07
+
+### 新增
+
+- 根目录同步脚本增加 `-RecordReplayOnly` 专用部署入口，只同步并重启 RecordReplay，执行 staging、文件清单、SHA-256、旧目录归档和只读 `/status`/版本校验；不会操作其它服务或发送 `/start`。该入口会先确认 CameraPipeline 已在 6200 就绪，并排除运行时 `runtime_state.json`。
+
+## 2.1.9 - 2026-08-07
+
+### 修复
+
+- 先验替换接口现在仅允许在 `idle` 且无活动 worker 时执行，并与 `start` 共用应用锁，
+  防止 busy 期间改变当前回放使用的先验文件。
+
+## 2.1.8 - 2026-08-07
+
+### 修复
+
+- 状态 WebSocket 快照补齐 HTTP `/status` 的 `accepted=true` 与 `parameters=null` 字段，
+  与 API Reference 声明的状态字段保持一致。
+
+## 2.1.7 - 2026-08-07
+
+### 修复
+
+- 在 `RecordReplayCycleService.run_once()` 执行边界再次拒绝 `rapid_stop` 或已置位的停止事件，
+  防止非 HTTP 调用路径绕过应用层状态门。
+
+## 2.1.6 - 2026-08-07
+
+### 修复
+
+- AGV 导航或回放阶段异常时，服务先锁存停止事件并自动调用 AGV/左右 AR5 的停止流程，
+  再发布 `rapid_stop`；人工 stop 已锁存状态时不重复提交停止调用。
+
+## 2.1.5 - 2026-08-07
+
+### 修复
+
+- 部署摘要的 CSV 行数改为直接读取 start 前冻结的 `preloaded_rows_by_path`，不再重新读取磁盘，
+  确保状态清单与实际执行快照一致。
+
+## 2.1.4 - 2026-08-07
+
+### 修复
+
+- 修正 arm 段 zone 选择：快速动作和拍摄动作的所有 arm 点均使用 JSON 动作项的非零 zone，
+  只有精确动作在执行入口强制使用 `zone=0`；capture 仍仅在最后 arm 点切换 `final_speed`。
+
+## 2.1.3 - 2026-08-07
+
+### 修复
+
+- 动作顺序读取阶段只解析 JSON 当前引用动作的候选 CSV；未引用的其它 index 或非法命名资产不会阻塞本轮启动，
+  同一 `(function_name, index, arm)` 的重复候选仍会明确报错。
+
+## 2.1.2 - 2026-08-07
+
+### 修复
+
+- 部署摘要只读取当前 `action_sequence.json` 实际引用的 CSV；`records` 目录中未引用的其它 index CSV
+  作为可选动作资产保留，不再阻塞本轮启动或被错误解析。
+
+## 2.1.1 - 2026-08-07
+
+### 修复
+
+- 先验上传接口现在复用 `action_sequence.json` 的 `deployment.prior_files` 目标路径，
+  与 `start` 前校验和回放执行使用同一份统一配置。
+- 执行器现在在左臂每个 JSON 任务开始和完成时原子更新任务状态，并校验实际 CSV 顺序与已发布任务清单一致；
+  右臂继续只发布独立动作进度。
+- 修正状态更新时的可选 `plan_index` 语义：未提供索引时保留当前运行索引，进入 idle 时仍清除本轮任务进度。
+- 使统一 JSON 中的 `capture_settle_delay_s` 真正作用于三球采样前稳定等待，并支持被停止事件打断。
+- 空 CSV 动作在命名动作分发后直接结束，不再继续进入 offset updater；因此表头-only 的
+  `calibration_new_tray` 始终保持留空语义。
+- AGV `navigate_to` 与 Stop 现在共享单次命令提交锁，停止事件置位后不会再与新的导航提交竞态；
+  到位轮询不持有该锁，Stop 不会等待整段导航完成。
+
+## 2.1.0 - 2026-08-07
+
+### 变更
+
+- 补齐本机 `record_left` 中的四个转移 CSV，并恢复服务端左臂与人工 CLI 一致的 15 项动作顺序；历史无时间戳 CSV 允许使用 `<action>_<arm>.csv` 命名。
+- 按本机 `record_left`、`record_right` 录制源刷新服务端 19 个动作 CSV，保留服务端动作名、时间戳和 index 文件名，逐文件 SHA-256 全部一致。
+- `action_sequence.json` 升级为统一部署配置，集中读取动作、速度、zone、index、offset 策略和先验文件入口；`start` 前冻结本轮配置。
+- `start` 现在先冻结 JSON，再按 JSON 中的 `deployment.prior_files` 校验先验；缺失或无效时保持 idle 并发布错误状态。
+- AGV 是否导航继续由 `POST /start` 的 `enable_agv_navigation` 参数决定。
+- 新增 RecordReplay 状态 WebSocket；服务内部监听 6301，正式客户端通过 Gateway 的 `wss://<orin-host>/api/v1/record-replay-ws` 订阅状态变化。
+
+## 2.0.2 - 2026-08-07
+
+### 修复
+
+- Stop 请求现在并行发起 AGV、左 AR5、右 AR5 的显式停止调用，避免单个 AGV Stop 超时延后
+  其它已连接机械臂的 `robot.stop()`；失败仍会汇总并锁存 `rapid_stop`。
+
+## 2.0.1 - 2026-08-07
+
+### 修复
+
+- 在创建左右机械臂 runtime 和进入每个命名动作前增加停止闸门，避免停止请求与 worker
+  初始化竞态导致停止后继续准备设备或进入后续动作。
+- 修正文档与当前 CaptureAction 语义：`calibration` 使用 CameraPipeline 三球检测，
+  `calibration_new_tray` 绑定空 CSV 并明确留空。
+
+## 2.0.0 - 2026-08-06
+
+### 变更
+
+- 将回放资产从数字前缀/Sxx 阶段改为显式命名 CSV；多目标动作使用动作名后的 index。
+- 新增 `action_sequence.json`，以左右有序列表承载 `function_name`、`type`、`speed`、`zone`、
+  `index` 和 capture 慢速参数；`POST /start` 前完成 UTF-8、schema、白名单、范围、CSV 唯一映射
+  和 capture 依赖校验，成功后冻结 JSON SHA-256 对应的内存计划。
+- 执行器按 capture、fast、precise 三类动作工作；precise 强制 zone=0，capture 最后 arm 点
+  使用 final_speed，并在到位后调用显式算法入口；open_door/close_door 只同步双臂起点，
+  start 前额外校验两臂同步动作的出现次数和相对顺序。
+- 按当前 `record_left` 录制命名补齐 before/after 转移动作和 `put_tray` 的显式封装；同时按
+  人工 CLI 语义修正三球 offset 目标为 `get_tray`、`put_new_tray`，左臂 ChArUco 目标为
+  `open_door`、`close_door`。
+- Rapid Stop 的停止事件已覆盖非运动重试、机械臂/AGV 到位轮询、手部/升降等待和 ChArUco
+  稳定等待；停止锁存后不再继续重试或发送后续普通指令。
+- 补充 start 前左右 JSON 动作列表非空校验，清理旧的 CSV 状态前缀兼容语义。
+- 修正 rapid_stop 下配置更新的状态门，避免先持久化参数后才因状态拒绝请求。
+- `execution_tasks` 状态摘要按 JSON 的有限 `loop_count` 展开，和实际循环执行顺序一致。
+- Rapid Stop 的设备停止调用失败原因会锁存到状态响应的 `error_text`，便于现场处理。
+- 明确 `calibration` 到位后调用 CameraPipeline 三球检测；`calibration_new_tray` 保持空 CSV
+  留空，不调用算法；历史 `finish_new_tray` 资产迁移为 `after_put_new_tray`。
+- 将当前左臂多点计划绑定为 `get_tray_1_left` 与 `put_tray_4_left`，并在状态响应中列出头部
+  与三球 offset 的可用/应用状态，拒绝同一动作同时使用两种 offset。
+- 为每个 AR5 增加显式命令锁，串行化准备、MoveReset/MoveAppend/MoveStart 和 robot.stop，
+  降低停止请求与队列提交并发交错的风险；运动等待不持有该锁。
+- README HTTP API 总览补充 `POST /stop` 与 `POST /reset`，与 OpenAPI 和 API Reference 对齐。
+- 被 JSON 引用的 CSV 行在 start 前冻结进动作计划，执行期不再重新读取磁盘文件。
+- 原有 14 个服务 CSV 迁移时只改文件名，不修改内容；`put_tray_4_left` 原样复制已确认录制，
+  `calibration_new_tray` 服务资产按最新要求保持表头-only；先验文件和先验录制流程未改动。
+- 按 xCoreSDK 协作机器人接口文档收紧动作计划 zone 上限为 200 mm；speed 上限保持 4000 mm/s。
+- 文档补充 xCoreSDK speed 五档和 zone 四档映射；JSON 仍按动作保存可调原始数值。
 
 ## 1.12.0 - 2026-08-05
 

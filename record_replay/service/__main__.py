@@ -14,17 +14,20 @@ from qmlinker import QMGripper, QMHead, QMLift, QMMoveBase, create_channel
 
 from camera_pipeline.client import CameraName
 
+from ..action_sequence import ActionSequencePlan
 from ..charuco_offset import CharucoOffsetInitializer
 from ..context import ReplayContext
 from ..cycle_service import RecordReplayCycleService
 from ..device_status import DeviceStatusReader
 from ..offset_detector_gateway import CameraPipelineThreeBallDetector, load_three_ball_priors
 from ..offset_updater import GlobalOffsetUpdater
-from ..settings import OffsetConfig, ReplayCycleConfig, ReplayDeviceConnection
+from ..settings import ReplayCycleConfig, ReplayDeviceConnection
 from .application import RecordReplayApplication
 from .config_store import RuntimeConfigStore
 from .prior_store import RecordReplayPriorStore
 from .server import RecordReplayServer
+from .state_store import ReplayStateStore
+from .websocket_server import RecordReplayWebSocketServer
 
 SERVICE_ROOT = Path(__file__).resolve().parents[1]
 "record_replay 服务根目录。"
@@ -37,6 +40,9 @@ LEFT_RECORD_DIR = SERVICE_ROOT / "records" / "left"
 
 RIGHT_RECORD_DIR = SERVICE_ROOT / "records" / "right"
 "右臂预录 CSV 固定目录。"
+
+ACTION_SEQUENCE_PATH = SERVICE_ROOT / "action_sequence.json"
+"命名动作顺序和每项速度/zone 的固定 JSON 路径。"
 
 BALL_POSE_PRIOR_PATH = PRIOR_DATA_DIR / "ball_pose_prior.json"
 "prior_record.py 生成的三球先验固定路径。"
@@ -62,6 +68,12 @@ RIGHT_HEAD_BASE_CAMERA_PATH = (
 
 RUNTIME_CONFIG_PATH = SERVICE_ROOT / "config.json"
 "本机 API 修改后持久化的运行参数路径。"
+
+RUNTIME_STATE_PATH = SERVICE_ROOT / "runtime_state.json"
+"服务重启后防止绕过人工复位的最小状态文件。"
+
+WEBSOCKET_PORT = 6301
+"RecordReplay 内部状态 WebSocket 端口；正式客户端通过 Gateway 使用 wss。"
 
 LEFT_ARM_IP = "192.168.100.161"
 RIGHT_ARM_IP = "192.168.100.160"
@@ -96,6 +108,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         ReplayCycleConfig(
             left_record_dir=LEFT_RECORD_DIR,
             right_record_dir=RIGHT_RECORD_DIR,
+            action_sequence_path=ACTION_SEQUENCE_PATH,
             device_connection=device_connection,
             settings=settings,
             start_station=args.start_station,
@@ -112,17 +125,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         QMHead(qmlinker_channel),
         QMLift(qmlinker_channel),
     )
-    offset_config = OffsetConfig(
-        prior_capture_path=BALL_POSE_PRIOR_PATH,
-        hand_eye_result_path=HAND_EYE_RESULT_PATH,
-        camera_name=args.camera_name,
-        charuco_prior_path=CHARUCO_PRIOR_PATH,
-        charuco_history_path=CHARUCO_HISTORY_PATH,
-        left_head_base_camera_path=LEFT_HEAD_BASE_CAMERA_PATH,
-        right_head_base_camera_path=RIGHT_HEAD_BASE_CAMERA_PATH,
-    )
-    def build_cycle_service() -> RecordReplayCycleService:
-        """在人工 POST /start 之前完成先验加载和回放业务组装。"""
+    def build_cycle_service(plan: ActionSequencePlan) -> RecordReplayCycleService:
+        """按 start 前冻结的统一 JSON 组装本轮回放业务。"""
+
+        offset_config = plan.deployment.offset_config
+        plan_settings = context.config.settings
 
         prior_load_started_at = time.perf_counter()
         ball_priors = load_three_ball_priors(offset_config.prior_capture_path)
@@ -134,27 +141,31 @@ def main(argv: Sequence[str] | None = None) -> int:
         detector = CameraPipelineThreeBallDetector(
             CameraName(offset_config.camera_name),
             ball_priors,
-            settings.offset,
+            plan_settings.offset,
         )
         return RecordReplayCycleService(
             context,
             agv_client,
             offset_updater=GlobalOffsetUpdater(offset_config, detector),
-            charuco_initializer=CharucoOffsetInitializer(offset_config, settings),
+            charuco_initializer=CharucoOffsetInitializer(offset_config, plan_settings),
         )
 
     prior_store = RecordReplayPriorStore(PRIOR_DATA_DIR)
+    state_store = ReplayStateStore(RUNTIME_STATE_PATH)
     application = RecordReplayApplication(
         context,
         build_cycle_service,
         config_store,
         device_status_reader,
         prior_store,
+        state_store,
     )
     server = RecordReplayServer(args.host, args.port, application)
+    websocket_server = RecordReplayWebSocketServer(args.websocket_host, WEBSOCKET_PORT, context)
 
     def handle_signal(signum: int, _frame: FrameType | None) -> None:
         logger.warning("record replay service received stop signal={}", signum)
+        application.stop()
         raise KeyboardInterrupt
 
     signal.signal(signal.SIGINT, handle_signal)
@@ -166,11 +177,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         (time.perf_counter() - startup_started_at) * 1000.0,
     )
     try:
+        websocket_server.start()
         server.serve()
     except KeyboardInterrupt:
         logger.info("record replay service stopping")
     finally:
         shutdown_started_at = time.perf_counter()
+        websocket_server.close()
         server.close()
         logger.info("record replay HTTP server socket closed")
         logger.info("record replay waiting for active worker to finish")
@@ -188,8 +201,8 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Dingtai RecordReplay service")
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=6300)
+    parser.add_argument("--websocket-host", default="0.0.0.0")
     parser.add_argument("--start-station", default="1")
-    parser.add_argument("--camera-name", default="left_hand_camera")
     return parser.parse_args(argv)
 
 

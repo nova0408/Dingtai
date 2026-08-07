@@ -1,7 +1,7 @@
 # Dingtai API Gateway API Reference
 
-文档版本：`1.3.0`（2026-08-04）
-Gateway 服务版本：`0.2.2`
+文档版本：`1.5.0`（2026-08-07）
+Gateway 服务版本：`0.3.0`
 正式客户端入口：`https://<orin-host>`（标准 HTTPS 端口 `443`）
 
 Gateway 使用 aiohttp 直接终止 TLS 并监听外部客户端；默认绑定 `0.0.0.0:443`，同时在
@@ -34,6 +34,7 @@ API Gateway 是三个功能性服务的正式客户端入口：
 | `/api/v1/camera/*` | CameraPipeline HTTP | 6400 | 去掉 `/api/v1/camera` 后转发 |
 | `/api/v1/camera-ws/*` | CameraPipeline WebSocket | 6401 | 去掉 `/api/v1/camera-ws` 后转发 |
 | `/api/v1/record-replay/*` | RecordReplay HTTP | 6300 | 去掉 `/api/v1/record-replay` 后转发 |
+| `/api/v1/record-replay-ws` | RecordReplay 状态 WebSocket | 6301 | 转发到 `/api/v1/ws` |
 | `/api/v1/robot-control/*` | RobotControl HTTP | 6500 | 去掉 `/api/v1/robot-control` 后转发 |
 
 三个功能性服务的独立端口只允许用于人工测试、Orin 本地只读诊断和故障排查，不得作为
@@ -47,6 +48,7 @@ Orin 本机的服务间访问和只读诊断必须直接使用内部端口，不
 | CameraPipeline HTTP | `http://127.0.0.1:6400` |
 | CameraPipeline WebSocket | `ws://127.0.0.1:6401` |
 | RecordReplay HTTP | `http://127.0.0.1:6300` |
+| RecordReplay 状态 WebSocket | `ws://127.0.0.1:6301` |
 | RobotControl HTTP | `http://127.0.0.1:6500` |
 
 Gateway 的 `443` 和 `/api/v1/*` 前缀只面向外部客户端。部署脚本对 Gateway 自身的健康检查
@@ -71,6 +73,7 @@ GET /api/v1/gateway/health
     "camera_http": 6400,
     "camera_websocket": 6401,
     "record_replay": 6300,
+    "record_replay_websocket": 6301,
     "robot_control": 6500
   },
   "backend_probe": false
@@ -84,6 +87,43 @@ GET /api/v1/camera/health
 GET /api/v1/record-replay/status
 GET /api/v1/robot-control/health
 ```
+
+### 2.2 RobotControl AR5 七轴软限位
+
+Gateway 会原样转发 RobotControl 的 AR5 软限位只读接口。正式客户端使用统一 Gateway 前缀：
+
+```http
+GET /api/v1/robot-control/ar5/{side}/soft-limits
+```
+
+`side` 必须为 `left` 或 `right`。例如读取右臂：
+
+```http
+GET https://<orin-host>/api/v1/robot-control/ar5/right/soft-limits
+Accept: application/json
+```
+
+成功响应包含七个轴的软限位上下限，单位为 rad：
+
+```json
+{
+  "side": "right",
+  "enabled": true,
+  "axis_count": 7,
+  "limits_rad": [
+    {"axis_index": 0, "lower_rad": -3.14, "upper_rad": 3.14},
+    {"axis_index": 1, "lower_rad": -2.0, "upper_rad": 2.0},
+    {"axis_index": 2, "lower_rad": -2.0, "upper_rad": 2.0},
+    {"axis_index": 3, "lower_rad": -3.14, "upper_rad": 3.14},
+    {"axis_index": 4, "lower_rad": -3.14, "upper_rad": 3.14},
+    {"axis_index": 5, "lower_rad": -3.14, "upper_rad": 3.14},
+    {"axis_index": 6, "lower_rad": -3.14, "upper_rad": 3.14}
+  ]
+}
+```
+
+该接口只读，不改变 AR5 电源、工作模式或拖动状态。RobotControl 返回 `503` 时，Gateway
+保留后端的结构化错误响应，包括 `error`、`message`、`path` 和 `stage` 字段。
 
 ## 3. 客户端配置
 
@@ -104,6 +144,7 @@ replay = RecordReplayClient(
     "https://<orin-host>",
     api_prefix="/api/v1/record-replay",
 )
+# 状态订阅：wss://<orin-host>/api/v1/record-replay-ws
 robot = RobotControlClient(
     "https://<orin-host>",
     api_prefix="/api/v1/robot-control",
@@ -117,6 +158,8 @@ RobotControl 的控制 POST 和 RecordReplay 的 `/start` 仍必须由现场人�
 
 | 文档版本 | 日期 | 内容 |
 | --- | --- | --- |
+| `1.5.0` | 2026-08-07 | 补充 RobotControl AR5 七轴软限位读取接口的统一 Gateway 访问路径和响应契约。 |
+| `1.4.0` | 2026-08-07 | 增加 RecordReplay 状态 WebSocket 的 WSS 统一入口。 |
 | `1.3.0` | 2026-08-04 | Gateway 默认同时监听 IPv4 `0.0.0.0:443` 与 IPv6 `[::]:443`；后端 loopback、hostname 证书和 CORS 约束不变。 |
 | `1.2.0` | 2026-08-03 | 修复 OpenSSL 1.1.1f CA 扩展兼容性，增加 Orin 一键注册脚本 |
 | `1.1.0` | 2026-08-03 | Gateway 由 aiohttp 直接提供 443/TLS；增加 CasiaHand CA 安装前置要求 |

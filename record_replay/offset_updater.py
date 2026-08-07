@@ -22,34 +22,36 @@ class GlobalOffsetUpdater:
         self._config = config
         self._detector = detector
 
-    def should_update_after(self, runtime: ReplayRuntime, csv_name: str) -> bool:
-        """判断当前文件是否为左臂 offset 计算触发文件。"""
-
-        return (
-            runtime.connected_arm.arm_side == "left"
-            and _extract_sequence(csv_name) == runtime.settings.offset.calculate_at_sequence
-        )
-
     def update(self, runtime: ReplayRuntime) -> None:
         """读取当前 TCP 与三球检测结果，计算并写入全局 T_off。"""
 
+        _raise_if_stopped(runtime)
         robot = runtime.connected_arm.robot
         ec = runtime.connected_arm.ec
-        apply_named_toolset(runtime.connected_arm, runtime.settings)
+        apply_named_toolset(
+            runtime.connected_arm,
+            runtime.settings,
+            runtime.stop_event,
+        )
         tcp_pose = retry_non_motion_call(
             f"cartPosture(endInRef, offset-calc:{runtime.connected_arm.arm_side})",
             lambda: robot.cartPosture(xCoreSDK_python.endInRef, ec),
             runtime.settings.non_motion_retry_count,
             runtime.settings.non_motion_retry_delay_s,
+            runtime.stop_event,
         )
         if ec.get("ec", 0) != 0:
             raise RuntimeError("读取当前 TCP 位姿失败，无法计算全局 offset")
         tcp_matrix = _cartesian_pose_to_matrix(tcp_pose)
+        _raise_if_stopped(runtime)
         prior_base_ball = load_prior_base_ball_transform(self._config.prior_capture_path, self._config.hand_eye_result_path)
+        if runtime.stop_event.wait(timeout=max(0.0, runtime.settings.offset.capture_settle_delay_s)):
+            raise RuntimeError("检测到停止请求，终止三球采样前稳定等待")
         samples_mm = [
             np.asarray(sample, dtype=np.float64)
             for sample in self._detector.capture_samples(runtime.settings.offset.sample_count)
         ]
+        _raise_if_stopped(runtime)
         camera_ball = camera_ball_transform_m(samples_mm, runtime.settings.offset)
         runtime.global_cartesian_offset = calculate_global_offset(
             tcp_matrix,
@@ -59,6 +61,13 @@ class GlobalOffsetUpdater:
         )
 
 
+def _raise_if_stopped(runtime: ReplayRuntime) -> None:
+    """阻止停止锁存后的拍摄算法继续请求设备。"""
+
+    if runtime.stop_event.is_set():
+        raise RuntimeError("检测到停止请求，禁止继续执行三球拍摄")
+
+
 def _cartesian_pose_to_matrix(pose: xCoreSDK_python.CartesianPosition) -> np.ndarray:
     """将 SDK 的 trans(m)+rpy(rad) 位姿转换为 4x4 齐次矩阵。"""
 
@@ -66,9 +75,3 @@ def _cartesian_pose_to_matrix(pose: xCoreSDK_python.CartesianPosition) -> np.nda
     matrix[:3, :3] = Rotation.from_euler("xyz", pose.rpy, degrees=False).as_matrix()
     matrix[:3, 3] = np.asarray(pose.trans, dtype=np.float64)
     return matrix
-
-
-def _extract_sequence(csv_name: str) -> int:
-    """解析 CSV 文件名前缀阶段序号。"""
-
-    return int(csv_name.split("_", maxsplit=1)[0])

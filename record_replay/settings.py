@@ -53,26 +53,6 @@ class ReplayArmSettings:
     "调用 moveReset 前连续确认 idle 的次数。"
     reset_ready_poll_interval_s: float = 0.2
     "调用 moveReset 前的状态轮询周期，单位 s。"
-    left_move_abs_j_end_linear_speed_mm_s_by_csv_sequence: tuple[tuple[int, float], ...] = (
-        (-1, 1000.0),
-        (4, 200.0),
-    )
-    "左臂按 CSV 数字序号覆盖 MoveAbsJ 末端线速度；-1 为左臂默认值。"
-    right_move_abs_j_end_linear_speed_mm_s_by_csv_sequence: tuple[tuple[int, float], ...] = (
-        (-1, 1000.0),
-    )
-    "右臂按 CSV 数字序号覆盖 MoveAbsJ 末端线速度；-1 为右臂默认值。"
-    left_move_abs_j_zone_mm_by_csv_sequence: tuple[tuple[int, float], ...] = (
-        (-1, 10.0),
-        (2, 80.0),
-        (4, 0.0),
-        (15, 80.0),
-    )
-    "左臂按 CSV 数字序号覆盖连续 MoveAbsJ 中间点 zone；-1 为左臂默认值。"
-    right_move_abs_j_zone_mm_by_csv_sequence: tuple[tuple[int, float], ...] = (
-        (-1, 10.0),
-    )
-    "右臂按 CSV 数字序号覆盖连续 MoveAbsJ 中间点 zone；-1 为右臂默认值。"
 
 
 @dataclass(frozen=True, slots=True)
@@ -111,10 +91,10 @@ class ReplayHandSettings:
 class ReplayOffsetSettings:
     """三球全局纠偏的触发、采样与鲁棒聚合参数。"""
 
-    target_sequences: frozenset[int] = frozenset({5, 12})
-    "需要应用全局笛卡尔纠偏的 CSV 阶段序号。"
-    calculate_at_sequence: int = 4
-    "完成该左臂 CSV 后计算新的全局纠偏。"
+    calculate_after_action_name: str | None = "calibration"
+    """完成该命名动作后执行三球采样；为空表示本轮不触发。"""
+    target_action_names: frozenset[str] = frozenset({"get_tray", "put_new_tray"})
+    "需要应用全局笛卡尔纠偏的命名动作。"
     sample_count: int = 2
     "单次全局纠偏连续采样次数。"
     detection_timeout_ms: int = 30_000
@@ -129,10 +109,10 @@ class ReplayOffsetSettings:
     "MAD 过小时采用的最小异常距离阈值，单位 mm。"
     narrow_consistency_tolerance_mm: float = 8.0
     "窄 HSV 与宽 HSV 同色球心允许的最大差异，单位 mm。"
-    left_charuco_target_sequences: frozenset[int] = frozenset({2, 15})
-    "左臂应用 ChArUco offset 的 CSV 数字序号。"
-    right_charuco_target_sequences: frozenset[int] = frozenset({2, 3})
-    "右臂应用 ChArUco offset 的 CSV 数字序号。"
+    left_charuco_target_action_names: frozenset[str] = frozenset({"open_door", "close_door"})
+    "左臂应用 ChArUco offset 的命名动作。"
+    right_charuco_target_action_names: frozenset[str] = frozenset({"open_door", "close_door"})
+    "右臂应用 ChArUco offset 的命名动作。"
     charuco_head_yaw_deg: float = 60.0
     "ChArUco 检测前头部 yaw 目标角度，单位 deg。"
     charuco_head_pitch_deg: float = 45.0
@@ -199,6 +179,8 @@ class ReplayServiceSettings:
     "AGV 单次导航到位等待超时，单位 s。"
     agv_navigation_poll_interval_s: float = 1.0
     "AGV runtime info 轮询周期，单位 s。"
+    agv_stop_timeout_s: float = 5.0
+    "AGV Stop RPC 超时时间，单位 s。"
     trigger_poll_interval_s: float = 1.0
     "触发文件等待轮询周期，单位 s。"
     non_motion_retry_count: int = 3
@@ -221,14 +203,14 @@ class ReplayCycleConfig:
     "左臂 CSV 目录。"
     right_record_dir: Path
     "右臂 CSV 目录。"
+    action_sequence_path: Path
+    "固定命名动作顺序 JSON 路径。"
     device_connection: ReplayDeviceConnection
     "双臂、手部和升降设备的现场连接参数。"
     settings: ReplayServiceSettings = field(default_factory=ReplayServiceSettings)
     "服务运行参数的唯一配置对象。"
     start_station: str = "1"
     "启用 AGV 时，执行前导航到的目标站点。"
-    state_prefix: str = "left_"
-    "左臂 CSV 状态名需要删除的文件名前缀。"
     trigger_file: Path | None = None
     "循环服务的触发文件路径。"
 

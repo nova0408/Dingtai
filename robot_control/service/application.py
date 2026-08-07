@@ -36,6 +36,31 @@ class RobotControlApplication:
 
         return self._gateway.read_qmlinker_agv_navigation_map()
 
+    def qmlinker_get_agv_base_state(self) -> dict[str, JsonValue]:
+        """读取 qmlinker AGV 底盘状态。"""
+
+        return self._gateway.read_qmlinker_agv_base_state()
+
+    def qmlinker_get_agv_base_mode(self) -> dict[str, JsonValue]:
+        """读取 qmlinker AGV 底盘控制模式和工作模式。"""
+
+        return self._gateway.read_qmlinker_agv_base_mode()
+
+    def qmlinker_get_agv_base_operation_state(self) -> dict[str, JsonValue]:
+        """读取 qmlinker AGV 底盘原始运行状态位。"""
+
+        return self._gateway.read_qmlinker_agv_base_operation_state()
+
+    def qmlinker_get_agv_base_task_process(self) -> dict[str, JsonValue]:
+        """读取 qmlinker AGV 当前任务和动作进度。"""
+
+        return self._gateway.read_qmlinker_agv_base_task_process()
+
+    def qmlinker_get_agv_base_battery(self) -> dict[str, JsonValue]:
+        """读取 qmlinker AGV 电量和充电状态。"""
+
+        return self._gateway.read_qmlinker_agv_base_battery()
+
     def qmlinker_set_head(
         self, enable: bool | None, yaw_deg: float | None, pitch_deg: float | None
     ) -> ActionResponse:
@@ -196,6 +221,11 @@ class RobotControlApplication:
 
         self._gateway.ar5_stop(side)
         return self._accepted("ar5_stop", f"ar5_{side}")
+
+    def ar5_get_soft_limits(self, side: str) -> dict[str, JsonValue]:
+        """读取指定 AR5 七个轴的软限位。"""
+
+        return self._gateway.read_ar5_soft_limits(side)
 
     @staticmethod
     def _accepted(action: str, device: str) -> ActionResponse:

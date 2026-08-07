@@ -1,86 +1,39 @@
-"""左右臂 CSV 的确定性阶段编排。"""
+"""命名动作计划的只读状态摘要。"""
 
 from __future__ import annotations
 
-from pathlib import Path
-
-from .contracts import CsvExecutionPlan, ReplayExecutionTaskStatus
-from .csv_repository import extract_csv_sequence, extract_sync_csv_sequence
-
-
-def build_execution_plans(left_csv_paths: list[Path], right_csv_paths: list[Path]) -> list[CsvExecutionPlan]:
-    """按旧自动回放规则生成双臂执行计划。"""
-
-    right_by_sequence = {extract_csv_sequence(path.name): path for path in right_csv_paths}
-    right_sequences = sorted(right_by_sequence)
-    consumed: set[int] = set()
-    specs: list[tuple[Path, Path | None, tuple[Path, ...], Path | None, bool]] = []
-    for left_index, left_path in enumerate(left_csv_paths):
-        left_sequence = extract_csv_sequence(left_path.name)
-        sync_sequence = extract_sync_csv_sequence(left_path.name)
-        start_path = right_by_sequence.get(left_sequence) if left_index == 0 else None
-        start_together = start_path is not None and left_index == 0
-        if start_path is not None:
-            consumed.add(left_sequence)
-        pre_sequences: list[int] = []
-        sync_path = None
-        if sync_sequence is not None:
-            sync_path = right_by_sequence.get(sync_sequence)
-            if sync_path is None:
-                raise RuntimeError(
-                    f"左臂 CSV 声明同步右臂文件但不存在：left={left_path.name} right_seq={sync_sequence:02d}"
-                )
-            for sequence in right_sequences:
-                if sequence not in consumed and sequence < sync_sequence:
-                    pre_sequences.append(sequence)
-                    consumed.add(sequence)
-            consumed.add(sync_sequence)
-        elif left_index > 0:
-            future_sync = next(
-                (
-                    extract_sync_csv_sequence(path.name)
-                    for path in left_csv_paths[left_index + 1 :]
-                    if extract_sync_csv_sequence(path.name) is not None
-                ),
-                None,
-            )
-            upper_bound = left_sequence if future_sync is None else future_sync
-            for sequence in right_sequences:
-                if sequence not in consumed and sequence < upper_bound:
-                    pre_sequences.append(sequence)
-                    consumed.add(sequence)
-        specs.append(
-            (left_path, start_path, tuple(right_by_sequence[item] for item in pre_sequences), sync_path, start_together)
-        )
-    trailing = tuple(right_by_sequence[item] for item in right_sequences if item not in consumed)
-    return [
-        CsvExecutionPlan(left, start, pre, sync, trailing if index == len(specs) - 1 else (), together)
-        for index, (left, start, pre, sync, together) in enumerate(specs)
-    ]
+from .action_sequence import ActionSequencePlan, SYNC_ACTION_ORDER
+from .contracts import ReplayExecutionTaskStatus
 
 
 def build_execution_task_statuses(
-    plans: list[CsvExecutionPlan],
+    plan: ActionSequencePlan,
 ) -> tuple[ReplayExecutionTaskStatus, ...]:
-    """将内部计划展开为与实际执行顺序一致的左右臂对齐任务。"""
+    """把左臂冻结动作列表展开为当前任务状态的静态摘要。
 
-    task_pairs: list[tuple[str | None, str | None, bool]] = []
-    for plan in plans:
-        left_executed = False
-        if plan.start_together and plan.right_start_csv_path is not None:
-            task_pairs.append(
-                (plan.left_csv_path.name, plan.right_start_csv_path.name, True)
-            )
-            left_executed = True
-        task_pairs.extend((None, path.name, False) for path in plan.right_pre_stage_csv_paths)
-        if plan.right_sync_csv_path is not None:
-            task_pairs.append(
-                (plan.left_csv_path.name, plan.right_sync_csv_path.name, True)
-            )
-            left_executed = True
-        if not left_executed:
-            task_pairs.append((plan.left_csv_path.name, None, False))
-        task_pairs.extend((None, path.name, False) for path in plan.right_post_stage_csv_paths)
+    执行器的两侧动作分别在线程中按各自 JSON 列表运行，右臂独立动作没有
+    一个真实的全局先后位置。因此当前任务序号以左臂动作列表为基准；右臂
+    独立动作仍通过 ``current_right_*`` 字段实时发布，不伪造一个执行器并不
+    存在的“右臂追加阶段”。
+    """
+
+    one_loop_tasks: list[tuple[str | None, str | None, bool]] = []
+    right_by_function: dict[str, list[int]] = {}
+    for right_position, action in enumerate(plan.right_actions):
+        right_by_function.setdefault(action.item.function_name, []).append(right_position)
+    consumed_right_positions: set[int] = set()
+    for action in plan.left_actions:
+        right_csv: str | None = None
+        synchronized = action.item.function_name in SYNC_ACTION_ORDER
+        if synchronized:
+            candidates = right_by_function.get(action.item.function_name, [])
+            for candidate_position in candidates:
+                if candidate_position not in consumed_right_positions:
+                    right_csv = plan.right_actions[candidate_position].csv_asset.path.name
+                    consumed_right_positions.add(candidate_position)
+                    break
+        one_loop_tasks.append((action.csv_asset.path.name, right_csv, synchronized))
+    tasks = one_loop_tasks * plan.loop_count
     return tuple(
         ReplayExecutionTaskStatus(
             sequence=index,
@@ -88,5 +41,5 @@ def build_execution_task_statuses(
             right_csv=right_csv,
             synchronized=synchronized,
         )
-        for index, (left_csv, right_csv, synchronized) in enumerate(task_pairs, start=1)
+        for index, (left_csv, right_csv, synchronized) in enumerate(tasks, start=1)
     )

@@ -55,6 +55,16 @@ class RecordReplayClient:
             {"enable_agv_navigation": enable_agv_navigation},
         )
 
+    def stop(self) -> dict[str, object]:
+        """请求人工停止并锁存 rapid_stop。"""
+
+        return self._request("POST", "/stop", {})
+
+    def reset(self) -> dict[str, object]:
+        """人工处理完成后请求恢复 idle。"""
+
+        return self._request("POST", "/reset", {})
+
     def _request(
         self,
         method: str,

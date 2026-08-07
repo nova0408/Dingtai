@@ -12,6 +12,7 @@ from scipy.spatial.transform import Rotation
 
 from sdk.xcoresdk import xCoreSDK_python
 
+from .action_sequence import NamedActionPlan
 from .arm_gateway import retry_non_motion_call
 from .contracts import ReplayRow
 from .runtime import ReplayRuntime
@@ -54,6 +55,7 @@ def build_arm_target(runtime: ReplayRuntime, row: ReplayRow) -> ArmMoveTarget:
         lambda: robot.cartPosture(xCoreSDK_python.endInRef, ec),
         runtime.settings.non_motion_retry_count,
         runtime.settings.non_motion_retry_delay_s,
+        runtime.stop_event,
     )
     if ec.get("ec", 0) != 0:
         raise RuntimeError("读取当前笛卡尔位姿失败")
@@ -76,6 +78,7 @@ def build_arm_target(runtime: ReplayRuntime, row: ReplayRow) -> ArmMoveTarget:
         lambda: robot.toolset(ec),
         runtime.settings.non_motion_retry_count,
         runtime.settings.non_motion_retry_delay_s,
+        runtime.stop_event,
     )
     if ec.get("ec", 0) != 0:
         raise RuntimeError("回放 arm 读取 toolset 失败")
@@ -105,59 +108,84 @@ def build_arm_target(runtime: ReplayRuntime, row: ReplayRow) -> ArmMoveTarget:
 # region 连续执行
 
 
-def execute_arm_segment(runtime: ReplayRuntime, rows: list[ReplayRow]) -> None:
-    """将连续 arm 行合并为一次 MoveAbsJ append/start。"""
+def execute_arm_segment(
+    runtime: ReplayRuntime,
+    rows: list[ReplayRow],
+    final_arm_segment: bool = True,
+) -> None:
+    """将连续 arm 行合并为一次 MoveAbsJ append/start。
+
+    ``final_arm_segment`` 指示本段是否包含该 CSV 最后一条 arm 记录；CSV 中间因夹爪、
+    M11 或升降记录而切开的 arm 段不能因此误用 CaptureAction 的 ``final_speed``。
+    """
 
     if not rows:
         return
+    _raise_if_stop_requested(runtime)
     targets = [build_arm_target(runtime, row) for row in rows]
+    _raise_if_stop_requested(runtime)
     commands = []
     for index, target in enumerate(targets):
         segment_end = index == len(targets) - 1
-        csv_end = segment_end or targets[index + 1].row.csv_name != target.row.csv_name
-        zone = 0.0 if csv_end else _resolve_replay_move_abs_j_zone_mm(runtime, target.row.csv_name)
-        speed = _resolve_replay_move_abs_j_end_linear_speed_mm_s(runtime, target.row.csv_name)
+        action = runtime.current_action
+        if action is None:
+            raise RuntimeError("执行 arm 段时缺少当前命名动作")
+        is_final_point = final_arm_segment and segment_end
+        zone = _resolve_action_zone(action, is_final_point)
+        speed = _resolve_action_speed(action, is_final_point)
         commands.append(xCoreSDK_python.MoveAbsJCommand(target.joint, speed, zone))
     robot = runtime.connected_arm.robot
     ec = runtime.connected_arm.ec
+    _raise_if_stop_requested(runtime)
     _wait_until_reset_ready(robot, ec, runtime, rows[0], rows[-1])
-    retry_non_motion_call(
-        f"moveReset(replay-arm-segment:{runtime.connected_arm.arm_side}:{rows[0].csv_name}:{rows[0].row_index}-{rows[-1].row_index})",
-        lambda: robot.moveReset(ec),
-        runtime.settings.non_motion_retry_count,
-        runtime.settings.non_motion_retry_delay_s,
-    )
-    if ec.get("ec", 0) != 0:
-        raise RuntimeError("回放 arm 连续段 moveReset 失败")
-    command_id = xCoreSDK_python.PyString()
-    robot.moveAppend(commands, command_id, ec)
-    if ec.get("ec", 0) != 0:
-        raise RuntimeError("回放 arm 连续段 moveAppend 失败")
-    robot.moveStart(ec)
-    if ec.get("ec", 0) != 0:
-        raise RuntimeError("回放 arm 连续段 moveStart 失败")
-    _wait_until_motion_finished(robot, ec, runtime.settings.arm.motion_state_poll_interval_s)
+    with runtime.connected_arm.command_lock:
+        _raise_if_stop_requested(runtime)
+        retry_non_motion_call(
+            f"moveReset(replay-arm-segment:{runtime.connected_arm.arm_side}:{rows[0].csv_name}:{rows[0].row_index}-{rows[-1].row_index})",
+            lambda: robot.moveReset(ec),
+            runtime.settings.non_motion_retry_count,
+            runtime.settings.non_motion_retry_delay_s,
+            runtime.stop_event,
+        )
+        if ec.get("ec", 0) != 0:
+            raise RuntimeError("回放 arm 连续段 moveReset 失败")
+        _raise_if_stop_requested(runtime)
+        command_id = xCoreSDK_python.PyString()
+        robot.moveAppend(commands, command_id, ec)
+        if ec.get("ec", 0) != 0:
+            raise RuntimeError("回放 arm 连续段 moveAppend 失败")
+        _raise_if_stop_requested(runtime)
+        robot.moveStart(ec)
+        if ec.get("ec", 0) != 0:
+            raise RuntimeError("回放 arm 连续段 moveStart 失败")
+    _wait_until_motion_finished(robot, ec, runtime)
 
 
-def flush_pending_arm_segment(runtime: ReplayRuntime) -> None:
+def flush_pending_arm_segment(
+    runtime: ReplayRuntime,
+    final_arm_segment: bool = True,
+) -> None:
     """执行并清空 runtime 中积累的连续 arm 行。"""
 
     if not runtime.pending_arm_rows:
         return
     rows = list(runtime.pending_arm_rows)
     runtime.pending_arm_rows.clear()
-    execute_arm_segment(runtime, rows)
+    execute_arm_segment(runtime, rows, final_arm_segment)
 
 
 def _wait_until_motion_finished(
     robot: xCoreSDK_python.xMateErProRobot,
     ec: dict[str, object],
-    poll_interval_s: float,
+    runtime: ReplayRuntime,
 ) -> None:
     """轮询控制器直到运动进入 idle 或 unknown。"""
 
     while True:
-        time.sleep(poll_interval_s)
+        if runtime.stop_event.is_set():
+            raise RuntimeError("检测到停止请求，终止等待机械臂运动")
+        if runtime.stop_event.wait(timeout=runtime.settings.arm.motion_state_poll_interval_s):
+            raise RuntimeError("检测到停止请求，终止等待机械臂运动")
         state = robot.operationState(ec)
         if ec.get("ec", 0) != 0:
             raise RuntimeError(f"查询运动状态失败：{ec}")
@@ -179,6 +207,7 @@ def _wait_until_reset_ready(
     idle_count = 0
     last_state_text = ""
     while time.time() < deadline:
+        _raise_if_stop_requested(runtime)
         operation_state = robot.operationState(ec)
         operate_mode = robot.operateMode(ec)
         power_state = robot.powerState(ec)
@@ -189,7 +218,11 @@ def _wait_until_reset_ready(
                 return
         else:
             idle_count = 0
-        time.sleep(arm_settings.reset_ready_poll_interval_s)
+        remaining_s = deadline - time.time()
+        if remaining_s <= 0.0:
+            break
+        if runtime.stop_event.wait(timeout=min(arm_settings.reset_ready_poll_interval_s, remaining_s)):
+            raise RuntimeError("检测到停止请求，终止等待机械臂复位")
     logger.warning(
         "等待 moveReset 就绪超时，继续执行 arm_side={} file={} rows={}-{} {}",
         runtime.connected_arm.arm_side,
@@ -212,59 +245,65 @@ def _deg_to_rad(values: list[float]) -> list[float]:
     return [math.radians(value) for value in values]
 
 
-def _extract_csv_sequence(csv_name: str) -> int:
-    """解析 CSV 文件名前缀的整数阶段序号。"""
-
-    return int(csv_name.split("_", maxsplit=1)[0])
-
-
 def _resolve_cartesian_offset(
     runtime: ReplayRuntime,
     csv_name: str,
 ) -> tuple[np.ndarray | None, str]:
-    """按测试 CLI 的优先级选择当前 CSV 的 ChArUco 或三球纠偏。"""
+    """按当前命名动作的优先级选择 ChArUco 或三球纠偏。"""
 
-    sequence = _extract_csv_sequence(csv_name)
+    del csv_name
+    action = runtime.current_action
+    if action is None:
+        raise RuntimeError("构建 arm 目标时缺少当前命名动作")
+    action_name = action.item.function_name
     charuco_sequences = (
-        runtime.settings.offset.left_charuco_target_sequences
+        runtime.settings.offset.left_charuco_target_action_names
         if runtime.connected_arm.arm_side == "left"
-        else runtime.settings.offset.right_charuco_target_sequences
+        else runtime.settings.offset.right_charuco_target_action_names
     )
-    if sequence in charuco_sequences:
+    use_charuco = action_name in charuco_sequences
+    use_three_ball = action_name in runtime.offset_target_action_names
+    if use_charuco and use_three_ball:
+        raise RuntimeError(f"动作 {action_name} 不能同时应用头部 offset 与三球 offset")
+    if use_charuco:
         if runtime.charuco_cartesian_offset is None:
-            raise RuntimeError(f"CSV {csv_name} 需要 ChArUco offset，但当前尚未完成目标板检测")
+            raise RuntimeError(f"动作 {action_name} 需要 ChArUco offset，但当前尚未完成目标板检测")
+        runtime.offset_source = "head"
         return np.asarray(runtime.charuco_cartesian_offset, dtype=np.float64), "charuco"
-    if sequence in runtime.offset_target_sequences:
+    if use_three_ball:
         if runtime.global_cartesian_offset is None:
-            raise RuntimeError(f"CSV {csv_name} 需要三球 offset，但当前尚未完成三球检测")
+            raise RuntimeError(f"动作 {action_name} 需要三球 offset，但当前尚未完成三球检测")
+        runtime.offset_source = "three_ball"
         return np.asarray(runtime.global_cartesian_offset, dtype=np.float64), "three-ball"
+    runtime.offset_source = "none"
     return None, "none"
 
 
-def _resolve_replay_move_abs_j_end_linear_speed_mm_s(runtime: ReplayRuntime, csv_name: str) -> float:
-    """按机械臂侧别和 CSV 序号选择 MoveAbsJ 末端线速度。"""
+def _resolve_action_speed(action: NamedActionPlan, is_final_point: bool) -> float:
+    """读取动作级速度；capture 的最后一个 arm 点使用 final_speed。"""
 
-    sequence = _extract_csv_sequence(csv_name)
-    entries = (
-        runtime.settings.arm.left_move_abs_j_end_linear_speed_mm_s_by_csv_sequence
-        if runtime.connected_arm.arm_side == "left"
-        else runtime.settings.arm.right_move_abs_j_end_linear_speed_mm_s_by_csv_sequence
-    )
-    values = dict(entries)
-    return values.get(sequence, values[-1])
+    if is_final_point and action.item.action_type == "capture":
+        if action.item.final_speed is None:
+            raise RuntimeError(f"capture 动作缺少 final_speed：{action.item.function_name}")
+        return action.item.final_speed
+    return action.item.speed
 
 
-def _resolve_replay_move_abs_j_zone_mm(runtime: ReplayRuntime, csv_name: str) -> float:
-    """按机械臂侧别和 CSV 序号选择连续 MoveAbsJ 中间点 zone。"""
+def _resolve_action_zone(action: NamedActionPlan, is_final_point: bool) -> float:
+    """读取动作级 zone；capture 最终拍摄点固定使用 zone=0。"""
 
-    sequence = _extract_csv_sequence(csv_name)
-    entries = (
-        runtime.settings.arm.left_move_abs_j_zone_mm_by_csv_sequence
-        if runtime.connected_arm.arm_side == "left"
-        else runtime.settings.arm.right_move_abs_j_zone_mm_by_csv_sequence
-    )
-    values = dict(entries)
-    return values.get(sequence, values[-1])
+    if action.item.action_type == "precise":
+        return 0.0
+    if is_final_point and action.item.action_type == "capture":
+        return 0.0
+    return action.item.zone
+
+
+def _raise_if_stop_requested(runtime: ReplayRuntime) -> None:
+    """在所有可能继续提交运动的边界检查停止锁存。"""
+
+    if runtime.stop_event.is_set():
+        raise RuntimeError("检测到停止请求，禁止继续发送机械臂指令")
 
 
 def _apply_global_offset(

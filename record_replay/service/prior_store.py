@@ -14,6 +14,7 @@ from typing import Literal
 from ..charuco_offset import _load_history, _load_matrix, _load_prior_board
 from ..offset_detector_gateway import load_three_ball_priors
 from ..offset_math import load_tool_camera_transform
+from ..settings import OffsetConfig
 
 PriorKind = Literal["ball_pose", "charuco"]
 "可通过 HTTP 替换的两类 JSON 先验。"
@@ -27,7 +28,7 @@ class PriorValidationResult:
     """一次完整先验检查的结果。"""
 
     errors: tuple[str, ...]
-    "按固定先验文件名归属的缺失或格式错误摘要。"
+    "按先验类别归属的缺失或格式错误摘要。"
 
     @property
     def valid(self) -> bool:
@@ -48,7 +49,7 @@ class PriorReplacement:
     """一次 JSON 先验替换的结果。"""
 
     file_name: str
-    "被替换的固定先验文件名。"
+    "被替换的先验文件名；目标路径来自统一动作 JSON。"
 
     backup_file: str | None
     "旧文件在服务端 `.archive` 下的相对路径；首次创建时为 None。"
@@ -64,29 +65,45 @@ class RecordReplayPriorStore:
         self._service_root = prior_data_dir.parent
         self._archive_dir = self._service_root / ".archive" / "prior_data"
 
-    def validate_all(self) -> PriorValidationResult:
-        """完整检查回放所需的全部先验文件。"""
+    def validate_all(self, offset_config: OffsetConfig | None = None) -> PriorValidationResult:
+        """完整检查本轮统一 JSON 指定的全部先验文件。"""
+
+        config = offset_config if offset_config is not None else OffsetConfig(
+            self._path("ball_pose_prior.json"),
+            self._path("hand_eye_result.txt"),
+            charuco_prior_path=self._path("charuco_board_prior.json"),
+            charuco_history_path=self._path("charuco_offset_history.csv"),
+            left_head_base_camera_path=self._path("left_head_base_camera.npy"),
+            right_head_base_camera_path=self._path("right_head_base_camera.npy"),
+        )
+        if (
+            config.charuco_prior_path is None
+            or config.charuco_history_path is None
+            or config.left_head_base_camera_path is None
+            or config.right_head_base_camera_path is None
+        ):
+            return PriorValidationResult(("统一 JSON 缺少完整 ChArUco 先验路径",))
 
         checks: tuple[tuple[str, Path, Callable[[Path], None]], ...] = (
-            ("ball_pose_prior.json", self._path("ball_pose_prior.json"), self._validate_ball_pose),
-            ("hand_eye_result.txt", self._path("hand_eye_result.txt"), self._validate_hand_eye),
-            ("charuco_board_prior.json", self._path("charuco_board_prior.json"), self._validate_charuco_board),
-            ("charuco_offset_history.csv", self._path("charuco_offset_history.csv"), self._validate_charuco_history),
+            ("ball_pose_prior.json", config.prior_capture_path, self._validate_ball_pose),
+            ("hand_eye_result.txt", config.hand_eye_result_path, self._validate_hand_eye),
+            ("charuco_board_prior.json", config.charuco_prior_path, self._validate_charuco_board),
+            ("charuco_offset_history.csv", config.charuco_history_path, self._validate_charuco_history),
             (
                 "left_head_base_camera.npy",
-                self._path("left_head_base_camera.npy"),
+                config.left_head_base_camera_path,
                 self._validate_left_head_base_camera,
             ),
             (
                 "right_head_base_camera.npy",
-                self._path("right_head_base_camera.npy"),
+                config.right_head_base_camera_path,
                 self._validate_right_head_base_camera,
             ),
         )
         errors: list[str] = []
         for file_name, path, validator in checks:
             if not path.is_file():
-                errors.append(f"{file_name}: 文件不存在")
+                errors.append(f"{file_name}: 文件不存在 path={path}")
                 continue
             try:
                 validator(path)
@@ -94,13 +111,18 @@ class RecordReplayPriorStore:
                 errors.append(f"{file_name}: {exc}")
         return PriorValidationResult(tuple(errors))
 
-    def replace_json(self, kind: PriorKind, payload: object) -> PriorReplacement:
-        """校验并原子替换一种 JSON 先验，同时备份旧文件。"""
+    def replace_json(
+        self,
+        kind: PriorKind,
+        payload: object,
+        target_path: Path | None = None,
+    ) -> PriorReplacement:
+        """校验并原子替换统一 JSON 指定的先验，同时备份旧文件。"""
 
         if not isinstance(payload, dict):
             raise ValueError("先验请求 body 必须是 JSON object")
         file_name = self._file_name(kind)
-        target = self._path(file_name)
+        target = self._resolve_target(target_path if target_path is not None else self._path(file_name))
         temporary = target.with_name(f".{target.name}.upload.tmp")
         target.parent.mkdir(parents=True, exist_ok=True)
         try:
@@ -115,8 +137,18 @@ class RecordReplayPriorStore:
         finally:
             temporary.unlink(missing_ok=True)
 
+    def _resolve_target(self, target_path: Path) -> Path:
+        """校验先验写回路径仍位于服务目录内。"""
+
+        target = target_path.resolve()
+        try:
+            target.relative_to(self._service_root.resolve())
+        except ValueError as error:
+            raise ValueError(f"先验写回路径不得越出服务目录：{target_path}") from error
+        return target
+
     def _path(self, file_name: str) -> Path:
-        """返回固定先验文件路径。"""
+        """返回未提供统一配置时使用的默认先验文件路径。"""
 
         return self._prior_data_dir / file_name
 
