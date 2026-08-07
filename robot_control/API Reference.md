@@ -1,6 +1,6 @@
 # RobotControl API Reference
 
-当前契约版本：`0.10.0`
+当前契约版本：`0.10.1`
 HTTP API 主版本：`1`
 
 本文档描述 `robot_control` 对外 HTTP API 的实际调用方式、状态字段、单位和安全边界。
@@ -36,7 +36,7 @@ Gateway 只移除 `/api/v1/robot-control` 前缀后转发到 RobotControl 的
 
 ```json
 {
-  "service_version": "0.10.0",
+  "service_version": "0.10.1",
   "api_version": "1",
   "hardware_access": "lazy"
 }
@@ -48,7 +48,7 @@ Gateway 只移除 `/api/v1/robot-control` 前缀后转发到 RobotControl 的
 
 ```json
 {
-  "service_version": "0.10.0",
+  "service_version": "0.10.1",
   "api_version": "1",
   "devices": [
     {
@@ -182,7 +182,7 @@ Accept: text/event-stream
 ```text
 event: robot_status
 id: 0
-data: {"service_version":"0.10.0","api_version":"1","devices":[]}
+data: {"service_version":"0.10.1","api_version":"1","devices":[]}
 
 ```
 
@@ -546,7 +546,7 @@ POST /api/v1/ar5/{side}/move-elbow
 
 ```json
 {
-  "service_version": "0.10.0",
+  "service_version": "0.10.1",
   "api_version": "1",
   "accepted": true,
   "data": {

@@ -1,6 +1,12 @@
 # RobotControl 版本日志
 
-当前版本：`0.10.0`
+当前版本：`0.10.1`
+
+## 0.10.1 - 2026-08-07
+
+### 修复
+
+- 将 RobotControl 使用的 qmlinker、AGV、右手和 AR5 适配器收回 `robot_control/devices/`，服务部署不再依赖仓库 `src/`。
 
 ## 0.10.0 - 2026-08-07
 

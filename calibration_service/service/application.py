@@ -22,11 +22,14 @@ from urllib.request import ProxyHandler, Request, build_opener
 import cv2
 import numpy as np
 from scipy.spatial.transform import Rotation
-from camera_pipeline.client import CameraName
-from camera_pipeline.service.http_client import CameraPipelineHttpClient
-from camera_pipeline.service.protocol import CharucoDetectionRequest, CharucoDetectionResponse
-from src.calibration.hand_eye import calibrate_hand_eye_from_pose_sequences
-from src.wuji.prior_calibration import (
+from .camera_client import (
+    CameraName,
+    CameraPipelineHttpClient,
+    CharucoDetectionRequest,
+    CharucoDetectionResponse,
+)
+from .hand_eye import calibrate_hand_eye_from_pose_sequences
+from .prior_calibration import (
     PriorCalibrationConfig,
     PriorCalibrationRecorder,
 )
@@ -463,7 +466,7 @@ class CalibrationApplication:
                 pair_mode=pair_mode,
                 method=method,
             )
-            matrix = np.asarray(result.transform.as_SE3(), dtype=np.float64).reshape(4, 4)
+            matrix = np.asarray(result.transform, dtype=np.float64).reshape(4, 4)
             staging_dir = _create_staging_dir()
             try:
                 _write_hand_eye(

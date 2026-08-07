@@ -12,9 +12,8 @@ from types import FrameType
 from loguru import logger
 from qmlinker import QMGripper, QMHead, QMLift, QMMoveBase, create_channel
 
-from camera_pipeline.client import CameraName
-
 from ..action_sequence import ActionSequencePlan
+from ..camera_client import CameraName
 from ..charuco_offset import CharucoOffsetInitializer
 from ..context import ReplayContext
 from ..cycle_service import RecordReplayCycleService

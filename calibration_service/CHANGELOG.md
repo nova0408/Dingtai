@@ -1,6 +1,12 @@
 # Calibration Service 版本日志
 
-当前版本：`1.1.0`
+当前版本：`1.1.1`
+
+## 1.1.1 - 2026-08-07
+
+### 修复
+
+- 收回手眼算法、先验记录算法和 CameraPipeline HTTP 协议 DTO；服务运行时不再导入仓库 `src/` 或 CameraPipeline Python 包。
 
 ## 1.1.0 - 2026-08-07
 

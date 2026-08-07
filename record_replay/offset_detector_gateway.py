@@ -10,11 +10,12 @@ from typing import Protocol
 import numpy as np
 from loguru import logger
 
-from camera_pipeline.ball_pose_detection.protocol import (
+from .camera_client import (
     BallPoseDetectionRequest,
     BallPosePriorInfo,
+    CameraName,
+    CameraPipelineHttpClient,
 )
-from camera_pipeline.client import CameraName, CameraPipelineClient
 
 from .offset_detection import ordered_three_ball_centers
 from .settings import ReplayOffsetSettings
@@ -301,7 +302,7 @@ class CameraPipelineThreeBallDetector:
     "检测请求使用的三球先验。"
     settings: ReplayOffsetSettings
     "三球检测与鲁棒聚合参数。"
-    service_addr: str = "tcp://127.0.0.1:6200"
+    service_url: str = "http://127.0.0.1:6400"
     "CameraPipeline 服务地址；正式服务固定使用 Orin 本机地址。"
 
     def capture_samples(self, sample_count: int) -> list[tuple[tuple[float, float, float], ...]]:
@@ -311,9 +312,9 @@ class CameraPipelineThreeBallDetector:
         物理直径和三球模型坐标，因此回退不会绕过尺寸与几何约束。
         """
 
-        client = CameraPipelineClient(
-            service_addr=self.service_addr,
-            timeout_ms=self.settings.detection_timeout_ms,
+        client = CameraPipelineHttpClient(
+            base_url=self.service_url,
+            timeout_s=self.settings.detection_timeout_ms,
         )
         samples: list[tuple[tuple[float, float, float], ...]] = []
         ordered_colors = tuple(prior.color_hex for prior in self.priors)
@@ -389,7 +390,7 @@ class CameraPipelineThreeBallDetector:
 
     def _detect_centers_with_retries(
         self,
-        client: CameraPipelineClient,
+        client: CameraPipelineHttpClient,
         *,
         request_id_base: int,
         priors: tuple[BallPosePriorInfo, ...],
@@ -418,7 +419,7 @@ class CameraPipelineThreeBallDetector:
 
     def _detect_centers(
         self,
-        client: CameraPipelineClient,
+        client: CameraPipelineHttpClient,
         *,
         request_id: int,
         priors: tuple[BallPosePriorInfo, ...],

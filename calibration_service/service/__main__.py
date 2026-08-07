@@ -7,10 +7,10 @@ import signal
 from collections.abc import Sequence
 from types import FrameType
 
-from camera_pipeline.service.http_client import CameraPipelineHttpClient
 from loguru import logger
 
 from .application import CalibrationApplication
+from .camera_client import CameraPipelineHttpClient
 from .server import CalibrationServer
 
 

@@ -1,6 +1,6 @@
 # 双臂记录回放服务
 
-当前 RecordReplay 服务业务语义版本：`2.2.0`。本次升级沿用
+当前 RecordReplay 服务业务语义版本：`2.2.1`。本次升级沿用
 `test/wuji/record_replay_cli.py` 的动作命名作为参考，但不改变该人工验证入口的版本语义。
 
 面向 GUI 和其它项目的完整 HTTP 契约见 [API Reference](API%20Reference.md)，机器可读描述见
@@ -9,8 +9,8 @@
 本服务从 `test/wuji/record_replay_cli.py` 拆分而来，位于仓库根目录，和
 `camera_pipeline` 同级。业务代码不导入 `test`，在 Orin 上直接连接机械臂、
 qmlinker、AGV 和 Orin 本机部署的 camera_pipeline，并由 HTTP API 触发一轮执行。
-三球和 Board 检测全部通过 `CameraPipelineClient` 的业务接口完成；本服务不导入、配置或
-描述 camera_pipeline 内部使用的传输实现，也不自行订阅相机帧或实现检测算法。
+三球和 Board 检测全部通过本服务内的 `camera_client.py` HTTP 协议适配完成；本服务不导入
+CameraPipeline Python 包、不引用仓库 `src/`，也不自行订阅相机帧或实现检测算法。
 
 ## 固定数据目录
 

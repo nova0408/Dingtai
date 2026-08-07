@@ -5,9 +5,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 
-import zmq
-from camera_pipeline.client import CameraName, CameraPipelineClient
-from camera_pipeline.service.protocol import CharucoDetectionRequest
+from .camera_client import CameraName, CameraPipelineHttpClient, CharucoDetectionRequest
 
 
 @dataclass(frozen=True, slots=True)
@@ -26,7 +24,7 @@ class BoardDetectionConfig:
     rpc_timeout_s: float = 55.0
     timeout_retry_count: int = 3
     timeout_retry_delay_s: float = 1.0
-    service_addr: str = "tcp://127.0.0.1:6200"
+    service_url: str = "http://127.0.0.1:6400"
 
 
 class CameraPipelineBoardDetector:
@@ -39,9 +37,9 @@ class CameraPipelineBoardDetector:
         """返回有效的 T_camera_board；未检测到 Board 时抛出明确异常。"""
 
         config = self._config
-        client = CameraPipelineClient(
-            service_addr=config.service_addr,
-            timeout_ms=int(config.rpc_timeout_s * 1000.0),
+        client = CameraPipelineHttpClient(
+            base_url=config.service_url,
+            timeout_s=config.rpc_timeout_s,
         )
         try:
             request = CharucoDetectionRequest(
@@ -56,13 +54,13 @@ class CameraPipelineBoardDetector:
                 stable_timeout_s=config.stable_timeout_s,
             )
             response = None
-            last_timeout: zmq.Again | None = None
+            last_error: Exception | None = None
             for attempt in range(1, config.timeout_retry_count + 1):
                 try:
                     response = client.detect_charuco(request)
                     break
-                except zmq.Again as error:
-                    last_timeout = error
+                except (TimeoutError, OSError, RuntimeError) as error:
+                    last_error = error
                     if attempt == config.timeout_retry_count:
                         break
                     time.sleep(config.timeout_retry_delay_s)
@@ -70,7 +68,7 @@ class CameraPipelineBoardDetector:
                 raise TimeoutError(
                     f"ChArUco RPC 连续超时 attempts={config.timeout_retry_count} "
                     f"timeout={config.rpc_timeout_s:.1f}s"
-                ) from last_timeout
+                ) from last_error
         finally:
             client.close()
         if response.status != "detected" or len(response.t_cam_board_mm) != 4:

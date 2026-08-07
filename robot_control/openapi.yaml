@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: RobotControl HTTP API
-  version: 0.10.0
+  version: 0.10.1
   description: >-
     qmlinker 与 AR5 xCoreSDK 统一服务。GET 状态接口可用于只读诊断；POST 控制接口可能
     使真实设备动作，只能由现场人员手动发起。

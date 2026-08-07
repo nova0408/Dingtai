@@ -24,7 +24,8 @@ description: 安全维护 Dingtai 根目录 robot_control 统一机器人控制�
 
 1. `robot_control/` 是根目录独立服务包，负责统一 HTTP 边界、设备生命周期、状态协议和控制路由。
 2. `robot_control/gateway.py` 负责 qmlinker/xCoreSDK 适配，不负责 HTTP 路由；`robot_control/service/` 负责 API、启动和客户端。
-3. 复用现有 `src/wuji` 客户端和 `sdk/xcoresdk`，不在 HTTP 层复制 SDK 协议细节。
+3. 复用 `robot_control/devices/` 内的服务本地设备适配器和远端 `sdk/xcoresdk`，不在 HTTP 层复制 SDK 协议细节；
+   RobotControl 运行时和部署清单不得引用仓库 `src/`。
    远端部署使用 Orin 已有 Linux xCoreSDK 二进制，不得同步本机 Windows SDK 二进制。
 4. qmlinker 与 AR5 的设备对象必须延迟创建；导入模块、构造配置和健康检查不得连接或控制硬件。
 5. 只读 GET 与控制 POST 必须保持清晰边界。AR5 控制客户端默认使用
@@ -54,7 +55,7 @@ description: 安全维护 Dingtai 根目录 robot_control 统一机器人控制�
 
 ## 修改流程
 
-1. 先阅读 `robot_control/README.md`、`API Reference.md`、`CHANGELOG.md`、`openapi.yaml`、服务入口和对应的现有 `src/wuji` 客户端。
+1. 先阅读 `robot_control/README.md`、`API Reference.md`、`CHANGELOG.md`、`openapi.yaml`、服务入口和 `robot_control/devices/` 内的设备适配器。
 2. 修改已有文件前，在项目根 `.archive/` 中按相对路径生成 UTF-8 快照；删除、移动和重命名也必须先快照。
 3. 先设计 dataclass、设备边界和错误语义，再修改 gateway、application、server 或 client。
 4. 仅为控制能力补充实现，不为通过检查改变默认单位、时序、重试、模式或设备安全门。

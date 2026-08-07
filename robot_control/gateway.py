@@ -506,11 +506,11 @@ class RobotControlGateway:
             return
         from qmlinker import create_channel
 
-        from src.wuji.agv_client import WujiAgvClient
-        from src.wuji.body_client import WujiBodyClient
-        from src.wuji.dahuan_gripper_client import DahuanGripperClient
-        from src.wuji.head_client import WujiHeadClient
-        from src.wuji.right_hand_client import WujiRightHandClient
+        from .devices.agv_client import WujiAgvClient
+        from .devices.body_client import WujiBodyClient
+        from .devices.dahuan_gripper_client import DahuanGripperClient
+        from .devices.head_client import WujiHeadClient
+        from .devices.right_hand_client import WujiRightHandClient
 
         self._qmlinker_channel = create_channel(
             f"{self._settings.qmlinker_host}:{self._settings.qmlinker_port}"
@@ -540,7 +540,7 @@ class RobotControlGateway:
             client = self._ar5_clients.get(side)
             if client is not None:
                 return client
-            from src.wuji.ar5_client import Ar5Client, Ar5ConnectionConfig
+            from .devices.ar5_client import Ar5Client, Ar5ConnectionConfig
 
             robot_ip = (
                 self._settings.left_ar5_ip

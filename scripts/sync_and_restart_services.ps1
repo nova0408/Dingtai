@@ -96,12 +96,6 @@ $cameraPipelineVersionPath = Join-Path $cameraPipelinePath "service/protocol.py"
 $recordReplayVersionPath = Join-Path $recordReplayPath "__init__.py"
 $robotControlVersionPath = Join-Path $robotControlPath "__init__.py"
 $apiGatewayVersionPath = Join-Path $apiGatewayPath "__init__.py"
-$robotControlSourceInitPath = Join-Path $projectRoot "src/__init__.py"
-$robotControlSourceDirectories = @(
-    (Join-Path $projectRoot "src/wuji"),
-    (Join-Path $projectRoot "src/arm"),
-    (Join-Path $projectRoot "src/robotics")
-)
 $restartScriptPaths = @(
     (Join-Path $projectRoot "scripts/restart_camera_pipeline_service.sh"),
     (Join-Path $projectRoot "scripts/restart_record_replay_service.sh"),
@@ -132,14 +126,6 @@ if (-not (Test-Path -LiteralPath $apiGatewayServicePath -PathType Leaf)) {
 }
 if (-not (Test-Path -LiteralPath $robotControlServicePath -PathType Leaf)) {
     throw "缺少本机 RobotControl systemd 服务文件：$robotControlServicePath"
-}
-if (-not (Test-Path -LiteralPath $robotControlSourceInitPath -PathType Leaf)) {
-    throw "缺少本机 src 包入口：$robotControlSourceInitPath"
-}
-foreach ($sourceDirectory in $robotControlSourceDirectories) {
-    if (-not (Test-Path -LiteralPath $sourceDirectory -PathType Container)) {
-        throw "缺少 RobotControl 依赖源码目录：$sourceDirectory"
-    }
 }
 foreach ($restartScriptPath in $restartScriptPaths) {
     if (-not (Test-Path -LiteralPath $restartScriptPath -PathType Leaf)) {
@@ -501,11 +487,6 @@ if ($RobotControlOnly) {
         $deployFiles = @(
             Get-ChildItem -LiteralPath $robotControlPath -Recurse -File |
                 Where-Object { Test-DeployFile -File $_ }
-            Get-Item -LiteralPath $robotControlSourceInitPath
-            $robotControlSourceDirectories | ForEach-Object {
-                Get-ChildItem -LiteralPath $_ -Recurse -File |
-                    Where-Object { Test-DeployFile -File $_ }
-            }
         )
         if ($deployFiles.Count -eq 0) {
             throw "RobotControl 部署清单为空"
@@ -535,11 +516,7 @@ if ($RobotControlOnly) {
             "--exclude=*.log",
             "-C",
             $projectRoot,
-            "robot_control",
-            "src/__init__.py",
-            "src/wuji",
-            "src/arm",
-            "src/robotics"
+            "robot_control"
         )
 
         $remoteScript = @'
@@ -566,7 +543,7 @@ case "${stage_path}" in
 esac
 
 expected_count="$(wc -l < "${manifest_path}")"
-actual_stage_count="$(find "${stage_path}/robot_control" "${stage_path}/src" -type f ! -name '*.pyc' ! -name '*.log' ! -path '*/__pycache__/*' | wc -l)"
+actual_stage_count="$(find "${stage_path}/robot_control" -type f ! -name '*.pyc' ! -name '*.log' ! -path '*/__pycache__/*' | wc -l)"
 if [[ "${actual_stage_count}" -ne "${expected_count}" ]]; then
   echo "[deploy] RobotControl staged file count mismatch expected=${expected_count} actual=${actual_stage_count}"
   exit 1
@@ -595,11 +572,7 @@ mkdir -p "${archive_root}"
 if [[ -d "${workspace}/robot_control" ]]; then
   mv "${workspace}/robot_control" "${archive_root}/robot_control"
 fi
-if [[ -d "${workspace}/src" ]]; then
-  mv "${workspace}/src" "${archive_root}/src"
-fi
 mv "${stage_path}/robot_control" "${workspace}/robot_control"
-mv "${stage_path}/src" "${workspace}/src"
 
 install -m 0644 \
   "${workspace}/robot_control/service/robot-control.service" \
@@ -932,15 +905,6 @@ try {
             Where-Object { Test-DeployFile -File $_ }
         Get-ChildItem -LiteralPath $apiGatewayPath -Recurse -File |
             Where-Object { Test-DeployFile -File $_ }
-        Get-Item -LiteralPath $robotControlSourceInitPath
-        $robotControlSourceDirectories | ForEach-Object {
-            Get-ChildItem -LiteralPath $_ -Recurse -File |
-                Where-Object { Test-DeployFile -File $_ }
-        }
-        Get-ChildItem -LiteralPath (Join-Path $projectRoot "src/calibration") -Recurse -File |
-            Where-Object { Test-DeployFile -File $_ }
-        Get-ChildItem -LiteralPath (Join-Path $projectRoot "src/utils") -Recurse -File |
-            Where-Object { Test-DeployFile -File $_ }
         $restartScriptPaths | ForEach-Object { Get-Item -LiteralPath $_ }
     )
     if ($deployFiles.Count -eq 0) {
@@ -982,12 +946,6 @@ try {
         "calibration_service",
         "robot_control",
         "api_gateway",
-        "src/__init__.py",
-        "src/wuji",
-        "src/arm",
-        "src/robotics",
-        "src/calibration",
-        "src/utils",
         "scripts/restart_camera_pipeline_service.sh",
         "scripts/restart_record_replay_service.sh",
         "scripts/restart_robot_control_service.sh",
@@ -1071,7 +1029,7 @@ trap cleanup EXIT
 
 expected_count="$(wc -l < "${manifest_path}")"
 actual_stage_count="$(
-  find "${stage_path}/camera_pipeline" "${stage_path}/record_replay" "${stage_path}/calibration_service" "${stage_path}/robot_control" "${stage_path}/api_gateway" "${stage_path}/src" \
+  find "${stage_path}/camera_pipeline" "${stage_path}/record_replay" "${stage_path}/calibration_service" "${stage_path}/robot_control" "${stage_path}/api_gateway" \
     "${stage_path}/scripts/restart_camera_pipeline_service.sh" \
     "${stage_path}/scripts/restart_record_replay_service.sh" \
     "${stage_path}/scripts/restart_robot_control_service.sh" \
@@ -1169,9 +1127,6 @@ fi
 if [[ -d "${workspace}/api_gateway" ]]; then
   mv "${workspace}/api_gateway" "${archive_root}/api_gateway"
 fi
-if [[ -d "${workspace}/src" ]]; then
-  mv "${workspace}/src" "${archive_root}/src"
-fi
 for restart_script_name in \
   "restart_camera_pipeline_service.sh" \
   "restart_record_replay_service.sh" \
@@ -1188,7 +1143,6 @@ mv "${stage_path}/record_replay" "${workspace}/record_replay"
 mv "${stage_path}/calibration_service" "${workspace}/calibration_service"
 mv "${stage_path}/robot_control" "${workspace}/robot_control"
 mv "${stage_path}/api_gateway" "${workspace}/api_gateway"
-mv "${stage_path}/src" "${workspace}/src"
 mkdir -p "${workspace}/scripts"
 mv "${stage_path}/scripts/restart_camera_pipeline_service.sh" \
   "${workspace}/scripts/restart_camera_pipeline_service.sh"

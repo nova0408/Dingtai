@@ -27,7 +27,9 @@ description: 安全维护、迁移、部署、版本管理和评审 Dingtai 根�
    - gateway 负责设备连接与协议收窄。
    - action/executor/cycle 模块负责业务动作与编排。
    - `service/` 只负责 API、进程生命周期和业务桥接，不复制运动逻辑。
-5. `record_replay` 可依赖同级 `camera_pipeline` 公共协议与 Orin 已安装第三方包，运行时禁止导入仓库 `src` 或 `test`。
+5. `record_replay` 只依赖自身代码、明确的第三方包和 Orin 本机服务 HTTP 契约，运行时禁止导入
+   `camera_pipeline`、`calibration_service`、`robot_control`、仓库 `src` 或 `test` 的 Python 包。
+   CameraPipeline 检测通过 `record_replay/camera_client.py` 的本地 DTO 和 HTTP 客户端完成。
    先验拍摄和手眼计算由同级 `calibration_service` 提供；该服务只读取 RobotControl 状态、
    请求 CameraPipeline 拍摄和执行计算，不提供任何设备控制接口，默认使用 Orin 本机 6600 端口。
    Calibration Service 有独立版本和变更日志；仅新增该独立服务不升级 RecordReplay 版本。
@@ -44,7 +46,8 @@ description: 安全维护、迁移、部署、版本管理和评审 Dingtai 根�
    必须先校验，成功后原子替换，旧文件备份到服务端 `record_replay/.archive/prior_data/`。
    `.archive` 是服务端运行备份，必须从部署归档和清单中排除。
 10. 先验 JSON 与预录 CSV 属于部署源文件，必须和 Python 代码一起参与本机与 Orin 文件清单及 SHA-256 校验。
-11. 三球与 Board 检测只调用 Orin 本机部署的 `CameraPipelineClient` 业务方法；`record_replay/` 禁止导入、配置或描述底层 ZMQ。
+11. 三球与 Board 检测只调用 `record_replay/camera_client.py` 的 HTTP 业务方法；`record_replay/`
+    禁止导入 CameraPipeline Python 包、配置或描述底层 ZMQ。
 12. 左右臂 IP 和现场设备地址由 Orin 服务入口固定，不允许本机测试或 API 覆盖。
 
 ## CameraPipeline 依赖部署
@@ -109,7 +112,7 @@ Windows 与 Linux 输出路径不同，比较前只保留相对于 `record_repla
 
 ## 版本与变更日志
 
-1. `record_replay/CHANGELOG.md` 是服务功能版本号的唯一权威来源，当前基线版本为 `2.2.0`。
+1. `record_replay/CHANGELOG.md` 是服务功能版本号的唯一权威来源，当前基线版本为 `2.2.1`。
 2. 版本号必须使用 `a.b.c`：
    - `a`：重大重构或重大更新。
    - `b`：功能调整，包括新增、删除或改变 HTTP API、回放流程及设备行为。

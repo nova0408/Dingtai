@@ -1,0 +1,257 @@
+from __future__ import annotations
+
+import math
+from collections.abc import Iterator, Sequence
+from typing import Any, cast
+
+from qmlinker import QMHand
+from qmlinker.grpc_py import hand_pb2
+
+from .right_hand_specs import (
+    WujiRightHandActuatorSpec,
+    build_right_hand_actuator_specs,
+)
+
+DEFAULT_RIGHT_HAND_SPEED_RATIO = 0.5
+"右手下发默认速度比例，单位 归一化比例。现场 hand_m_example.py 也是该值。"
+
+DEFAULT_RIGHT_HAND_FORCE_LIMIT = 0.5
+"右手下发默认力控上限，单位 归一化比例。现场 hand_m_example.py 也是该值。"
+# 注意：
+# - 现场冒烟时曾把该值写成 0.0，表现为指令看似下发但手无动作。
+# - 这里固定使用 0.5，和当前 ROS 侧示例保持一致，避免后续再踩坑。
+# - 调用方只需要传归一化位置，速度和力限不再暴露给上层用户。
+
+
+# region 右手客户端
+
+
+class WujiRightHandClient(QMHand):
+    """无际 M6 右手灵巧手客户端。
+
+    职责边界：
+    - 直接继承 `QMHand`，负责右手状态读取、使能控制和状态下发。
+    - 不承担左手夹爪语义，左手应由专用 gripper 客户端处理。
+
+    设计思想：
+    - 当前右手硬件为 M6，执行器数量与名称以 qmlinker `hand_info` 为运行时真值。
+    - 控制前根据运行时规格校验目标数量，避免向 M6 下发长度不匹配的命令。
+    - 仅保留右手语义，不再支持左手作为通用 hand。
+
+    生命周期：
+    - 依赖外部传入的 qmlinker channel。
+    - 不持有线程或任务队列。
+
+    继承关系：
+    - 直接继承 `QMHand`。
+    """
+
+    def __init__(self, channel: object, request_timeout_s: float = 3.0) -> None:
+        """创建右手客户端。
+
+        Parameters
+        ----------
+        channel:
+            qmlinker `create_channel()` 返回的基础 channel 或 channel dict。
+        request_timeout_s:
+            单次 unary 请求超时时间，单位 s。
+        """
+
+        super().__init__(channel, cast(str, QMHand.HAND_RIGHT))
+        self._request_timeout_s = float(request_timeout_s)
+
+    def get_right_hand_values(self) -> dict[str, float]:
+        """读取右手执行器位置。"""
+
+        request = hand_pb2.GetHandStateRequest()
+        request.hand_id = cast(Any, self.hand_id)
+        request.include_tactile = False
+        response = self.stub.GetHandState(request, timeout=self._request_timeout_s)
+        values: dict[str, float] = {}
+        for actuator in response.actuators:
+            axis_name = f"right_hand_a{int(actuator.actuator_id)}"
+            values[axis_name] = float(actuator.position)
+        return values
+
+    def stream_right_hand_values(self) -> Iterator[dict[str, float]]:
+        """持续读取右手执行器位置。
+
+        Notes
+        -----
+        该接口直接复用 qmlinker 提供的 `StreamGetHandState` 流接口，
+        供 GUI 高频状态刷新线程消费。
+        """
+
+        for state in super().stream_get_hand_state(include_tactile=False):
+            actuators = state.get("actuators", [])
+            values: dict[str, float] = {}
+            if not isinstance(actuators, list):
+                continue
+            for actuator in actuators:
+                if not isinstance(actuator, dict):
+                    continue
+                actuator_id = actuator.get("actuator_id")
+                position = actuator.get("position")
+                if not isinstance(actuator_id, int | float) or not isinstance(position, int | float):
+                    continue
+                values[f"right_hand_a{int(actuator_id)}"] = float(position)
+            if values:
+                yield values
+
+    def _validate_normalized_position(self, target_value: float, *, axis_name: str) -> float:
+        """校验右手目标值必须是 0 到 1 的归一化值。
+
+        Parameters
+        ----------
+        target_value:
+            目标位置，必须是有限浮点数，且落在 `0.0` 到 `1.0` 之间。
+        axis_name:
+            用于错误信息的轴名。
+
+        Returns
+        -------
+        float
+            归一化后的目标值。
+
+        Raises
+        ------
+        ValueError
+            当目标值不是有限数，或超出 `0.0` 到 `1.0` 范围时抛出。
+        """
+
+        value = float(target_value)
+        if not math.isfinite(value):
+            raise ValueError(f"{axis_name} 目标值必须是有限数，当前为 {target_value!r}")
+        if value < 0.0 or value > 1.0:
+            raise ValueError(f"{axis_name} 目标值必须在 0-1 之间，当前为 {value:.6f}")
+        return value
+
+    def get_right_hand_actuator_count(self) -> int:
+        """从 qmlinker 手部信息读取右手执行器数量。
+
+        Returns
+        -------
+        int
+            当前右手执行器数量，单位 个。
+        """
+
+        return len(self.get_right_hand_instance_specs())
+
+    def get_right_hand_instance_specs(self) -> tuple[WujiRightHandActuatorSpec, ...]:
+        """根据 qmlinker 手部信息返回当前右手执行器规格。
+
+        Returns
+        -------
+        tuple[WujiRightHandActuatorSpec, ...]
+            当前右手执行器规格，顺序与 qmlinker actuator_id 一致。
+
+        Raises
+        ------
+        RuntimeError
+            手部信息不可用，或返回字段类型不符合协议。
+        ValueError
+            执行器数量与执行器名称数量不一致。
+        """
+
+        hand_info = self.get_hand_info()
+        if hand_info is None:
+            raise RuntimeError("右手信息不可用")
+
+        actuator_count = hand_info.get("actuator_count")
+        if not isinstance(actuator_count, int):
+            raise RuntimeError(f"右手 actuator_count 类型异常: {actuator_count!r}")
+
+        actuator_names = hand_info.get("actuator_names")
+        if not isinstance(actuator_names, list) or not all(isinstance(name, str) for name in actuator_names):
+            raise RuntimeError(f"右手 actuator_names 类型异常: {actuator_names!r}")
+
+        return build_right_hand_actuator_specs(
+            actuator_count=actuator_count,
+            actuator_names=actuator_names,
+        )
+
+    def set_right_hand_axis(self, actuator_id: int, target_value: float) -> bool:
+        """设置右手单轴目标值。
+
+        Notes
+        -----
+        调用方只需要提供归一化目标值 `target_value`。
+        速度比例和力控上限由 client 内部固定，不再由上层调用方传入。
+        """
+
+        normalized_target_value = self._validate_normalized_position(
+            target_value,
+            axis_name=f"right_hand_a{int(actuator_id)}",
+        )
+        actuator_specs = self.get_right_hand_instance_specs()
+        current_values = self.get_right_hand_values()
+        positions = [
+            normalized_target_value
+            if spec.actuator_id == int(actuator_id)
+            else self._validate_normalized_position(
+                self._get_required_current_value(current_values, spec.axis_name),
+                axis_name=spec.axis_name,
+            )
+            for spec in actuator_specs
+        ]
+        return bool(self.set_hand_state(positions))
+
+    def _get_required_current_value(self, current_values: dict[str, float], axis_name: str) -> float:
+        """读取当前轴值，缺失时直接抛错。
+
+        Parameters
+        ----------
+        current_values:
+            当前右手各轴位置映射，键为轴名，值为 0 到 1 的归一化位置。
+        axis_name:
+            需要读取的轴名。
+
+        Returns
+        -------
+        float
+            当前轴位置。
+
+        Raises
+        ------
+        RuntimeError
+            当当前状态缺少指定轴时抛出。
+        """
+
+        if axis_name not in current_values:
+            raise RuntimeError(f"当前右手状态缺少 {axis_name}，拒绝下发。")
+        return float(current_values[axis_name])
+
+    def set_hand_state(self, actuator_commands: Sequence[float]) -> bool:
+        """按运行时 M6 执行器规格下发右手状态。
+
+        Parameters
+        ----------
+        actuator_commands:
+            归一化位置序列，数量必须与 qmlinker `hand_info` 的执行器数量一致。
+
+        Notes
+        -----
+        调用方只需要传入当前 M6 的归一化位置值。
+        当前 `wuyou` 端右手示例链路对 `speed_ratio` 和 `force_limit` 都使用 `0.5`。
+        现场曾验证过把 `force_limit` 误设为 `0.0` 时，命令可能已经到达但手部不发生有效动作。
+        因此这里固定使用示例一致的默认值，不再回退到 `0.0`。
+        """
+
+        actuator_specs = self.get_right_hand_instance_specs()
+        normalized_positions = [
+            self._validate_normalized_position(position, axis_name=spec.axis_name)
+            for spec, position in zip(actuator_specs, actuator_commands, strict=True)
+        ]
+        command_frames = [
+            {
+                "actuator_id": spec.actuator_id,
+                "position": float(position),
+                "speed_ratio": DEFAULT_RIGHT_HAND_SPEED_RATIO,
+                "force_limit": DEFAULT_RIGHT_HAND_FORCE_LIMIT,
+            }
+            for spec, position in zip(actuator_specs, normalized_positions, strict=True)
+        ]
+        return bool(super().set_hand_state(command_frames))
+
+
+# endregion

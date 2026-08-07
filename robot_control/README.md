@@ -122,8 +122,9 @@ AGV、AR5 急停恢复、拖动和 Jog 路径及字段见 `openapi.yaml` 与 `AP
 
 ## 部署依赖
 
-服务复用仓库现有 `src/wuji`、`src/arm`、`src/robotics` 客户端和远端 Linux `sdk/xcoresdk`、qmlinker 环境。
-推荐使用下面的脚本只部署本服务；脚本会同步所需 Python 源码，但不会把本机 Windows xCoreSDK 二进制覆盖到 Orin：
+服务使用本包 `robot_control/devices/` 内的 qmlinker、AGV、右手和 AR5 适配器，以及远端 Linux
+`sdk/xcoresdk`、qmlinker 环境；运行时不引用仓库 `src/`。推荐使用下面的脚本只部署本服务；
+脚本会同步所需 Python 源码，但不会把本机 Windows xCoreSDK 二进制覆盖到 Orin：
 
 ```powershell
 pwsh -NoProfile -File .\scripts\sync_and_restart_services.ps1 -RobotControlOnly

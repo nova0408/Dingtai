@@ -1,7 +1,7 @@
 # RecordReplay API Reference
 
-文档版本：`2.2.0`（2026-08-07）
-服务业务版本：`2.2.0`
+文档版本：`2.2.1`（2026-08-07）
+服务业务版本：`2.2.1`
 默认监听：`http://<orin>:6300`
 
 机器可读文件：[OpenAPI 3.1](openapi.yaml)。
@@ -12,14 +12,14 @@ RecordReplay 会控制机械臂、AGV、夹爪、M11 和升降机构。服务启
 不会自动开始回放；`POST /start` 会启动真实业务线程。GUI 可以读取状态和配置，但不能
 把 `start` 当作普通查询接口调用。任何真实启动都必须由现场人员确认设备区域安全后手动发起。
 
-RecordReplay 通过内部 `CameraPipelineClient` 调用 CameraPipeline 的 ZMQ 业务 client，
-不直接使用 CameraPipeline 的 ZMQ wire codec。GUI 和其它项目只需要访问 RecordReplay
-的 HTTP API。
+RecordReplay 通过本服务内的 `camera_client.py` 调用 CameraPipeline 的 HTTP 检测接口，
+不导入 CameraPipeline Python 包，也不直接使用其 ZMQ wire codec。GUI 和其它项目只需要
+访问 RecordReplay 的 HTTP API。
 
 ## 2. 通用约定
 
 - Content-Type：`application/json; charset=utf-8`。
-- 当前服务版本：`2.2.0`，与 `record_replay/CHANGELOG.md` 一致。
+- 当前服务版本：`2.2.1`，与 `record_replay/CHANGELOG.md` 一致。
 - 根目录同步脚本支持 `-RecordReplayOnly`，只替换并重启 RecordReplay；替换前检查 RecordReplay
   为 `idle`/`waiting` 且 CameraPipeline 在 6200 端口就绪，替换后校验文件清单、SHA-256、只读
   `/status` 和版本，不发送 `/start`；`runtime_state.json` 等运行产物不纳入清单。
