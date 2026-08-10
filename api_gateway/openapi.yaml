@@ -8,7 +8,7 @@ info:
     `0.0.0.0:443` 与 IPv6 `[::]:443`。客户端必须预先安装并信任
     CasiaHand Root CA。后端服务的完整协议仍以各自目录中的 OpenAPI/AsyncAPI 为准。
 servers:
-  - url: https://<orin-host>
+  - url: https://<orin-ip>
 paths:
   /api/v1/gateway/health:
     get:

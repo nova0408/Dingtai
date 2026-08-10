@@ -1,7 +1,7 @@
 # CasiaHand 自签名 CA 与 API Gateway 证书
 
 API Gateway 在 aiohttp 进程内直接终止 TLS，并正式监听 `443`。没有额外的 Nginx、Caddy
-或其它反向代理。所有正式客户端在首次访问 `https://<orin-host>` 前，必须先安装并信任
+或其它反向代理。所有正式客户端在首次访问 `https://<orin-ip>` 前，必须先安装并信任
 `CasiaHand Root CA`；禁止用 `verify=False`、`curl -k` 或忽略浏览器告警代替证书安装。
 
 `generated/` 和所有私钥都被排除在 Git 与服务同步清单之外。CasiaHand CA 私钥必须保存在
@@ -12,27 +12,35 @@ API Gateway 在 aiohttp 进程内直接终止 TLS，并正式监听 `443`。没�
 ## 1. 正式生成
 
 新 Orin 只需要执行注册脚本，不需要填写 hostname、SAN 或任何路径参数。脚本自动读取当前
-`hostname`，并固定使用 `/home/wuji-brain/casiahand-pki`：
+`hostname`，并固定使用 `/home/wuji-brain/casiahand-pki`。服务器证书同时包含当前 hostname、
+`192.168.100.70` 和 `192.168.1.1` 到 `192.168.1.254` 的 IP SAN；明确不包含网段地址
+`192.168.1.0` 和广播地址 `192.168.1.255`：
 
 ```bash
 bash /home/wuji-brain/workspace/api_gateway/certificates/scripts/register_api_gateway.sh
 ```
 
-脚本会要求设置 CA 私钥口令，自动创建 CA、签发当前 hostname 的服务器证书、安装服务器证书
-并执行安装后校验。它不需要参数，也不会覆盖已有 PKI 目录。
+脚本会要求输入已有加密 CA 私钥的口令，或在首次建立 CA 时要求设置口令；随后签发服务器
+证书、安装服务器证书并执行安装后校验。它不会覆盖已有的服务器 PKI 输出目录；重新签发前
+必须先把现有 `orin` 目录移动到带时间戳的备份目录。
 
-CA 是签发机构，本身不验证主机名或 IP。服务器证书 SAN 只包含当前 `hostname` 的 DNS 名，
-不包含任何 IP 地址；签发脚本和安装脚本只用当前 hostname 做证书链校验，不执行 IP 校验。
-客户端必须使用该 hostname 访问，不能使用 IP 地址替代。服务器证书有效期为 825 天，CA 有效期
-为 10 年，应在到期前重新签发并部署。
+CA 是签发机构，本身不验证主机名或 IP。服务器证书的身份校验由客户端根据 URL 执行：使用
+hostname 时匹配 DNS SAN，使用 IP 时匹配完全相同的 IP SAN。服务器证书有效期为 825 天，CA
+有效期为 10 年，应在到期前重新签发并部署。重新签发服务器证书不会改变 Root CA，已经信任
+该 Root CA 的客户端不需要重新安装证书。
 
 ### 新 Orin 快速注册
 
-注册脚本会安装服务器证书，但不会把 CA 公钥安装到客户端，也不会替换 Gateway 代码。脚本结束后，
-先把输出目录中的 `casiahand-root-ca.cer` 复制到 Windows/Linux/Android 客户端并安装信任，
+注册脚本会安装服务器证书，但不会把 CA 公钥安装到客户端，也不会替换 Gateway 代码。使用已有
+Root CA 时，脚本结束后无需重新安装客户端 CA；新 CA 只允许用于首次建立 CA 的受控流程。
+首次建立 CA 时，应把输出目录中的 `casiahand-root-ca.cer` 复制到 Windows/Linux/Android 客户端并安装信任，
 再在项目根目录运行 `scripts/sync_and_restart_services.ps1 -ApiGatewayOnly` 更新并重启 Gateway。
-重复注册前必须先归档现有
-`/home/wuji-brain/casiahand-pki/ca` 和 `orin` 目录；脚本不会覆盖已有 CA 或服务器私钥。
+重复注册前必须先归档现有 `/home/wuji-brain/casiahand-pki/orin` 目录；CA 目录应保留并作为
+受控 CA 资产，不要为每台 Orin 重新创建不同 Root CA。
+
+如果新 Orin 必须复用现有 Root CA，应从受控离线位置临时恢复加密的 `ca` 目录到
+`/home/wuji-brain/casiahand-pki/ca`，运行注册脚本并输入 CA 私钥口令；注册完成后确认服务器
+证书已安装，再从 Orin 工作目录移除 CA 私钥，只保留服务器证书、私钥、完整链和 CA 公钥。
 
 ## 2. 安装到 Orin
 
@@ -52,6 +60,10 @@ gateway_hostname=$(hostname)
 curl --cacert /etc/dingtai/api-gateway/tls/casiahand-root-ca.crt.pem \
   --resolve "${gateway_hostname}:443:127.0.0.1" \
   "https://${gateway_hostname}/api/v1/gateway/health"
+
+# 直接使用 Orin 固定 IP 验证 IP SAN
+curl --cacert /etc/dingtai/api-gateway/tls/casiahand-root-ca.crt.pem \
+  "https://192.168.100.70/api/v1/gateway/health"
 ```
 
 ## 3. Windows 客户端安装
@@ -106,6 +118,7 @@ pwsh -NoProfile -File .\api_gateway\certificates\scripts\stage_ca_android.ps1
 并在应用清单的 `<application>` 上设置
 `android:networkSecurityConfig="@xml/network_security_config"`。正式发布时应评估把 CasiaHand
 CA 公钥随应用打包并只信任该 CA，避免扩大到全部用户 CA；不得在 Dio 中关闭证书校验。
+Flutter Web 仍由浏览器执行 CA 信任和 IP SAN 校验，内置 Flutter 资源不能替代浏览器/系统信任库安装。
 
 ## 6. 更新与撤销
 

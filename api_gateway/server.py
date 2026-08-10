@@ -26,7 +26,13 @@ _HOP_BY_HOP_HEADERS = frozenset(
     }
 )
 _WEBSOCKET_MAX_MESSAGE_SIZE = 16 * 1024 * 1024
-_CORS_ALLOWED_ORIGINS = frozenset({"https://wujibrain-desktop"})
+_CORS_ALLOWED_ORIGINS = frozenset(
+    {
+        "https://wujibrain-desktop",
+        "https://192.168.100.70",
+        *(f"https://192.168.1.{last_octet}" for last_octet in range(1, 255)),
+    }
+)
 _CORS_ALLOWED_LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 _CORS_ALLOWED_HEADERS = "Accept, Content-Type"
 _CORS_ALLOWED_METHODS = "GET, POST, PUT, PATCH, DELETE, OPTIONS"
@@ -292,7 +298,7 @@ async def _cors_middleware(
 
 
 def _allowed_cors_origin(origin: str | None) -> str | None:
-    """只允许本机开发 GUI 和正式 hostname 来源，拒绝任意来源反射。"""
+    """只允许本机开发 GUI 和证书覆盖的正式来源，拒绝任意来源反射。"""
 
     if not origin:
         return None

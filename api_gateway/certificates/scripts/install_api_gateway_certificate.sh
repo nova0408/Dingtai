@@ -5,6 +5,10 @@ if (( $# != 0 )); then
   echo "此脚本不需要参数，直接运行即可。" >&2
   exit 2
 fi
+
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+source "${script_dir}/api_gateway_certificate_sans.sh"
+
 if (( EUID != 0 )); then
   echo "run this script with sudo" >&2
   exit 1
@@ -50,6 +54,7 @@ installed_fullchain="${install_dir}/api-gateway.fullchain.pem"
 installed_key="${install_dir}/api-gateway.key.pem"
 gateway_hostname="$(hostname)"
 openssl verify -CAfile "${installed_ca}" -verify_hostname "${gateway_hostname}" "${installed_cert}"
+api_gateway_verify_certificate_ip_sans "${installed_ca}" "${installed_cert}"
 openssl x509 -in "${installed_fullchain}" -noout -subject -issuer -dates >/dev/null
 installed_cert_public_key="$(openssl x509 -in "${installed_cert}" -pubkey -noout | openssl sha256)"
 installed_key_public_key="$(openssl pkey -in "${installed_key}" -pubout | openssl sha256)"

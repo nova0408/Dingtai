@@ -1,8 +1,8 @@
 # Dingtai API Gateway API Reference
 
-文档版本：`1.5.0`（2026-08-07）
+文档版本：`1.6.0`（2026-08-10）
 Gateway 服务版本：`0.3.0`
-正式客户端入口：`https://<orin-host>`（标准 HTTPS 端口 `443`）
+正式客户端入口：`https://<orin-ip>`（标准 HTTPS 端口 `443`）
 
 Gateway 使用 aiohttp 直接终止 TLS 并监听外部客户端；默认绑定 `0.0.0.0:443`，同时在
 同一端口监听 `[::]:443`，不需要额外部署一层反向代理。CameraPipeline、RecordReplay 和
@@ -10,9 +10,10 @@ RobotControl 仍是 Orin 内部服务，Gateway 通过 `127.0.0.1` 访问它们�
 
 所有正式客户端在首次使用前都必须安装并信任 `CasiaHand Root CA`。平台安装方法见
 [`certificates/README.md`](certificates/README.md)。禁止使用 `verify=False`、`curl -k` 或
-忽略浏览器证书告警。CasiaHand CA 只作为签发机构，不验证主机名或 IP；服务器证书 SAN 只包含
-Orin 的 hostname，不包含 IP 地址。签发和安装脚本只按该 hostname 校验证书链，不执行 IP 校验。
-正式客户端必须使用该 hostname 访问 Gateway，不支持用 IP 地址替代 hostname。
+忽略浏览器证书告警。CasiaHand CA 只作为签发机构，不验证主机名或 IP；服务器证书 SAN 包含
+当前 Orin hostname、`192.168.100.70` 和 `192.168.1.1–192.168.1.254`。正式客户端可以使用
+其中任意一个实际转发到 Gateway 443 的 IP 地址，客户端按 URL 中的 IP 执行标准 IP SAN 校验。
+重新签发服务器证书不会改变 Root CA，客户端不需要重新安装同一个 Root CA。
 
 CameraPipeline WebSocket 的单条 CPWS1 消息上限为 16 MiB，足以承载当前 RGBD 帧；超过
 该上限的消息会被 Gateway 拒绝。
@@ -99,7 +100,7 @@ GET /api/v1/robot-control/ar5/{side}/soft-limits
 `side` 必须为 `left` 或 `right`。例如读取右臂：
 
 ```http
-GET https://<orin-host>/api/v1/robot-control/ar5/right/soft-limits
+GET https://<orin-ip>/api/v1/robot-control/ar5/right/soft-limits
 Accept: application/json
 ```
 
@@ -135,18 +136,18 @@ from record_replay.service.client import RecordReplayClient
 from robot_control.service.client import RobotControlClient
 
 camera = CameraPipelineHttpClient(
-    "https://<orin-host>",
-    websocket_url="wss://<orin-host>",
+    "https://<orin-ip>",
+    websocket_url="wss://<orin-ip>",
     api_prefix="/api/v1/camera",
     websocket_prefix="/api/v1/camera-ws",
 )
 replay = RecordReplayClient(
-    "https://<orin-host>",
+    "https://<orin-ip>",
     api_prefix="/api/v1/record-replay",
 )
-# 状态订阅：wss://<orin-host>/api/v1/record-replay-ws
+# 状态订阅：wss://<orin-ip>/api/v1/record-replay-ws
 robot = RobotControlClient(
-    "https://<orin-host>",
+    "https://<orin-ip>",
     api_prefix="/api/v1/robot-control",
 )
 ```
@@ -160,7 +161,7 @@ RobotControl 的控制 POST 和 RecordReplay 的 `/start` 仍必须由现场人�
 | --- | --- | --- |
 | `1.5.0` | 2026-08-07 | 补充 RobotControl AR5 七轴软限位读取接口的统一 Gateway 访问路径和响应契约。 |
 | `1.4.0` | 2026-08-07 | 增加 RecordReplay 状态 WebSocket 的 WSS 统一入口。 |
-| `1.3.0` | 2026-08-04 | Gateway 默认同时监听 IPv4 `0.0.0.0:443` 与 IPv6 `[::]:443`；后端 loopback、hostname 证书和 CORS 约束不变。 |
+| `1.3.0` | 2026-08-04 | Gateway 默认同时监听 IPv4 `0.0.0.0:443` 与 IPv6 `[::]:443`；后端 loopback、证书和 CORS 约束不变。 |
 | `1.2.0` | 2026-08-03 | 修复 OpenSSL 1.1.1f CA 扩展兼容性，增加 Orin 一键注册脚本 |
 | `1.1.0` | 2026-08-03 | Gateway 由 aiohttp 直接提供 443/TLS；增加 CasiaHand CA 安装前置要求 |
 | `1.0.0` | 2026-08-03 | 明确三个功能性服务正式访问 Gateway，独立端口仅用于测试和诊断 |

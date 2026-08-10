@@ -22,8 +22,10 @@ Windows 客户端可在仓库根目录直接执行
 
 Orin 本机访问示例：CameraPipeline HTTP `http://127.0.0.1:6400`、CameraPipeline WebSocket
 `ws://127.0.0.1:6401`、RecordReplay `http://127.0.0.1:6300`、RobotControl
-`http://127.0.0.1:6500`、Calibration Service `http://127.0.0.1:6600`。外部客户端才使用
-`https://<orin-host>` 和下方统一 URL 前缀。
+`http://127.0.0.1:6500`、Calibration Service `http://127.0.0.1:6600`。外部客户端使用
+`https://<orin-ip>` 和下方统一 URL 前缀；当前服务器证书支持 `192.168.100.70` 与
+`192.168.1.1–192.168.1.254` 的 IP SAN（不包含 `.0` 和 `.255`）。客户端输入的 IP 必须是实际转发到 Orin Gateway
+443 的入口地址。
 
 ## URL 映射
 
@@ -39,14 +41,14 @@ Orin 本机访问示例：CameraPipeline HTTP `http://127.0.0.1:6400`、CameraPi
 例如：
 
 ```text
-GET  https://<orin-host>/api/v1/camera/health
-GET  https://<orin-host>/api/v1/camera/cameras/head_camera/status
-GET  https://<orin-host>/api/v1/record-replay/status
-GET  https://<orin-host>/api/v1/robot-control/health
-GET  https://<orin-host>/api/v1/calibration/status
-SSE  https://<orin-host>/api/v1/robot-control/status/stream?interval_s=0.2
-WS   wss://<orin-host>/api/v1/camera-ws/cameras/head_camera/color
-WS   wss://<orin-host>/api/v1/record-replay-ws
+GET  https://<orin-ip>/api/v1/camera/health
+GET  https://<orin-ip>/api/v1/camera/cameras/head_camera/status
+GET  https://<orin-ip>/api/v1/record-replay/status
+GET  https://<orin-ip>/api/v1/robot-control/health
+GET  https://<orin-ip>/api/v1/calibration/status
+SSE  https://<orin-ip>/api/v1/robot-control/status/stream?interval_s=0.2
+WS   wss://<orin-ip>/api/v1/camera-ws/cameras/head_camera/color
+WS   wss://<orin-ip>/api/v1/record-replay-ws
 ```
 
 `GET /api/v1/gateway/health` 只表示 Gateway 自身能够响应，并返回后端端口配置；它不会探测后端服务、相机或机器人。后端服务健康检查必须访问对应的带前缀 URL。
@@ -62,21 +64,21 @@ from robot_control.service.client import RobotControlClient
 from calibration_service.service.client import CalibrationServiceClient
 
 camera = CameraPipelineHttpClient(
-    "https://<orin-host>",
-    websocket_url="wss://<orin-host>",
+    "https://<orin-ip>",
+    websocket_url="wss://<orin-ip>",
     api_prefix="/api/v1/camera",
     websocket_prefix="/api/v1/camera-ws",
 )
 replay = RecordReplayClient(
-    "https://<orin-host>",
+    "https://<orin-ip>",
     api_prefix="/api/v1/record-replay",
 )
 robot = RobotControlClient(
-    "https://<orin-host>",
+    "https://<orin-ip>",
     api_prefix="/api/v1/robot-control",
 )
 calibration = CalibrationServiceClient(
-    "https://<orin-host>",
+    "https://<orin-ip>",
     api_prefix="/api/v1/calibration",
 )
 ```

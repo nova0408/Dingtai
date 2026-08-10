@@ -9,6 +9,8 @@ fi
 ca_dir="/home/wuji-brain/casiahand-pki/ca"
 output_dir="/home/wuji-brain/casiahand-pki/orin"
 common_name="$(hostname)"
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+source "${script_dir}/api_gateway_certificate_sans.sh"
 
 ca_key="${ca_dir}/casiahand-root-ca.key.pem"
 ca_cert="${ca_dir}/casiahand-root-ca.crt.pem"
@@ -30,7 +32,7 @@ for path in "${key_path}" "${csr_path}" "${cert_path}" "${fullchain_path}" \
   [[ ! -e "${path}" ]] || { echo "refused: output exists: ${path}" >&2; exit 1; }
 done
 
-san_csv="DNS:${common_name}"
+san_csv="DNS:${common_name},$(api_gateway_certificate_san_csv)"
 
 extension_file="$(mktemp "${output_dir}/api-gateway.extensions.XXXXXX")"
 trap 'rm -f -- "${extension_file}"' EXIT
@@ -57,5 +59,6 @@ chmod 0644 "${csr_path}" "${cert_path}" "${fullchain_path}" \
   "${output_ca_cert}" "${output_ca_der}"
 
 openssl verify -CAfile "${ca_cert}" -verify_hostname "${common_name}" "${cert_path}"
+api_gateway_verify_certificate_ip_sans "${ca_cert}" "${cert_path}"
 openssl x509 -in "${cert_path}" -noout -subject -issuer -dates -ext subjectAltName
 echo "API Gateway certificate created: ${fullchain_path}"
