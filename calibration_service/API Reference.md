@@ -1,6 +1,6 @@
 # Calibration Service API Reference
 
-文档版本：`1.1.1`（2026-08-07）
+文档版本：`1.2.0`（2026-08-10）
 默认内部地址：`http://127.0.0.1:6600`  
 正式外部前缀：`https://<orin-host>/api/v1/calibration`
 
@@ -16,6 +16,7 @@ CameraPipeline 拍摄和执行计算，不发送设备控制请求。设备姿�
 | GET | `/api/v1/results/head-eye/{arm_side}` | 读取头部眼在手外 `T_base_camera` |
 | GET | `/api/v1/results/prior/head` | 读取头部 ChArUco 先验 JSON |
 | GET | `/api/v1/results/prior/hand` | 读取手部三球先验 JSON |
+| GET | `/api/v1/hand-eye/config` | 读取手眼 ChArUco 默认参数和当前 OpenCV 可用字典 |
 
 通过 Gateway 访问时，把内部 `/api/v1` 替换为 `/api/v1/calibration`，例如：
 `GET /api/v1/calibration/results/head-eye/left`。
@@ -29,7 +30,7 @@ CameraPipeline 拍摄和执行计算，不发送设备控制请求。设备姿�
 
 不存在的结果返回 `accepted=false` 和可复制的错误文本。
 
-## POST 接口
+## 写接口
 
 | 方法 | 内部路径 | 作用 |
 | --- | --- | --- |
@@ -43,6 +44,29 @@ CameraPipeline 拍摄和执行计算，不发送设备控制请求。设备姿�
 | POST | `/api/v1/head-eye/sample` | 采集指定侧头部眼在手外样本 |
 | POST | `/api/v1/hand-eye/solve` | 求解并缓存 `T_tool_cam`，等待二次确认 |
 | POST | `/api/v1/head-eye/solve` | 求解并缓存指定侧 `T_base_camera`，等待二次确认 |
+| PATCH | `/api/v1/hand-eye/config` | 部分修改手眼 ChArUco 默认参数，不触发拍摄 |
+
+手眼采样的默认板参数为：
+
+```json
+{
+  "dictionary_name": "DICT_APRILTAG_16H5",
+  "squares_x": 4,
+  "squares_y": 4,
+  "square_length_mm": 20.0,
+  "marker_length_mm": 14.0,
+  "min_charuco_corners": 6,
+  "max_frames": 300,
+  "stable_timeout_s": 10.0,
+  "enable_debug": false
+}
+```
+
+`GET /api/v1/hand-eye/config` 返回 `data.config` 和
+`data.available_dictionary_names`。字典列表由服务运行时的
+`cv2.aruco` 预定义字典动态生成，更新时 `dictionary_name` 必须来自该列表；其它字段可在
+`PATCH` body 中按需提供。配置只在当前服务进程内生效，服务重启后恢复上述默认值。配置更新
+不会连接设备或触发拍摄；拍摄任务执行期间更新会返回 `409`。
 
 `start/end` body 使用：
 

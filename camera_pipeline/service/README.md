@@ -147,7 +147,7 @@ systemd 模板位于 `camera-pipeline.service`，进程启动、停止上限分�
 
 ## 协议与安全边界
 
-请求包含 `protocol_version`，当前内部 ZMQ 版本为 `10`。对外 HTTP 使用功能版本 `1.10.0`，
+请求包含 `protocol_version`，当前内部 ZMQ 版本为 `10`。对外 HTTP 使用功能版本 `1.11.0`，
 WebSocket 使用 `CPWS1` 版本 `1`。版本 8 为三球先验增加每球专属
 `hsv_ranges`，并在检测结果中返回 `observed_hsv`。相机相关请求必须显式携带
 `camera_name`；版本 9 在 `CameraStatusResponse` 中增加必填 `service_version`，

@@ -120,7 +120,8 @@ CSV 内容。服务部署目录 `record_replay/records/` 与录制源目录不�
 
 迁移只重命名文件，不改写 CSV 内容。迁移前必须保存 `.archive/record_replay/records/` 快照，并在迁移后比较每个 CSV 的 SHA-256 内容哈希。
 
-新版本直接采用新命名，不保留“数字前缀或新命名均可”的兼容分支。
+服务动作绑定仍采用新命名；为方便继续录制，允许 CSV 文件名最前面保留纯数字前缀，
+仅在动作名匹配时忽略该前缀，实际执行仍使用原始文件名。
 
 ## 4. 三类底层动作
 
@@ -667,8 +668,8 @@ ChArUco 稳定等待均已接入停止事件；停止事件生效后不会继续
   `complete_execution_task`；该边界会校验 JSON 任务清单中的左右 CSV 配对和循环顺序，WSS/HTTP 发布的
   `current_task_active` 因此不再只是覆盖式索引；状态更新未提供新 `plan_index` 时会保留当前索引，
   进入 idle 时才清除本轮索引。
-- 纯离线不变量断言已通过：数字前缀 CSV 被拒绝，新 index 文件名正确解析，capture 末点慢速且 `zone=0` 生效，
-  capture 前段和 fast arm 点使用动作项 zone，precise 强制 `zone=0`，状态订阅只保留最新快照，idle 清除任务进度，
+- 纯离线不变量断言已通过：新 index 文件名正确解析，capture 末点慢速且 `zone=0` 生效；当前版本另外兼容
+  纯数字前缀 CSV。capture 前段和 fast arm 点使用动作项 zone，precise 强制 `zone=0`，状态订阅只保留最新快照，idle 清除任务进度，
   stop 标志置位时 AGV 不发送导航；有限循环
   计划展开两轮得到 30 个左臂任务。该结果不替代现场运动和停止验证。
 - 纯 AST 护栏检查已通过：`record_replay/` 未使用 `getattr`、`eval`、`exec` 或 `__import__` 等动态分发，

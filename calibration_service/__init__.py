@@ -1,6 +1,6 @@
 """Dingtai 手眼标定与先验记录服务。"""
 
-CALIBRATION_SERVICE_VERSION = "1.1.1"
+CALIBRATION_SERVICE_VERSION = "1.2.0"
 "服务功能版本。"
 
 __all__ = ["CALIBRATION_SERVICE_VERSION"]

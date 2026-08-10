@@ -28,6 +28,70 @@ class PriorUploadResponse:
 
 
 @dataclass(frozen=True, slots=True)
+class ReplayPlanAction:
+    """启动前展示的一项只读回放动作。"""
+
+    sequence: int
+    "当前机械臂侧在展开循环中的执行序号，从 1 开始。"
+
+    loop: int
+    "该动作所属的循环序号，从 1 开始。"
+
+    csv: str
+    "实际执行的 CSV 文件名，保留磁盘上的数字前缀。"
+
+    action_name: str
+    "统一动作 JSON 中的 function_name。"
+
+    action_type: str
+    "动作类型：capture、fast 或 precise。"
+
+    speed: float
+    "动作 speed，单位 mm/s。"
+
+    zone: float
+    "动作 zone，单位 mm。"
+
+    index: int | None = None
+    "多目标动作 index；普通动作为空。"
+
+    final_speed: float | None = None
+    "capture 动作末点速度，单位 mm/s。"
+
+    settle_delay: float | None = None
+    "capture 动作稳定等待时间，单位 s。"
+
+    row_count: int = 0
+    "对应 CSV 的可执行数据行数。"
+
+
+@dataclass(frozen=True, slots=True)
+class RecordReplayPlanResponse:
+    """启动前读取的冻结动作计划摘要。"""
+
+    state: ReplayServiceState
+    "当前服务阶段。"
+
+    accepted: bool = True
+    "计划是否成功读取。"
+
+    action_sequence_sha256: str | None = None
+    "本次读取的 action_sequence.json SHA-256。"
+
+    loop_count: int = 0
+    "动作顺序配置中的循环次数。"
+
+    left: tuple[ReplayPlanAction, ...] = ()
+    "左臂按实际执行顺序展开后的动作。"
+
+    right: tuple[ReplayPlanAction, ...] = ()
+    "右臂按实际执行顺序展开后的动作。"
+
+    error_text: str | None = None
+    "读取或校验失败原因。"
+
+
+@dataclass(frozen=True, slots=True)
 class RecordReplayResponse:
     """HTTP API 返回的服务状态与可选持久化参数。"""
 

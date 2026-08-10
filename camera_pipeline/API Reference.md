@@ -1,7 +1,7 @@
 # CameraPipeline API Reference
 
 文档版本：`1.0.4`（2026-08-03）
-CameraPipeline 功能版本：`1.10.0`
+CameraPipeline 功能版本：`1.11.0`
 内部 ZMQ 线协议：`CPW1` / `PROTOCOL_VERSION=10`
 外部 WebSocket 帧协议：`CPWS1` / `protocol_version=1`
 
@@ -39,7 +39,7 @@ URL 统一使用小写和短横线；路径参数使用简短资源名；JSON bo
 ```json
 {
   "ok": true,
-  "service_version": "1.10.0",
+  "service_version": "1.11.0",
   "zmq_protocol_version": 10,
   "data": {},
   "error": null
@@ -51,7 +51,7 @@ URL 统一使用小写和短横线；路径参数使用简短资源名；JSON bo
 ```json
 {
   "ok": false,
-  "service_version": "1.10.0",
+  "service_version": "1.11.0",
   "zmq_protocol_version": 10,
   "data": null,
   "error": {"code": "invalid_request", "message": "ValueError: ..."}
@@ -80,7 +80,7 @@ URL 统一使用小写和短横线；路径参数使用简短资源名；JSON bo
 GET /api/v1/health
 ```
 
-`data`：`{"service_version":"1.10.0","zmq_protocol_version":10}`。该接口只表示
+`data`：`{"service_version":"1.11.0","zmq_protocol_version":10}`。该接口只表示
 HTTP 适配层可响应，不保证任意相机已有首帧；请使用相机状态接口判断相机可用性。
 
 ### 3.2 相机清单
@@ -95,7 +95,7 @@ GET /api/v1/cameras
 {
   "cameras": [
     {
-      "service_version": "1.10.0",
+      "service_version": "1.11.0",
       "camera_name": "left_hand_camera",
       "camera_id": "LEFT",
       "camera_model": "unknown",
@@ -249,7 +249,7 @@ Content-Type: application/json
 }
 ```
 
-当前只支持 `DICT_APRILTAG_16H5`；横纵方格至少为 `2`；方格和 marker 边长必须满足
+`dictionary_name` 必须是当前 OpenCV `cv2.aruco` 暴露的预定义字典；横纵方格至少为 `2`；方格和 marker 边长必须满足
 `0 < marker_length_mm < square_length_mm`；最少角点至少为 `4`；`max_frames` 和
 `stable_timeout_s` 必须大于 `0`。服务端自行构造 Board、等待纯彩色稳定帧并执行 PnP。
 
@@ -348,5 +348,5 @@ finally:
 | `1.0.1` | 2026-07-31 | 统一 URL、OpenAPI operationId 和 AsyncAPI 标识命名 |
 | `1.0.0` | 2026-07-31 | 新增 HTTP/JSON、CPWS1 WebSocket、OpenAPI 和 AsyncAPI 说明 |
 
-服务功能版本见 `camera_pipeline/CHANGELOG.md`；本次外部 API 新增使功能版本升级为
-`1.10.0`，内部 ZMQ `PROTOCOL_VERSION=10` 不变。
+服务功能版本见 `camera_pipeline/CHANGELOG.md`；本次 ChArUco 字典能力扩展使功能版本升级为
+`1.11.0`，内部 ZMQ `PROTOCOL_VERSION=10` 不变。

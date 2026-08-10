@@ -4,18 +4,60 @@ from __future__ import annotations
 
 import threading
 from collections.abc import Callable
+from pathlib import Path
 
 from loguru import logger
 
-from ..action_sequence import ActionSequencePlan, load_action_sequence
+from ..action_sequence import (
+    ActionSequencePlan,
+    ActionSequenceValidationError,
+    NamedActionPlan,
+    load_action_sequence,
+)
 from ..context import ReplayContext
 from ..contracts import ReplayServiceState
 from ..cycle_service import RecordReplayCycleService
 from ..device_status import DeviceStatusReader, DeviceStatusResponse
 from .config_store import RuntimeConfigStore, RuntimeParameterValue
 from .prior_store import PriorKind, PriorReplacement, RecordReplayPriorStore
-from .protocol import PriorUploadResponse, RecordReplayResponse
+from .protocol import (
+    PriorUploadResponse,
+    RecordReplayPlanResponse,
+    ReplayPlanAction,
+    RecordReplayResponse,
+)
 from .state_store import ReplayStateStore
+
+
+def _preview_actions(
+    actions: tuple[NamedActionPlan, ...],
+    loop_count: int,
+    row_counts: dict[Path, int],
+) -> tuple[ReplayPlanAction, ...]:
+    """把单轮动作按真实循环次数展开为 GUI 可直接展示的顺序。"""
+
+    result: list[ReplayPlanAction] = []
+    sequence = 0
+    for loop in range(1, loop_count + 1):
+        for action in actions:
+            sequence += 1
+            item = action.item
+            result.append(
+                ReplayPlanAction(
+                    sequence=sequence,
+                    loop=loop,
+                    csv=action.csv_asset.path.name,
+                    action_name=item.function_name,
+                    action_type=item.action_type,
+                    speed=item.speed,
+                    zone=item.zone,
+                    index=item.index,
+                    final_speed=item.final_speed,
+                    settle_delay=item.settle_delay,
+                    row_count=row_counts[action.csv_asset.path],
+                )
+            )
+    return tuple(result)
 
 
 class RecordReplayApplication:
@@ -171,6 +213,46 @@ class RecordReplayApplication:
             current_right_total_rows=snapshot.current_right_total_rows,
             offset_statuses=snapshot.offset_statuses,
         )
+
+    def get_plan(self) -> RecordReplayPlanResponse:
+        """读取下一轮回放计划，不连接设备、不创建线程。"""
+
+        with self._lock:
+            snapshot = self._context.snapshot()
+            if self._worker is not None and self._worker.is_alive():
+                return RecordReplayPlanResponse(
+                    state=snapshot.state,
+                    accepted=False,
+                    error_text="回放正在执行，请通过 WebSocket 读取实时状态",
+                )
+            if snapshot.state is not ReplayServiceState.IDLE:
+                return RecordReplayPlanResponse(
+                    state=snapshot.state,
+                    accepted=False,
+                    error_text="服务当前不在 idle 状态，不能读取下一轮计划",
+                )
+            try:
+                plan = load_action_sequence(
+                    self._context.config.action_sequence_path,
+                    self._context.config.left_record_dir,
+                    self._context.config.right_record_dir,
+                )
+            except ActionSequenceValidationError as error:
+                return RecordReplayPlanResponse(
+                    state=snapshot.state,
+                    accepted=False,
+                    error_text=str(error),
+                )
+            row_counts = {
+                path: len(rows) for path, rows in plan.preloaded_rows_by_path
+            }
+            return RecordReplayPlanResponse(
+                state=snapshot.state,
+                action_sequence_sha256=plan.source_sha256,
+                loop_count=plan.loop_count,
+                left=_preview_actions(plan.left_actions, plan.loop_count, row_counts),
+                right=_preview_actions(plan.right_actions, plan.loop_count, row_counts),
+            )
 
     def get_parameters(self) -> RecordReplayResponse:
         """读取当前持久化参数。"""

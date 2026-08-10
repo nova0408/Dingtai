@@ -1,7 +1,7 @@
 # RecordReplay API Reference
 
-文档版本：`2.2.1`（2026-08-07）
-服务业务版本：`2.2.1`
+文档版本：`2.4.0`（2026-08-10）
+服务业务版本：`2.4.0`
 默认监听：`http://<orin>:6300`
 
 机器可读文件：[OpenAPI 3.1](openapi.yaml)。
@@ -19,7 +19,7 @@ RecordReplay 通过本服务内的 `camera_client.py` 调用 CameraPipeline 的 
 ## 2. 通用约定
 
 - Content-Type：`application/json; charset=utf-8`。
-- 当前服务版本：`2.2.1`，与 `record_replay/CHANGELOG.md` 一致。
+- 当前服务版本：`2.4.0`，与 `record_replay/CHANGELOG.md` 一致。
 - 根目录同步脚本支持 `-RecordReplayOnly`，只替换并重启 RecordReplay；替换前检查 RecordReplay
   为 `idle`/`waiting` 且 CameraPipeline 在 6200 端口就绪，替换后校验文件清单、SHA-256、只读
   `/status` 和版本，不发送 `/start`；`runtime_state.json` 等运行产物不纳入清单。
@@ -38,6 +38,7 @@ RecordReplay 通过本服务内的 `camera_client.py` 调用 CameraPipeline 的 
 | 方法 | 路径 | HTTP 成功码 | 作用 |
 | --- | --- | ---: | --- |
 | GET | `/status` | 200 | 读取回放阶段、命名 CSV 清单和任务进度 |
+| GET | `/plan` | 200 | 启动前读取下一轮 CSV、动作参数和行数 |
 | GET | `/config` | 200 | 读取可调运行参数 |
 | POST | `/config` | 200 | 修改并持久化可调运行参数 |
 | GET | `/device-status` | 200 | 读取机械臂、夹爪、头部和升降状态 |
@@ -93,6 +94,10 @@ GET /status
 {"name":"get_tray_1_left_20260630_154830.csv","row_count":120}
 ```
 
+录制 CSV 文件名允许在动作名前增加纯数字首段前缀，例如
+`01_go_out_left.csv`、`10_get_new_tray_left.csv`。前缀只用于动作名匹配；响应中的文件名、
+当前处理文件和 CSV 行记录均保留实际文件名，不会改写或复制文件。
+
 `execution_tasks[]`：
 
 ```json
@@ -118,7 +123,51 @@ GET /status
 Rapid Stop 期间，AR5 的队列提交与 `robot.stop()` 使用同侧命令锁串行化；该锁只保护指令
 提交，不会让运动完成等待阻塞停止流程。
 
-## 5. GET /config
+## 5. GET /plan
+
+```http
+GET /plan
+```
+
+该接口只在服务处于 `idle` 且没有活动回放线程时读取
+`record_replay/action_sequence.json`，复用 `POST /start` 的动作 JSON、CSV 唯一映射和 CSV
+行预加载校验。不连接机械臂、AGV、相机或其它现场设备，不创建执行线程，也不提供修改参数的
+请求字段。
+
+响应中的 `left` 和 `right` 按 `loop_count` 展开为实际执行顺序；`csv` 始终是磁盘上的实际
+文件名，因此 `01_`、`10_`、`11_` 等录制前缀会原样显示。每项字段如下：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `state` | enum | 当前服务状态；正常预览为 `idle` |
+| `accepted` | boolean | 是否成功读取计划 |
+| `action_sequence_sha256` | string/null | 本次读取的顺序 JSON SHA-256 |
+| `loop_count` | integer | 配置中的循环次数 |
+| `left` / `right` | array | 按实际执行顺序展开的动作清单 |
+| `error_text` | string/null | 校验失败或非 idle 时的原因 |
+
+计划动作项示例：
+
+```json
+{
+  "sequence": 1,
+  "loop": 1,
+  "csv": "01_go_out_left.csv",
+  "action_name": "go_out",
+  "action_type": "fast",
+  "speed": 800.0,
+  "zone": 50.0,
+  "index": null,
+  "final_speed": null,
+  "settle_delay": null,
+  "row_count": 120
+}
+```
+
+`speed`、`zone`、`index`、`final_speed` 和 `settle_delay` 仅供查看；要修改它们必须由人工
+编辑部署目录中的 `action_sequence.json`，然后重新读取计划。GUI 不提供直接编辑控件。
+
+## 6. GET /config
 
 ```http
 GET /config
@@ -135,7 +184,7 @@ GET /config
 
 这些参数只影响后续回放轮次，不暴露现场 IP、端口、先验路径、CSV 路径或机械臂型号。
 
-## 6. POST /config
+## 7. POST /config
 
 请求 body 是“字段到数字”的 JSON object，可以只更新部分字段；动作 speed/zone 不在此接口修改：
 
@@ -156,7 +205,7 @@ GET /config
 
 成功返回 HTTP `200` 和完整 `RecordReplayResponse`，其中 `parameters` 为保存后的值。
 
-## 7. 动作顺序 JSON
+## 8. 动作顺序 JSON
 
 服务在 `POST /start` 建立设备 runtime 前读取并校验固定文件
 `record_replay/action_sequence.json`。根节点包含 `schema_version`、有限的 `loop_count`、
@@ -182,7 +231,7 @@ SDK 会将 speed 按 `<100`、`100~200`、`200~500`、`500~800`、`>800` mm/s �
 响应中的 `offset_statuses` 固定列出 `head`（头部 ChArUco）和 `three_ball`（三球）两种来源，
 并分别给出 `available`、`applied`；同一动作配置重叠时，start 前直接拒绝。
 
-## 8. GET /device-status
+## 9. GET /device-status
 
 ```http
 GET /device-status
@@ -223,7 +272,7 @@ GET /device-status
 
 可选数值读取失败时返回 `null`；整个设备项读取失败时 `connected=false` 并填充 `error`。
 
-## 9. POST /prior/ball-pose
+## 10. POST /prior/ball-pose
 
 仅在 `state=idle` 且没有活动回放线程时，替换统一动作 JSON `deployment.prior_files.ball_pose` 指定的服务内先验文件；默认路径为
 `record_replay/prior_data/ball_pose_prior.json`。请求 body 必须是完整的三球 JSON object；
@@ -251,7 +300,7 @@ Content-Type: application/json
 }
 ```
 
-## 10. POST /prior/charuco
+## 11. POST /prior/charuco
 
 仅在 `state=idle` 且没有活动回放线程时，替换统一动作 JSON `deployment.prior_files.charuco_board` 指定的服务内先验文件；默认路径为
 `record_replay/prior_data/charuco_board_prior.json`。请求 body 必须是完整的 ChArUco JSON object，
@@ -265,7 +314,7 @@ Content-Type: application/json
 { ...完整 charuco_board_prior.json 内容... }
 ```
 
-## 11. POST /start
+## 12. POST /start
 
 ```http
 POST /start
@@ -290,7 +339,7 @@ body 必须且只能包含 `enable_agv_navigation`，类型必须为 boolean。
 `false` 时跳过回放前导航，但双臂 CSV 回放仍然执行。服务进程启动和 HTTP 就绪不会触发
 该接口，也不会自动执行任何动作。
 
-## 12. 客户端示例
+## 13. 客户端示例
 
 ```python
 from record_replay.client import RecordReplayClient
@@ -300,16 +349,20 @@ client = RecordReplayClient(
     api_prefix="/api/v1/record-replay",
 )
 print(client.get_status())
+print(client.get_plan())
 print(client.get_config())
 ```
 
-`RecordReplayClient.start()` 只应由现场人员在安全确认后手动调用。GUI 首页推荐只轮询
-`get_status()`，根据 `state`、`current_task_*` 和 `error_text` 更新界面。
+`RecordReplayClient.start()` 只应由现场人员在安全确认后手动调用。GUI 应在 start 前读取
+`get_plan()` 展示只读动作信息；start 被接受后切换到 Gateway WSS，根据状态快照中的
+`state`、`current_task_*` 和 `error_text` 更新界面。
 
-## 13. 文档变更记录
+## 14. 文档变更记录
 
 | 文档版本 | 日期 | 内容 |
 | --- | --- | --- |
+| `2.4.0` | 2026-08-10 | 新增启动前只读 `GET /plan`，明确 GUI 预览与启动后 WSS 状态链路 |
+| `2.3.0` | 2026-08-10 | 兼容录制 CSV 的纯数字首段前缀，并保留实际文件名处理 |
 | `2.0.2` | 2026-08-07 | AGV 与左右 AR5 Stop 调用并行发起，避免单点超时延后其它停止调用 |
 | `2.0.1` | 2026-08-07 | 补充停止竞态闸门，明确 calibration 三球检测与 calibration_new_tray 空动作语义 |
 | `2.0.0` | 2026-08-06 | 引入命名动作、JSON 顺序、多点 index、Rapid Stop 和 offset 状态 |

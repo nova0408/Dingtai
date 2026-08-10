@@ -1,165 +1,89 @@
 ---
 name: record-replay-service-maintainer
-description: 安全维护、迁移、部署、版本管理和评审 Dingtai 根目录 `record_replay/` 服务。用于修改回放业务、Orin API、设备网关、功能、systemd、部署同步或本机/Orin 人工测试入口；强制维护 CHANGELOG 语义版本、区分两端连接与测试目录，并禁止无人值守运行任何 record_replay 测试或 start。
+description: 安全维护、评审、变更和部署 Dingtai 根目录 record_replay 服务。用于修改回放业务、服务 API、网关接入、进程管理、部署脚本或人工验证入口；强制先查询仓库当前契约，禁止无人值守触发真实回放、控制请求或相关测试。
 ---
 
-# Record Replay Service Maintainer
+# RecordReplay Service Maintainer
 
-## 安全红线
+本 skill 只定义维护流程、安全边界和契约查询方法，不保存 RecordReplay 的具体业务契约。
+接口路径、字段、端口、目录、版本号、设备依赖、部署映射和测试语义都可能随开发变化，必须
+从当前工作区的权威文件重新确认，禁止依据本 skill 的旧内容猜测。
 
-1. 任何 `record_replay` 运行入口都视为可能触发机械臂、AGV、夹爪、M11 或升降机构运动。
-2. 禁止 Codex、CI、hook、静态检查脚本或无人值守任务执行以下操作：
-   - 运行文件名、模块名或测试名包含 `record_replay` 的测试、CLI、冒烟脚本。
-   - 执行 `python -m record_replay.service` 做启动冒烟。
-   - 向服务发送任何 `POST /start` 请求。
-   - 调用 `RecordReplayCycleService.run_once()`、`run_forever()` 或等价硬件入口。
-3. 即使测试使用 fake，也不得自动执行，避免未来替身失效后静默触发真实设备。
-4. 只允许执行不会导入并运行业务入口的静态验证：UTF-8 扫描、ruff、pyright、`py_compile`、`compileall` 和 skill 结构校验。
-5. 需要真实运行时必须停止自动操作，明确说明运动风险，由现场人员确认设备区域安全后手动执行。
+## 契约查询顺序
 
-## 代码边界
+开始任何实现、评审、部署或验证前，先在当前仓库定位并阅读与任务相关的最新资料：
 
-1. `record_replay/` 与 `camera_pipeline/` 同级，是 Orin 部署的独立服务，不属于 `src.business`。
-2. 本机仓库 `C:\Projects\Dingtai\record_replay` 是唯一源代码。
-3. 禁止只修改 `/home/wuji-brain/workspace/record_replay` 中的远端文件。
-4. 业务、设备、API 职责保持分离：
-   - `context.py` 管理运行资源和状态交换。
-   - gateway 负责设备连接与协议收窄。
-   - action/executor/cycle 模块负责业务动作与编排。
-   - `service/` 只负责 API、进程生命周期和业务桥接，不复制运动逻辑。
-5. `record_replay` 只依赖自身代码、明确的第三方包和 Orin 本机服务 HTTP 契约，运行时禁止导入
-   `camera_pipeline`、`calibration_service`、`robot_control`、仓库 `src` 或 `test` 的 Python 包。
-   CameraPipeline 检测通过 `record_replay/camera_client.py` 的本地 DTO 和 HTTP 客户端完成。
-   先验拍摄和手眼计算由同级 `calibration_service` 提供；该服务只读取 RobotControl 状态、
-   请求 CameraPipeline 拍摄和执行计算，不提供任何设备控制接口，默认使用 Orin 本机 6600 端口。
-   Calibration Service 有独立版本和变更日志；仅新增该独立服务不升级 RecordReplay 版本。
-6. 业务行为以 `test/wuji/record_replay_cli.py` 的最新人工验证语义为基准；迁移实现与 CLI 不一致时必须显式列出差异，禁止声称完全等价。
-7. 服务数据目录固定，不提供路径参数或环境变量覆盖：
-   - `record_replay/prior_data/ball_pose_prior.json` 与 `charuco_board_prior.json` 保存 `test/wuji/prior_record.py` 的人工采集结果。
-   - `hand_eye_result.txt`、`charuco_offset_history.csv`、`left_head_base_camera.npy` 和
-     `right_head_base_camera.npy` 是 `/start` 前全量检查的部署先验。
-   - `record_replay/records/left/` 保存左臂预录 CSV。
-   - `record_replay/records/right/` 保存右臂预录 CSV。
-8. 服务启动只建立 HTTP 监听，不加载或校验先验；人工 `POST /start` 创建回放业务前必须
-   全量检查上述先验，并在错误响应中逐项报告缺失或无效文件，不得因为缺少先验阻止 HTTP 服务启动。
-9. 仅允许通过 `POST /prior/ball-pose` 和 `POST /prior/charuco` 替换两个 JSON 先验；请求内容
-   必须先校验，成功后原子替换，旧文件备份到服务端 `record_replay/.archive/prior_data/`。
-   `.archive` 是服务端运行备份，必须从部署归档和清单中排除。
-10. 先验 JSON 与预录 CSV 属于部署源文件，必须和 Python 代码一起参与本机与 Orin 文件清单及 SHA-256 校验。
-11. 三球与 Board 检测只调用 `record_replay/camera_client.py` 的 HTTP 业务方法；`record_replay/`
-    禁止导入 CameraPipeline Python 包、配置或描述底层 ZMQ。
-12. 左右臂 IP 和现场设备地址由 Orin 服务入口固定，不允许本机测试或 API 覆盖。
+1. 仓库根目录和目标子目录的 `AGENTS.md`、README 或维护说明。
+2. 服务目录内的 API Reference、OpenAPI/AsyncAPI、协议 DTO、客户端和实际路由实现。
+3. 服务入口、应用层、状态/配置/数据契约，以及调用方使用的真实字段。
+4. API Gateway 的当前路由配置、Gateway 文档和证书/连接说明。
+5. 当前 `CHANGELOG`、版本声明和官方部署脚本。
+6. 仓库中明确标注为人工验证的入口；不要把实验脚本、旧 CLI 或历史文档当作现行契约。
 
-## CameraPipeline 依赖部署
+查找代码时优先使用代码知识图谱的搜索、调用链和代码片段能力；对字符串、文档、配置和脚本
+再使用 `rg` 或文件搜索。发现资料冲突时，暂停猜测，沿调用链核对实现与消费者，并在交付中
+说明采用的权威来源和未解决的冲突。
 
-1. CameraPipeline 公共 client、API 或线协议变化时，把 `camera_pipeline/` 与
-   `record_replay/` 作为同一批次同步；禁止只替换 CameraPipeline 后继续运行加载
-   旧客户端的 RecordReplay 进程。
-2. 部署顺序固定为：确认 RecordReplay 处于 `waiting`、停止 RecordReplay、替换两端
-   文件、启动并验证 CameraPipeline、启动并验证 RecordReplay。
-3. 停止 RecordReplay 只能是部署中的临时状态；部署成功必须恢复 HTTP 业务就绪。
-4. 服务恢复只允许 systemd 启动和只读 `/status` 检查，仍禁止发送 `/start`、运行
-   RecordReplay 测试或调用任何硬件执行入口。
-5. 从 Windows 执行时优先使用
-   `scripts/sync_and_restart_services.ps1`，不要手写 sudo 或拆分部署步骤。
-6. 总控脚本允许向 RecordReplay 重启脚本传递 `--non-interactive`，但该模式仅允许
-   systemd 重启和只读 `/status` 就绪检查；不得扩展为 `/start` 或任何执行授权。
-7. 五服务完整部署的启动顺序为 CameraPipeline、RecordReplay、RobotControl、
-   Calibration Service、API Gateway；Calibration Service 只做 6600 端口状态检查，
-   不触发拍摄、标定或设备控制。
+## 安全边界
 
-## 本机与 Orin 同步
+1. 将 `record_replay` 的运行入口视为可能控制机械臂、AGV、夹爪、相机、升降机构或其它现场设备。
+2. Codex、CI、hook 和无人值守流程不得：
+   - 启动 RecordReplay 服务做冒烟验证；
+   - 发送启动、停止、复位、控制或其它可能改变设备状态的请求；
+   - 调用回放执行线程、动作执行器或等价硬件入口；
+   - 自动运行名称、模块或路径表明属于 RecordReplay 的测试、CLI 或实验入口，即使当前使用 fake。
+3. 默认只做不会导入并运行真实业务入口的静态、语法、类型、编码、结构和契约文件检查。
+4. 需要真实运行、只读现场检查或人工测试时，停止自动操作，说明连接阶段和运动风险，交由现场人员
+   在确认设备区域安全后手动执行。
 
-按以下顺序部署：
+## 源码与职责边界
 
-1. 先修改本机源代码并生成 `.archive` 快照。
-2. 只把本机 `record_replay/` 的最终内容同步到 `/home/wuji-brain/workspace/record_replay/`。
-3. 同步时排除 `__pycache__`、`.pyc`、日志和运行产物。
-4. 不做双向合并，不以 Orin 文件覆盖本机源代码。
-5. 同步后分别生成相对路径文件清单和 SHA-256；只有两端清单及每个文件哈希完全一致时才报告部署一致。
-6. 哈希不一致时停止服务启动与硬件测试，先重新同步并定位差异。
+- 以当前仓库中明确声明的本机服务源码为唯一编辑来源；不要只修改远端副本。
+- 不根据本机目录结构推断远端目录、服务地址、端口或测试脚本映射；这些信息必须从当前部署说明和
+  官方脚本读取。
+- 保持上下文/状态管理、设备网关、回放编排、HTTP/WebSocket 适配和进程生命周期的现有职责边界。
+  API 层只做协议转换和业务桥接，不复制动作执行逻辑。
+- 服务运行时不得为了方便测试而绕过已声明的服务边界，直接导入其它服务的内部包；跨服务协议变化
+  先检查两端现行契约和对应版本策略。
+- 修改前为已有文件在仓库规定的归档目录生成快照；删除、移动或重命名之前必须先确认快照存在。
 
-### 测试脚本是非镜像部署
+## API 和功能变更流程
 
-不得根据本机目录层级推断 Orin 目标目录。仅按下列显式映射部署：
+1. 从当前契约文件和实际调用链建立最小变更范围；不要凭记忆新增路径、字段、事件名或默认值。
+2. 优先复用现有数据结构、路由、客户端和状态通道；避免平行协议、兼容分支和重复扫描逻辑。
+3. 让启动前只读检查与真正启动使用同一套解析、校验和冻结逻辑；不要让 GUI 或客户端重新推断服务端
+   的执行语义。
+4. 若公共 API、消息、配置语义、执行行为或部署行为发生变化，按当前仓库的版本规则更新权威版本声明、
+   CHANGELOG、API 文档和机器可读契约，并检查所有正式消费者；版本号不得写死在本 skill 中。
+5. 若只是内部实现且不改变公开契约，仍检查是否影响状态、时序、重试、资源释放或设备安全边界，并在
+   交付中明确说明。
 
-| 用途 | 本机唯一源文件 | Orin 执行文件 |
-| --- | --- | --- |
-| 只读状态 | `test/record_replay/orin/record_replay_static_status.py` | `/home/wuji-brain/workspace/test/record_replay_static_status.py` |
-| 人工 start | `test/record_replay/orin/record_replay_start.py` | `/home/wuji-brain/workspace/test/record_replay_start.py` |
+## 部署与远端操作
 
-1. 禁止创建或同步 `/home/wuji-brain/workspace/test/record_replay/orin/`。
-2. 禁止把 `test/record_replay/local/` 中任何文件部署到 Orin。
-3. 部署后对上表每一对文件单独比较 SHA-256；不对两端 `test/` 目录做同层级清单比较。
-4. 如果 Orin 上存在误创建的镜像目录，先为其文件在本机 `.archive/` 保留快照，再删除精确路径。
+- 没有用户明确授权时，不执行同步、重启、远端写入、证书变更或硬件验证。
+- 获得授权后，只使用当前仓库提供的官方部署脚本和参数；先确认脚本实际会修改的服务、源文件集合、
+  归档策略和只读就绪检查，再执行。
+- 部署前后按照当前部署契约核对相对路径、文件清单、哈希、服务状态和公开版本；不要把 `health`、进程
+  active 或端口监听单独当作业务可用证明。
+- 远端不可达、版本不符、清单不一致或只读就绪检查失败时停止，不报告部署完成，也不继续启动真实业务。
 
-推荐对两端同一集合进行校验：
+## 静态验证
 
-```powershell
-Get-ChildItem .\record_replay -Recurse -File |
-  Where-Object { $_.Extension -ne '.pyc' -and $_.FullName -notmatch '__pycache__' } |
-  Sort-Object FullName |
-  Get-FileHash -Algorithm SHA256
-```
+根据当前仓库的检查规范执行最小验证，通常包括：
 
-```bash
-find /home/wuji-brain/workspace/record_replay -type f \
-  ! -name '*.pyc' ! -path '*/__pycache__/*' -print0 \
-  | sort -z | xargs -0 sha256sum
-```
+- UTF-8、换行、替换字符、NUL 和 diff 空白检查；
+- 项目规定的 formatter/linter、类型检查、语法编译和纯静态结构校验；
+- 对公共契约做文档、OpenAPI/AsyncAPI、客户端 DTO 和服务响应字段的一致性检查。
 
-Windows 与 Linux 输出路径不同，比较前只保留相对于 `record_replay/` 的路径和哈希。
+不得用静态检查结果代替 GUI、网络、远端服务或硬件实测。尤其不得为了验证本 skill 所维护的服务而
+运行 RecordReplay 测试、启动服务或发送任何控制请求。
 
-## 版本与变更日志
+## 交付报告
 
-1. `record_replay/CHANGELOG.md` 是服务功能版本号的唯一权威来源，当前基线版本为 `2.2.1`。
-2. 版本号必须使用 `a.b.c`：
-   - `a`：重大重构或重大更新。
-   - `b`：功能调整，包括新增、删除或改变 HTTP API、回放流程及设备行为。
-   - `c`：缺陷修复和不改变功能边界的优化。
-3. 修改公共 client、HTTP API、请求响应字段、回放功能、设备行为、配置语义或部署行为时，必须在同一批改动中升级版本号，并在 CHANGELOG 顶部追加带日期的记录。
-4. 同一批改动只升级一次；同时包含多类改动时按影响最大的版本位升级，不得为每个文件分别升级。
-5. CHANGELOG 属于 RecordReplay 部署源文件，必须同步到 Orin，并参与相对路径清单和 SHA-256 一致性校验。API 或功能已改变但版本号或日志未更新时，不得报告完成。
-6. `RECORD_REPLAY_VERSION` 发生变化后，在用户授权远端部署且本机静态/契约检查通过时，必须尝试执行
-   `scripts/sync_and_restart_services.ps1 -RecordReplayOnly`；必须记录本机期望版本、远端实际版本、
-   同步文件清单、SHA-256、远端备份、只读 `/status` 和服务状态。远端不可达或同步失败时不得报告
-   RecordReplay 版本已更新；整个流程仍不得发送 `/start` 或运行回放测试。
+最终说明：
 
-## 测试环境必须分离
-
-### 本机人工测试
-
-1. 只使用 `test/record_replay/local/` 下明确标注为 local 的入口。
-2. 本机 RecordReplay HTTP API 固定使用 `http://192.168.1.128:6300`。
-3. 禁止把本机 API 改为 `127.0.0.1:6300`，禁止为 RecordReplay API 建立 SSH 端口转发。
-4. 本机不直接转发或连接机械臂、qmlinker、AGV 或相机服务。
-5. 本机只允许读取状态、读取或修改持久化运行参数，以及在人工安全确认后发送 start。
-6. 运行必须由现场人员手动发起，并在触发动作前再次确认安全。
-
-### Orin 人工测试
-
-1. 本机维护源文件时只修改 `test/record_replay/orin/` 中上表指定的两个入口。
-2. Orin 上只从 `/home/wuji-brain/workspace/test/record_replay_static_status.py` 或 `record_replay_start.py` 执行。
-3. Orin 脚本 RecordReplay HTTP API 固定使用 `http://127.0.0.1:6300`，禁止使用 `192.168.1.128:6300`。
-4. Orin 直接访问已部署 API，禁止创建 SSH 转发。
-5. 不复用本机测试入口，不通过平台判断在一个文件内切换两套连接方式。
-6. 运行必须由现场人员在 Orin 上手动发起；Codex 只能给出命令，不能执行命令。
-
-## 修改与验证流程
-
-1. 先检查 `record_replay/README.md`、API 协议、业务入口和对应人工测试入口。
-2. 修改前为已有文件生成 `.archive` 快照。
-3. 做最小范围修改，不添加旧 `src.business.record_replay` 兼容层。
-4. 更新 README、`API Reference.md` 和 `openapi.yaml`，明确本机/Orin 连接差异、API 行为、
-   先验全量检查、JSON 替换及 `.archive` 备份语义和硬件风险。
-5. 按改动影响升级 `record_replay/CHANGELOG.md` 的版本号并追加版本记录。
-6. 只运行 ruff、pyright、编码扫描、compile-only 验证。
-7. 每次涉及测试脚本时，在报告完成前显式检查：
-   - local 源文件仅出现 `192.168.1.128:6300`；
-   - Orin 源文件仅出现 `127.0.0.1:6300`；
-   - Orin 远端两个文件位于 `/home/wuji-brain/workspace/test/` 根层。
-8. 最终明确报告：
-   - 本机静态验证结果。
-   - 是否完成 Orin 文件哈希一致性校验。
-   - 未运行任何 record_replay 测试或 start API。
-   - 硬件行为未经本回合验证。
+- 修改的文件和实际变更边界；
+- 查询过的当前契约来源，以及是否存在冲突；
+- 已完成的静态/离线验证；
+- 是否执行过远端部署或只读现场检查，并给出实际证据；
+- 明确声明未执行的 RecordReplay 测试、启动、控制请求和硬件行为验证。

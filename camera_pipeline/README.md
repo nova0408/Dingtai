@@ -201,7 +201,7 @@ After=camera-pipeline.service
 ## 协议与安全
 
 统一请求包含 `protocol_version`。当前内部 ZMQ 线协议版本为 `10`；对外 HTTP API 使用
-`service_version=1.10.0`，WebSocket `CPWS1` 帧协议版本为 `1`。版本 8 为三球先验增加每球专属
+`service_version=1.11.0`，WebSocket `CPWS1` 帧协议版本为 `1`。版本 8 为三球先验增加每球专属
 `hsv_ranges`，并在检测结果中返回 `observed_hsv`；所有相机查询、订阅和算法请求
 必须显式携带 `camera_name`。
 网络数据采用白名单协议 dataclass 的 JSON 元数据与 NumPy 原始字节块，不使用

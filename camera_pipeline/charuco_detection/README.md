@@ -26,6 +26,9 @@ ChArUco 只依赖彩色图、彩色相机内参和畸变参数，不读取深度
   marker 边长均由该对象提供，长度统一使用 mm。
 - `CharucoDetectionConfig`：最小角点数、CLAHE、unsharp 和 debug 坐标轴参数。
 
+HTTP 服务层通过 `dictionary_name` 从当前 OpenCV `cv2.aruco` 暴露的预定义字典中构造
+`CharucoBoard`；本算法模块只接收已经构造好的 Board，不维护字典白名单。
+
 模块只依赖 OpenCV、NumPy、`camera_pipeline.protocol` 和自身文件，不从
 `src`、`experiments`、`test` 或其它算法子模块导入。
 

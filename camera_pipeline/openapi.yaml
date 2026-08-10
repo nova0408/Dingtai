@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: CameraPipeline HTTP API
-  version: 1.10.0
+  version: 1.11.0
   description: >-
     CameraPipeline 对外 HTTP/JSON 控制与检测接口。内部 ZMQ CPW1 不通过本 API 暴露。
   license:
@@ -194,7 +194,7 @@ components:
           type: boolean
         service_version:
           type: string
-          example: 1.10.0
+          example: 1.11.0
         zmq_protocol_version:
           type: integer
           const: 10
@@ -373,7 +373,7 @@ components:
       required: [camera_name, dictionary_name, squares_x, squares_y, square_length_mm, marker_length_mm, min_charuco_corners, max_frames, stable_timeout_s]
       properties:
         camera_name: {$ref: '#/components/schemas/CameraName'}
-        dictionary_name: {type: string, enum: [DICT_APRILTAG_16H5]}
+        dictionary_name: {type: string, description: 当前 OpenCV cv2.aruco 暴露的预定义字典名称}
         squares_x: {type: integer, minimum: 2}
         squares_y: {type: integer, minimum: 2}
         square_length_mm: {type: number, exclusiveMinimum: 0}

@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: RecordReplay HTTP API
-  version: 2.2.1
+  version: 2.4.0
   description: >-
     双臂记录回放服务 HTTP API。POST /start 可能控制真实设备，必须由现场人员确认安全后调用。
     状态 WebSocket 通过 API Gateway 的 /api/v1/record-replay-ws 提供 WSS 入口。
@@ -55,6 +55,22 @@ paths:
                 $ref: '#/components/schemas/RecordReplayResponse'
         '400':
           $ref: '#/components/responses/ErrorResponse'
+  /plan:
+    get:
+      operationId: get_plan
+      summary: 启动前读取回放计划
+      description: >-
+        只在 idle 且没有活动回放线程时读取并校验 action_sequence.json 与实际 CSV；不连接
+        现场设备、不创建执行线程、不允许通过该接口修改 speed、zone 或 index。
+      responses:
+        '200':
+          description: 按循环展开的只读动作计划
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RecordReplayPlanResponse'
+        '400':
+          $ref: '#/components/responses/ErrorResponse'
   /device-status:
     get:
       operationId: get_device_status
@@ -73,7 +89,10 @@ paths:
     post:
       operationId: start_replay
       summary: 启动一轮回放
-      description: 先全量校验先验、命名动作 JSON 和 CSV 唯一映射；校验通过后可能控制机械臂、AGV、夹爪、M11 和升降机构，必须现场确认安全。
+      description: >-
+        先全量校验先验、命名动作 JSON 和 CSV 唯一映射；录制 CSV 文件名允许使用
+        01_、10_、11_ 等纯数字首段前缀，前缀只用于动作名匹配，实际执行仍使用原始文件名。
+        校验通过后可能控制机械臂、AGV、夹爪、M11 和升降机构，必须现场确认安全。
       requestBody:
         required: true
         content:
@@ -179,6 +198,32 @@ components:
         left_csv: {type: [string, 'null']}
         right_csv: {type: [string, 'null']}
         synchronized: {type: boolean}
+    PlanAction:
+      type: object
+      required: [sequence, loop, csv, action_name, action_type, speed, zone, index, final_speed, settle_delay, row_count]
+      properties:
+        sequence: {type: integer, minimum: 1}
+        loop: {type: integer, minimum: 1}
+        csv: {type: string}
+        action_name: {type: string}
+        action_type: {type: string, enum: [capture, fast, precise]}
+        speed: {type: number, minimum: 5}
+        zone: {type: number, minimum: 0}
+        index: {type: [integer, 'null'], minimum: 1}
+        final_speed: {type: [number, 'null'], minimum: 5}
+        settle_delay: {type: [number, 'null'], minimum: 0}
+        row_count: {type: integer, minimum: 0}
+    RecordReplayPlanResponse:
+      type: object
+      required: [state, accepted, action_sequence_sha256, loop_count, left, right, error_text]
+      properties:
+        state: {$ref: '#/components/schemas/ReplayState'}
+        accepted: {type: boolean}
+        action_sequence_sha256: {type: [string, 'null']}
+        loop_count: {type: integer, minimum: 0}
+        left: {type: array, items: {$ref: '#/components/schemas/PlanAction'}}
+        right: {type: array, items: {$ref: '#/components/schemas/PlanAction'}}
+        error_text: {type: [string, 'null']}
     RuntimeParameters:
       type: object
       required: [agv_navigation_timeout_s, agv_navigation_poll_interval_s, non_motion_retry_count, non_motion_retry_delay_s]

@@ -25,6 +25,11 @@ class RecordReplayClient:
     def get_status(self) -> dict[str, object]:
         return self._request("GET", "/status")
 
+    def get_plan(self) -> dict[str, object]:
+        """读取下一轮动作、CSV 和运动参数的只读预览。"""
+
+        return self._request("GET", "/plan")
+
     def get_config(self) -> dict[str, object]:
         return self._request("GET", "/config")
 

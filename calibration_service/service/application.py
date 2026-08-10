@@ -28,6 +28,11 @@ from .camera_client import (
     CharucoDetectionRequest,
     CharucoDetectionResponse,
 )
+from .charuco_config import (
+    HandEyeCharucoConfig,
+    available_aruco_dictionary_names,
+    parse_hand_eye_config_update,
+)
 from .hand_eye import calibrate_hand_eye_from_pose_sequences
 from .prior_calibration import (
     PriorCalibrationConfig,
@@ -164,6 +169,39 @@ class CalibrationApplication:
         self._ended_at: str | None = None
         self._last_error: str | None = None
         self._pending_replacement: PendingReplacement | None = None
+        self._hand_eye_charuco_config = HandEyeCharucoConfig()
+
+    def get_hand_eye_config(self) -> CalibrationResponse:
+        """读取手眼 ChArUco 默认参数和当前 OpenCV 可用字典。"""
+
+        with self._lock:
+            config = self._hand_eye_charuco_config
+        return CalibrationResponse(
+            data={
+                "config": config.to_dict(),
+                "available_dictionary_names": list(available_aruco_dictionary_names()),
+            }
+        )
+
+    def update_hand_eye_config(self, payload: Mapping[str, object]) -> CalibrationResponse:
+        """更新手眼 ChArUco 默认参数，不连接设备或触发拍摄。"""
+
+        update = parse_hand_eye_config_update(dict(payload))
+        with self._lock:
+            if self._busy:
+                return CalibrationResponse(
+                    state="busy",
+                    accepted=False,
+                    error="已有拍摄或计算任务正在执行，请稍后修改配置",
+                )
+            self._hand_eye_charuco_config = self._hand_eye_charuco_config.with_updates(update)
+            config = self._hand_eye_charuco_config
+        return CalibrationResponse(
+            data={
+                "config": config.to_dict(),
+                "available_dictionary_names": list(available_aruco_dictionary_names()),
+            }
+        )
 
     def status(self) -> CalibrationResponse:
         """返回服务任务状态，不读取设备。"""
@@ -374,20 +412,21 @@ class CalibrationApplication:
         def operation() -> dict[str, object]:
             self._require_collecting("left_eye_in_hand", arm_side)
             snapshot = self._robot_client.read_ar5(arm_side)
+            config = self._snapshot_hand_eye_config()
             client = self._camera_client_factory()
             try:
                 response = client.detect_charuco(
                     CharucoDetectionRequest(
                         camera_name=CameraName("left_hand_camera" if arm_side == "left" else "right_hand_camera"),
-                        dictionary_name="DICT_APRILTAG_16H5",
-                        squares_x=4,
-                        squares_y=4,
-                        square_length_mm=20.0,
-                        marker_length_mm=14.0,
-                        min_charuco_corners=6,
-                        max_frames=300,
-                        stable_timeout_s=10.0,
-                        enable_debug=False,
+                        dictionary_name=config.dictionary_name,
+                        squares_x=config.squares_x,
+                        squares_y=config.squares_y,
+                        square_length_mm=config.square_length_mm,
+                        marker_length_mm=config.marker_length_mm,
+                        min_charuco_corners=config.min_charuco_corners,
+                        max_frames=config.max_frames,
+                        stable_timeout_s=config.stable_timeout_s,
+                        enable_debug=config.enable_debug,
                     )
                 )
             finally:
@@ -413,20 +452,21 @@ class CalibrationApplication:
         def operation() -> dict[str, object]:
             self._require_collecting("head_eye_to_hand", arm_side)
             snapshot = self._robot_client.read_ar5(arm_side)
+            config = self._snapshot_hand_eye_config()
             client = self._camera_client_factory()
             try:
                 response = client.detect_charuco(
                     CharucoDetectionRequest(
                         camera_name=HEAD_CAMERA_NAME,
-                        dictionary_name="DICT_APRILTAG_16H5",
-                        squares_x=4,
-                        squares_y=4,
-                        square_length_mm=20.0,
-                        marker_length_mm=14.0,
-                        min_charuco_corners=6,
-                        max_frames=300,
-                        stable_timeout_s=10.0,
-                        enable_debug=False,
+                        dictionary_name=config.dictionary_name,
+                        squares_x=config.squares_x,
+                        squares_y=config.squares_y,
+                        square_length_mm=config.square_length_mm,
+                        marker_length_mm=config.marker_length_mm,
+                        min_charuco_corners=config.min_charuco_corners,
+                        max_frames=config.max_frames,
+                        stable_timeout_s=config.stable_timeout_s,
+                        enable_debug=config.enable_debug,
                     )
                 )
             finally:
@@ -651,6 +691,10 @@ class CalibrationApplication:
     def _snapshot_hand_eye_samples(self) -> tuple[HandEyeSample, ...]:
         with self._lock:
             return tuple(self._hand_eye_samples)
+
+    def _snapshot_hand_eye_config(self) -> HandEyeCharucoConfig:
+        with self._lock:
+            return self._hand_eye_charuco_config
 
     def _snapshot_head_eye_samples(self, arm_side: str) -> tuple[HandEyeSample, ...]:
         with self._lock:

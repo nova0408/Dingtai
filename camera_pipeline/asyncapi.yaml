@@ -1,7 +1,7 @@
 asyncapi: 3.0.0
 info:
   title: CameraPipeline WebSocket API
-  version: 1.10.0
+  version: 1.11.0
   description: >-
     CameraPipeline 对外最新帧 WebSocket 订阅协议。HTTP 控制接口见 openapi.yaml。
 servers:

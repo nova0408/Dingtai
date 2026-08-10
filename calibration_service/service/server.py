@@ -43,6 +43,9 @@ class CalibrationServer:
                 if path == "/api/v1/status":
                     self._send(HTTPStatus.OK, application.status())
                     return
+                if path == "/api/v1/hand-eye/config":
+                    self._send(HTTPStatus.OK, application.get_hand_eye_config())
+                    return
                 if path == "/api/v1/results/hand-eye":
                     self._send(HTTPStatus.OK, application.get_result("hand_eye"))
                     return
@@ -96,6 +99,18 @@ class CalibrationServer:
                     else:
                         self._send_error(HTTPStatus.NOT_FOUND, "unsupported path")
                         return
+                    status = HTTPStatus.OK if response.accepted else HTTPStatus.CONFLICT
+                    self._send(status, response)
+                except Exception as error:
+                    self._send_error(HTTPStatus.BAD_REQUEST, f"{type(error).__name__}: {error}")
+
+            def do_PATCH(self) -> None:
+                path = urlsplit(self.path).path
+                if path != "/api/v1/hand-eye/config":
+                    self._send_error(HTTPStatus.NOT_FOUND, "unsupported path")
+                    return
+                try:
+                    response = application.update_hand_eye_config(self._read_json_object())
                     status = HTTPStatus.OK if response.accepted else HTTPStatus.CONFLICT
                     self._send(status, response)
                 except Exception as error:

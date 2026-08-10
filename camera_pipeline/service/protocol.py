@@ -13,7 +13,7 @@ from ..protocol import CameraName
 PROTOCOL_VERSION = 10
 "CameraPipeline 线协议版本。"
 
-SERVICE_VERSION = "1.10.0"
+SERVICE_VERSION = "1.11.0"
 "CameraPipeline 服务功能版本，必须与 CHANGELOG 当前版本一致。"
 
 CAMERA_STREAM_TOPIC_SEPARATOR = b"\x00"
@@ -39,7 +39,7 @@ class CharucoDetectionRequest:
     camera_name: CameraName
     "逻辑相机名称。"
     dictionary_name: str
-    "ArUco 字典名称；当前支持 DICT_APRILTAG_16H5。"
+    "ArUco 字典名称；必须是当前 OpenCV cv2.aruco 暴露的预定义字典。"
     squares_x: int
     "Board 横向方格数量。"
     squares_y: int

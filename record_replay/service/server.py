@@ -10,9 +10,14 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from .application import RecordReplayApplication
 from .config_store import RuntimeParameterValue
 from ..device_status import DeviceStatusResponse
-from .protocol import PriorUploadResponse, RecordReplayResponse
+from .protocol import PriorUploadResponse, RecordReplayPlanResponse, RecordReplayResponse
 
-ApiResponse = RecordReplayResponse | DeviceStatusResponse | PriorUploadResponse
+ApiResponse = (
+    RecordReplayResponse
+    | RecordReplayPlanResponse
+    | DeviceStatusResponse
+    | PriorUploadResponse
+)
 
 
 class RecordReplayServer:
@@ -47,6 +52,13 @@ class RecordReplayServer:
                 try:
                     if self.path == "/status":
                         self._send(HTTPStatus.OK, application.status())
+                        return
+                    if self.path == "/plan":
+                        response = application.get_plan()
+                        response_status = (
+                            HTTPStatus.BAD_REQUEST if not response.accepted else HTTPStatus.OK
+                        )
+                        self._send(response_status, response)
                         return
                     if self.path == "/config":
                         self._send(HTTPStatus.OK, application.get_parameters())

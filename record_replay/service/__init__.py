@@ -1,6 +1,6 @@
 """RecordReplay 常驻 API 服务。"""
 
 from .application import RecordReplayApplication
-from .protocol import RecordReplayResponse
+from .protocol import RecordReplayPlanResponse, RecordReplayResponse
 
-__all__ = ["RecordReplayApplication", "RecordReplayResponse"]
+__all__ = ["RecordReplayApplication", "RecordReplayPlanResponse", "RecordReplayResponse"]

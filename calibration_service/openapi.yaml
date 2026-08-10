@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Dingtai Calibration Service
-  version: 1.1.1
+  version: 1.2.0
   description: >-
     手眼标定与先验记录服务。只读取 RobotControl 状态，只请求 CameraPipeline
     拍摄和检测，不发送设备控制请求。计算结果先进入临时缓存，二次确认后写入
@@ -94,16 +94,46 @@ paths:
       responses:
         '200': {description: 先验已计算并进入待确认缓存}
         '409': {description: 已有任务执行}
+  /api/v1/hand-eye/config:
+    get:
+      operationId: get_hand_eye_config
+      description: 读取手眼 ChArUco 默认参数和当前 OpenCV 可用字典。服务重启后恢复代码默认值。
+      responses:
+        '200': {description: 当前配置}
+    patch:
+      operationId: update_hand_eye_config
+      description: 部分更新手眼 ChArUco 默认参数；不连接设备、不触发拍摄。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                dictionary_name: {type: string, description: 必须是当前 OpenCV cv2.aruco 暴露的预定义字典}
+                squares_x: {type: integer, minimum: 2}
+                squares_y: {type: integer, minimum: 2}
+                square_length_mm: {type: number, exclusiveMinimum: 0}
+                marker_length_mm: {type: number, exclusiveMinimum: 0}
+                min_charuco_corners: {type: integer, minimum: 4}
+                max_frames: {type: integer, minimum: 1}
+                stable_timeout_s: {type: number, exclusiveMinimum: 0}
+                enable_debug: {type: boolean}
+      responses:
+        '200': {description: 配置已更新}
+        '400': {description: 配置字段或取值无效}
+        '409': {description: 当前有拍摄或计算任务}
   /api/v1/hand-eye/sample:
     post:
       operationId: capture_hand_eye_sample
-      description: 只读当前 AR5 状态并拍摄一组手眼 ChArUco 样本。
+      description: 只读当前 AR5 状态并按当前手眼 ChArUco 默认参数拍摄一组样本。
       responses:
         '200': {description: 样本已加入当前服务内存}
   /api/v1/head-eye/sample:
     post:
       operationId: capture_head_eye_sample
-      description: 只读当前 AR5 状态并使用头部相机拍摄眼在手外样本。
+      description: 只读当前 AR5 状态并按当前手眼 ChArUco 默认参数使用头部相机拍摄眼在手外样本。
       responses:
         '200': {description: 样本已加入当前服务内存}
   /api/v1/hand-eye/solve:

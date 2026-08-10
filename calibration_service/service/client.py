@@ -29,6 +29,16 @@ class CalibrationServiceClient:
 
         return self._request("GET", "/status")
 
+    def get_hand_eye_config(self) -> dict[str, object]:
+        """读取手眼 ChArUco 默认参数和当前 OpenCV 可用字典。"""
+
+        return self._request("GET", "/hand-eye/config")
+
+    def update_hand_eye_config(self, payload: Mapping[str, object]) -> dict[str, object]:
+        """部分更新手眼 ChArUco 默认参数。"""
+
+        return self._request("PATCH", "/hand-eye/config", payload)
+
     def get_hand_eye_result(self) -> dict[str, object]:
         """读取左手眼在手上 `T_tool_cam` 结果。"""
 

@@ -1,6 +1,6 @@
 # 双臂记录回放服务
 
-当前 RecordReplay 服务业务语义版本：`2.2.1`。本次升级沿用
+当前 RecordReplay 服务业务语义版本：`2.4.0`。本次升级沿用
 `test/wuji/record_replay_cli.py` 的动作命名作为参考，但不改变该人工验证入口的版本语义。
 
 面向 GUI 和其它项目的完整 HTTP 契约见 [API Reference](API%20Reference.md)，机器可读描述见
@@ -37,7 +37,9 @@ CameraPipeline Python 包、不引用仓库 `src/`，也不自行订阅相机帧
 
 CSV 文件名使用 `<action>_<arm>[_<timestamp>].csv`；多目标动作使用
 `<action>_<index>_<arm>[_<timestamp>].csv`，例如 `get_tray_1_left_20260630_154830.csv`。
-数字前缀和 `Sxx` 不再参与解析。既有 CSV 迁移只改文件名，不改表头、行顺序、数值、单位或时间戳。
+录制时也兼容在最前面增加纯数字前缀，例如 `01_go_out_left.csv`、`10_get_new_tray_left.csv`、
+`11_before_put_new_tray_left.csv`。该前缀只用于动作名匹配，不改写实际文件名；执行、状态展示和
+CSV 行记录仍按磁盘上的完整文件名处理。`Sxx` 仍不参与动作名解析。
 
 部署时必须把代码、先验 JSON、ChArUco offset 历史 CSV、两侧相机外参和两侧回放 CSV 作为同一个
 `record_replay/` 目录同步到 Orin，并参与文件清单和 SHA-256 一致性校验。
@@ -240,9 +242,9 @@ fast 的每个 arm 点使用动作项 zone，precise 的每个 arm 点固定使�
 GUI 可以轮询只读 `/status`，也可以订阅 `wss://<orin-host>/api/v1/record-replay-ws`。
 连接建立后立即收到当前状态，后续每次状态快照变化立即推送；短暂断网后重新连接即可恢复。
 
-HTTP API：`GET /status`、`GET /config`、`GET /device-status`、`POST /config`、
+HTTP API：`GET /status`、`GET /plan`、`GET /config`、`GET /device-status`、`POST /config`、
 `POST /prior/ball-pose`、`POST /prior/charuco`、`POST /start`、`POST /stop`、
-`POST /reset`。配置更新 body
+`POST /reset`。`GET /plan` 只在 `idle` 时读取并校验下一轮动作 JSON 与实际 CSV，返回 GUI 执行前展示所需的 CSV、动作类型、speed、zone、index 和行数；它不连接设备、不创建线程，也不允许通过 HTTP 修改这些字段。配置更新 body
 只包含非动作数字参数；动作 speed/zone 不通过 HTTP 任意修改，必须编辑顺序 JSON，且服务 `busy` 期间拒绝修改配置。两个 prior 接口接收完整 JSON，
 仅在服务 `idle` 且没有活动回放线程时允许替换；校验通过后原子替换并将旧文件备份到服务端 `.archive/prior_data/<时间戳>/`。`POST /start` 必须提供
 `{"enable_agv_navigation": true|false}`；为 `false` 时不执行回放前导航，双臂 CSV

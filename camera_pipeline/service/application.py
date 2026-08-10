@@ -356,8 +356,6 @@ class CameraPipelineApplication:
             raise RuntimeError("detect_charuco payload missing")
         if payload.camera_name != request.camera_name:
             raise ValueError("detect_charuco camera_name mismatch")
-        if payload.dictionary_name != "DICT_APRILTAG_16H5":
-            raise ValueError(f"unsupported dictionary: {payload.dictionary_name}")
         if payload.squares_x < 2 or payload.squares_y < 2:
             raise ValueError("charuco board squares_x and squares_y must be at least 2")
         if payload.square_length_mm <= 0.0:
@@ -368,7 +366,9 @@ class CameraPipelineApplication:
             raise ValueError("charuco min_charuco_corners must be at least 4")
         if payload.max_frames <= 0 or payload.stable_timeout_s <= 0.0:
             raise ValueError("charuco max_frames and stable_timeout_s must be greater than zero")
-        dictionary = cv2.aruco.getPredefinedDictionary(int(cv2.aruco.DICT_APRILTAG_16h5))
+        from ..charuco_detection import get_predefined_aruco_dictionary
+
+        dictionary = get_predefined_aruco_dictionary(payload.dictionary_name)
         board = cv2.aruco.CharucoBoard(
             (payload.squares_x, payload.squares_y),
             payload.square_length_mm,

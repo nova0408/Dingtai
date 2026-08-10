@@ -49,6 +49,7 @@ KNOWN_ACTION_TYPES: Final = {
 SYNC_ACTION_ORDER: Final = ("open_door", "close_door")
 "双臂只允许按该名称顺序建立起点同步；不建立终点同步。"
 _TIMESTAMP_PATTERN: Final = re.compile(r"\d{8}_\d{6}\Z")
+_RECORDING_PREFIX_PATTERN: Final = re.compile(r"[0-9]+\Z")
 
 
 @dataclass(frozen=True, slots=True)
@@ -176,7 +177,11 @@ class ActionSequenceValidationError(ValueError):
 
 
 def parse_csv_filename(path_or_name: Path | str) -> CsvAsset:
-    """解析 ``<action>[_<index>]_<arm>[_<timestamp>].csv`` 文件名。"""
+    """解析命名 CSV，并兼容录制时附加的纯数字首段前缀。
+
+    数字前缀只用于动作名匹配；返回的 ``CsvAsset.path`` 始终保留实际文件路径，
+    因此执行、状态展示和 CSV 行记录仍按磁盘上的原始文件名处理。
+    """
 
     path = Path(path_or_name)
     if path.suffix.lower() != ".csv":
@@ -194,6 +199,8 @@ def parse_csv_filename(path_or_name: Path | str) -> CsvAsset:
         action_parts = parts[:-1]
     if arm_side not in {"left", "right"}:
         raise ValueError(f"CSV 文件名缺少有效机械臂侧别：{path.name}")
+    if action_parts and _RECORDING_PREFIX_PATTERN.fullmatch(action_parts[0]) is not None:
+        action_parts = action_parts[1:]
     index: int | None = None
     if len(action_parts) >= 2 and action_parts[-1].isdigit():
         index = int(action_parts.pop())
@@ -699,6 +706,9 @@ def _is_required_asset_name(
     """按动作名、index 和侧别筛选候选文件，不解析无关资产。"""
 
     stem = path.stem
+    stem_parts = stem.split("_", maxsplit=1)
+    if len(stem_parts) == 2 and _RECORDING_PREFIX_PATTERN.fullmatch(stem_parts[0]) is not None:
+        stem = stem_parts[1]
     for function_name, index in required_keys:
         index_suffix = "" if index is None else f"_{index}"
         prefix = f"{function_name}{index_suffix}_{arm_side}"

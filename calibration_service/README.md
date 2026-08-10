@@ -19,6 +19,8 @@
 头部和手部先验分别使用两个接口。手部先验当前按 RecordReplay 语义固定使用左手
 相机和左臂状态。手眼样本保存在服务内存中，服务重启后需重新调用
 `POST /api/v1/hand-eye/sample`；也可以在 solve body 中直接提供样本数组。
+手眼 ChArUco 板参数通过 `GET/PATCH /api/v1/hand-eye/config` 查询和修改，字典选项与当前
+`cv2.aruco` 可用预定义字典一致。配置只在当前服务进程内生效，重启后恢复默认值。
 
 ## 手动流程
 
@@ -37,6 +39,18 @@
    `POST /api/v1/head-eye/sample`，求解接口为 `POST /api/v1/head-eye/solve`；同样需要
    `POST /api/v1/replacements/confirm` 二次确认，结果通过
    `GET /api/v1/results/head-eye/{arm_side}` 读取。
+
+修改手眼采样默认板参数示例：
+
+```http
+PATCH /api/v1/hand-eye/config
+Content-Type: application/json
+
+{"dictionary_name":"DICT_5X5_1000","squares_x":12,"squares_y":9}
+```
+
+先读取配置响应中的 `available_dictionary_names`，再选择字典；服务不会接受当前
+OpenCV 未提供的字典名称。
 
 标定会话的 `start/end` 只用于提示、清空和封存本次内存样本，不会隐式移动设备、拍摄或
 求解。`cancel` 会丢弃样本和待确认缓存，不执行替换。正式替换时，旧文件会按
