@@ -1,7 +1,7 @@
-# RecordReplay 动作抽象、多点循环与 Rapid Stop 升级 TODO
+# RecordReplay 动作抽象、单次托盘交换与 Rapid Stop 升级 TODO
 
 > 状态：主流程代码已完成静态检查；`calibration` 三球算法已绑定，`calibration_new_tray` 按要求留空，部署已完成，现场验收仍未完成  
-> 范围：`record_replay/` 服务的 CSV 解析、动作执行、双臂同步、循环编排、运行状态及 AR5/AGV 停止  
+> 范围：`record_replay/` 服务的 CSV 解析、动作执行、双臂同步、单次执行、运行状态及 AR5/AGV 停止
 > 不在范围：修改先验录制流程、修改 CSV 内容格式、为 AR5/AGV 之外的设备设计急停
 
 ## 1. 已确认的设计约束
@@ -234,7 +234,8 @@ record_replay/action_sequence.json
 
 该文件是服务部署源文件，必须纳入版本管理、部署清单和 SHA-256 一致性校验。第一版不增加在线流程编辑器，也不通过 HTTP 接收任意动作列表；顺序调整通过修改并部署该 JSON 完成。
 
-JSON 顶层保存版本、循环次数、统一 deployment 配置和左右臂两个顺序列表。每个动作项至少明确写出：
+JSON 顶层保存版本、统一 deployment 配置和左右臂两个顺序列表。服务不在 JSON 或进程内保存循环次数；GUI
+通过每次 `start` 传入旧托盘和新托盘 index 编排循环。每个动作项至少明确写出：
 
 - `function_name`：封闭白名单中的命名动作；
 - `type`：`capture`、`fast` 或 `precise`；
@@ -247,8 +248,7 @@ JSON 顶层保存版本、循环次数、统一 deployment 配置和左右臂两
 
 ```json
 {
-  "schema_version": 2,
-  "loop_count": 1,
+  "schema_version": 3,
   "deployment": {
     "prior_files": {
       "ball_pose": "prior_data/ball_pose_prior.json",
@@ -357,7 +357,8 @@ match function_name:
 start 前至少检查：
 
 - JSON 是合法 UTF-8、合法 JSON，且 `schema_version` 受支持；
-- `loop_count` 是允许范围内的正整数；
+- `old_tray_current_index`、`old_tray_put_index`、`new_tray_current_index`、`new_tray_put_index`
+  由每次 start 传入且必须是正整数；
 - 左右列表非空，动作项字段完整且无未知字段；
 - `function_name`、`type` 均在封闭白名单内且彼此匹配；
 - `speed`、`zone`、`final_speed`、`settle_delay` 是有限数值且在允许范围内；
@@ -431,7 +432,7 @@ rapid_stop --人工处理 + reset--> idle
 
 - `start` 之前为 `idle`；
 - 正常开始后为 `busy`；
-- 正常执行完所有循环后恢复 `idle`；
+- 正常执行完一次计划后恢复 `idle`，并将进程内完成次数加一；
 - 收到停止信号时立即锁存 `rapid_stop`；
 - `rapid_stop` 下拒绝 start、参数修改和所有普通动作；
 - 只有人工处理后显式 `POST /reset` 才能恢复 `idle`；
@@ -542,7 +543,7 @@ AGV 与左右 AR5 使用显式字段和显式 stop 调用；不循环遍历动�
 - [x] 允许通过版本化 JSON 调整、删除、重复已知动作；
 - [x] 在多目标动作项中直接写入 index；
 - [x] index 精确解析到唯一 CSV；
-- [x] 读取并校验 JSON 中明确的有限循环次数；
+- [x] 读取并校验 JSON 中明确的单次动作顺序；
 - [x] start 成功前冻结本轮执行列表和 JSON SHA-256；
 - [x] 不提供 HTTP 任意动作排序 API；
 - [x] 状态进度显示动作名和 index，不显示旧 CSV 序号。
@@ -591,7 +592,7 @@ ChArUco 稳定等待均已接入停止事件；停止事件生效后不会继续
 - [x] 不自动运行任何 record_replay 测试或 start；
 - [x] 部署前后比较 record_replay 文件清单和 SHA-256；全量四服务部署清单包含 `record_replay/`，远端替换前后
   的 `sha256sum --check` 均通过；
-- [ ] 由现场人员依次验证单臂、双臂起点同步、不同 index、有限循环和 Rapid Stop。
+- [ ] 由现场人员依次验证单臂、双臂起点同步、不同 index、GUI 外部循环和 Rapid Stop。
 
 ## 10. 主要风险与控制
 
@@ -665,19 +666,18 @@ ChArUco 稳定等待均已接入停止事件；停止事件生效后不会继续
 - 当前任务状态以左臂 JSON 动作序列为全局 `current_task_index/current_task_sequence` 基准；右臂不再伪造
   追加阶段，而是通过 `current_right_*` 字段发布其独立动作。双臂仅在 `open_door`、`close_door` 起点屏障同步。
 - 执行器已在左臂每个动作开始时调用 `advance_execution_task`，在动作和其 offset 处理完成后调用
-  `complete_execution_task`；该边界会校验 JSON 任务清单中的左右 CSV 配对和循环顺序，WSS/HTTP 发布的
+  `complete_execution_task`；该边界会校验 JSON 任务清单中的左右 CSV 配对和单次顺序，WSS/HTTP 发布的
   `current_task_active` 因此不再只是覆盖式索引；状态更新未提供新 `plan_index` 时会保留当前索引，
   进入 idle 时才清除本轮索引。
 - 纯离线不变量断言已通过：新 index 文件名正确解析，capture 末点慢速且 `zone=0` 生效；当前版本另外兼容
   纯数字前缀 CSV。capture 前段和 fast arm 点使用动作项 zone，precise 强制 `zone=0`，状态订阅只保留最新快照，idle 清除任务进度，
-  stop 标志置位时 AGV 不发送导航；有限循环
-  计划展开两轮得到 30 个左臂任务。该结果不替代现场运动和停止验证。
+  stop 标志置位时 AGV 不发送导航；单次计划只展开一份动作列表。该结果不替代现场运动和停止验证。
 - 纯 AST 护栏检查已通过：`record_replay/` 未使用 `getattr`、`eval`、`exec` 或 `__import__` 等动态分发，
   显式动作分发仍使用 `match`；当前 19 个服务 CSV 均通过新命名解析，`get_tray_1_left` 和
   `put_tray_4_left` 的 index 绑定均通过。
-- 当前本机 `action_sequence.json` 只配置 `loop_count=1`；离线读取实际展开为左臂 15 个动作任务，
-  `action_sequence.py` 对 `loop_count` 的软件边界为 `1..1000`，ruff/pyright 均通过。`1000` 是否为第一版现场允许的
-  最大循环次数仍待人工安全评审，未据此宣称现场上限已确定。
+- 当前本机 `action_sequence.json` 使用 schema 3；离线读取为单次左臂动作任务。每次 start 的
+  `old_tray_current_index`、`old_tray_put_index`、`new_tray_current_index`、`new_tray_put_index`
+  分别绑定 `get_tray`、`put_tray`、`get_new_tray`、`put_new_tray`，GUI 负责决定下一次参数。
 - 2026-08-07 对 Orin 当前部署文件做只读权限核对：`action_sequence.json` 为 `wuji-brain:wuji-brain`、
   权限 `664`；当前状态只能证明服务用户可读写，不能证明人工修改、评审和部署职责已隔离，因此权限项继续保留待确认。
 - 2026-08-07 14:12:44 全量部署已将当前本机版本同步至 Orin；远端暂存区共 205 个文件，
@@ -697,6 +697,6 @@ ChArUco 稳定等待均已接入停止事件；停止事件生效后不会继续
   zone `[0, 200]` mm、capture `final_speed <= speed`；具体现场安全值仍由人工评审；
 - [ ] action_sequence.json 的人工修改、评审和部署权限；
 - [ ] 取消 open/close 终点同步后，两臂工作空间是否始终安全；
-- [ ] 第一版允许的最大循环次数。
+- [ ] GUI 外部循环中四个托盘位置 index 的现场业务顺序和异常恢复策略。
 
 这些确认项只影响显式 JSON 字段和顺序，不应引入反射式动态调用或通用流程编辑器。

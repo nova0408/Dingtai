@@ -8,6 +8,7 @@ from ..contracts import (
     ReplayCsvFileStatus,
     ReplayExecutionTaskStatus,
     ReplayOffsetStatus,
+    ReplayErrorCode,
     ReplayServiceState,
 )
 from .config_store import RuntimeParameters
@@ -32,10 +33,7 @@ class ReplayPlanAction:
     """启动前展示的一项只读回放动作。"""
 
     sequence: int
-    "当前机械臂侧在展开循环中的执行序号，从 1 开始。"
-
-    loop: int
-    "该动作所属的循环序号，从 1 开始。"
+    "当前机械臂侧在本次单次执行中的序号，从 1 开始。"
 
     csv: str
     "实际执行的 CSV 文件名，保留磁盘上的数字前缀。"
@@ -72,14 +70,26 @@ class RecordReplayPlanResponse:
     state: ReplayServiceState
     "当前服务阶段。"
 
+    error_code: ReplayErrorCode | None = None
+    "稳定错误码；正常计划为 null。"
+
     accepted: bool = True
     "计划是否成功读取。"
 
     action_sequence_sha256: str | None = None
     "本次读取的 action_sequence.json SHA-256。"
 
-    loop_count: int = 0
-    "动作顺序配置中的循环次数。"
+    old_tray_current_index: int | None = None
+    "本次预览使用的旧托盘当前位置 index。"
+
+    old_tray_put_index: int | None = None
+    "本次预览使用的旧托盘放置位置 index。"
+
+    new_tray_current_index: int | None = None
+    "本次预览使用的新托盘当前位置 index。"
+
+    new_tray_put_index: int | None = None
+    "本次预览使用的新托盘放置位置 index。"
 
     left: tuple[ReplayPlanAction, ...] = ()
     "左臂按实际执行顺序展开后的动作。"
@@ -96,6 +106,7 @@ class RecordReplayResponse:
     """HTTP API 返回的服务状态与可选持久化参数。"""
 
     state: ReplayServiceState
+    error_code: ReplayErrorCode | None = None
     accepted: bool = True
     action_sequence_sha256: str | None = None
     left_csv_state: str | None = None
@@ -107,6 +118,12 @@ class RecordReplayResponse:
     current_task_sequence: int = 0
     current_task_active: bool = False
     total_execution_count: int = 0
+    old_tray_current_index: int | None = None
+    old_tray_put_index: int | None = None
+    new_tray_current_index: int | None = None
+    new_tray_put_index: int | None = None
+    agv_navigation_enabled: bool | None = None
+    agv_target: str | None = None
     current_left_csv: str | None = None
     current_left_action_name: str | None = None
     current_left_action_index: int | None = None

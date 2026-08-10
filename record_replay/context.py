@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import threading
 from dataclasses import dataclass, replace
-from queue import Full, Queue
+from queue import Empty, Full, Queue
 from typing import TYPE_CHECKING
 
 from .contracts import (
     ReplayCsvFileStatus,
     ReplayExecutionTaskStatus,
+    ReplayExecutionCompletedEvent,
+    ReplayErrorCode,
     ReplayOffsetStatus,
     ReplayServiceState,
     ReplayStatusSnapshot,
@@ -42,13 +44,15 @@ class ReplayContext:
     # region 初始化
 
     def __init__(self, config: ReplayCycleConfig) -> None:
-        """创建一轮或多轮可复用的执行上下文。"""
+        """创建服务进程内可复用的单次执行上下文。"""
 
         self.config = config
         self.resources = ReplayRuntimeResources()
         self.stop_event = threading.Event()
         self._lock = threading.Lock()
-        self._status_subscribers: list[Queue[ReplayStatusSnapshot]] = []
+        self._status_subscribers: list[
+            Queue[ReplayStatusSnapshot | ReplayExecutionCompletedEvent]
+        ] = []
         self._snapshot = ReplayStatusSnapshot(state=ReplayServiceState.IDLE)
 
     # endregion
@@ -67,6 +71,7 @@ class ReplayContext:
         *,
         left_csv_state: str | None = None,
         plan_index: int | None = None,
+        error_code: ReplayErrorCode | None = None,
         error_text: str | None = None,
     ) -> None:
         """原子更新服务阶段与当前左臂执行状态。"""
@@ -95,6 +100,7 @@ class ReplayContext:
                     if clear_task
                     else True if plan_index is not None else self._snapshot.current_task_active
                 ),
+                error_code=error_code,
                 error_text=error_text,
             )
             self._publish_locked()
@@ -110,7 +116,7 @@ class ReplayContext:
             self._publish_locked()
 
     def set_total_execution_count(self, count: int) -> None:
-        """发布服务进程内已接受的回放轮次。"""
+        """发布服务进程内已成功完成的回放轮次。"""
 
         if count < 0:
             raise ValueError("total_execution_count 不能为负数")
@@ -118,16 +124,63 @@ class ReplayContext:
             self._snapshot = replace(self._snapshot, total_execution_count=count)
             self._publish_locked()
 
-    def subscribe_status(self) -> Queue[ReplayStatusSnapshot]:
+    def set_start_parameters(
+        self,
+        old_tray_current_index: int,
+        old_tray_put_index: int,
+        new_tray_current_index: int,
+        new_tray_put_index: int,
+        enable_agv_navigation: bool,
+        agv_target: str,
+    ) -> None:
+        """发布本次 start 冻结的四个托盘位置与 AGV 选项。"""
+
+        with self._lock:
+            self._snapshot = replace(
+                self._snapshot,
+                old_tray_current_index=old_tray_current_index,
+                old_tray_put_index=old_tray_put_index,
+                new_tray_current_index=new_tray_current_index,
+                new_tray_put_index=new_tray_put_index,
+                agv_navigation_enabled=enable_agv_navigation,
+                agv_target=agv_target,
+            )
+            self._publish_locked()
+
+    def complete_execution(self) -> None:
+        """递增完成次数并向现有订阅者投递一次性完成事件。"""
+
+        with self._lock:
+            self._snapshot = replace(
+                self._snapshot,
+                total_execution_count=self._snapshot.total_execution_count + 1,
+            )
+            event = ReplayExecutionCompletedEvent(self._snapshot)
+            for subscriber in tuple(self._status_subscribers):
+                try:
+                    subscriber.get_nowait()
+                except Empty:
+                    pass
+                try:
+                    subscriber.put_nowait(event)
+                except Full:
+                    pass
+
+    def subscribe_status(
+        self,
+    ) -> Queue[ReplayStatusSnapshot | ReplayExecutionCompletedEvent]:
         """订阅状态快照；建立连接后立即收到当前状态。"""
 
-        subscriber: Queue[ReplayStatusSnapshot] = Queue(maxsize=1)
+        subscriber: Queue[ReplayStatusSnapshot | ReplayExecutionCompletedEvent] = Queue(maxsize=1)
         with self._lock:
             self._status_subscribers.append(subscriber)
             subscriber.put_nowait(self._snapshot)
         return subscriber
 
-    def unsubscribe_status(self, subscriber: Queue[ReplayStatusSnapshot]) -> None:
+    def unsubscribe_status(
+        self,
+        subscriber: Queue[ReplayStatusSnapshot | ReplayExecutionCompletedEvent],
+    ) -> None:
         """解除一个状态订阅。"""
 
         with self._lock:
@@ -154,13 +207,14 @@ class ReplayContext:
             self._publish_locked()
 
     def reset_run_progress(self) -> None:
-        """在新一轮开始前清除上一轮当前 CSV 与行进度。"""
+        """在下一次 start 前清除上一轮当前 CSV 与行进度。"""
 
         with self._lock:
             self._snapshot = replace(
                 self._snapshot,
                 left_csv_state=None,
                 plan_index=None,
+                error_code=None,
                 error_text=None,
                 current_task_index=None,
                 current_task_active=False,
@@ -347,6 +401,7 @@ class ReplayContext:
             self._snapshot = replace(
                 self._snapshot,
                 state=ReplayServiceState.IDLE,
+                error_code=None,
                 error_text=None,
             )
             self._publish_locked()

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
+from urllib.parse import urlencode
 from urllib.request import Request, ProxyHandler, build_opener
 
 _DIRECT_OPENER = build_opener(ProxyHandler({}))
@@ -25,10 +26,24 @@ class RecordReplayClient:
     def get_status(self) -> dict[str, object]:
         return self._request("GET", "/status")
 
-    def get_plan(self) -> dict[str, object]:
-        """读取下一轮动作、CSV 和运动参数的只读预览。"""
+    def get_plan(
+        self,
+        old_tray_current_index: int,
+        old_tray_put_index: int,
+        new_tray_current_index: int,
+        new_tray_put_index: int,
+    ) -> dict[str, object]:
+        """读取指定四个托盘位置的单次动作预览。"""
 
-        return self._request("GET", "/plan")
+        query = urlencode(
+            {
+                "old_tray_current_index": old_tray_current_index,
+                "old_tray_put_index": old_tray_put_index,
+                "new_tray_current_index": new_tray_current_index,
+                "new_tray_put_index": new_tray_put_index,
+            }
+        )
+        return self._request("GET", f"/plan?{query}")
 
     def get_config(self) -> dict[str, object]:
         return self._request("GET", "/config")
@@ -51,13 +66,28 @@ class RecordReplayClient:
 
         return self._request("POST", "/prior/charuco", payload)
 
-    def start(self, enable_agv_navigation: bool = False) -> dict[str, object]:
-        """启动一轮回放，并显式指定本轮是否执行 AGV 导航。"""
+    def start(
+        self,
+        old_tray_current_index: int,
+        old_tray_put_index: int,
+        new_tray_current_index: int,
+        new_tray_put_index: int,
+        enable_agv_navigation: bool,
+        agv_target: str,
+    ) -> dict[str, object]:
+        """启动一次回放，并显式指定四个托盘位置与 AGV 选项。"""
 
         return self._request(
             "POST",
             "/start",
-            {"enable_agv_navigation": enable_agv_navigation},
+            {
+                "old_tray_current_index": old_tray_current_index,
+                "old_tray_put_index": old_tray_put_index,
+                "new_tray_current_index": new_tray_current_index,
+                "new_tray_put_index": new_tray_put_index,
+                "enable_agv_navigation": enable_agv_navigation,
+                "agv_target": agv_target,
+            },
         )
 
     def stop(self) -> dict[str, object]:

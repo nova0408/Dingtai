@@ -20,7 +20,7 @@ from urllib.parse import urlsplit
 from loguru import logger
 
 from ..context import ReplayContext
-from ..contracts import ReplayStatusSnapshot
+from ..contracts import ReplayExecutionCompletedEvent, ReplayStatusSnapshot
 
 _WEBSOCKET_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 _MAX_HANDSHAKE_BYTES = 16 * 1024
@@ -82,10 +82,14 @@ class RecordReplayWebSocketServer:
                         if not _handle_control_frame(self.request):
                             return
                         try:
-                            snapshot = subscriber.get(timeout=0.2)
+                            message = subscriber.get(timeout=0.2)
                         except Empty:
                             continue
-                        _send_text_frame(self.request, _snapshot_json(snapshot))
+                        if isinstance(message, ReplayExecutionCompletedEvent):
+                            payload = _completion_json(message.snapshot)
+                        else:
+                            payload = _snapshot_json(message)
+                        _send_text_frame(self.request, payload)
                 except (ConnectionError, OSError, TimeoutError):
                     return
                 except Exception as exc:  # noqa: BLE001
@@ -105,11 +109,36 @@ class _ThreadingTcpServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
 def _snapshot_json(snapshot: ReplayStatusSnapshot) -> str:
     """将不可变状态快照编码为稳定的 JSON 文本。"""
 
+    return _status_json(snapshot, "record_replay.status", completed=False)
+
+
+def _completion_json(snapshot: ReplayStatusSnapshot) -> str:
+    """编码一次性执行完成事件；事件中的计数已经递增。"""
+
+    return _status_json(snapshot, "record_replay.completed", completed=True)
+
+
+def _status_json(
+    snapshot: ReplayStatusSnapshot,
+    event_name: str,
+    *,
+    completed: bool,
+) -> str:
+    """编码状态或完成事件的共同字段。"""
+
     payload = {
-        "event": "record_replay.status",
+        "event": event_name,
+        "completed": completed,
         "state": snapshot.state.value,
         "accepted": True,
+        "error_code": snapshot.error_code,
         "total_execution_count": snapshot.total_execution_count,
+        "old_tray_current_index": snapshot.old_tray_current_index,
+        "old_tray_put_index": snapshot.old_tray_put_index,
+        "new_tray_current_index": snapshot.new_tray_current_index,
+        "new_tray_put_index": snapshot.new_tray_put_index,
+        "agv_navigation_enabled": snapshot.agv_navigation_enabled,
+        "agv_target": snapshot.agv_target,
         "action_sequence_sha256": snapshot.action_sequence_sha256,
         "left_csv_state": snapshot.left_csv_state,
         "plan_index": snapshot.plan_index,

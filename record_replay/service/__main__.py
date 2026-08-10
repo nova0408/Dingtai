@@ -110,7 +110,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             action_sequence_path=ACTION_SEQUENCE_PATH,
             device_connection=device_connection,
             settings=settings,
-            start_station=args.start_station,
         )
     )
     agv_channel = create_channel(f"{AGV_HOST}:{QMLINKER_PORT}")
@@ -201,7 +200,6 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=6300)
     parser.add_argument("--websocket-host", default="0.0.0.0")
-    parser.add_argument("--start-station", default="1")
     return parser.parse_args(argv)
 
 

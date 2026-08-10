@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: RecordReplay HTTP API
-  version: 2.4.0
+  version: 3.2.0
   description: >-
     双臂记录回放服务 HTTP API。POST /start 可能控制真实设备，必须由现场人员确认安全后调用。
     状态 WebSocket 通过 API Gateway 的 /api/v1/record-replay-ws 提供 WSS 入口。
@@ -62,9 +62,30 @@ paths:
       description: >-
         只在 idle 且没有活动回放线程时读取并校验 action_sequence.json 与实际 CSV；不连接
         现场设备、不创建执行线程、不允许通过该接口修改 speed、zone 或 index。
+      parameters:
+        - name: old_tray_current_index
+          in: query
+          required: true
+          schema: {type: integer, minimum: 1}
+          description: 本次旧托盘当前位置 index，绑定 get_tray。
+        - name: old_tray_put_index
+          in: query
+          required: true
+          schema: {type: integer, minimum: 1}
+          description: 本次旧托盘放置位置 index，绑定 put_tray。
+        - name: new_tray_current_index
+          in: query
+          required: true
+          schema: {type: integer, minimum: 1}
+          description: 本次新托盘当前位置 index，绑定 get_new_tray。
+        - name: new_tray_put_index
+          in: query
+          required: true
+          schema: {type: integer, minimum: 1}
+          description: 本次新托盘放置位置 index，绑定 put_new_tray。
       responses:
         '200':
-          description: 按循环展开的只读动作计划
+          description: 本次单次执行的只读动作计划
           content:
             application/json:
               schema:
@@ -88,7 +109,7 @@ paths:
   /start:
     post:
       operationId: start_replay
-      summary: 启动一轮回放
+      summary: 启动一次回放
       description: >-
         先全量校验先验、命名动作 JSON 和 CSV 唯一映射；录制 CSV 文件名允许使用
         01_、10_、11_ 等纯数字首段前缀，前缀只用于动作名匹配，实际执行仍使用原始文件名。
@@ -184,6 +205,21 @@ components:
     ReplayState:
       type: string
       enum: [idle, busy, rapid_stop]
+    ErrorCode:
+      type: [string, 'null']
+      enum:
+        - invalid_request
+        - invalid_index
+        - invalid_plan
+        - busy
+        - rapid_stop
+        - invalid_state
+        - stop_failed
+        - stop_requested
+        - execution_failed
+        - not_found
+        - internal_error
+        - null
     CsvFileStatus:
       type: object
       required: [name, row_count]
@@ -200,10 +236,9 @@ components:
         synchronized: {type: boolean}
     PlanAction:
       type: object
-      required: [sequence, loop, csv, action_name, action_type, speed, zone, index, final_speed, settle_delay, row_count]
+      required: [sequence, csv, action_name, action_type, speed, zone, index, final_speed, settle_delay, row_count]
       properties:
         sequence: {type: integer, minimum: 1}
-        loop: {type: integer, minimum: 1}
         csv: {type: string}
         action_name: {type: string}
         action_type: {type: string, enum: [capture, fast, precise]}
@@ -215,12 +250,16 @@ components:
         row_count: {type: integer, minimum: 0}
     RecordReplayPlanResponse:
       type: object
-      required: [state, accepted, action_sequence_sha256, loop_count, left, right, error_text]
+      required: [state, accepted, error_code, action_sequence_sha256, old_tray_current_index, old_tray_put_index, new_tray_current_index, new_tray_put_index, left, right, error_text]
       properties:
         state: {$ref: '#/components/schemas/ReplayState'}
         accepted: {type: boolean}
+        error_code: {$ref: '#/components/schemas/ErrorCode'}
         action_sequence_sha256: {type: [string, 'null']}
-        loop_count: {type: integer, minimum: 0}
+        old_tray_current_index: {type: [integer, 'null'], minimum: 1}
+        old_tray_put_index: {type: [integer, 'null'], minimum: 1}
+        new_tray_current_index: {type: [integer, 'null'], minimum: 1}
+        new_tray_put_index: {type: [integer, 'null'], minimum: 1}
         left: {type: array, items: {$ref: '#/components/schemas/PlanAction'}}
         right: {type: array, items: {$ref: '#/components/schemas/PlanAction'}}
         error_text: {type: [string, 'null']}
@@ -234,10 +273,11 @@ components:
         non_motion_retry_delay_s: {type: number, minimum: 0, default: 0.5}
     RecordReplayResponse:
       type: object
-      required: [state, accepted, action_sequence_sha256, left_csv_state, plan_index, error_text, left_csv_files, right_csv_files, execution_tasks, current_task_sequence, current_task_active, total_execution_count, current_left_csv, current_left_action_name, current_left_action_index, current_right_csv, current_right_action_name, current_right_action_index, current_left_row, current_right_row, current_left_total_rows, current_right_total_rows, offset_statuses, parameters]
+      required: [state, accepted, error_code, action_sequence_sha256, left_csv_state, plan_index, error_text, left_csv_files, right_csv_files, execution_tasks, current_task_sequence, current_task_active, total_execution_count, old_tray_current_index, old_tray_put_index, new_tray_current_index, new_tray_put_index, agv_navigation_enabled, agv_target, current_left_csv, current_left_action_name, current_left_action_index, current_right_csv, current_right_action_name, current_right_action_index, current_left_row, current_right_row, current_left_total_rows, current_right_total_rows, offset_statuses, parameters]
       properties:
         state: {$ref: '#/components/schemas/ReplayState'}
         accepted: {type: boolean}
+        error_code: {$ref: '#/components/schemas/ErrorCode'}
         action_sequence_sha256: {type: [string, 'null']}
         left_csv_state: {type: [string, 'null']}
         plan_index: {type: [integer, 'null'], minimum: 0}
@@ -248,6 +288,12 @@ components:
         current_task_sequence: {type: integer, minimum: 0}
         current_task_active: {type: boolean}
         total_execution_count: {type: integer, minimum: 0}
+        old_tray_current_index: {type: [integer, 'null'], minimum: 1}
+        old_tray_put_index: {type: [integer, 'null'], minimum: 1}
+        new_tray_current_index: {type: [integer, 'null'], minimum: 1}
+        new_tray_put_index: {type: [integer, 'null'], minimum: 1}
+        agv_navigation_enabled: {type: [boolean, 'null']}
+        agv_target: {type: [string, 'null']}
         current_left_csv: {type: [string, 'null']}
         current_left_action_name: {type: [string, 'null']}
         current_left_action_index: {type: [integer, 'null'], minimum: 1}
@@ -282,9 +328,14 @@ components:
     StartRequest:
       type: object
       additionalProperties: false
-      required: [enable_agv_navigation]
+      required: [old_tray_current_index, old_tray_put_index, new_tray_current_index, new_tray_put_index, enable_agv_navigation, agv_target]
       properties:
+        old_tray_current_index: {type: integer, minimum: 1}
+        old_tray_put_index: {type: integer, minimum: 1}
+        new_tray_current_index: {type: integer, minimum: 1}
+        new_tray_put_index: {type: integer, minimum: 1}
         enable_agv_navigation: {type: boolean}
+        agv_target: {type: string, minLength: 1}
     JsonObject:
       type: object
       additionalProperties: true

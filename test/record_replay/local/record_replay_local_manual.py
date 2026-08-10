@@ -19,7 +19,7 @@ def main() -> int:
 
     client = RecordReplayClient(SERVICE_ADDR)
     while True:
-        print("1: 获取状态  2: 获取配置  3: 修改配置  4: 启动一轮  5: 设备诊断  q: 退出")
+        print("1: 获取状态  2: 获取配置  3: 修改配置  4: 启动一次  5: 设备诊断  q: 退出")
         choice = input("请选择：").strip().lower()
         if choice == "q":
             return 0
@@ -45,7 +45,26 @@ def main() -> int:
             if confirmation != HARDWARE_CONFIRMATION:
                 print("未获得完整现场安全确认，不发送启动请求。")
                 continue
-            print(json.dumps(client.start(), ensure_ascii=False, indent=2))
+            old_tray_current_index = int(input("旧托盘当前位置 index：").strip())
+            old_tray_put_index = int(input("旧托盘放置位置 index：").strip())
+            new_tray_current_index = int(input("新托盘当前位置 index：").strip())
+            new_tray_put_index = int(input("新托盘放置位置 index：").strip())
+            enable_agv_navigation = input("是否启用 AGV 导航（y/N）：").strip().lower() == "y"
+            agv_target = input("AGV 目标：").strip()
+            print(
+                json.dumps(
+                    client.start(
+                        old_tray_current_index,
+                        old_tray_put_index,
+                        new_tray_current_index,
+                        new_tray_put_index,
+                        enable_agv_navigation,
+                        agv_target,
+                    ),
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
         elif choice == "5":
             print("设备诊断只读取状态，不下发上电、使能或运动指令。")
             print(json.dumps(client.get_device_status(), ensure_ascii=False, indent=2))

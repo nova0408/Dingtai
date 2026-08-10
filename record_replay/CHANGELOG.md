@@ -1,6 +1,6 @@
 # RecordReplay 版本日志
 
-当前版本：`2.4.0`
+当前版本：`3.2.0`
 
 ## 版本号规则
 
@@ -12,11 +12,34 @@
 
 每次更新 API 或功能时，必须同步更新当前版本号，并在本文件顶部追加带日期的版本记录。同一批改动只升级一次，按影响最大的改动选择版本位。
 
+## 3.2.0 - 2026-08-10
+
+### 新增
+
+- HTTP、状态和 WSS 响应增加稳定 `error_code`；`error_text` 统一返回中文说明，并区分请求、index、计划、状态和执行错误。
+
+## 3.1.0 - 2026-08-10
+
+### 变更
+
+- `GET /plan` 和 `POST /start` 改为接收四个托盘位置 index：旧托盘当前位置、旧托盘放置位置、
+  新托盘当前位置、新托盘放置位置，分别绑定 `get_tray`、`put_tray`、`get_new_tray`、`put_new_tray`。
+
+## 3.0.0 - 2026-08-10
+
+### 变更
+
+- 服务改为单次执行：移除 `loop_count` 和服务内部循环；GUI 负责在托盘位置 index 之间编排下一次 `start`。
+- `GET /plan` 与 `POST /start` 接收托盘位置参数；`start` 另接收 `enable_agv_navigation` 和
+  `agv_target`，共同冻结本次计划。
+- `total_execution_count` 改为进程启动以来成功完成的执行次数，仅在执行完成时递增。
+- WebSocket 在完成时推送一次 `event=record_replay.completed` 且 `completed=true` 的结束消息，消息中的计数已递增。
+
 ## 2.4.0 - 2026-08-10
 
 ### 新增
 
-- 新增只读 `GET /plan`，在启动前返回按循环展开的左右臂 CSV、动作类型、speed、zone、index、末点速度、稳定等待和 CSV 行数。
+- 新增只读 `GET /plan`，在启动前返回左右臂 CSV、动作类型、speed、zone、index、末点速度、稳定等待和 CSV 行数。
 - GUI 可在执行前展示服务端计划；`POST /start` 被接受后继续通过 Gateway WSS 接收实时执行状态。
 
 ## 2.3.0 - 2026-08-10

@@ -35,7 +35,7 @@ class DualArmExecutor:
         offset_updater: GlobalOffsetUpdater | None = None,
         charuco_initializer: CharucoOffsetInitializer | None = None,
     ) -> None:
-        """创建 runtime 并按左右 JSON 列表执行有限轮次。"""
+        """创建 runtime 并按左右 JSON 列表执行一次。"""
 
         stop_event = context.stop_event
         settings = context.config.settings
@@ -89,7 +89,6 @@ class DualArmExecutor:
                     context,
                     plan.left_actions,
                     (),
-                    plan.loop_count,
                     left_runtime,
                     offset_updater,
                     None,
@@ -126,7 +125,6 @@ class DualArmExecutor:
                     context,
                     plan.left_actions,
                     plan.right_actions,
-                    plan.loop_count,
                     left_runtime,
                     offset_updater,
                     open_door_start_barrier,
@@ -144,7 +142,6 @@ class DualArmExecutor:
                     context,
                     plan.right_actions,
                     (),
-                    plan.loop_count,
                     right_runtime,
                     None,
                     open_door_start_barrier,
@@ -168,48 +165,46 @@ class DualArmExecutor:
         context: ReplayContext,
         actions: tuple[NamedActionPlan, ...],
         synchronized_peer_actions: tuple[NamedActionPlan, ...],
-        loop_count: int,
         runtime: ReplayRuntime,
         offset_updater: GlobalOffsetUpdater | None,
         open_door_start_barrier: threading.Barrier | None,
         close_door_start_barrier: threading.Barrier | None,
     ) -> None:
-        """按一侧 JSON 顺序执行指定循环次数。"""
+        """按一侧 JSON 顺序执行一次。"""
 
         synchronized_peer_csvs = _build_synchronized_peer_csvs(
             actions,
             synchronized_peer_actions,
         )
-        for _ in range(loop_count):
-            for action_position, action in enumerate(actions):
-                if runtime.stop_event.is_set():
-                    raise RuntimeError("检测到停止请求，终止后续命名动作")
-                runtime.offset_source = "none"
-                context.refresh_offset_statuses()
-                if runtime.connected_arm.arm_side == "left":
-                    context.advance_execution_task(
-                        action.csv_asset.path.name,
-                        synchronized_peer_csvs[action_position],
-                    )
-                context.set_state(
-                    ReplayServiceState.BUSY,
-                    left_csv_state=(
-                        action.csv_asset.path.stem
-                        if runtime.connected_arm.arm_side == "left"
-                        else context.snapshot().left_csv_state
-                    ),
-                    plan_index=None,
+        for action_position, action in enumerate(actions):
+            if runtime.stop_event.is_set():
+                raise RuntimeError("检测到停止请求，终止后续命名动作")
+            runtime.offset_source = "none"
+            context.refresh_offset_statuses()
+            if runtime.connected_arm.arm_side == "left":
+                context.advance_execution_task(
+                    action.csv_asset.path.name,
+                    synchronized_peer_csvs[action_position],
                 )
-                barrier = _barrier_for_name(
-                    action.item.function_name,
-                    open_door_start_barrier,
-                    close_door_start_barrier,
-                )
-                _wait_action_start(barrier, action.item.function_name, runtime)
-                self._execute_action(context, runtime, action, offset_updater)
-                context.refresh_offset_statuses()
-                if runtime.connected_arm.arm_side == "left":
-                    context.complete_execution_task()
+            context.set_state(
+                ReplayServiceState.BUSY,
+                left_csv_state=(
+                    action.csv_asset.path.stem
+                    if runtime.connected_arm.arm_side == "left"
+                    else context.snapshot().left_csv_state
+                ),
+                plan_index=None,
+            )
+            barrier = _barrier_for_name(
+                action.item.function_name,
+                open_door_start_barrier,
+                close_door_start_barrier,
+            )
+            _wait_action_start(barrier, action.item.function_name, runtime)
+            self._execute_action(context, runtime, action, offset_updater)
+            context.refresh_offset_statuses()
+            if runtime.connected_arm.arm_side == "left":
+                context.complete_execution_task()
 
     def _execute_action(
         self,

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+from typing import Literal
 
 from .motion_parsing import ParsedArmPose
 
@@ -28,6 +29,22 @@ class ReplayServiceState(str, Enum):
 
 
 # region 数据结构
+
+
+ReplayErrorCode = Literal[
+    "invalid_request",
+    "invalid_index",
+    "invalid_plan",
+    "busy",
+    "rapid_stop",
+    "invalid_state",
+    "stop_failed",
+    "stop_requested",
+    "execution_failed",
+    "not_found",
+    "internal_error",
+]
+"RecordReplay 对外返回的稳定错误码集合。"
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,8 +113,22 @@ class ReplayStatusSnapshot:
 
     state: ReplayServiceState
     "服务阶段。"
+    error_code: ReplayErrorCode | None = None
+    "稳定错误码；正常状态为 null。"
     total_execution_count: int = 0
-    "服务进程内已接受的回放轮次；HTTP 与 WebSocket 共用该值。"
+    "服务进程自启动以来已成功完成的回放轮次；HTTP 与 WebSocket 共用该值。"
+    old_tray_current_index: int | None = None
+    "本次执行使用的旧托盘当前位置 index。"
+    old_tray_put_index: int | None = None
+    "本次执行使用的旧托盘放置位置 index。"
+    new_tray_current_index: int | None = None
+    "本次执行使用的新托盘当前位置 index。"
+    new_tray_put_index: int | None = None
+    "本次执行使用的新托盘放置位置 index。"
+    agv_navigation_enabled: bool | None = None
+    "本次执行是否启用 AGV 导航。"
+    agv_target: str | None = None
+    "本次执行请求的 AGV 目标名称。"
     action_sequence_sha256: str | None = None
     "当前冻结动作顺序 JSON 的 SHA-256。"
     left_csv_state: str | None = None
@@ -141,6 +172,14 @@ class ReplayStatusSnapshot:
         ReplayOffsetStatus("three_ball", False, False),
     )
     "头部 offset 与三球 offset 的列表状态。"
+
+
+@dataclass(frozen=True, slots=True)
+class ReplayExecutionCompletedEvent:
+    """一次成功回放完成时发送给当前 WebSocket 订阅者的结束事件。"""
+
+    snapshot: ReplayStatusSnapshot
+    "完成后、计数已递增的最终状态快照。"
 
 
 # endregion

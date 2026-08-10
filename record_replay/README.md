@@ -1,6 +1,6 @@
 # 双臂记录回放服务
 
-当前 RecordReplay 服务业务语义版本：`2.4.0`。本次升级沿用
+当前 RecordReplay 服务业务语义版本：`3.2.0`。本次升级沿用
 `test/wuji/record_replay_cli.py` 的动作命名作为参考，但不改变该人工验证入口的版本语义。
 
 面向 GUI 和其它项目的完整 HTTP 契约见 [API Reference](API%20Reference.md)，机器可读描述见
@@ -8,7 +8,7 @@
 
 本服务从 `test/wuji/record_replay_cli.py` 拆分而来，位于仓库根目录，和
 `camera_pipeline` 同级。业务代码不导入 `test`，在 Orin 上直接连接机械臂、
-qmlinker、AGV 和 Orin 本机部署的 camera_pipeline，并由 HTTP API 触发一轮执行。
+qmlinker、AGV 和 Orin 本机部署的 camera_pipeline，并由 HTTP API 触发一次执行。
 三球和 Board 检测全部通过本服务内的 `camera_client.py` HTTP 协议适配完成；本服务不导入
 CameraPipeline Python 包、不引用仓库 `src/`，也不自行订阅相机帧或实现检测算法。
 
@@ -125,7 +125,7 @@ idle
 | `arm_actions.py` / `hand_actions.py` | 单一设备动作语义与旧回放时序。 |
 | `dual_arm_executor.py` | 双臂阶段、并行、flush、offset 触发边界。 |
 | `offset_*.py` | 三球检测、手眼变换及全局纠偏数据流。 |
-| `agv_navigation.py` / `cycle_service.py` | AGV 到位确认与常态化循环。 |
+| `agv_navigation.py` / `cycle_service.py` | AGV 到位确认与单次执行。 |
 
 ## 状态查询
 
@@ -135,14 +135,18 @@ idle
 - `left_csv_state`：当前左臂命名动作对应的 CSV 文件 stem；
 - `plan_index`：当前左臂计划下标；
 - `error_text`：失败原因；
+- `error_code`：稳定机器可读错误码；正常为 `null`，错误说明见 API Reference；
 - `left_csv_files` / `right_csv_files`：本轮 JSON 实际引用的左右臂 CSV 文件名与数据行数；未引用的可选 index CSV 不计入本轮摘要；
 - `execution_tasks`：按实际执行顺序展开的任务清单；每个一级任务同时给出
   `left_csv`、`right_csv` 和 `synchronized`，单臂阶段另一侧为空；
 - `current_task_sequence`：当前执行任务在 `execution_tasks` 中的序号，从 1 开始；
 - `current_task_active`：当前任务序号对应的任务是否仍在执行；任务完成后到下一任务开始前
   为 `false`，避免界面把 AGV 返航等阶段误显示为仍在执行最后一个 CSV；
-- `total_execution_count`：服务进程本次启动以来累计接受的执行请求次数；服务重启后从
-  0 重新计数，不代表任务清单长度；
+- `total_execution_count`：服务进程本次启动以来累计成功完成的执行次数；服务重启后从
+  0 重新计数；每次 start 仅在执行完成时加一；
+- `old_tray_current_index` / `old_tray_put_index`：本次执行使用的旧托盘当前位置和放置位置 index；
+- `new_tray_current_index` / `new_tray_put_index`：本次执行使用的新托盘当前位置和放置位置 index；
+- `agv_navigation_enabled` / `agv_target`：本次执行的 AGV 开关与目标；
 - `current_left_csv` / `current_right_csv`：左右臂当前正在处理的 CSV；
 - `current_left_action_name` / `current_right_action_name`：左右臂当前命名动作；
 - `current_left_action_index` / `current_right_action_index`：多目标动作 index，普通动作为空；
@@ -235,22 +239,26 @@ fast 的每个 arm 点使用动作项 zone，precise 的每个 arm 点固定使�
 服务入口为 `python -m record_replay.service`，默认监听 `http://0.0.0.0:6300`。
 进程启动只建立 API 监听，不会自动执行机械臂动作，并处于 `idle` 状态。调用 `start` 被接受后
 立即进入 `busy`，直到 AGV、设备准备、CSV 回放和资源清理全部结束，再恢复 `idle`。业务线程执行
-一轮既有的 AGV、CSV、双臂和 offset 流程；重复 `start` 会返回 `accepted=false`，
+一次既有的 AGV、CSV、双臂和 offset 流程；重复 `start` 会返回 `accepted=false`，
 不会并发控制同一组设备。`status` 可查询当前阶段、部署的左右臂 CSV、左右臂对齐的
 实际执行任务、当前任务序号、服务累计执行次数、各臂当前 CSV、源数据行进度、计划下标
 和错误文本。
 GUI 可以轮询只读 `/status`，也可以订阅 `wss://<orin-host>/api/v1/record-replay-ws`。
-连接建立后立即收到当前状态，后续每次状态快照变化立即推送；短暂断网后重新连接即可恢复。
+连接建立后立即收到当前状态，后续推送 `record_replay.status`；一次成功完成时额外推送
+`record_replay.completed` 结束事件，计数已同步加一。状态和结束事件同时包含 `error_code` 与中文
+`error_text`。短暂断网后重新连接即可恢复；GUI
+负责根据四个托盘位置 index 编排下一次 start，服务不提供循环执行。
 
-HTTP API：`GET /status`、`GET /plan`、`GET /config`、`GET /device-status`、`POST /config`、
+HTTP API：`GET /status`、`GET /plan?old_tray_current_index={old_current}&old_tray_put_index={old_put}&new_tray_current_index={new_current}&new_tray_put_index={new_put}`、`GET /config`、`GET /device-status`、`POST /config`、
 `POST /prior/ball-pose`、`POST /prior/charuco`、`POST /start`、`POST /stop`、
-`POST /reset`。`GET /plan` 只在 `idle` 时读取并校验下一轮动作 JSON 与实际 CSV，返回 GUI 执行前展示所需的 CSV、动作类型、speed、zone、index 和行数；它不连接设备、不创建线程，也不允许通过 HTTP 修改这些字段。配置更新 body
+`POST /reset`。`GET /plan` 只在 `idle` 时读取并校验本次动作 JSON 与实际 CSV，返回 GUI 执行前展示所需的 CSV、动作类型、speed、zone、index 和行数；它不连接设备、不创建线程，也不允许通过 HTTP 修改这些字段。配置更新 body
 只包含非动作数字参数；动作 speed/zone 不通过 HTTP 任意修改，必须编辑顺序 JSON，且服务 `busy` 期间拒绝修改配置。两个 prior 接口接收完整 JSON，
 仅在服务 `idle` 且没有活动回放线程时允许替换；校验通过后原子替换并将旧文件备份到服务端 `.archive/prior_data/<时间戳>/`。`POST /start` 必须提供
-`{"enable_agv_navigation": true|false}`；为 `false` 时不执行回放前导航，双臂 CSV
-回放仍会执行；为 `true` 时只在回放前导航到站点 `1`，回放完成后不自动返航，与已验证
-人工 CLI 一致。调用 `/start` 前会全量检查所有运行先验，缺失或无效文件会逐项写入
+`{"old_tray_current_index": 1, "old_tray_put_index": 4, "new_tray_current_index": 1, "new_tray_put_index": 1, "enable_agv_navigation": false, "agv_target": "1"}`；服务只执行这一组四位置对应的单次计划。为 `false` 时不执行回放前导航；为 `true` 时导航到传入的 `agv_target`，回放完成后不自动返航。调用 `/start` 前会全量检查所有运行先验，缺失或无效文件会逐项写入
 `error_text`；服务启动本身不会因先验缺失失败。
+
+四个 index 分别绑定 `get_tray`、`put_tray`、`get_new_tray`、`put_new_tray`。四个位置的下一次
+取值和异常恢复由 GUI 决定，服务本身不循环。
 
 正式客户端必须通过统一 Gateway 访问本服务：HTTP 使用 `https://<orin-host>` 配置
 `/api/v1/record-replay` 前缀，状态订阅使用 `wss://<orin-host>` 配置

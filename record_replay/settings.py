@@ -181,8 +181,6 @@ class ReplayServiceSettings:
     "AGV runtime info 轮询周期，单位 s。"
     agv_stop_timeout_s: float = 5.0
     "AGV Stop RPC 超时时间，单位 s。"
-    trigger_poll_interval_s: float = 1.0
-    "触发文件等待轮询周期，单位 s。"
     non_motion_retry_count: int = 3
     "非运动设备调用最大尝试次数。"
     non_motion_retry_delay_s: float = 0.5
@@ -209,10 +207,6 @@ class ReplayCycleConfig:
     "双臂、手部和升降设备的现场连接参数。"
     settings: ReplayServiceSettings = field(default_factory=ReplayServiceSettings)
     "服务运行参数的唯一配置对象。"
-    start_station: str = "1"
-    "启用 AGV 时，执行前导航到的目标站点。"
-    trigger_file: Path | None = None
-    "循环服务的触发文件路径。"
 
 
 # endregion

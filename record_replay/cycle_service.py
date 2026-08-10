@@ -1,8 +1,7 @@
-"""AGV 导航与双臂回放的常态化循环服务。"""
+"""AGV 导航与双臂回放的单次执行服务。"""
 
 from __future__ import annotations
 
-import time
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -19,7 +18,7 @@ from .offset_updater import GlobalOffsetUpdater
 
 
 class RecordReplayCycleService:
-    """按导航、回放、返回顺序执行的 Linux 常态化服务。"""
+    """按导航、回放、资源清理顺序执行一次业务。"""
 
     def __init__(
         self,
@@ -39,9 +38,10 @@ class RecordReplayCycleService:
     def run_once(
         self,
         enable_agv_navigation: bool = True,
+        agv_target: str = "",
         plan: ActionSequencePlan | None = None,
     ) -> None:
-        """执行一轮可选 AGV 导航、双臂回放与返回流程。"""
+        """执行一次可选 AGV 导航和双臂回放。"""
 
         try:
             if self._context.snapshot().state is ReplayServiceState.RAPID_STOP:
@@ -55,10 +55,12 @@ class RecordReplayCycleService:
             else:
                 left_paths = [action.csv_asset.path for action in plan.left_actions]
             if enable_agv_navigation:
+                if not agv_target.strip():
+                    raise ValueError("AGV 导航目标不能为空")
                 self._context.set_state(ReplayServiceState.BUSY)
                 wait_until_arrived(
                     self._agv_client,
-                    config.start_station,
+                    agv_target,
                     timeout_s=config.settings.agv_navigation_timeout_s,
                     poll_s=config.settings.agv_navigation_poll_interval_s,
                     stop_event=self._context.stop_event,
@@ -80,12 +82,16 @@ class RecordReplayCycleService:
                 try:
                     self.stop_devices()
                 except Exception as stop_error:
-                    stop_error_text = f"{type(stop_error).__name__}: {stop_error}"
+                    stop_error_text = str(stop_error)
             self._context.reset_run_progress()
             error_text = str(error)
             if stop_error_text is not None:
                 error_text = f"{error_text}；自动停止设备失败：{stop_error_text}"
-            self._context.set_state(ReplayServiceState.RAPID_STOP, error_text=error_text)
+            self._context.set_state(
+                ReplayServiceState.RAPID_STOP,
+                error_code="execution_failed",
+                error_text=error_text,
+            )
             raise
 
     def refresh_deployment_status(
@@ -119,19 +125,6 @@ class RecordReplayCycleService:
             plan.source_sha256,
         )
         return left_paths, plan
-
-    def run_forever(self) -> None:
-        """等待触发文件存在后执行下一轮。"""
-
-        trigger_file = self._context.config.trigger_file
-        if trigger_file is None:
-            raise ValueError("常态化服务必须配置 trigger_file")
-        while True:
-            if trigger_file.exists():
-                trigger_file.unlink()
-                self.run_once()
-            else:
-                time.sleep(self._context.config.settings.trigger_poll_interval_s)
 
     def stop_devices(self) -> None:
         """并行停止 AGV、左 AR5 和右 AR5；一个失败不阻断其它调用。"""

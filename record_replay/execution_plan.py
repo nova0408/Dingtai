@@ -17,7 +17,7 @@ def build_execution_task_statuses(
     存在的“右臂追加阶段”。
     """
 
-    one_loop_tasks: list[tuple[str | None, str | None, bool]] = []
+    tasks: list[tuple[str | None, str | None, bool]] = []
     right_by_function: dict[str, list[int]] = {}
     for right_position, action in enumerate(plan.right_actions):
         right_by_function.setdefault(action.item.function_name, []).append(right_position)
@@ -32,8 +32,7 @@ def build_execution_task_statuses(
                     right_csv = plan.right_actions[candidate_position].csv_asset.path.name
                     consumed_right_positions.add(candidate_position)
                     break
-        one_loop_tasks.append((action.csv_asset.path.name, right_csv, synchronized))
-    tasks = one_loop_tasks * plan.loop_count
+        tasks.append((action.csv_asset.path.name, right_csv, synchronized))
     return tuple(
         ReplayExecutionTaskStatus(
             sequence=index,

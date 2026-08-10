@@ -10,7 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Final
 
@@ -19,12 +19,10 @@ from .csv_repository import discover_csv_paths, load_replay_rows
 from .settings import OffsetConfig, ReplayOffsetSettings
 
 ACTION_SEQUENCE_FILE_NAME: Final = "action_sequence.json"
-ACTION_SEQUENCE_SCHEMA_VERSION: Final = 2
+ACTION_SEQUENCE_SCHEMA_VERSION: Final = 3
 MIN_MOTION_SPEED_MM_S: Final = 5.0
 MAX_MOTION_SPEED_MM_S: Final = 4000.0
 MAX_ZONE_MM: Final = 200.0
-MAX_LOOP_COUNT: Final = 1000
-
 ACTION_TYPES: Final = frozenset({"capture", "fast", "precise"})
 INDEXED_ACTIONS: Final = frozenset(
     {"get_tray", "put_tray", "get_new_tray", "put_new_tray"}
@@ -143,12 +141,10 @@ class NamedActionPlan:
 
 @dataclass(frozen=True, slots=True)
 class ActionSequencePlan:
-    """一轮或多轮回放使用的不可变命名动作计划。"""
+    """单次 start 使用的不可变命名动作计划。"""
 
     schema_version: int
     "JSON schema 版本。"
-    loop_count: int
-    "有限循环次数。"
     left_actions: tuple[NamedActionPlan, ...]
     "左臂按 JSON 顺序执行的动作。"
     right_actions: tuple[NamedActionPlan, ...]
@@ -220,8 +216,18 @@ def load_action_sequence(
     config_path: Path,
     left_record_dir: Path,
     right_record_dir: Path,
+    *,
+    old_tray_current_index: int | None = None,
+    old_tray_put_index: int | None = None,
+    new_tray_current_index: int | None = None,
+    new_tray_put_index: int | None = None,
 ) -> ActionSequencePlan:
-    """读取 JSON、校验 schema 和 CSV 唯一映射，返回冻结计划。"""
+    """读取 JSON、校验 schema 和 CSV 唯一映射，返回单次冻结计划。
+
+    四个托盘 index 由每次 start 传入；提供时会覆盖四个托盘动作在 JSON 中保存的
+    index，使同一份动作顺序可以服务 GUI 的外部循环。未提供时保留 JSON 中的 index，
+    供只读取先验配置的内部流程使用。
+    """
 
     errors: list[str] = []
     try:
@@ -236,16 +242,13 @@ def load_action_sequence(
     if not isinstance(payload, dict):
         raise ActionSequenceValidationError(["顺序文件根节点必须是 JSON object"])
 
-    allowed_root = {"schema_version", "loop_count", "left", "right", "deployment"}
+    allowed_root = {"schema_version", "left", "right", "deployment"}
     errors.extend(_unknown_fields(payload, allowed_root, "根节点"))
     schema_version = _read_int(payload.get("schema_version"), "schema_version", errors)
-    loop_count = _read_int(payload.get("loop_count"), "loop_count", errors)
     if schema_version != ACTION_SEQUENCE_SCHEMA_VERSION:
         errors.append(
             f"schema_version 必须为 {ACTION_SEQUENCE_SCHEMA_VERSION}，实际为 {schema_version!r}"
         )
-    if loop_count is None or not 1 <= loop_count <= MAX_LOOP_COUNT:
-        errors.append(f"loop_count 必须在 1 到 {MAX_LOOP_COUNT} 之间")
 
     deployment = _parse_deployment_config(payload.get("deployment"), config_path, errors)
 
@@ -256,6 +259,22 @@ def load_action_sequence(
     if not right_items:
         errors.append("right 动作列表不能为空")
     _validate_sync_pairing(left_items, right_items, errors)
+    left_items = _apply_runtime_tray_index(
+        left_items,
+        old_tray_current_index,
+        old_tray_put_index,
+        new_tray_current_index,
+        new_tray_put_index,
+        errors,
+    )
+    right_items = _apply_runtime_tray_index(
+        right_items,
+        old_tray_current_index,
+        old_tray_put_index,
+        new_tray_current_index,
+        new_tray_put_index,
+        errors,
+    )
 
     required_keys_by_side = {
         "left": {(item.function_name, item.index) for item in left_items},
@@ -289,11 +308,10 @@ def load_action_sequence(
     preloaded_rows_by_path = _freeze_action_rows(left_actions + right_actions, errors)
     if errors:
         raise ActionSequenceValidationError(errors)
-    if schema_version is None or loop_count is None:
-        raise ActionSequenceValidationError(["顺序文件的 schema_version 或 loop_count 缺失"])
+    if schema_version is None:
+        raise ActionSequenceValidationError(["顺序文件的 schema_version 缺失"])
     return ActionSequencePlan(
         schema_version,
-        loop_count,
         tuple(left_actions),
         tuple(right_actions),
         config_path,
@@ -301,6 +319,60 @@ def load_action_sequence(
         deployment,
         tuple(preloaded_rows_by_path),
     )
+
+
+def _apply_runtime_tray_index(
+    items: list[ActionItem],
+    old_tray_current_index: int | None,
+    old_tray_put_index: int | None,
+    new_tray_current_index: int | None,
+    new_tray_put_index: int | None,
+    errors: list[str],
+) -> list[ActionItem]:
+    """把 start 的四个托盘位置 index 应用到四个托盘动作。"""
+
+    values = (
+        old_tray_current_index,
+        old_tray_put_index,
+        new_tray_current_index,
+        new_tray_put_index,
+    )
+    if all(value is None for value in values):
+        return items
+    names_and_values = (
+        ("old_tray_current_index", old_tray_current_index),
+        ("old_tray_put_index", old_tray_put_index),
+        ("new_tray_current_index", new_tray_current_index),
+        ("new_tray_put_index", new_tray_put_index),
+    )
+    for name, value in names_and_values:
+        if not _is_positive_int(value):
+            errors.append(f"{name} 必须是大于 0 的整数")
+    if not all(_is_positive_int(value) for value in values):
+        return items
+    return [
+        replace(
+            item,
+            index=(
+                old_tray_current_index
+                if item.function_name == "get_tray"
+                else old_tray_put_index
+                if item.function_name == "put_tray"
+                else new_tray_current_index
+                if item.function_name == "get_new_tray"
+                else new_tray_put_index
+                if item.function_name == "put_new_tray"
+                else item.index
+            ),
+        )
+        for item in items
+    ]
+
+
+def _is_positive_int(value: int | None) -> bool:
+    """判断 start 传入的 index 是否为正整数。"""
+
+    return isinstance(value, int) and not isinstance(value, bool) and value > 0
 
 
 def _parse_deployment_config(

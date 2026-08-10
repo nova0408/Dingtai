@@ -1,7 +1,7 @@
 # RecordReplay API Reference
 
-文档版本：`2.4.0`（2026-08-10）
-服务业务版本：`2.4.0`
+文档版本：`3.2.0`（2026-08-10）
+服务业务版本：`3.2.0`
 默认监听：`http://<orin>:6300`
 
 机器可读文件：[OpenAPI 3.1](openapi.yaml)。
@@ -19,7 +19,7 @@ RecordReplay 通过本服务内的 `camera_client.py` 调用 CameraPipeline 的 
 ## 2. 通用约定
 
 - Content-Type：`application/json; charset=utf-8`。
-- 当前服务版本：`2.4.0`，与 `record_replay/CHANGELOG.md` 一致。
+- 当前服务版本：`3.2.0`，与 `record_replay/CHANGELOG.md` 一致。
 - 根目录同步脚本支持 `-RecordReplayOnly`，只替换并重启 RecordReplay；替换前检查 RecordReplay
   为 `idle`/`waiting` 且 CameraPipeline 在 6200 端口就绪，替换后校验文件清单、SHA-256、只读
   `/status` 和版本，不发送 `/start`；`runtime_state.json` 等运行产物不纳入清单。
@@ -30,7 +30,7 @@ RecordReplay 通过本服务内的 `camera_client.py` 调用 CameraPipeline 的 
   不得将 `6300` 作为默认访问入口。Gateway 只转发请求，不改变本服务 API 语义。
 - `/status`、`/config`、`/device-status` 均为只读请求，但 `/device-status` 会连接并读取现场设备。
 - 服务提供状态 WebSocket；正式客户端通过 Gateway 的 `wss://<orin-host>/api/v1/record-replay-ws` 订阅，后端内部端口为 `6301`。
-- HTTP 错误响应仍为 JSON，但只保证 `accepted=false` 和 `error_text` 有值；状态字段来自
+- HTTP 错误响应仍为 JSON，`error_code` 提供稳定机器判断值，`error_text` 提供中文说明；状态字段来自
   发生错误时的只读快照。
 
 ## 3. API 总览
@@ -38,13 +38,13 @@ RecordReplay 通过本服务内的 `camera_client.py` 调用 CameraPipeline 的 
 | 方法 | 路径 | HTTP 成功码 | 作用 |
 | --- | --- | ---: | --- |
 | GET | `/status` | 200 | 读取回放阶段、命名 CSV 清单和任务进度 |
-| GET | `/plan` | 200 | 启动前读取下一轮 CSV、动作参数和行数 |
+| GET | `/plan?old_tray_current_index={old_current}&old_tray_put_index={old_put}&new_tray_current_index={new_current}&new_tray_put_index={new_put}` | 200 | 启动前读取本次 CSV、动作参数和行数 |
 | GET | `/config` | 200 | 读取可调运行参数 |
 | POST | `/config` | 200 | 修改并持久化可调运行参数 |
 | GET | `/device-status` | 200 | 读取机械臂、夹爪、头部和升降状态 |
 | POST | `/prior/ball-pose` | 200 | 校验、备份并替换三球 JSON 先验 |
 | POST | `/prior/charuco` | 200 | 校验、备份并替换 ChArUco JSON 先验 |
-| POST | `/start` | 202 | 接受一轮回放请求；返回启动时状态快照 |
+| POST | `/start` | 202 | 接受一次回放请求；返回启动时状态快照 |
 | POST | `/stop` | 200 | 停止 AGV/当前左右 AR5，并锁存 `rapid_stop` |
 | POST | `/reset` | 200 | 人工处理后清除 `rapid_stop`，恢复 `idle` |
 
@@ -54,8 +54,10 @@ RecordReplay 通过本服务内的 `camera_client.py` 调用 CameraPipeline 的 
 wss://<orin-host>/api/v1/record-replay-ws
 ```
 
-连接建立后立即收到当前状态，之后每次状态快照变化推送一条 JSON 文本消息，字段与
-`GET /status` 的状态字段保持一致。慢客户端只保留最新快照，不会阻塞回放线程。
+连接建立后立即收到当前状态，之后每次状态快照变化推送一条 `event=record_replay.status` 消息。
+一次执行成功完成时，额外推送一条 `event=record_replay.completed` 且 `completed=true` 的结束消息；
+该消息中的 `total_execution_count` 已经加一，客户端可使用结束事件或计数判断本次完成。
+慢客户端只保留最新状态，不会阻塞回放线程；GUI 负责决定下一次 start 的托盘 index，不由服务循环。
 
 未列出的路径返回 `404` 和 `accepted=false`。`/stop` 不会恢复动作，`/reset` 不会自动上电、导航或续跑。
 
@@ -71,6 +73,7 @@ GET /status
 | --- | --- | --- |
 | `state` | enum | `idle`、`busy` 或 `rapid_stop`；停止后必须人工 reset 才能回到 `idle` |
 | `accepted` | boolean | 请求是否被接受；正常查询为 `true` |
+| `error_code` | string/null | 稳定错误码；正常为 `null` |
 | `action_sequence_sha256` | string/null | 当前冻结动作顺序 JSON 的 SHA-256 |
 | `left_csv_state` | string/null | 当前左臂命名动作对应的 CSV 状态名 |
 | `plan_index` | integer/null | 当前执行计划索引，从 `0` 开始 |
@@ -80,7 +83,13 @@ GET /status
 | `execution_tasks` | array | 按实际执行顺序对齐的左右臂任务 |
 | `current_task_sequence` | integer | 当前任务序号，从 `1` 开始；无任务为 `0` |
 | `current_task_active` | boolean | 当前任务是否仍在执行 |
-| `total_execution_count` | integer | 本次服务进程累计接受的 start 请求数 |
+| `total_execution_count` | integer | 本次服务进程累计成功完成的执行次数；每次 start 成功完成时加一，服务重启后归零 |
+| `old_tray_current_index` | integer/null | 本次执行使用的旧托盘当前位置 index |
+| `old_tray_put_index` | integer/null | 本次执行使用的旧托盘放置位置 index |
+| `new_tray_current_index` | integer/null | 本次执行使用的新托盘当前位置 index |
+| `new_tray_put_index` | integer/null | 本次执行使用的新托盘放置位置 index |
+| `agv_navigation_enabled` | boolean/null | 本次执行是否启用 AGV 导航 |
+| `agv_target` | string/null | 本次执行请求的 AGV 目标 |
 | `current_left_csv` / `current_right_csv` | string/null | 当前正在处理的 CSV |
 | `current_left_action_name` / `current_right_action_name` | string/null | 当前命名动作 |
 | `current_left_action_index` / `current_right_action_index` | integer/null | 当前多目标动作 index；普通动作为空 |
@@ -119,14 +128,14 @@ GET /status
     人工 stop 或任一阶段异常 -> rapid_stop -> 人工 reset -> idle
 ```
 
-启用 AGV 时只在回放前导航到站点 `1`；回放完成后不自动导航到终点。
+启用 AGV 时只在回放前导航到请求中的 `agv_target`；回放完成后不自动导航到终点。
 Rapid Stop 期间，AR5 的队列提交与 `robot.stop()` 使用同侧命令锁串行化；该锁只保护指令
 提交，不会让运动完成等待阻塞停止流程。
 
 ## 5. GET /plan
 
 ```http
-GET /plan
+GET /plan?old_tray_current_index=1&old_tray_put_index=4&new_tray_current_index=1&new_tray_put_index=1
 ```
 
 该接口只在服务处于 `idle` 且没有活动回放线程时读取
@@ -134,15 +143,18 @@ GET /plan
 行预加载校验。不连接机械臂、AGV、相机或其它现场设备，不创建执行线程，也不提供修改参数的
 请求字段。
 
-响应中的 `left` 和 `right` 按 `loop_count` 展开为实际执行顺序；`csv` 始终是磁盘上的实际
+响应中的 `left` 和 `right` 是本次单次执行的实际顺序。四个 index 分别应用于 `get_tray`、
+`put_tray`、`get_new_tray`、`put_new_tray`；`csv` 始终是磁盘上的实际
 文件名，因此 `01_`、`10_`、`11_` 等录制前缀会原样显示。每项字段如下：
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
 | `state` | enum | 当前服务状态；正常预览为 `idle` |
 | `accepted` | boolean | 是否成功读取计划 |
+| `error_code` | string/null | 稳定错误码；正常为 `null` |
 | `action_sequence_sha256` | string/null | 本次读取的顺序 JSON SHA-256 |
-| `loop_count` | integer | 配置中的循环次数 |
+| `old_tray_current_index` / `old_tray_put_index` | integer/null | 本次预览使用的旧托盘当前位置/放置位置 index |
+| `new_tray_current_index` / `new_tray_put_index` | integer/null | 本次预览使用的新托盘当前位置/放置位置 index |
 | `left` / `right` | array | 按实际执行顺序展开的动作清单 |
 | `error_text` | string/null | 校验失败或非 idle 时的原因 |
 
@@ -151,7 +163,6 @@ GET /plan
 ```json
 {
   "sequence": 1,
-  "loop": 1,
   "csv": "01_go_out_left.csv",
   "action_name": "go_out",
   "action_type": "fast",
@@ -166,6 +177,12 @@ GET /plan
 
 `speed`、`zone`、`index`、`final_speed` 和 `settle_delay` 仅供查看；要修改它们必须由人工
 编辑部署目录中的 `action_sequence.json`，然后重新读取计划。GUI 不提供直接编辑控件。
+
+错误码约定：`invalid_request` 表示请求结构或参数类型错误，`invalid_index` 表示托盘 index
+不是正整数或查询值不合法，`invalid_plan` 表示动作 JSON、CSV 或先验校验失败，`busy` 表示
+已有执行线程，`rapid_stop` 表示必须先人工 reset，`invalid_state` 表示当前状态不允许该操作，
+`stop_failed` 表示停止设备失败，`execution_failed` 表示执行阶段失败，`not_found` 表示路径不存在，
+`internal_error` 表示服务内部错误。`error_text` 始终使用中文。
 
 ## 6. GET /config
 
@@ -208,7 +225,7 @@ GET /config
 ## 8. 动作顺序 JSON
 
 服务在 `POST /start` 建立设备 runtime 前读取并校验固定文件
-`record_replay/action_sequence.json`。根节点包含 `schema_version`、有限的 `loop_count`、
+`record_replay/action_sequence.json`。根节点包含 `schema_version`、
 `deployment`、`left` 和 `right` 两个有序数组；`deployment` 统一承载 offset 策略和先验
 文件入口。每项必须包含 `function_name`、`type`、`speed`、`zone`，
 两个数组都不能为空；多目标动作还必须包含正整数 `index`，普通动作不得携带 `index`。
@@ -320,10 +337,12 @@ Content-Type: application/json
 POST /start
 Content-Type: application/json
 
-{"enable_agv_navigation": false}
+{"old_tray_current_index": 1, "old_tray_put_index": 4, "new_tray_current_index": 1, "new_tray_put_index": 1, "enable_agv_navigation": false, "agv_target": "1"}
 ```
 
-body 必须且只能包含 `enable_agv_navigation`，类型必须为 boolean。
+body 必须且只能包含 `old_tray_current_index`、`old_tray_put_index`、`new_tray_current_index`、
+`new_tray_put_index`、`enable_agv_navigation`、`agv_target`。四个 index 必须是正整数，导航
+flag 必须是 boolean，目标必须是非空字符串。
 
 | HTTP 状态 | `accepted` | 语义 |
 | ---: | --- | --- |
@@ -335,7 +354,7 @@ body 必须且只能包含 `enable_agv_navigation`，类型必须为 boolean。
 缺失或格式无效的项目会在 `error_text` 中逐项列出，缺少先验时不会创建回放线程，也不会
 触发设备动作。上传接口替换的 JSON 会在下一次人工调用 `/start` 时重新加载。
 
-`enable_agv_navigation=true` 时，回放前导航到站点 `1`；回放完成后不自动返航。
+`enable_agv_navigation=true` 时，回放前导航到 `agv_target`；回放完成后不自动返航。
 `false` 时跳过回放前导航，但双臂 CSV 回放仍然执行。服务进程启动和 HTTP 就绪不会触发
 该接口，也不会自动执行任何动作。
 
@@ -349,18 +368,22 @@ client = RecordReplayClient(
     api_prefix="/api/v1/record-replay",
 )
 print(client.get_status())
-print(client.get_plan())
+print(client.get_plan(1, 4, 1, 1))
 print(client.get_config())
 ```
 
 `RecordReplayClient.start()` 只应由现场人员在安全确认后手动调用。GUI 应在 start 前读取
-`get_plan()` 展示只读动作信息；start 被接受后切换到 Gateway WSS，根据状态快照中的
-`state`、`current_task_*` 和 `error_text` 更新界面。
+`get_plan(old_tray_current_index, old_tray_put_index, new_tray_current_index, new_tray_put_index)` 展示只读动作信息；start 被接受后切换到 Gateway WSS，
+根据状态快照中的 `state`、`current_task_*`、结束事件和 `error_text` 更新界面。GUI 自行编排
+四个托盘位置 index 的循环，服务每次只执行一份冻结计划。
 
 ## 14. 文档变更记录
 
 | 文档版本 | 日期 | 内容 |
 | --- | --- | --- |
+| `3.2.0` | 2026-08-10 | 增加稳定 `error_code`，并统一中文 `error_text` |
+| `3.1.0` | 2026-08-10 | 增加旧/新托盘当前位置与放置位置四个 index 参数 |
+| `3.0.0` | 2026-08-10 | 改为单次 start；增加 AGV 目标参数、完成次数和 WebSocket 结束事件 |
 | `2.4.0` | 2026-08-10 | 新增启动前只读 `GET /plan`，明确 GUI 预览与启动后 WSS 状态链路 |
 | `2.3.0` | 2026-08-10 | 兼容录制 CSV 的纯数字首段前缀，并保留实际文件名处理 |
 | `2.0.2` | 2026-08-07 | AGV 与左右 AR5 Stop 调用并行发起，避免单点超时延后其它停止调用 |

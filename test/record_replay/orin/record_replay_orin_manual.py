@@ -24,7 +24,22 @@ def main() -> int:
         print("未获得完整现场安全确认，不发送启动请求。")
         return 1
     client = RecordReplayClient(SERVICE_ADDR)
-    print(client.start())
+    old_tray_current_index = int(input("旧托盘当前位置 index：").strip())
+    old_tray_put_index = int(input("旧托盘放置位置 index：").strip())
+    new_tray_current_index = int(input("新托盘当前位置 index：").strip())
+    new_tray_put_index = int(input("新托盘放置位置 index：").strip())
+    enable_agv_navigation = input("是否启用 AGV 导航（y/N）：").strip().lower() == "y"
+    agv_target = input("AGV 目标：").strip()
+    print(
+        client.start(
+            old_tray_current_index,
+            old_tray_put_index,
+            new_tray_current_index,
+            new_tray_put_index,
+            enable_agv_navigation,
+            agv_target,
+        )
+    )
     print(client.get_status())
     return 0
 
