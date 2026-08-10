@@ -13,15 +13,15 @@ dependencies:
   - wheel
 
   # Core scientific stack
-  # 2026-06-09 实测：Qt 内嵌 Open3D 视图稳定组合为 numpy 1.26.4 + open3d 0.19.0。
+  # 2026-06-09 实测：Open3D 算法环境稳定组合为 numpy 1.26.4 + open3d 0.19.0。
   # 同时 plyfile 1.0.x 仍要求保持在 numpy 1.x。
   - numpy=1.26.4
   - scipy
   - tomlkit
 
-  # GUI
-  # README 里记录 PySide6 6.11.0；Python 3.10 下优先让 conda-forge 求解可用的 PySide6 6.x。
-  # 如果必须严格 6.11.0，可在建好环境后再用 pip 单独固定。
+  # 实验与调试工具（正式 GUI 不在本仓库维护）
+  # Python 3.10 下优先让 conda-forge 求解可用的 PySide6 6.x。
+  # 如果必须严格固定版本，可在建好环境后再用 pip 单独固定。
   - pyside6
 
   # Logging

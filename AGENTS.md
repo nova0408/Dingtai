@@ -11,7 +11,7 @@
 ## 项目结构
 
 - `src/`：长期维护的业务、算法、硬件适配与公共数据结构。
-- `gui/`：Qt / PySide6 界面层，不在 UI 层重复实现存储、硬件或算法细节。
+- GUI 不属于本仓库的产品实现；正式 GUI 由独立的 `wuji_gui` 项目维护。
 - `test/`：可运行验证脚本，默认支持 CLI 与 IDE 直跑双模式。
 - `experiments/`：预研脚本，可以快速试验，但沉淀到 `src/` 前必须整理职责与数据结构。
 - `debug/`：临时调试入口，不作为长期公共接口。
@@ -38,12 +38,6 @@
 - Windows PowerShell 文本编辑优先使用 `.agents/skills/windows-powershell-utf8-safe-edit/scripts/` 下脚本。
 - 静态检查统一使用 `.agents/skills/dingtai-static-check-workflow/scripts/check/` 下脚本。
 - 静态检查默认使用 DingTai Conda 环境。
-- `gui/test/` 下测试 GUI 的 widget 风格默认对齐 `gui/test/head_tab.py`：
-  - `__init__` 只保留状态字段初始化，再调用 `_setup_*` / `_connect_signals()`。
-  - UI 创建集中放在 `_setup_ui()` 与少量 `_build_*()` 私有方法中，不要在 `__init__` 里散落创建控件。
-  - 方法按 `# region 初始化 / 生命周期 / 使能 / 刷新 / 控制 / 工具` 分段。
-  - Qt 槽函数优先加 `@Slot`。
-  - 能直接写 `self._client.xxx` 的地方不要再套多余 helper；在允许保留可见错误的测试 GUI 中，不为了静态检查再额外加 wrapper。
 
 ---
 

@@ -9,9 +9,6 @@ from .protocols import (
     JointUiSpec,
     JointUiValue,
 )
-from .qt_matplotlib_widget import MatplotKinematicsWidget, PlotStyle
-from .simulator_widget import KinematicsSimulationWidget
-
 __all__ = [
     "JointUiSpec",
     "JointUiValue",
@@ -23,8 +20,5 @@ __all__ = [
     "ArmSimulationModelProtocol",
     "SpatialArmKinematics",
     "ArmSimulationModel",
-    "PlotStyle",
-    "MatplotKinematicsWidget",
-    "KinematicsSimulationWidget",
 ]
 
