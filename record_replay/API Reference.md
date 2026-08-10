@@ -1,7 +1,7 @@
 # RecordReplay API Reference
 
-文档版本：`3.2.0`（2026-08-10）
-服务业务版本：`3.2.0`
+文档版本：`3.3.0`（2026-08-10）
+服务业务版本：`3.3.0`
 默认监听：`http://<orin>:6300`
 
 机器可读文件：[OpenAPI 3.1](openapi.yaml)。
@@ -19,7 +19,7 @@ RecordReplay 通过本服务内的 `camera_client.py` 调用 CameraPipeline 的 
 ## 2. 通用约定
 
 - Content-Type：`application/json; charset=utf-8`。
-- 当前服务版本：`3.2.0`，与 `record_replay/CHANGELOG.md` 一致。
+- 当前服务版本：`3.3.0`，与 `record_replay/CHANGELOG.md` 一致。
 - 根目录同步脚本支持 `-RecordReplayOnly`，只替换并重启 RecordReplay；替换前检查 RecordReplay
   为 `idle`/`waiting` 且 CameraPipeline 在 6200 端口就绪，替换后校验文件清单、SHA-256、只读
   `/status` 和版本，不发送 `/start`；`runtime_state.json` 等运行产物不纳入清单。
@@ -30,8 +30,15 @@ RecordReplay 通过本服务内的 `camera_client.py` 调用 CameraPipeline 的 
   不得将 `6300` 作为默认访问入口。Gateway 只转发请求，不改变本服务 API 语义。
 - `/status`、`/config`、`/device-status` 均为只读请求，但 `/device-status` 会连接并读取现场设备。
 - 服务提供状态 WebSocket；正式客户端通过 Gateway 的 `wss://<orin-host>/api/v1/record-replay-ws` 订阅，后端内部端口为 `6301`。
-- HTTP 错误响应仍为 JSON，`error_code` 提供稳定机器判断值，`error_text` 提供中文说明；状态字段来自
-  发生错误时的只读快照。
+- HTTP 非 2xx 响应统一为独立 JSON 错误对象，不复用状态快照：
+
+  ```json
+  {"error_code":"invalid_request","error_text":"请求 body 必须是 JSON object"}
+  ```
+
+  `error_code` 提供稳定机器判断值，`error_text` 提供中文说明。
+- HTTP 状态码约定：`200` 表示同步请求成功，`202` 表示 `/start` 已接受并创建执行任务，
+  `400` 表示请求参数或业务状态拒绝，`404` 表示路径不存在，`500` 表示服务内部错误。
 
 ## 3. API 总览
 
@@ -59,7 +66,7 @@ wss://<orin-host>/api/v1/record-replay-ws
 该消息中的 `total_execution_count` 已经加一，客户端可使用结束事件或计数判断本次完成。
 慢客户端只保留最新状态，不会阻塞回放线程；GUI 负责决定下一次 start 的托盘 index，不由服务循环。
 
-未列出的路径返回 `404` 和 `accepted=false`。`/stop` 不会恢复动作，`/reset` 不会自动上电、导航或续跑。
+未列出的路径返回 `404` 和上述 JSON 错误对象。`/stop` 不会恢复动作，`/reset` 不会自动上电、导航或续跑。
 
 ## 4. GET /status
 
@@ -347,11 +354,10 @@ flag 必须是 boolean，目标必须是非空字符串。
 | HTTP 状态 | `accepted` | 语义 |
 | ---: | --- | --- |
 | `202` | `true` | 已创建唯一回放业务线程 |
-| `202` | `false` | 已有回放运行，拒绝重复启动；不会并发控制设备 |
-| `400` | `false` | body 非法或服务拒绝启动 |
+| `400` | 无 `accepted` 字段 | body 非法或服务拒绝启动，响应为 `{"error_code":"...","error_text":"中文说明"}` |
 
 调用前会一次性检查全部运行先验，包括两个 JSON、手眼结果、ChArUco 历史和两侧相机外参。
-缺失或格式无效的项目会在 `error_text` 中逐项列出，缺少先验时不会创建回放线程，也不会
+缺失或格式无效的项目会在错误对象的 `error_text` 中逐项列出，缺少先验时不会创建回放线程，也不会
 触发设备动作。上传接口替换的 JSON 会在下一次人工调用 `/start` 时重新加载。
 
 `enable_agv_navigation=true` 时，回放前导航到 `agv_target`；回放完成后不自动返航。

@@ -15,6 +15,17 @@ from .config_store import RuntimeParameters
 
 
 @dataclass(frozen=True, slots=True)
+class RecordReplayErrorResponse:
+    """HTTP 非 2xx 响应使用的稳定 JSON 错误对象。"""
+
+    error_code: ReplayErrorCode
+    """机器可判定的稳定错误码。"""
+
+    error_text: str
+    """面向客户端和现场人员的中文错误说明。"""
+
+
+@dataclass(frozen=True, slots=True)
 class PriorUploadResponse:
     """先验 JSON 替换结果。"""
 

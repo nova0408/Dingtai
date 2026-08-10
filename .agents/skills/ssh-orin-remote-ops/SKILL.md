@@ -153,6 +153,25 @@ For changes spanning multiple services, use the full five-service deployment. Si
 CameraPipeline or Calibration Service changes use their corresponding `*Only` deployment. These operations never
 authorize RecordReplay `/start`, replay tests, device-control POSTs, or calibration capture.
 
+## Mandatory deployment disposition
+
+Before ending any task that changed a deployed package or service version, report one of these
+explicit states:
+
+- `已部署`：the official synchronization command succeeded, with local expected version, remote
+  actual version, file count/manifest result, backup, restart/readiness, and direct read-only
+  response recorded.
+- `待授权部署`：deployment was not authorized. Give the exact scoped command and do not imply the
+  remote service contains the local change.
+- `部署失败`：the command was attempted but sync, readiness, or version verification failed;
+  preserve the failure output and report the remote version actually observed.
+
+When the user reports a manual restart or synchronization, verify every affected service by its
+Orin-local read-only endpoint. A manual restart alone proves process lifecycle only; it does not
+prove that local files were copied. For a Calibration Service plus CameraPipeline change, check
+both `127.0.0.1:6600/api/v1/status` and `127.0.0.1:6400/api/v1/health`, and compare both versions
+with the local source. Do not restart again unless the user authorizes it.
+
 RecordReplay service startup no longer depends on `ball_debug_overlay.jpg` or any other prior file.
 Missing or invalid runtime priors are reported only when现场人员 explicitly calls `POST /start`;
 the synchronization script must not add an overlay-artifact precondition.

@@ -1,6 +1,6 @@
 # 双臂记录回放服务
 
-当前 RecordReplay 服务业务语义版本：`3.2.0`。本次升级沿用
+当前 RecordReplay 服务业务语义版本：`3.3.0`。本次升级沿用
 `test/wuji/record_replay_cli.py` 的动作命名作为参考，但不改变该人工验证入口的版本语义。
 
 面向 GUI 和其它项目的完整 HTTP 契约见 [API Reference](API%20Reference.md)，机器可读描述见
@@ -239,14 +239,15 @@ fast 的每个 arm 点使用动作项 zone，precise 的每个 arm 点固定使�
 服务入口为 `python -m record_replay.service`，默认监听 `http://0.0.0.0:6300`。
 进程启动只建立 API 监听，不会自动执行机械臂动作，并处于 `idle` 状态。调用 `start` 被接受后
 立即进入 `busy`，直到 AGV、设备准备、CSV 回放和资源清理全部结束，再恢复 `idle`。业务线程执行
-一次既有的 AGV、CSV、双臂和 offset 流程；重复 `start` 会返回 `accepted=false`，
+一次既有的 AGV、CSV、双臂和 offset 流程；重复 `start` 会返回 HTTP `400` 的 JSON 错误对象，
 不会并发控制同一组设备。`status` 可查询当前阶段、部署的左右臂 CSV、左右臂对齐的
 实际执行任务、当前任务序号、服务累计执行次数、各臂当前 CSV、源数据行进度、计划下标
 和错误文本。
 GUI 可以轮询只读 `/status`，也可以订阅 `wss://<orin-host>/api/v1/record-replay-ws`。
 连接建立后立即收到当前状态，后续推送 `record_replay.status`；一次成功完成时额外推送
 `record_replay.completed` 结束事件，计数已同步加一。状态和结束事件同时包含 `error_code` 与中文
-`error_text`。短暂断网后重新连接即可恢复；GUI
+`error_text`。HTTP 非 2xx 响应统一返回 `{"error_code":"...","error_text":"中文说明"}`，
+其中 `400` 表示请求或业务拒绝、`404` 表示路径不存在、`500` 表示服务内部错误。短暂断网后重新连接即可恢复；GUI
 负责根据四个托盘位置 index 编排下一次 start，服务不提供循环执行。
 
 HTTP API：`GET /status`、`GET /plan?old_tray_current_index={old_current}&old_tray_put_index={old_put}&new_tray_current_index={new_current}&new_tray_put_index={new_put}`、`GET /config`、`GET /device-status`、`POST /config`、
@@ -255,7 +256,8 @@ HTTP API：`GET /status`、`GET /plan?old_tray_current_index={old_current}&old_t
 只包含非动作数字参数；动作 speed/zone 不通过 HTTP 任意修改，必须编辑顺序 JSON，且服务 `busy` 期间拒绝修改配置。两个 prior 接口接收完整 JSON，
 仅在服务 `idle` 且没有活动回放线程时允许替换；校验通过后原子替换并将旧文件备份到服务端 `.archive/prior_data/<时间戳>/`。`POST /start` 必须提供
 `{"old_tray_current_index": 1, "old_tray_put_index": 4, "new_tray_current_index": 1, "new_tray_put_index": 1, "enable_agv_navigation": false, "agv_target": "1"}`；服务只执行这一组四位置对应的单次计划。为 `false` 时不执行回放前导航；为 `true` 时导航到传入的 `agv_target`，回放完成后不自动返航。调用 `/start` 前会全量检查所有运行先验，缺失或无效文件会逐项写入
-`error_text`；服务启动本身不会因先验缺失失败。
+`error_text`；服务启动本身不会因先验缺失失败。HTTP 非 2xx 响应统一使用
+`{"error_code":"...","error_text":"中文说明"}`。
 
 四个 index 分别绑定 `get_tray`、`put_tray`、`get_new_tray`、`put_new_tray`。四个位置的下一次
 取值和异常恢复由 GUI 决定，服务本身不循环。

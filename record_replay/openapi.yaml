@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: RecordReplay HTTP API
-  version: 3.2.0
+  version: 3.3.0
   description: >-
     双臂记录回放服务 HTTP API。POST /start 可能控制真实设备，必须由现场人员确认安全后调用。
     状态 WebSocket 通过 API Gateway 的 /api/v1/record-replay-ws 提供 WSS 入口。
@@ -25,6 +25,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/RecordReplayResponse'
+        '500':
+          $ref: '#/components/responses/ErrorResponse'
   /config:
     get:
       operationId: get_config
@@ -36,6 +38,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/RecordReplayResponse'
+        '500':
+          $ref: '#/components/responses/ErrorResponse'
     post:
       operationId: update_config
       summary: 更新运行参数
@@ -54,6 +58,8 @@ paths:
               schema:
                 $ref: '#/components/schemas/RecordReplayResponse'
         '400':
+          $ref: '#/components/responses/ErrorResponse'
+        '500':
           $ref: '#/components/responses/ErrorResponse'
   /plan:
     get:
@@ -92,6 +98,8 @@ paths:
                 $ref: '#/components/schemas/RecordReplayPlanResponse'
         '400':
           $ref: '#/components/responses/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/ErrorResponse'
   /device-status:
     get:
       operationId: get_device_status
@@ -105,6 +113,8 @@ paths:
               schema:
                 $ref: '#/components/schemas/DeviceStatusResponse'
         '400':
+          $ref: '#/components/responses/ErrorResponse'
+        '500':
           $ref: '#/components/responses/ErrorResponse'
   /start:
     post:
@@ -122,12 +132,14 @@ paths:
               $ref: '#/components/schemas/StartRequest'
       responses:
         '202':
-          description: 请求已处理；accepted=false 表示已有任务运行
+          description: 请求已接受并创建一次执行任务；业务拒绝统一使用 400 错误响应
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/RecordReplayResponse'
         '400':
+          $ref: '#/components/responses/ErrorResponse'
+        '500':
           $ref: '#/components/responses/ErrorResponse'
   /stop:
     post:
@@ -141,6 +153,10 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/RecordReplayResponse'
+        '400':
+          $ref: '#/components/responses/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/ErrorResponse'
   /reset:
     post:
       operationId: reset_replay
@@ -153,6 +169,10 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/RecordReplayResponse'
+        '400':
+          $ref: '#/components/responses/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/ErrorResponse'
   /prior/ball-pose:
     post:
       operationId: replace_ball_pose_prior
@@ -172,6 +192,8 @@ paths:
               schema:
                 $ref: '#/components/schemas/PriorUploadResponse'
         '400':
+          $ref: '#/components/responses/ErrorResponse'
+        '500':
           $ref: '#/components/responses/ErrorResponse'
   /prior/charuco:
     post:
@@ -193,6 +215,8 @@ paths:
                 $ref: '#/components/schemas/PriorUploadResponse'
         '400':
           $ref: '#/components/responses/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/ErrorResponse'
 components:
   responses:
     ErrorResponse:
@@ -200,7 +224,7 @@ components:
       content:
         application/json:
           schema:
-            $ref: '#/components/schemas/RecordReplayResponse'
+            $ref: '#/components/schemas/RecordReplayErrorResponse'
   schemas:
     ReplayState:
       type: string
@@ -220,6 +244,28 @@ components:
         - not_found
         - internal_error
         - null
+    RecordReplayErrorResponse:
+      type: object
+      additionalProperties: false
+      required: [error_code, error_text]
+      properties:
+        error_code:
+          type: string
+          enum:
+            - invalid_request
+            - invalid_index
+            - invalid_plan
+            - busy
+            - rapid_stop
+            - invalid_state
+            - stop_failed
+            - stop_requested
+            - execution_failed
+            - not_found
+            - internal_error
+        error_text:
+          type: string
+          description: 中文错误说明
     CsvFileStatus:
       type: object
       required: [name, row_count]

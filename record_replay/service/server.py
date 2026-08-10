@@ -13,14 +13,21 @@ from .application import RecordReplayApplication, RecordReplayApplicationError
 from .config_store import RuntimeParameterValue
 from ..contracts import ReplayErrorCode
 from ..device_status import DeviceStatusResponse
-from .protocol import PriorUploadResponse, RecordReplayPlanResponse, RecordReplayResponse
+from .protocol import (
+    PriorUploadResponse,
+    RecordReplayErrorResponse,
+    RecordReplayPlanResponse,
+    RecordReplayResponse,
+)
 
 _ERROR_NOT_FOUND: Final[ReplayErrorCode] = "not_found"
 _ERROR_INTERNAL: Final[ReplayErrorCode] = "internal_error"
+_ERROR_INVALID_STATE: Final[ReplayErrorCode] = "invalid_state"
 
 ApiResponse = (
     RecordReplayResponse
     | RecordReplayPlanResponse
+    | RecordReplayErrorResponse
     | DeviceStatusResponse
     | PriorUploadResponse
 )
@@ -71,10 +78,14 @@ class RecordReplayServer:
                     if path == "/plan":
                         plan_options = self._read_plan_options()
                         response = application.get_plan(*plan_options)
-                        response_status = (
-                            HTTPStatus.BAD_REQUEST if not response.accepted else HTTPStatus.OK
-                        )
-                        self._send(response_status, response)
+                        if not response.accepted:
+                            self._send_error(
+                                HTTPStatus.BAD_REQUEST,
+                                response.error_text or "回放计划未被接受",
+                                response.error_code or _ERROR_INVALID_STATE,
+                            )
+                            return
+                        self._send(HTTPStatus.OK, response)
                         return
                     if path == "/config":
                         self._send(HTTPStatus.OK, application.get_parameters())
@@ -105,18 +116,36 @@ class RecordReplayServer:
                     path = urlsplit(self.path).path
                     if path == "/start":
                         response = application.start(*self._read_start_options())
-                        response_status = (
-                            HTTPStatus.BAD_REQUEST
-                            if not response.accepted and response.error_text is not None
-                            else HTTPStatus.ACCEPTED
-                        )
-                        self._send(response_status, response)
+                        if not response.accepted:
+                            self._send_error(
+                                HTTPStatus.BAD_REQUEST,
+                                response.error_text or "回放启动未被接受",
+                                response.error_code or _ERROR_INVALID_STATE,
+                            )
+                            return
+                        self._send(HTTPStatus.ACCEPTED, response)
                         return
                     if path == "/stop":
-                        self._send(HTTPStatus.OK, application.stop())
+                        response = application.stop()
+                        if not response.accepted:
+                            self._send_error(
+                                HTTPStatus.BAD_REQUEST,
+                                response.error_text or "停止请求未被接受",
+                                response.error_code or _ERROR_INVALID_STATE,
+                            )
+                            return
+                        self._send(HTTPStatus.OK, response)
                         return
                     if path == "/reset":
-                        self._send(HTTPStatus.OK, application.reset())
+                        response = application.reset()
+                        if not response.accepted:
+                            self._send_error(
+                                HTTPStatus.BAD_REQUEST,
+                                response.error_text or "复位请求未被接受",
+                                response.error_code or _ERROR_INVALID_STATE,
+                            )
+                            return
+                        self._send(HTTPStatus.OK, response)
                         return
                     if path == "/config":
                         self._send(HTTPStatus.OK, application.update_parameters(self._read_changes()))
@@ -262,40 +291,10 @@ class RecordReplayServer:
                 message: str,
                 error_code: ReplayErrorCode,
             ) -> None:
-                response = application.status(accepted=False)
-                payload = RecordReplayResponse(
-                    state=response.state,
-                    accepted=False,
-                    error_code=error_code,
-                    action_sequence_sha256=response.action_sequence_sha256,
-                    left_csv_state=response.left_csv_state,
-                    plan_index=response.plan_index,
-                    error_text=message,
-                    left_csv_files=response.left_csv_files,
-                    right_csv_files=response.right_csv_files,
-                    execution_tasks=response.execution_tasks,
-                    current_task_sequence=response.current_task_sequence,
-                    current_task_active=response.current_task_active,
-                    total_execution_count=response.total_execution_count,
-                    old_tray_current_index=response.old_tray_current_index,
-                    old_tray_put_index=response.old_tray_put_index,
-                    new_tray_current_index=response.new_tray_current_index,
-                    new_tray_put_index=response.new_tray_put_index,
-                    agv_navigation_enabled=response.agv_navigation_enabled,
-                    agv_target=response.agv_target,
-                    current_left_csv=response.current_left_csv,
-                    current_left_action_name=response.current_left_action_name,
-                    current_left_action_index=response.current_left_action_index,
-                    current_right_csv=response.current_right_csv,
-                    current_right_action_name=response.current_right_action_name,
-                    current_right_action_index=response.current_right_action_index,
-                    current_left_row=response.current_left_row,
-                    current_right_row=response.current_right_row,
-                    current_left_total_rows=response.current_left_total_rows,
-                    current_right_total_rows=response.current_right_total_rows,
-                    offset_statuses=response.offset_statuses,
+                self._send(
+                    status,
+                    RecordReplayErrorResponse(error_code=error_code, error_text=message),
                 )
-                self._send(status, payload)
 
         return Handler
 
