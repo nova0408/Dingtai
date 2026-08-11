@@ -143,12 +143,17 @@ updated based only on local edits:
 | Calibration Service | `calibration_service/__init__.py: CALIBRATION_SERVICE_VERSION` | `-CalibrationServiceOnly` |
 | API Gateway | `api_gateway/__init__.py: API_GATEWAY_VERSION` | `-ApiGatewayOnly` |
 
-After changing any service version, first complete the relevant local static and contract checks,
-then attempt the corresponding authorized synchronization command. The result must record the
-local expected version, remote actual version, file manifest and SHA-256 result, remote backup,
-service readiness, and the service's read-only version/health response. If Orin is unreachable,
-the user has not authorized restart/deployment, or any synchronization/readiness/version check
-fails, report the service as not remotely updated; never infer remote state from the local file.
+默认部署规则：只要任务修改了上述任一已部署服务的版本源或部署包，完成相关本地静态检查和契约
+检查后，必须执行对应的官方 `scripts/sync_and_restart_services.ps1` 同步并重启；除非用户明确要求
+“仅本地修改/不部署”，否则不能把代码修改交付为仅本地状态。单服务变更使用对应的 `*Only` 参数，
+跨服务协议或依赖变更使用全量命令。不要改用手写 `scp`、`ssh systemctl` 或 `RestartOnly` 替代默认
+同步部署。
+
+同步部署前必须检查所有将上传并由远端 Bash 执行的 `.sh` 文件为 LF 换行；若发现 CRLF，先修复
+本地部署源文件并重新执行本地检查，再调用官方 PowerShell 脚本，不能重复提交已知会被 Bash 拒绝的
+产物。部署结果必须记录本地期望版本、远端实际版本、文件清单和 SHA-256 结果、远端备份、服务
+就绪状态及服务只读版本/健康响应。若 Orin 不可达、同步/就绪/版本校验失败，必须报告为未部署，
+不得根据本地文件推断远端状态。
 For changes spanning multiple services, use the full five-service deployment. Single-service
 CameraPipeline or Calibration Service changes use their corresponding `*Only` deployment. These operations never
 authorize RecordReplay `/start`, replay tests, device-control POSTs, or calibration capture.

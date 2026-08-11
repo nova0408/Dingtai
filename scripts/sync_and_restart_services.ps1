@@ -415,7 +415,11 @@ if [[ -d "${workspace}/api_gateway" ]]; then
 fi
 mv "${stage_path}/api_gateway" "${workspace}/api_gateway"
 install -m 0644 "${workspace}/api_gateway/service/api-gateway.service" "/etc/systemd/system/${unit}"
-"/home/wuji-brain/miniconda3/envs/wuji/bin/python" -m pip install --disable-pip-version-check --no-input -r "${workspace}/api_gateway/requirements.txt"
+if [[ -f "${workspace}/api_gateway/requirements.txt" ]]; then
+  "/home/wuji-brain/miniconda3/envs/wuji/bin/python" -m pip install --disable-pip-version-check --no-input -r "${workspace}/api_gateway/requirements.txt"
+else
+  echo "[deploy] api_gateway/requirements.txt not present; skip API Gateway dependency installation"
+fi
 systemctl daemon-reload
 systemctl enable "${unit}"
 systemctl restart --no-block "${unit}"
@@ -1176,7 +1180,11 @@ install -m 0644 \
 install -m 0644 \
   "${workspace}/api_gateway/service/api-gateway.service" \
   "/etc/systemd/system/${gateway_unit}"
-"/home/wuji-brain/miniconda3/envs/wuji/bin/python" -m pip install --disable-pip-version-check --no-input -r "${workspace}/api_gateway/requirements.txt"
+if [[ -f "${workspace}/api_gateway/requirements.txt" ]]; then
+  "/home/wuji-brain/miniconda3/envs/wuji/bin/python" -m pip install --disable-pip-version-check --no-input -r "${workspace}/api_gateway/requirements.txt"
+else
+  echo "[deploy] api_gateway/requirements.txt not present; skip API Gateway dependency installation"
+fi
 systemctl daemon-reload
 systemctl enable "${camera_unit}" "${record_unit}" "${robot_unit}" "${calibration_unit}" "${gateway_unit}"
 

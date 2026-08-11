@@ -1,0 +1,62 @@
+Hand-eye calibration result
+generated_at=2026-07-08T15:31:12
+Formula:
+T_base_board = T_base_tool @ T_tool_cam @ T_cam_board
+
+robot_source = robot_end
+camera_source = camera_board
+toolset_source = sdk.toolset(ec); end=xyz_mm=(0.000, 0.000, 0.000) rpy_deg=(0.000, -0.000, 0.000); ref=xyz_mm=(0.000, 0.000, 0.000) rpy_deg=(0.000, -0.000, 0.000)
+method = PARK
+valid_sample_count = 14
+valid_sample_indices = 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14
+
+Toolset note:
+xCoreSDK_python.endInRef is defined by the current SDK toolset.
+toolset_record = sdk.toolset(ec); end=xyz_mm=(0.000, 0.000, 0.000) rpy_deg=(0.000, -0.000, 0.000); ref=xyz_mm=(0.000, 0.000, 0.000) rpy_deg=(0.000, -0.000, 0.000)
+
+T_tool_cam:
+[[ 0.9991591459  0.0403822772  0.0070903295 -0.0074869482]
+ [-0.0403919331  0.9991831633  0.0012238994 -0.1094328079]
+ [-0.007035114  -0.0015092624  0.9999741143  0.0240656244]
+ [ 0.            0.            0.            1.          ]]
+
+T_tool_cam_rpy_XYZ_deg:
+roll = -0.070126
+pitch = 0.406249
+yaw = -2.314422
+
+Mean board position in base:
+x_m = 0.7194759041
+y_m = 0.6818296548
+z_m = -0.0502893881
+
+Mean board position in base, unit mm:
+x_mm = 719.475904
+y_mm = 681.829655
+z_mm = -50.289388
+
+Std board position in base, unit mm:
+x_std_mm = 0.462302
+y_std_mm = 0.355610
+z_std_mm = 1.070539
+
+translation_mean_error_m = 0.0010819631
+translation_max_error_m = 0.0026413918
+rotation_mean_error_deg = 0.3773006465
+rotation_max_error_deg = 0.6474266064
+
+[per_sample_base_board]
+sample_001 t_mm=(718.9, 682.4, -50.2) rpy_deg=(-94.9, 47.0, 2.7)
+sample_002 t_mm=(719.3, 682.1, -48.8) rpy_deg=(-94.2, 47.1, 2.2)
+sample_003 t_mm=(719.3, 681.7, -50.0) rpy_deg=(-94.9, 46.9, 2.8)
+sample_004 t_mm=(720.0, 681.5, -50.8) rpy_deg=(-94.7, 47.1, 2.4)
+sample_005 t_mm=(720.7, 681.3, -52.6) rpy_deg=(-94.7, 47.2, 2.1)
+sample_006 t_mm=(719.8, 681.6, -48.9) rpy_deg=(-94.1, 47.1, 2.3)
+sample_007 t_mm=(719.4, 681.3, -49.4) rpy_deg=(-94.4, 46.9, 2.6)
+sample_008 t_mm=(719.9, 682.3, -50.8) rpy_deg=(-95.0, 46.7, 2.5)
+sample_009 t_mm=(719.7, 682.1, -50.3) rpy_deg=(-94.3, 46.9, 1.9)
+sample_010 t_mm=(718.9, 682.2, -50.9) rpy_deg=(-94.9, 46.7, 2.5)
+sample_011 t_mm=(719.4, 681.8, -51.2) rpy_deg=(-94.7, 46.7, 2.3)
+sample_012 t_mm=(719.1, 681.9, -51.6) rpy_deg=(-94.6, 47.1, 2.1)
+sample_013 t_mm=(719.1, 681.4, -49.1) rpy_deg=(-94.0, 47.0, 2.3)
+sample_014 t_mm=(719.4, 682.1, -49.5) rpy_deg=(-94.4, 47.0, 2.4)

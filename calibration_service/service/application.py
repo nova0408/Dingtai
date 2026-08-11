@@ -10,10 +10,11 @@ import json
 import shutil
 import tempfile
 import threading
+import time
 import uuid
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Literal, cast
 from urllib.error import HTTPError, URLError
@@ -46,6 +47,9 @@ SERVICE_ROOT = Path(__file__).resolve().parents[1]
 
 RECORD_REPLAY_PRIOR_DIR = SERVICE_ROOT.parent / "record_replay" / "prior_data"
 "RecordReplay 使用的固定先验结果目录。"
+
+PENDING_REPLACEMENT_TIMEOUT_S = 30.0
+"待确认结果最长保留时间，单位 s。"
 
 ROBOT_CONTROL_STATUS_URL = "http://127.0.0.1:6500/api/v1/status"
 "Orin 本机 RobotControl 只读状态接口。"
@@ -113,6 +117,12 @@ class PendingReplacement:
     files: tuple[tuple[Path, Path], ...]
     "临时结果文件与 RecordReplay 目标文件的映射。"
 
+    expires_at: str
+    "待确认结果的本地时间过期时刻。"
+
+    expires_at_monotonic: float
+    "待确认结果的单调时钟过期时刻，用于避免系统时间调整影响计时。"
+
     data: dict[str, object]
     "计算结果及前端展示信息。"
 
@@ -169,6 +179,7 @@ class CalibrationApplication:
         self._ended_at: str | None = None
         self._last_error: str | None = None
         self._pending_replacement: PendingReplacement | None = None
+        self._pending_replacement_timer: threading.Timer | None = None
         self._hand_eye_charuco_config = HandEyeCharucoConfig()
 
     def get_hand_eye_config(self) -> CalibrationResponse:
@@ -236,14 +247,13 @@ class CalibrationApplication:
                     accepted=False,
                     error="当前任务仍在执行，请等待接口返回后再取消",
                 )
-            pending = self._pending_replacement
             sample_count = len(self._hand_eye_samples) + sum(
                 len(samples) for samples in self._head_eye_samples.values()
             )
             self._hand_eye_samples.clear()
             for samples in self._head_eye_samples.values():
                 samples.clear()
-            self._pending_replacement = None
+            pending = self._clear_pending_replacement_locked()
             self._active_kind = None
             self._active_arm_side = "left"
             self._collecting = False
@@ -288,6 +298,9 @@ class CalibrationApplication:
                             self._prior_dir / "charuco_board_prior.json"
                         ),
                         "message": result.message,
+                        "result": _read_staged_json(
+                            staging_dir / "charuco_board_prior.json"
+                        ),
                     },
                 )
             except Exception:
@@ -398,6 +411,9 @@ class CalibrationApplication:
                             self._prior_dir / "ball_pose_prior.json"
                         ),
                         "message": result.message,
+                        "result": _read_staged_json(
+                            staging_dir / "ball_pose_prior.json"
+                        ),
                     },
                 )
             except Exception:
@@ -520,6 +536,23 @@ class CalibrationApplication:
                     result.residual.translation_rmse,
                     result.residual.translation_max,
                 )
+                result_data = {
+                    "transform_semantics": "T_tool_cam",
+                    "transform": matrix.tolist(),
+                    "translation_m": matrix[:3, 3].tolist(),
+                    "translation_mm": (matrix[:3, 3] * 1000.0).tolist(),
+                    "rpy_deg": Rotation.from_matrix(matrix[:3, :3]).as_euler(
+                        "xyz",
+                        degrees=True,
+                    ).tolist(),
+                    "sample_count": result.residual.sample_count,
+                    "method": method,
+                    "pair_mode": pair_mode,
+                    "rotation_rmse_deg": result.residual.rotation_rmse_deg,
+                    "rotation_max_deg": result.residual.rotation_max_deg,
+                    "translation_rmse_m": result.residual.translation_rmse,
+                    "translation_max_m": result.residual.translation_max,
+                }
                 return self._cache_replacement(
                     staging_dir,
                     {
@@ -535,6 +568,7 @@ class CalibrationApplication:
                         "translation_rmse_m": result.residual.translation_rmse,
                         "translation_max_m": result.residual.translation_max,
                         "transform": matrix.tolist(),
+                        "result": result_data,
                     },
                 )
             except Exception:
@@ -566,6 +600,17 @@ class CalibrationApplication:
                     staging_dir / f"{arm_side}_head_base_camera.npy",
                     matrix,
                 )
+                result_data = {
+                    "transform_semantics": "T_base_camera",
+                    "transform": matrix.tolist(),
+                    "translation_m": matrix[:3, 3].tolist(),
+                    "translation_mm": (matrix[:3, 3] * 1000.0).tolist(),
+                    "rpy_deg": Rotation.from_matrix(matrix[:3, :3]).as_euler(
+                        "xyz",
+                        degrees=True,
+                    ).tolist(),
+                    "sample_count": len(samples),
+                }
                 return self._cache_replacement(
                     staging_dir,
                     {
@@ -577,6 +622,7 @@ class CalibrationApplication:
                         "sample_count": len(samples),
                         "transform_semantics": "T_base_camera",
                         "transform": matrix.tolist(),
+                        "result": result_data,
                     },
                 )
             except Exception:
@@ -643,6 +689,7 @@ class CalibrationApplication:
                 accepted=False,
                 error="必须显式确认 replacement_id 后才能替换文件",
             )
+        expired_pending: PendingReplacement | None = None
         with self._lock:
             if self._busy:
                 return CalibrationResponse(
@@ -661,8 +708,18 @@ class CalibrationApplication:
                     accepted=False,
                     error="replacement_id 已失效或不匹配",
                 )
-            self._busy = True
-            self._last_error = None
+            if time.monotonic() >= pending.expires_at_monotonic:
+                expired_pending = self._clear_pending_replacement_locked()
+            else:
+                self._cancel_pending_expiry_locked()
+                self._busy = True
+                self._last_error = None
+        if expired_pending is not None:
+            _remove_staging_dir(expired_pending.staging_dir)
+            return CalibrationResponse(
+                accepted=False,
+                error="待确认结果已超过 30 秒，结果已自动丢弃",
+            )
         try:
             renamed_old_files = _replace_pending(pending)
         except Exception as error:
@@ -670,11 +727,13 @@ class CalibrationApplication:
             with self._lock:
                 self._busy = False
                 self._last_error = message
+                if self._pending_replacement is pending:
+                    self._schedule_pending_expiry_locked(pending)
             return CalibrationResponse(state="idle", accepted=False, error=message)
 
         with self._lock:
             self._busy = False
-            self._pending_replacement = None
+            self._clear_pending_replacement_locked()
             self._last_error = None
         _remove_staging_dir(pending.staging_dir)
         data = dict(pending.data)
@@ -733,6 +792,54 @@ class CalibrationApplication:
         )
         return data
 
+    def _clear_pending_replacement_locked(self) -> PendingReplacement | None:
+        """清除待确认结果并取消其过期计时器；调用方必须持有锁。"""
+
+        pending = self._pending_replacement
+        self._pending_replacement = None
+        self._cancel_pending_expiry_locked()
+        return pending
+
+    def _cancel_pending_expiry_locked(self) -> None:
+        """取消当前待确认结果的过期计时器；调用方必须持有锁。"""
+
+        timer = self._pending_replacement_timer
+        self._pending_replacement_timer = None
+        if timer is not None:
+            timer.cancel()
+
+    def _schedule_pending_expiry_locked(
+        self,
+        pending: PendingReplacement,
+        delay_s: float | None = None,
+    ) -> None:
+        """为待确认结果安排过期清理；调用方必须持有锁。"""
+
+        if delay_s is None:
+            delay_s = max(0.0, pending.expires_at_monotonic - time.monotonic())
+        timer = threading.Timer(
+            delay_s,
+            self._expire_pending_replacement,
+            args=(pending.replacement_id,),
+        )
+        timer.daemon = True
+        self._pending_replacement_timer = timer
+        timer.start()
+
+    def _expire_pending_replacement(self, replacement_id: str) -> None:
+        """30 秒未确认或取消时丢弃临时结果。"""
+
+        with self._lock:
+            pending = self._pending_replacement
+            if pending is None or pending.replacement_id != replacement_id:
+                return
+            if self._busy:
+                self._schedule_pending_expiry_locked(pending, delay_s=0.1)
+                return
+            pending = self._clear_pending_replacement_locked()
+        if pending is not None:
+            _remove_staging_dir(pending.staging_dir)
+
     def _cache_replacement(
         self,
         staging_dir: Path,
@@ -740,24 +847,30 @@ class CalibrationApplication:
     ) -> dict[str, object]:
         files = _staged_files(staging_dir, self._prior_dir)
         replacement_id = uuid.uuid4().hex
+        expires_at = datetime.now() + timedelta(seconds=PENDING_REPLACEMENT_TIMEOUT_S)
+        expires_at_monotonic = time.monotonic() + PENDING_REPLACEMENT_TIMEOUT_S
         pending_data = dict(data)
         pending_data.update(
             {
                 "replacement_state": "pending_confirmation",
                 "requires_confirmation": True,
                 "replacement_performed": False,
+                "expires_at": expires_at.isoformat(timespec="milliseconds"),
             }
         )
         pending = PendingReplacement(
             replacement_id=replacement_id,
             staging_dir=staging_dir,
             files=files,
+            expires_at=expires_at.isoformat(timespec="milliseconds"),
+            expires_at_monotonic=expires_at_monotonic,
             data=pending_data,
         )
         with self._lock:
             if self._pending_replacement is not None:
                 raise RuntimeError("已有待确认的结果替换，请先确认或取消")
             self._pending_replacement = pending
+            self._schedule_pending_expiry_locked(pending)
         return {
             **pending_data,
             "replacement_id": replacement_id,
@@ -1061,6 +1174,15 @@ def _write_hand_eye(
 
 def _relative_service_path(path: Path) -> str:
     return str(path.relative_to(SERVICE_ROOT.parent)).replace("\\", "/")
+
+
+def _read_staged_json(path: Path) -> dict[str, object]:
+    """读取尚未确认的 JSON 结果，供待确认响应展示。"""
+
+    value = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(value, dict):
+        raise ValueError(f"待确认结果根节点必须是 object：{path}")
+    return cast(dict[str, object], value)
 
 
 def _write_matrix_npy(target: Path, matrix: np.ndarray) -> None:

@@ -19,7 +19,6 @@ Logs/*
 *.jpg
 *.bmp
 *.tmp/
-*.txt
 *.bak
 *.npy
 opening_detection_pipeline_package/

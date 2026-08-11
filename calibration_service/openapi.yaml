@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Dingtai Calibration Service
-  version: 1.2.0
+  version: 1.4.0
   description: >-
     手眼标定与先验记录服务。只读取 RobotControl 状态，只请求 CameraPipeline
     拍摄和检测，不发送设备控制请求。计算结果先进入临时缓存，二次确认后写入
@@ -58,7 +58,7 @@ paths:
   /api/v1/replacements/confirm:
     post:
       operationId: confirm_calibration_replacement
-      description: 二次确认后替换正式先验；旧文件会改名保留，不执行删除。
+      description: 必须在结果生成后 30 秒内二次确认并替换正式先验；旧文件会改名保留，不执行删除。
       requestBody:
         required: true
         content:
@@ -75,14 +75,14 @@ paths:
   /api/v1/prior/head:
     post:
       operationId: record_head_prior
-      description: 按需触发头部 ChArUco 拍摄和计算，结果先缓存，需 confirm 接口二次确认后保存 charuco_board_prior.json。
+      description: 按需触发头部 ChArUco 拍摄和计算。响应的 data.result 返回待确认目录中 charuco_board_prior.json 的完整内容；结果先缓存 30 秒，需 confirm 接口在期限内二次确认后保存正式文件。
       responses:
         '200': {description: 先验已计算并进入待确认缓存}
         '409': {description: 已有任务执行}
   /api/v1/prior/hand:
     post:
       operationId: record_hand_prior
-      description: 只读当前 AR5 状态，按需触发手部三球拍摄和计算，结果先缓存，需 confirm 接口二次确认后保存 ball_pose_prior.json。
+      description: 只读当前 AR5 状态，按需触发手部三球拍摄和计算。响应的 data.result 返回待确认目录中 ball_pose_prior.json 的完整内容；结果先缓存 30 秒，需 confirm 接口在期限内二次确认后保存正式文件。
       requestBody:
         required: false
         content:
@@ -139,14 +139,14 @@ paths:
   /api/v1/hand-eye/solve:
     post:
       operationId: solve_hand_eye
-      description: 计算当前内存样本或请求 body 中的样本并缓存结果，需 confirm 接口二次确认后保存 hand_eye_result.txt。
+      description: 计算当前内存样本或请求 body 中的样本并缓存结果。响应的 data.result 返回完整矩阵、平移、RPY、样本数和求解指标；需 confirm 接口二次确认后保存 hand_eye_result.txt。
       responses:
         '200': {description: 手眼结果已计算并进入待确认缓存}
         '400': {description: 样本或计算失败}
   /api/v1/head-eye/solve:
     post:
       operationId: solve_head_eye
-      description: 计算 T_base_camera 并缓存结果，需 confirm 接口二次确认后保存对应侧 npy 文件。
+      description: 计算 T_base_camera 并缓存结果。响应的 data.result 返回完整矩阵、平移、RPY 和样本数；需 confirm 接口二次确认后保存对应侧 npy 文件。
       responses:
         '200': {description: 手眼结果已计算并进入待确认缓存}
         '400': {description: 样本或计算失败}

@@ -1,0 +1,14 @@
+拖动采样建议
+generated_at=2026-07-08T17:29:43
+sample_count=10
+span_x_mm=206.00
+span_y_mm=234.95
+span_z_mm=162.17
+span_roll_deg=238.75
+span_pitch_deg=124.68
+span_yaw_deg=181.17
+
+sampling_guidance:
+采样覆盖已经比较充分，可以补充 3-5 个斜向组合姿态做收尾。
+优先补“边平移边转动”的组合位，避免所有样本都围绕同一个姿态小范围抖动。
+若残差仍偏大，优先重采重投影误差高或姿态过于相似的样本。
