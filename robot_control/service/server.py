@@ -72,34 +72,34 @@ class RobotControlServer:
                     if path in {"/api/v1/status", "/api/v1/devices"}:
                         self._send(HTTPStatus.OK, asdict(application.status()))
                         return
-                    if path == "/api/v1/qmlinker/agv/targets":
+                    if path == "/api/v1/agv/targets":
                         self._send(
                             HTTPStatus.OK, application.qmlinker_get_agv_targets()
                         )
                         return
-                    if path == "/api/v1/qmlinker/agv/base-state":
+                    if path == "/api/v1/agv/base-state":
                         self._send(
                             HTTPStatus.OK, application.qmlinker_get_agv_base_state()
                         )
                         return
-                    if path == "/api/v1/qmlinker/agv/base-mode":
+                    if path == "/api/v1/agv/base-mode":
                         self._send(
                             HTTPStatus.OK, application.qmlinker_get_agv_base_mode()
                         )
                         return
-                    if path == "/api/v1/qmlinker/agv/base-operation-state":
+                    if path == "/api/v1/agv/base-operation-state":
                         self._send(
                             HTTPStatus.OK,
                             application.qmlinker_get_agv_base_operation_state(),
                         )
                         return
-                    if path == "/api/v1/qmlinker/agv/base-task-process":
+                    if path == "/api/v1/agv/base-task-process":
                         self._send(
                             HTTPStatus.OK,
                             application.qmlinker_get_agv_base_task_process(),
                         )
                         return
-                    if path == "/api/v1/qmlinker/agv/base-battery":
+                    if path == "/api/v1/agv/base-battery":
                         self._send(
                             HTTPStatus.OK,
                             application.qmlinker_get_agv_base_battery(),
@@ -121,6 +121,21 @@ class RobotControlServer:
                             application.ar5_get_soft_limits(side),
                         )
                         return
+                    if path.startswith("/api/v1/ar5/"):
+                        parts = [part for part in path.split("/") if part]
+                        if len(parts) == 5 and parts[:3] == ["api", "v1", "ar5"]:
+                            side, action = parts[3], parts[4]
+                            readers = {
+                                "robot-info": application.ar5_sdk_robot_info,
+                                "operation-state": application.ar5_sdk_operation_state,
+                                "operate-mode": application.ar5_sdk_operate_mode,
+                                "power-state": application.ar5_sdk_power_state,
+                                "cart-posture": application.ar5_sdk_cart_posture,
+                            }
+                            reader = readers.get(action)
+                            if reader is not None:
+                                self._send(HTTPStatus.OK, reader(side))
+                                return
                     if path == "/api/v1/status/stream":
                         self._stream_status()
                         return
@@ -168,7 +183,10 @@ class RobotControlServer:
                 try:
                     payload = self._read_json_object()
                     response = self._dispatch_control(path, payload)
-                    self._send(HTTPStatus.ACCEPTED, asdict(response))
+                    if isinstance(response, dict):
+                        self._send(HTTPStatus.OK, response)
+                    else:
+                        self._send(HTTPStatus.ACCEPTED, asdict(response))
                 except ValueError as exc:
                     logger.warning(
                         "RobotControl POST rejected: path={} error_type={} message={}",
@@ -235,16 +253,16 @@ class RobotControlServer:
                 """按显式路径分发控制请求，不使用动态方法名调用。"""
 
                 parts = [part for part in path.split("/") if part]
-                if parts[:3] == ["api", "v1", "qmlinker"]:
-                    return self._dispatch_qmlinker(parts[3:], payload)
+                if parts[:2] == ["api", "v1"] and len(parts) >= 3 and parts[2] != "ar5":
+                    return self._dispatch_peripheral(parts[2:], payload)
                 if parts[:3] == ["api", "v1", "ar5"]:
                     return self._dispatch_ar5(parts[3:], payload)
                 raise ValueError("unsupported POST path")
 
-            def _dispatch_qmlinker(
+            def _dispatch_peripheral(
                 self, parts: list[str], payload: dict[str, object]
             ) -> Any:
-                """分发 qmlinker 控制路径。"""
+                """分发头部、升降、手部和 AGV 控制路径。"""
 
                 if parts == ["head"]:
                     return application.qmlinker_set_head(
@@ -348,6 +366,51 @@ class RobotControlServer:
                         _number_field(payload, "speed_mm_s"),
                         _number_field(payload, "zone_mm"),
                     )
+                if action == "set-motion-control-mode":
+                    return application.ar5_sdk_set_motion_control_mode_nrt(side)
+                if action == "set-operate-mode":
+                    return application.ar5_sdk_set_operate_mode_automatic(side)
+                if action == "set-power-state":
+                    return application.ar5_sdk_set_power_state(
+                        side, _bool_field(payload, "enabled")
+                    )
+                if action == "set-default-conf-opt":
+                    return application.ar5_sdk_set_default_conf_opt(
+                        side, _bool_field(payload, "enabled")
+                    )
+                if action == "set-default-speed":
+                    return application.ar5_sdk_set_default_speed(
+                        side, _number_field(payload, "speed_mm_s")
+                    )
+                if action == "set-default-zone":
+                    return application.ar5_sdk_set_default_zone(
+                        side, _number_field(payload, "zone_mm")
+                    )
+                if action == "set-toolset":
+                    return application.ar5_sdk_set_toolset(
+                        side,
+                        _string_field(payload, "tool_name"),
+                        _string_field(payload, "wobj_name"),
+                    )
+                if action == "calc-ik":
+                    return application.ar5_sdk_calc_ik(
+                        side,
+                        trans_m=_number_tuple(payload, "trans_m", 3),
+                        rpy_rad=_number_tuple(payload, "rpy_rad", 3),
+                        has_elbow=_bool_field(payload, "has_elbow"),
+                        elbow_rad=_number_field(payload, "elbow_rad"),
+                        conf_data=_int_tuple(payload, "conf_data"),
+                    )
+                if action == "move-reset":
+                    return application.ar5_sdk_move_reset(side)
+                if action == "move-append":
+                    return application.ar5_sdk_move_append_abs_j(
+                        side, _move_abs_j_targets(payload)
+                    )
+                if action == "move-start":
+                    return application.ar5_sdk_move_start(side)
+                if action == "disable-drag":
+                    return application.ar5_sdk_disable_drag(side)
                 raise ValueError("unsupported AR5 control action")
 
             def _read_json_object(self) -> dict[str, object]:
@@ -478,3 +541,46 @@ def _string_field(payload: dict[str, object], name: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{name} must be a non-empty string")
     return value.strip()
+
+
+def _number_tuple(
+    payload: dict[str, object], name: str, expected_length: int
+) -> tuple[float, ...]:
+    """读取固定长度数值数组。"""
+
+    values = _number_sequence(payload, name)
+    if len(values) != expected_length:
+        raise ValueError(f"{name} must contain {expected_length} numbers")
+    return values
+
+
+def _int_tuple(payload: dict[str, object], name: str) -> tuple[int, ...]:
+    """读取整数数组。"""
+
+    value = payload.get(name)
+    if not isinstance(value, list):
+        raise ValueError(f"{name} must be an array")
+    return tuple(_int_field({"value": item}, "value") for item in value)
+
+
+def _move_abs_j_targets(
+    payload: dict[str, object],
+) -> tuple[tuple[tuple[float, ...], float, float], ...]:
+    """解析批量 MoveAbsJ 显式目标。"""
+
+    value = payload.get("targets")
+    if not isinstance(value, list) or not value:
+        raise ValueError("targets must be a non-empty array")
+    targets: list[tuple[tuple[float, ...], float, float]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            raise ValueError("each target must be an object")
+        target = {str(key): field for key, field in item.items()}
+        targets.append(
+            (
+                _number_tuple(target, "joints_rad", 7),
+                _number_field(target, "speed_mm_s"),
+                _number_field(target, "zone_mm"),
+            )
+        )
+    return tuple(targets)

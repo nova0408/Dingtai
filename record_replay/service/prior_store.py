@@ -20,7 +20,7 @@ PriorKind = Literal["ball_pose", "charuco"]
 "可通过 HTTP 替换的两类 JSON 先验。"
 
 CHARUCO_HISTORY_MIN_ACCEPTED_SAMPLES = 6
-"每侧 ChArUco 历史要求的最少有效样本数。"
+"全局 ChArUco 历史要求的最少有效样本数。"
 
 
 @dataclass(frozen=True, slots=True)
@@ -193,16 +193,15 @@ class RecordReplayPriorStore:
 
     @staticmethod
     def _validate_charuco_history(path: Path) -> None:
-        """校验 ChArUco 历史格式和左右臂有效样本数量。"""
+        """校验 ChArUco 历史格式和全局有效样本数量。"""
 
-        for arm_side in ("left", "right"):
-            values = _load_history(path, arm_side)
-            sample_count = values.shape[0]
-            if sample_count < CHARUCO_HISTORY_MIN_ACCEPTED_SAMPLES:
-                raise ValueError(
-                    f"{arm_side} 臂有效历史样本不足：{sample_count} < "
-                    f"{CHARUCO_HISTORY_MIN_ACCEPTED_SAMPLES}"
-                )
+        values = _load_history(path)
+        sample_count = values.shape[0]
+        if sample_count < CHARUCO_HISTORY_MIN_ACCEPTED_SAMPLES:
+            raise ValueError(
+                f"全局有效历史样本不足：{sample_count} < "
+                f"{CHARUCO_HISTORY_MIN_ACCEPTED_SAMPLES}"
+            )
 
     @staticmethod
     def _validate_left_head_base_camera(path: Path) -> None:

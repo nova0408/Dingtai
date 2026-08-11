@@ -67,6 +67,26 @@ description: 安全维护、评审、变更和部署 Dingtai 根目录 record_re
   active 或端口监听单独当作业务可用证明。
 - 远端不可达、版本不符、清单不一致或只读就绪检查失败时停止，不报告部署完成，也不继续启动真实业务。
 
+### 强制同步模式
+
+- 只有用户对当前这一次部署明确说出“强制同步”“强制部署”或等价指令时，才允许使用
+  `-RecordReplayOnly -Force`；普通的“同步”“部署”“继续”不构成授权，也不得沿用之前轮次的强制授权。
+- 强制模式只允许越过 RecordReplay 的 `rapid_stop` 部署前置检查。即使用户明确授权，也不得用它
+  越过 `busy`、未知状态、CameraPipeline 就绪、Calibration idle、文件清单、SHA-256、备份、版本或
+  部署后只读检查。
+- 使用前先通过只读 `/status` 确认实际状态为 `rapid_stop`，并说明强制同步会停止和重启服务，但不会
+  清除安全锁存、调用 `/reset`、发送 `/start` 或控制硬件。
+- 明确授权后的固定命令为：
+
+```powershell
+pwsh -NoProfile -File .\scripts\sync_and_restart_services.ps1 -RecordReplayOnly -Force
+```
+
+- 部署后必须确认服务仍保留合理的安全状态并核对远端版本；不得为了让检查显示 idle 而自动 reset。
+- 同步脚本必须按部署前状态恢复 `runtime_state.json`：`idle/waiting` 恢复为 `idle`，强制模式下的
+  `rapid_stop` 必须继续锁存为 `rapid_stop`，服务原本未运行时保留既有状态文件。不得因目录替换
+  丢失状态文件或把强制同步等价为 reset。
+
 ## 静态验证
 
 根据当前仓库的检查规范执行最小验证，通常包括：

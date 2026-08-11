@@ -19,7 +19,7 @@ from .csv_repository import discover_csv_paths, load_replay_rows
 from .settings import OffsetConfig, ReplayOffsetSettings
 
 ACTION_SEQUENCE_FILE_NAME: Final = "action_sequence.json"
-ACTION_SEQUENCE_SCHEMA_VERSION: Final = 3
+ACTION_SEQUENCE_SCHEMA_VERSION: Final = 4
 MIN_MOTION_SPEED_MM_S: Final = 5.0
 MAX_MOTION_SPEED_MM_S: Final = 4000.0
 MAX_ZONE_MM: Final = 200.0
@@ -217,30 +217,20 @@ def load_action_sequence(
     left_record_dir: Path,
     right_record_dir: Path,
     *,
-    old_tray_current_index: int | None = None,
-    old_tray_put_index: int | None = None,
-    new_tray_current_index: int | None = None,
-    new_tray_put_index: int | None = None,
+    old_tray_current_index: int,
+    old_tray_put_index: int,
+    new_tray_current_index: int,
+    new_tray_put_index: int,
 ) -> ActionSequencePlan:
     """读取 JSON、校验 schema 和 CSV 唯一映射，返回单次冻结计划。
 
-    四个托盘 index 由每次 start 传入；提供时会覆盖四个托盘动作在 JSON 中保存的
-    index，使同一份动作顺序可以服务 GUI 的外部循环。未提供时保留 JSON 中的 index，
-    供只读取先验配置的内部流程使用。
+    四个托盘 index 只允许由本次 start 或 plan 请求传入。动作 JSON 不保存 index，
+    避免配置默认值与请求参数形成两个数据源。
     """
 
     errors: list[str] = []
-    try:
-        raw_bytes = config_path.read_bytes()
-    except OSError as error:
-        raise ActionSequenceValidationError([f"顺序文件不可读：{config_path}: {error}"]) from error
+    payload, raw_bytes = _read_action_sequence_payload(config_path)
     source_sha256 = hashlib.sha256(raw_bytes).hexdigest()
-    try:
-        payload = json.loads(raw_bytes.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise ActionSequenceValidationError([f"顺序文件不是有效 UTF-8 JSON：{error}"]) from error
-    if not isinstance(payload, dict):
-        raise ActionSequenceValidationError(["顺序文件根节点必须是 JSON object"])
 
     allowed_root = {"schema_version", "left", "right", "deployment"}
     errors.extend(_unknown_fields(payload, allowed_root, "根节点"))
@@ -321,24 +311,57 @@ def load_action_sequence(
     )
 
 
+def load_replay_deployment_config(config_path: Path) -> ReplayDeploymentConfig:
+    """读取统一 JSON 的部署配置，不构建需要运行时 index 的动作计划。"""
+
+    errors: list[str] = []
+    payload, _ = _read_action_sequence_payload(config_path)
+    allowed_root = {"schema_version", "left", "right", "deployment"}
+    errors.extend(_unknown_fields(payload, allowed_root, "根节点"))
+    schema_version = _read_int(payload.get("schema_version"), "schema_version", errors)
+    if schema_version != ACTION_SEQUENCE_SCHEMA_VERSION:
+        errors.append(
+            f"schema_version 必须为 {ACTION_SEQUENCE_SCHEMA_VERSION}，实际为 {schema_version!r}"
+        )
+    deployment = _parse_deployment_config(payload.get("deployment"), config_path, errors)
+    left_items = _parse_items(payload.get("left"), "left", errors)
+    right_items = _parse_items(payload.get("right"), "right", errors)
+    if not left_items:
+        errors.append("left 动作列表不能为空")
+    if not right_items:
+        errors.append("right 动作列表不能为空")
+    _validate_sync_pairing(left_items, right_items, errors)
+    if errors:
+        raise ActionSequenceValidationError(errors)
+    return deployment
+
+
+def _read_action_sequence_payload(config_path: Path) -> tuple[dict[object, object], bytes]:
+    """读取 UTF-8 JSON object，并保留原始字节供完整计划计算摘要。"""
+
+    try:
+        raw_bytes = config_path.read_bytes()
+    except OSError as error:
+        raise ActionSequenceValidationError([f"顺序文件不可读：{config_path}: {error}"]) from error
+    try:
+        payload: object = json.loads(raw_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ActionSequenceValidationError([f"顺序文件不是有效 UTF-8 JSON：{error}"]) from error
+    if not isinstance(payload, dict):
+        raise ActionSequenceValidationError(["顺序文件根节点必须是 JSON object"])
+    return payload, raw_bytes
+
+
 def _apply_runtime_tray_index(
     items: list[ActionItem],
-    old_tray_current_index: int | None,
-    old_tray_put_index: int | None,
-    new_tray_current_index: int | None,
-    new_tray_put_index: int | None,
+    old_tray_current_index: int,
+    old_tray_put_index: int,
+    new_tray_current_index: int,
+    new_tray_put_index: int,
     errors: list[str],
 ) -> list[ActionItem]:
     """把 start 的四个托盘位置 index 应用到四个托盘动作。"""
 
-    values = (
-        old_tray_current_index,
-        old_tray_put_index,
-        new_tray_current_index,
-        new_tray_put_index,
-    )
-    if all(value is None for value in values):
-        return items
     names_and_values = (
         ("old_tray_current_index", old_tray_current_index),
         ("old_tray_put_index", old_tray_put_index),
@@ -348,22 +371,18 @@ def _apply_runtime_tray_index(
     for name, value in names_and_values:
         if not _is_positive_int(value):
             errors.append(f"{name} 必须是大于 0 的整数")
-    if not all(_is_positive_int(value) for value in values):
+    if not all(_is_positive_int(value) for _, value in names_and_values):
         return items
+    index_by_action = {
+        "get_tray": old_tray_current_index,
+        "put_tray": old_tray_put_index,
+        "get_new_tray": new_tray_current_index,
+        "put_new_tray": new_tray_put_index,
+    }
     return [
         replace(
             item,
-            index=(
-                old_tray_current_index
-                if item.function_name == "get_tray"
-                else old_tray_put_index
-                if item.function_name == "put_tray"
-                else new_tray_current_index
-                if item.function_name == "get_new_tray"
-                else new_tray_put_index
-                if item.function_name == "put_new_tray"
-                else item.index
-            ),
+            index=index_by_action.get(item.function_name, item.index),
         )
         for item in items
     ]
@@ -619,7 +638,7 @@ def _parse_items(
         if not isinstance(raw_item, dict):
             errors.append(f"{label} 必须是 JSON object")
             continue
-        allowed = {"function_name", "type", "speed", "zone", "index", "final_speed", "settle_delay"}
+        allowed = {"function_name", "type", "speed", "zone", "final_speed", "settle_delay"}
         errors.extend(_unknown_fields(raw_item, allowed, label))
         function_name = raw_item.get("function_name")
         action_type = raw_item.get("type")
@@ -634,8 +653,6 @@ def _parse_items(
             errors.append(f"{label} 动作类型错误：{function_name} 应为 {expected_type}")
         speed = _read_float(raw_item.get("speed"), f"{label}.speed", errors)
         zone = _read_float(raw_item.get("zone"), f"{label}.zone", errors)
-        has_index = "index" in raw_item
-        index = _read_optional_positive_int(raw_item.get("index"), f"{label}.index", errors)
         has_final_speed = "final_speed" in raw_item
         final_speed = _read_optional_float(raw_item.get("final_speed"), f"{label}.final_speed", errors)
         has_settle_delay = "settle_delay" in raw_item
@@ -644,10 +661,6 @@ def _parse_items(
             if has_settle_delay
             else None
         )
-        if function_name in INDEXED_ACTIONS and index is None:
-            errors.append(f"{label} 多目标动作必须提供正整数 index")
-        if function_name not in INDEXED_ACTIONS and has_index:
-            errors.append(f"{label} 普通动作不能提供 index")
         if speed is not None and not MIN_MOTION_SPEED_MM_S <= speed <= MAX_MOTION_SPEED_MM_S:
             errors.append(f"{label}.speed 必须在 {MIN_MOTION_SPEED_MM_S} 到 {MAX_MOTION_SPEED_MM_S} 之间")
         if zone is not None and not 0.0 <= zone <= MAX_ZONE_MM:
@@ -679,7 +692,7 @@ def _parse_items(
                 action_type,
                 speed,
                 zone,
-                index,
+                None,
                 final_speed,
                 0.0 if settle_delay is None else settle_delay,
             )
@@ -895,14 +908,3 @@ def _read_optional_float(value: object, label: str, errors: list[str]) -> float 
     if value is None:
         return None
     return _read_float(value, label, errors)
-
-
-def _read_optional_positive_int(value: object, label: str, errors: list[str]) -> int | None:
-    """读取可选正整数 index。"""
-
-    if value is None:
-        return None
-    number = _read_int(value, label, errors)
-    if number is not None and number <= 0:
-        errors.append(f"{label} 必须大于 0")
-    return number

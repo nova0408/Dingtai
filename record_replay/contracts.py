@@ -42,6 +42,7 @@ ReplayErrorCode = Literal[
     "stop_requested",
     "execution_failed",
     "not_found",
+    "method_not_allowed",
     "internal_error",
 ]
 "RecordReplay 对外返回的稳定错误码集合。"

@@ -49,6 +49,15 @@ class CharucoOffsetInitializer:
         if any(runtime.charuco_cartesian_offset is not None for runtime in runtimes):
             raise RuntimeError("本轮 ChArUco offset 已初始化，拒绝重复检测目标板")
         settings = self._settings.offset
+        logger.info(
+            "ChArUco offset 初始化开始 arm_sides={} attempts={} head_yaw_deg={:.1f} "
+            "head_pitch_deg={:.1f} settle_s={:.1f}",
+            [runtime.connected_arm.arm_side for runtime in runtimes],
+            settings.charuco_safety_attempt_count,
+            settings.charuco_head_yaw_deg,
+            settings.charuco_head_pitch_deg,
+            settings.charuco_head_settle_s,
+        )
         detector = CameraPipelineBoardDetector(
             BoardDetectionConfig(
                 max_frames=settings.charuco_max_frame_count,
@@ -62,6 +71,11 @@ class CharucoOffsetInitializer:
         rejected: list[str] = []
         for attempt in range(1, settings.charuco_safety_attempt_count + 1):
             _raise_if_stopped(runtimes)
+            logger.info(
+                "ChArUco offset 检测尝试开始 attempt={}/{}",
+                attempt,
+                settings.charuco_safety_attempt_count,
+            )
             current_camera_board_m = self._detect_current_board(detector, runtimes[0])
             decisions = [
                 self._precheck(runtime, current_camera_board_m)
@@ -103,10 +117,21 @@ class CharucoOffsetInitializer:
         head = QMHead(runtime.hand_body.body_channel)
         _raise_if_stopped([runtime])
         head_settings = self._settings.offset
+        logger.info(
+            "头部 ChArUco 姿态设置开始 yaw_target_deg={:.1f} pitch_target_deg={:.1f}",
+            head_settings.charuco_head_yaw_deg,
+            head_settings.charuco_head_pitch_deg,
+        )
         head.set_head_yaw(head_settings.charuco_head_yaw_deg)
+        logger.info("头部 ChArUco yaw 指令已返回")
         _raise_if_stopped([runtime])
         head.set_head_pitch(head_settings.charuco_head_pitch_deg)
+        logger.info("头部 ChArUco pitch 指令已返回")
         _raise_if_stopped([runtime])
+        logger.info(
+            "头部 ChArUco 姿态稳定等待开始 settle_s={:.1f}",
+            head_settings.charuco_head_settle_s,
+        )
         _wait_or_raise([runtime], head_settings.charuco_head_settle_s)
         _raise_if_stopped([runtime])
         logger.info(
@@ -114,7 +139,22 @@ class CharucoOffsetInitializer:
             head.get_head_yaw(),
             head.get_head_pitch(),
         )
+        logger.info(
+            "CameraPipeline ChArUco 检测请求开始 max_frames={} min_corners={} "
+            "stable_timeout_s={:.1f} rpc_timeout_s={:.1f}",
+            head_settings.charuco_max_frame_count,
+            head_settings.charuco_min_corners,
+            head_settings.charuco_camera_timeout_s,
+            head_settings.charuco_rpc_timeout_s,
+        )
         board_mm = np.asarray(detector.detect_t_camera_board_mm(), dtype=np.float64)
+        logger.info(
+            "CameraPipeline ChArUco 检测响应已返回 shape={} translation_mm=[{:.3f}, {:.3f}, {:.3f}]",
+            board_mm.shape,
+            board_mm[0, 3] if board_mm.shape == (4, 4) else float("nan"),
+            board_mm[1, 3] if board_mm.shape == (4, 4) else float("nan"),
+            board_mm[2, 3] if board_mm.shape == (4, 4) else float("nan"),
+        )
         _raise_if_stopped([runtime])
         if board_mm.shape != (4, 4) or not np.all(np.isfinite(board_mm)):
             raise ValueError(f"CameraPipeline 返回的 T_camera_board 无效：shape={board_mm.shape}")
@@ -172,10 +212,10 @@ class CharucoOffsetInitializer:
         if history_path is None:
             raise RuntimeError("未配置 ChArUco offset 历史路径")
         settings = self._settings.offset
-        history = _load_history(history_path, arm_side)
+        history = _load_history(history_path)
         if history.shape[0] < settings.charuco_history_min_accepted_samples:
             return False, (
-                f"{arm_side} 臂有效历史样本不足：{history.shape[0]} < "
+                f"全局有效历史样本不足：{history.shape[0]} < "
                 f"{settings.charuco_history_min_accepted_samples}"
             )
         values = _xyzrpy_mm_deg(offset_matrix_m)
@@ -201,7 +241,8 @@ class CharucoOffsetInitializer:
         if rotation_norm > rotation_limit:
             violations.append(f"rotation_norm_deg={rotation_norm:.3f} > {rotation_limit:.3f}")
         summary = (
-            f"arm_side={arm_side} history_count={history.shape[0]} sigma={sigma:.1f} "
+            f"arm_side={arm_side} history_scope=global history_count={history.shape[0]} "
+            f"sigma={sigma:.1f} "
             f"translation_limit_mm={translation_limit:.3f} rotation_limit_deg={rotation_limit:.3f}"
         )
         return (not violations, f"{summary}; " + ("; ".join(violations) if violations else "within_normal_range"))
@@ -230,7 +271,9 @@ def _load_prior_board(path: Path) -> np.ndarray:
     return result
 
 
-def _load_history(path: Path, arm_side: str) -> np.ndarray:
+def _load_history(path: Path) -> np.ndarray:
+    """读取全部人工接受的 ChArUco offset 历史，不按机械臂侧别分组。"""
+
     if not path.is_file():
         raise FileNotFoundError(f"ChArUco offset 历史文件不存在：{path}")
     values: list[list[float]] = []
@@ -239,7 +282,7 @@ def _load_history(path: Path, arm_side: str) -> np.ndarray:
         if tuple(reader.fieldnames or ()) != CHARUCO_HISTORY_FIELDS:
             raise RuntimeError(f"ChArUco offset 历史 CSV 字段不符合约定：{path}")
         for row in reader:
-            if row["arm_side"] != arm_side or row["accepted"].strip().lower() != "true":
+            if row["accepted"].strip().lower() != "true":
                 continue
             values.append([float(row[key]) for key in CHARUCO_HISTORY_FIELDS[3:9]])
     result = np.asarray(values, dtype=np.float64)

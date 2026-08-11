@@ -5,12 +5,10 @@ from __future__ import annotations
 import math
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import Protocol, TypeVar, cast
+from typing import TypeVar
 
 from qmlinker import QMGripper, QMHead, QMLift
-from sdk.xcoresdk import xCoreSDK_python
-
-from .arm_gateway import retry_non_motion_call
+from .arm_gateway import read_arm_diagnostic, retry_non_motion_call
 from .settings import ReplayDeviceConnection, ReplayServiceSettings
 
 _ResultT = TypeVar("_ResultT")
@@ -78,13 +76,6 @@ class DeviceStatusResponse:
     lift: LiftDeviceStatus
 
 
-class _RobotInfoProtocol(Protocol):
-    """xCoreSDK robotInfo 诊断所需的最小字段。"""
-
-    type: str
-    id: str
-
-
 class DeviceStatusReader:
     """通过 xCoreSDK 与 qmlinker 原生对象读取设备状态。"""
 
@@ -127,48 +118,24 @@ class DeviceStatusReader:
     def _read_arm(self, arm_side: str, robot_ip: str, expected_type: str) -> ArmDeviceStatus:
         """连接机械臂并校验 IP 对应的控制器型号。"""
 
-        robot: xCoreSDK_python.xMateErProRobot | None = None
         robot_type: str | None = None
         robot_uid: str | None = None
         operate_mode: str | None = None
         operation_state: str | None = None
         power_state: str | None = None
         powered_on: bool | None = None
-        ec: dict[str, object] = {}
         try:
-            robot = xCoreSDK_python.xMateErProRobot(robot_ip)
-            info = cast(
-                _RobotInfoProtocol,
-                self._arm_call(robot, ec, f"{arm_side}.robotInfo", lambda: robot.robotInfo(ec)),
+            robot_type, robot_uid, operate_mode, operation_state, power_state = (
+                read_arm_diagnostic(
+                    self._settings.arm.robot_control_base_url,
+                    arm_side,
+                )
             )
-            robot_type = info.type
-            robot_uid = info.id
             if robot_type != expected_type:
                 raise RuntimeError(
                     f"机型不匹配 expected={expected_type!r} actual={robot_type!r}"
                 )
-            operate_mode_value = self._arm_call(
-                robot,
-                ec,
-                f"{arm_side}.operateMode",
-                lambda: robot.operateMode(ec),
-            )
-            operation_state_value = self._arm_call(
-                robot,
-                ec,
-                f"{arm_side}.operationState",
-                lambda: robot.operationState(ec),
-            )
-            power_state_value = self._arm_call(
-                robot,
-                ec,
-                f"{arm_side}.powerState",
-                lambda: robot.powerState(ec),
-            )
-            operate_mode = str(operate_mode_value)
-            operation_state = str(operation_state_value)
-            power_state = str(power_state_value)
-            powered_on = power_state_value == xCoreSDK_python.PowerState.on
+            powered_on = power_state == "on"
             return ArmDeviceStatus(
                 True,
                 None,
@@ -194,33 +161,6 @@ class DeviceStatusReader:
                 power_state,
                 powered_on,
             )
-        finally:
-            if robot is not None:
-                try:
-                    robot.disconnectFromRobot({})
-                except Exception:
-                    pass
-
-    def _arm_call(
-        self,
-        robot: xCoreSDK_python.xMateErProRobot,
-        ec: dict[str, object],
-        label: str,
-        operation: Callable[[], _ResultT],
-    ) -> _ResultT:
-        """读取机械臂并检查 SDK 错误上下文。"""
-
-        del robot
-        ec.clear()
-        result = retry_non_motion_call(
-            label,
-            operation,
-            self._settings.non_motion_retry_count,
-            self._settings.non_motion_retry_delay_s,
-        )
-        if ec.get("ec", 0) != 0:
-            raise RuntimeError(f"{label} SDK 错误：{ec}")
-        return result
 
     def _read_gripper(self) -> GripperDeviceStatus:
         """读取夹爪原始状态，避免第三方 GripperInfo 字段不一致。"""

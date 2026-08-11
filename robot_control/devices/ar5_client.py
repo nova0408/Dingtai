@@ -78,6 +78,9 @@ class Ar5Snapshot:
     has_elbow: bool
     "当前笛卡尔点位是否携带臂角约束。"
 
+    conf_data: tuple[int, ...]
+    "当前笛卡尔点位的控制器构型数据。"
+
 
 @dataclass(frozen=True, slots=True)
 class Ar5SoftLimitSnapshot:
@@ -290,7 +293,179 @@ class Ar5Client:
                 ),
                 elbow_deg=math.degrees(float(cartesian_pose.elbow)),
                 has_elbow=bool(cartesian_pose.hasElbow),
+                conf_data=tuple(int(value) for value in cartesian_pose.confData),
             )
+
+    def sdk_robot_info(self) -> tuple[str, str]:
+        """返回原 SDK ``robotInfo`` 的型号与 UID。"""
+
+        return self._robot_type, self._robot_uid
+
+    def sdk_set_motion_control_mode_nrt(self) -> None:
+        """一对一封装 ``setMotionControlMode(NrtCommandMode)``。"""
+
+        with self._lock:
+            self._call_none(
+                "setMotionControlMode(NrtCommandMode)",
+                lambda ec: self._robot.setMotionControlMode(
+                    xCoreSDK_python.MotionControlMode.NrtCommandMode, ec
+                ),
+            )
+
+    def sdk_set_operate_mode_automatic(self) -> None:
+        """一对一封装 ``setOperateMode(automatic)``。"""
+
+        with self._lock:
+            self._call_none(
+                "setOperateMode(automatic)",
+                lambda ec: self._robot.setOperateMode(
+                    xCoreSDK_python.OperateMode.automatic, ec
+                ),
+            )
+
+    def sdk_set_power_state(self, enabled: bool) -> None:
+        """一对一封装 ``setPowerState``，不附加模式切换。"""
+
+        with self._lock:
+            self._call_none(
+                f"setPowerState({enabled})",
+                lambda ec: self._robot.setPowerState(enabled, ec),
+            )
+
+    def sdk_set_default_conf_opt(self, enabled: bool) -> None:
+        """一对一封装 ``setDefaultConfOpt``。"""
+
+        with self._lock:
+            self._call_none(
+                f"setDefaultConfOpt({enabled})",
+                lambda ec: self._robot.setDefaultConfOpt(enabled, ec),
+            )
+
+    def sdk_set_default_speed(self, speed_mm_s: float) -> None:
+        """一对一封装 ``setDefaultSpeed``。"""
+
+        with self._lock:
+            self._call_none(
+                f"setDefaultSpeed({speed_mm_s})",
+                lambda ec: self._robot.setDefaultSpeed(speed_mm_s, ec),
+            )
+
+    def sdk_set_default_zone(self, zone_mm: float) -> None:
+        """一对一封装 ``setDefaultZone``。"""
+
+        with self._lock:
+            self._call_none(
+                f"setDefaultZone({zone_mm})",
+                lambda ec: self._robot.setDefaultZone(zone_mm, ec),
+            )
+
+    def sdk_set_toolset(self, tool_name: str, wobj_name: str) -> None:
+        """一对一封装命名 ``setToolset``。"""
+
+        with self._lock:
+            self._apply_named_toolset_locked(tool_name, wobj_name)
+
+    def sdk_operation_state(self) -> str:
+        """返回原 SDK ``operationState`` 的枚举名称。"""
+
+        with self._lock:
+            return self._call_value("operationState", self._robot.operationState).name
+
+    def sdk_operate_mode(self) -> str:
+        """返回原 SDK ``operateMode`` 的枚举名称。"""
+
+        with self._lock:
+            return self._call_value("operateMode", self._robot.operateMode).name
+
+    def sdk_power_state(self) -> str:
+        """返回原 SDK ``powerState`` 的枚举名称。"""
+
+        with self._lock:
+            return self._call_value("powerState", self._robot.powerState).name
+
+    def sdk_cart_posture(self) -> dict[str, object]:
+        """返回原 SDK ``cartPosture(endInRef)`` 的显式可序列化字段。"""
+
+        with self._lock:
+            pose = self._call_value(
+                "cartPosture(endInRef)",
+                lambda ec: self._robot.cartPosture(xCoreSDK_python.endInRef, ec),
+            )
+            return {
+                "trans_m": [float(value) for value in pose.trans],
+                "rpy_rad": [float(value) for value in pose.rpy],
+                "has_elbow": bool(pose.hasElbow),
+                "elbow_rad": float(pose.elbow),
+                "conf_data": [int(value) for value in pose.confData],
+            }
+
+    def sdk_calc_ik(
+        self,
+        *,
+        trans_m: tuple[float, ...],
+        rpy_rad: tuple[float, ...],
+        has_elbow: bool,
+        elbow_rad: float,
+        conf_data: tuple[int, ...],
+    ) -> tuple[float, ...]:
+        """一对一封装当前 toolset 下的 ``model().calcIk``，返回 rad。"""
+
+        with self._lock:
+            pose = xCoreSDK_python.CartesianPosition(list(trans_m), list(rpy_rad))
+            pose.hasElbow = has_elbow
+            pose.elbow = elbow_rad
+            pose.confData = list(conf_data)
+            toolset = self._call_value("toolset", self._robot.toolset)
+            result = self._call_value(
+                "model().calcIk",
+                lambda ec: self._robot.model().calcIk(pose, toolset, ec),
+            )
+            joints_rad = tuple(float(value) for value in result)
+            if len(joints_rad) != 7:
+                raise RuntimeError(
+                    f"calcIk 返回关节数异常: expected=7 actual={len(joints_rad)}"
+                )
+            return joints_rad
+
+    def sdk_move_reset(self) -> None:
+        """一对一封装 ``moveReset``。"""
+
+        with self._lock:
+            self._call_none("moveReset", self._robot.moveReset)
+
+    def sdk_move_append_abs_j(
+        self, targets: tuple[tuple[tuple[float, ...], float, float], ...]
+    ) -> int:
+        """一对一封装一组 ``MoveAbsJCommand`` 的 ``moveAppend``。"""
+
+        if not targets:
+            raise ValueError("moveAppend targets 不能为空")
+        commands = []
+        for joints_rad, speed_mm_s, zone_mm in targets:
+            if len(joints_rad) != 7:
+                raise ValueError(f"MoveAbsJ 关节数必须为 7，实际为 {len(joints_rad)}")
+            commands.append(
+                xCoreSDK_python.MoveAbsJCommand(list(joints_rad), speed_mm_s, zone_mm)
+            )
+        with self._lock:
+            command_id = xCoreSDK_python.PyString()
+            self._call_none(
+                f"moveAppend(MoveAbsJ,count={len(commands)})",
+                lambda ec: self._robot.moveAppend(commands, command_id, ec),
+            )
+        return len(commands)
+
+    def sdk_move_start(self) -> None:
+        """一对一封装 ``moveStart``。"""
+
+        with self._lock:
+            self._call_none("moveStart", self._robot.moveStart)
+
+    def sdk_disable_drag(self) -> None:
+        """一对一封装 ``disableDrag``。"""
+
+        with self._lock:
+            self._call_none("disableDrag", self._robot.disableDrag)
 
     def read_soft_limits(self) -> Ar5SoftLimitSnapshot:
         """读取控制器当前七个轴的软限位配置。
@@ -699,6 +874,16 @@ class Ar5Client:
                 AR5_DEFAULT_WOBJ_NAME,
                 ec,
             ),
+        )
+
+    def _apply_named_toolset_locked(self, tool_name: str, wobj_name: str) -> None:
+        """设置调用方显式给出的工具和工件坐标系。"""
+
+        if not tool_name.strip() or not wobj_name.strip():
+            raise ValueError("tool_name 与 wobj_name 不能为空")
+        self._call_control_value(
+            f"setToolset({tool_name}, {wobj_name})",
+            lambda ec: self._robot.setToolset(tool_name, wobj_name, ec),
         )
 
     def _execute_move(

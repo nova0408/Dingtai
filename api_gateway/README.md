@@ -53,6 +53,11 @@ WS   wss://<orin-ip>/api/v1/record-replay-ws
 
 `GET /api/v1/gateway/health` 只表示 Gateway 自身能够响应，并返回后端端口配置；它不会探测后端服务、相机或机器人。后端服务健康检查必须访问对应的带前缀 URL。
 
+所有 HTTP 响应带 Gateway 的 `X-Request-ID`；上游已有请求 ID 时另保留为
+`X-Upstream-Request-ID`。Gateway 自身产生的路由、CORS、会话、上游连接和未知异常
+统一返回 `{error_code, error_text}` JSON，错误文本包含同一请求 ID；上游服务已经返回的错误
+JSON 则保持原样。Gateway 日志记录请求耗时、上游非 2xx、连接异常和完整堆栈。
+
 ## 客户端使用
 
 统一入口地址是客户端的公共 base URL；各 typed client 通过服务前缀区分目标服务。底层 HTTP/WebSocket 协议、CameraPipeline CPWS1、RecordReplay 状态语义和 RobotControl 控制安全边界不变。

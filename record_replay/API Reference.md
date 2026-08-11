@@ -1,7 +1,7 @@
 # RecordReplay API Reference
 
-文档版本：`3.3.0`（2026-08-10）
-服务业务版本：`3.3.0`
+文档版本：`3.7.0`（2026-08-11）
+服务业务版本：`3.7.0`
 默认监听：`http://<orin>:6300`
 
 机器可读文件：[OpenAPI 3.1](openapi.yaml)。
@@ -19,7 +19,7 @@ RecordReplay 通过本服务内的 `camera_client.py` 调用 CameraPipeline 的 
 ## 2. 通用约定
 
 - Content-Type：`application/json; charset=utf-8`。
-- 当前服务版本：`3.3.0`，与 `record_replay/CHANGELOG.md` 一致。
+- 当前服务版本：`3.7.0`，与 `record_replay/CHANGELOG.md` 一致。
 - 根目录同步脚本支持 `-RecordReplayOnly`，只替换并重启 RecordReplay；替换前检查 RecordReplay
   为 `idle`/`waiting` 且 CameraPipeline 在 6200 端口就绪，替换后校验文件清单、SHA-256、只读
   `/status` 和版本，不发送 `/start`；`runtime_state.json` 等运行产物不纳入清单。
@@ -38,7 +38,9 @@ RecordReplay 通过本服务内的 `camera_client.py` 调用 CameraPipeline 的 
 
   `error_code` 提供稳定机器判断值，`error_text` 提供中文说明。
 - HTTP 状态码约定：`200` 表示同步请求成功，`202` 表示 `/start` 已接受并创建执行任务，
-  `400` 表示请求参数或业务状态拒绝，`404` 表示路径不存在，`500` 表示服务内部错误。
+  `400` 表示请求参数或业务状态拒绝，`404` 表示路径不存在，`405` 表示已知路径使用了错误方法，
+  `500` 表示服务内部错误。每个响应包含 `X-Request-ID`；未知异常的 `error_text` 还包含同一
+  请求 ID、异常类型和限长原因，完整堆栈写入服务日志。
 
 ## 3. API 总览
 
@@ -87,6 +89,9 @@ GET /status
 | `error_text` | string/null | 失败原因；正常为 `null` |
 | `left_csv_files` | array | 本轮 JSON 实际引用的左侧 CSV 清单 |
 | `right_csv_files` | array | 本轮 JSON 实际引用的右侧 CSV 清单 |
+
+进程在 `busy` 或已锁存 `rapid_stop` 时异常退出，重启后仍保持 `rapid_stop`。服务会为恢复后的
+状态补充 `error_code=rapid_stop` 和人工检查说明，避免只看到状态而没有原因；该恢复不会自动续跑。
 | `execution_tasks` | array | 按实际执行顺序对齐的左右臂任务 |
 | `current_task_sequence` | integer | 当前任务序号，从 `1` 开始；无任务为 `0` |
 | `current_task_active` | boolean | 当前任务是否仍在执行 |
@@ -182,14 +187,16 @@ GET /plan?old_tray_current_index=1&old_tray_put_index=4&new_tray_current_index=1
 }
 ```
 
-`speed`、`zone`、`index`、`final_speed` 和 `settle_delay` 仅供查看；要修改它们必须由人工
-编辑部署目录中的 `action_sequence.json`，然后重新读取计划。GUI 不提供直接编辑控件。
+`speed`、`zone`、`final_speed` 和 `settle_delay` 仅供查看；要修改它们必须由人工编辑部署
+目录中的 `action_sequence.json`，然后重新读取计划。`index` 是本次计划请求传入并冻结的
+结果，不写入动作 JSON。GUI 不提供直接编辑动作参数的控件。
 
 错误码约定：`invalid_request` 表示请求结构或参数类型错误，`invalid_index` 表示托盘 index
 不是正整数或查询值不合法，`invalid_plan` 表示动作 JSON、CSV 或先验校验失败，`busy` 表示
 已有执行线程，`rapid_stop` 表示必须先人工 reset，`invalid_state` 表示当前状态不允许该操作，
 `stop_failed` 表示停止设备失败，`execution_failed` 表示执行阶段失败，`not_found` 表示路径不存在，
-`internal_error` 表示服务内部错误。`error_text` 始终使用中文。
+`method_not_allowed` 表示已知路径使用了错误 HTTP 方法，`internal_error` 表示服务内部错误。
+`error_text` 始终使用中文；内部错误会附带可检索的 `request_id`，不再只返回笼统兜底文本。
 
 ## 6. GET /config
 
@@ -220,7 +227,7 @@ GET /config
 
 约束：
 
-- 动作顺序、function_name、type、speed、zone 和 index 必须编辑 `record_replay/action_sequence.json`；该文件只在 idle 到下一次 start 前读取。
+- 动作顺序、function_name、type、speed 和 zone 必须编辑 `record_replay/action_sequence.json`；该文件只在 idle 到下一次 start 前读取。四个托盘 index 只由每次 plan/start 请求传入。
 - 配置接口中的参数必须是 JSON number，boolean 会被拒绝。
 - 未知字段被拒绝。
 - 空 object 表示保存当前配置并返回完整配置。
@@ -234,8 +241,9 @@ GET /config
 服务在 `POST /start` 建立设备 runtime 前读取并校验固定文件
 `record_replay/action_sequence.json`。根节点包含 `schema_version`、
 `deployment`、`left` 和 `right` 两个有序数组；`deployment` 统一承载 offset 策略和先验
-文件入口。每项必须包含 `function_name`、`type`、`speed`、`zone`，
-两个数组都不能为空；多目标动作还必须包含正整数 `index`，普通动作不得携带 `index`。
+文件入口。每项必须包含 `function_name`、`type`、`speed`、`zone`，两个数组都不能为空；
+任何动作项都不得携带 `index`。四个托盘位置 index 由每次 plan/start 请求传入，并分别绑定
+`get_tray`、`put_tray`、`get_new_tray`、`put_new_tray`。
 capture 另外必须包含 `final_speed` 和 `settle_delay`，非 capture 不得携带这两个字段；
 服务 speed/final_speed 必须在 `[5, 4000]` mm/s 内（SDK 原始边界为 `(0, 4000]`），zone 必须在 `[0, 200]` mm 内；
 fast 的 zone 必须大于 `0`，precise 的 zone 必须为 `0`。fast 的每个 arm 点使用动作项 zone，capture 的前置
@@ -387,6 +395,11 @@ print(client.get_config())
 
 | 文档版本 | 日期 | 内容 |
 | --- | --- | --- |
+| `3.6.1` | 2026-08-11 | 增加原生致命信号线程栈、设备调用边界和 WebSocket 生命周期日志；恢复状态补充错误说明 |
+| `3.6.0` | 2026-08-11 | 错误响应增加请求追踪和具体异常摘要，补充结构化 405 与关键日志约定 |
+| `3.5.0` | 2026-08-11 | ChArUco 历史改为不区分左右臂的全局有效样本池 |
+| `3.4.0` | 2026-08-11 | 动作 JSON 移除 index；四个托盘位置只由每次 plan/start 请求传入 |
+| `3.3.0` | 2026-08-10 | HTTP 非 2xx 响应统一为独立错误对象 |
 | `3.2.0` | 2026-08-10 | 增加稳定 `error_code`，并统一中文 `error_text` |
 | `3.1.0` | 2026-08-10 | 增加旧/新托盘当前位置与放置位置四个 index 参数 |
 | `3.0.0` | 2026-08-10 | 改为单次 start；增加 AGV 目标参数、完成次数和 WebSocket 结束事件 |

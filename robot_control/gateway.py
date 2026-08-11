@@ -460,6 +460,118 @@ class RobotControlGateway:
 
         self._ar5_client(side).stop()
 
+    # region RecordReplay 使用的 xCoreSDK 显式封装
+
+    def ar5_sdk_robot_info(self, side: str) -> dict[str, JsonValue]:
+        """封装 ``robotInfo`` 的稳定字段。"""
+
+        robot_type, robot_uid = self._ar5_client(side).sdk_robot_info()
+        return {"robot_type": robot_type, "robot_uid": robot_uid}
+
+    def ar5_sdk_set_motion_control_mode_nrt(self, side: str) -> None:
+        """封装 ``setMotionControlMode(NrtCommandMode)``。"""
+
+        self._ar5_client(side).sdk_set_motion_control_mode_nrt()
+
+    def ar5_sdk_set_operate_mode_automatic(self, side: str) -> None:
+        """封装 ``setOperateMode(automatic)``。"""
+
+        self._ar5_client(side).sdk_set_operate_mode_automatic()
+
+    def ar5_sdk_set_power_state(self, side: str, enabled: bool) -> None:
+        """封装 ``setPowerState``。"""
+
+        self._ar5_client(side).sdk_set_power_state(enabled)
+
+    def ar5_sdk_set_default_conf_opt(self, side: str, enabled: bool) -> None:
+        """封装 ``setDefaultConfOpt``。"""
+
+        self._ar5_client(side).sdk_set_default_conf_opt(enabled)
+
+    def ar5_sdk_set_default_speed(self, side: str, speed_mm_s: float) -> None:
+        """封装 ``setDefaultSpeed``。"""
+
+        self._ar5_client(side).sdk_set_default_speed(speed_mm_s)
+
+    def ar5_sdk_set_default_zone(self, side: str, zone_mm: float) -> None:
+        """封装 ``setDefaultZone``。"""
+
+        self._ar5_client(side).sdk_set_default_zone(zone_mm)
+
+    def ar5_sdk_set_toolset(self, side: str, tool_name: str, wobj_name: str) -> None:
+        """封装命名 ``setToolset``。"""
+
+        self._ar5_client(side).sdk_set_toolset(tool_name, wobj_name)
+
+    def ar5_sdk_operation_state(self, side: str) -> dict[str, JsonValue]:
+        """封装 ``operationState``。"""
+
+        return {"state": self._ar5_client(side).sdk_operation_state()}
+
+    def ar5_sdk_operate_mode(self, side: str) -> dict[str, JsonValue]:
+        """封装 ``operateMode``。"""
+
+        return {"mode": self._ar5_client(side).sdk_operate_mode()}
+
+    def ar5_sdk_power_state(self, side: str) -> dict[str, JsonValue]:
+        """封装 ``powerState``。"""
+
+        return {"state": self._ar5_client(side).sdk_power_state()}
+
+    def ar5_sdk_cart_posture(self, side: str) -> dict[str, JsonValue]:
+        """封装 ``cartPosture(endInRef)``。"""
+
+        payload = self._ar5_client(side).sdk_cart_posture()
+        return {key: cast(JsonValue, value) for key, value in payload.items()}
+
+    def ar5_sdk_calc_ik(
+        self,
+        side: str,
+        *,
+        trans_m: tuple[float, ...],
+        rpy_rad: tuple[float, ...],
+        has_elbow: bool,
+        elbow_rad: float,
+        conf_data: tuple[int, ...],
+    ) -> dict[str, JsonValue]:
+        """封装当前 toolset 下的 ``model().calcIk``。"""
+
+        joints_rad = self._ar5_client(side).sdk_calc_ik(
+            trans_m=trans_m,
+            rpy_rad=rpy_rad,
+            has_elbow=has_elbow,
+            elbow_rad=elbow_rad,
+            conf_data=conf_data,
+        )
+        return {"joints_rad": list(joints_rad)}
+
+    def ar5_sdk_move_reset(self, side: str) -> None:
+        """封装 ``moveReset``。"""
+
+        self._ar5_client(side).sdk_move_reset()
+
+    def ar5_sdk_move_append_abs_j(
+        self,
+        side: str,
+        targets: tuple[tuple[tuple[float, ...], float, float], ...],
+    ) -> dict[str, JsonValue]:
+        """封装批量 ``moveAppend(MoveAbsJ)``。"""
+
+        count = self._ar5_client(side).sdk_move_append_abs_j(targets)
+        return {"count": count}
+
+    def ar5_sdk_move_start(self, side: str) -> None:
+        """封装 ``moveStart``。"""
+
+        self._ar5_client(side).sdk_move_start()
+
+    def ar5_sdk_disable_drag(self, side: str) -> None:
+        """封装 ``disableDrag``。"""
+
+        self._ar5_client(side).sdk_disable_drag()
+
+    # endregion
+
     # endregion
 
     # region 客户端生命周期

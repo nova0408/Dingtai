@@ -58,12 +58,12 @@ client = RobotControlClient(
 GET /api/v1/health
 GET /api/v1/status
 GET /api/v1/devices
-GET /api/v1/qmlinker/agv/targets
-GET /api/v1/qmlinker/agv/base-state
-GET /api/v1/qmlinker/agv/base-mode
-GET /api/v1/qmlinker/agv/base-operation-state
-GET /api/v1/qmlinker/agv/base-task-process
-GET /api/v1/qmlinker/agv/base-battery
+GET /api/v1/agv/targets
+GET /api/v1/agv/base-state
+GET /api/v1/agv/base-mode
+GET /api/v1/agv/base-operation-state
+GET /api/v1/agv/base-task-process
+GET /api/v1/agv/base-battery
 GET /api/v1/ar5/{side}/soft-limits
 GET /api/v1/status/stream?interval_s=0.2
 ```
@@ -106,14 +106,14 @@ for snapshot in client.subscribe_status(interval_s=0.2):
 
 ## 控制接口
 
-控制接口统一位于 `/api/v1/qmlinker/...` 和 `/api/v1/ar5/...`，使用 POST。qmlinker 不再提供左右臂
+控制接口按设备直接位于 `/api/v1/...`，使用 POST。HTTP 契约不暴露内部 qmlinker 实现层；左右臂
 控制接口；新增的夹爪、右手、
 AGV、AR5 急停恢复、拖动和 Jog 路径及字段见 `openapi.yaml` 与 `API Reference.md`。
 
 腰部不提供任何控制接口；支持该能力时，`qmlinker_waist` 报告 `enabled` 和 `pitch_deg`。
 不支持时完全省略 `qmlinker_waist` 设备，因为设计上将取消腰部这个自由度。AGV
 `translate` 是持续实时平移请求，必须由现场人员显式调用
-`/api/v1/qmlinker/agv/stop` 停止；该停止语义是 qmlinker 的软件停止，不等同于硬件急停。
+`/api/v1/agv/stop` 停止；该停止语义是软件停止，不等同于硬件急停。
 
 这些接口可能使机械臂、AGV、夹爪、头部或升降机构动作。禁止 Codex、CI、hook 或自动化脚本发送控制 POST；只能由现场人员手动发起和验证。
 

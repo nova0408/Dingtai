@@ -29,6 +29,11 @@ class ReplayDeviceConnection:
 class ReplayArmSettings:
     """机械臂连接、NRT 准备与 MoveAbsJ 时序参数。"""
 
+    robot_control_base_url: str = "http://127.0.0.1:6500"
+    "RobotControl 本机服务地址；RecordReplay 不再直连 xCoreSDK。"
+    http_timeout_s: float = 10.0
+    "单次 RobotControl 机械臂 HTTP 请求超时，单位 s。"
+
     tool_name: str = "g_tool_0"
     "回放固定使用的工具坐标系名称。"
     wobj_name: str = "g_wobj_0"
@@ -136,7 +141,7 @@ class ReplayOffsetSettings:
     charuco_safety_retry_delay_s: float = 1.0
     "ChArUco offset 安全检查失败后的重新检测间隔，单位 s。"
     charuco_history_min_accepted_samples: int = 6
-    "允许使用 ChArUco offset 的同侧有效历史最少条数。"
+    "允许使用 ChArUco offset 的全局有效历史最少条数。"
     charuco_sigma_limit: float = 4.0
     "ChArUco 历史分量与模长统计的标准差倍数。"
     charuco_max_translation_norm_mm: float = 60.0

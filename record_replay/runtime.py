@@ -6,6 +6,8 @@ import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from loguru import logger
+
 from .arm_gateway import (
     ConnectedArm,
     close_arm,
@@ -72,15 +74,27 @@ def create_runtime(
     """创建一侧机械臂及 hand/body runtime，不执行运动准备。"""
 
     robot_ip = device_connection.left_arm_ip if arm_side == "left" else device_connection.right_arm_ip
+    logger.info("runtime 创建：开始连接机械臂 arm_side={} ip={}", arm_side, robot_ip)
     connected_arm = connect_arm(arm_side, robot_ip, settings, stop_event)
+    logger.info("runtime 创建：机械臂连接完成 arm_side={} ip={}", arm_side, robot_ip)
     try:
+        logger.info(
+            "runtime 创建：开始创建 qmlinker 附属设备 arm_side={} host={} body_port={} "
+            "gripper_port={}",
+            arm_side,
+            device_connection.qmlinker_host,
+            device_connection.qmlinker_port,
+            device_connection.gripper_port,
+        )
         hand_body = create_hand_body_runtime(
             arm_side,
             device_connection.qmlinker_host,
             device_connection.qmlinker_port,
             device_connection.gripper_port,
         )
+        logger.info("runtime 创建：qmlinker 附属设备创建完成 arm_side={}", arm_side)
     except Exception:
+        logger.exception("runtime 创建失败，准备关闭已连接机械臂 arm_side={}", arm_side)
         close_arm(connected_arm)
         raise
     return ReplayRuntime(
@@ -95,12 +109,16 @@ def prepare_runtime(runtime: ReplayRuntime) -> None:
     """准备一侧机械臂回放所需的 NRT 与升降使能状态。"""
 
     _raise_if_stopped(runtime)
+    arm_side = runtime.connected_arm.arm_side
+    logger.info("runtime 准备开始 arm_side={}", arm_side)
     if runtime.hand_body.gripper is not None:
         from .hand_actions import prepare_gripper_before_replay
 
+        logger.info("runtime 准备：左侧夹爪准备开始 arm_side={}", arm_side)
         prepare_gripper_before_replay(runtime)
+        logger.info("runtime 准备：左侧夹爪准备完成 arm_side={}", arm_side)
     _raise_if_stopped(runtime)
-    arm_side = runtime.connected_arm.arm_side
+    logger.info("runtime 准备：机械臂 NRT 准备开始 arm_side={}", arm_side)
     retry_non_motion_call(
         f"ensure_nrt_motion_ready({arm_side})",
         lambda: prepare_nrt_motion(
@@ -112,7 +130,9 @@ def prepare_runtime(runtime: ReplayRuntime) -> None:
         runtime.settings.non_motion_retry_delay_s,
         runtime.stop_event,
     )
+    logger.info("runtime 准备：机械臂 NRT 准备完成 arm_side={}", arm_side)
     _raise_if_stopped(runtime)
+    logger.info("runtime 准备：升降使能开始 arm_side={}", arm_side)
     retry_non_motion_call(
         f"lift.set_enable({arm_side})",
         lambda: runtime.hand_body.lift.set_enable(True),
@@ -120,7 +140,9 @@ def prepare_runtime(runtime: ReplayRuntime) -> None:
         runtime.settings.non_motion_retry_delay_s,
         runtime.stop_event,
     )
+    logger.info("runtime 准备：升降使能完成 arm_side={}", arm_side)
     _raise_if_stopped(runtime)
+    logger.info("runtime 准备完成 arm_side={}", arm_side)
 
 
 def _raise_if_stopped(runtime: ReplayRuntime) -> None:
@@ -135,8 +157,10 @@ def close_runtime(runtime: ReplayRuntime | None) -> None:
 
     if runtime is None:
         return
+    logger.info("runtime 释放开始 arm_side={}", runtime.connected_arm.arm_side)
     close_hand_body_runtime(runtime.hand_body)
     close_arm(runtime.connected_arm)
+    logger.info("runtime 释放完成 arm_side={}", runtime.connected_arm.arm_side)
 
 
 # endregion

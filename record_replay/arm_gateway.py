@@ -1,54 +1,45 @@
-"""双臂 xCoreSDK 连接与非实时运动准备。"""
+"""通过 RobotControl HTTP 服务访问双臂 xCoreSDK 能力。"""
 
 from __future__ import annotations
 
+import json
 import time
-from collections.abc import Callable
 import threading
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Protocol, TypeVar, cast
+from typing import TypeVar
+from urllib.error import HTTPError, URLError
+from urllib.request import ProxyHandler, Request, build_opener
 
 from loguru import logger
-
-from sdk.xcoresdk import xCoreSDK_python
 
 from .settings import ReplayArmSettings, ReplayServiceSettings
 
 _ResultT = TypeVar("_ResultT")
+_DIRECT_OPENER = build_opener(ProxyHandler({}))
 
 
-# region 数据结构
 @dataclass(slots=True)
 class ConnectedArm:
-    """一台已连接机械臂的 SDK 运行资源。"""
+    """RecordReplay 持有的一侧 RobotControl 逻辑连接。"""
 
     arm_side: str
-    "机械臂侧别，left 或 right。"
     robot_ip: str
-    "控制器 IPv4 地址。"
-    robot: xCoreSDK_python.xMateErProRobot
-    "xCoreSDK 机器人实例。"
+    base_url: str
     robot_type: str
-    "控制器上报的型号。"
     robot_uid: str
-    "控制器上报的唯一标识。"
-    ec: dict[str, object]
-    "SDK 调用共用错误上下文。"
     command_lock: threading.Lock = field(default_factory=threading.Lock)
-    "串行化该机械臂的准备、队列提交和 stop 调用。"
 
 
-# endregion
+@dataclass(frozen=True, slots=True)
+class CartesianPose:
+    """xCoreSDK CartesianPosition 的显式 HTTP 数据。"""
 
-
-class _RobotInfoProtocol(Protocol):
-    """本业务实际读取的 robotInfo 最小字段。"""
-
-    type: str
-    id: str
-
-
-# region 基础调用
+    trans_m: tuple[float, ...]
+    rpy_rad: tuple[float, ...]
+    has_elbow: bool
+    elbow_rad: float
+    conf_data: tuple[int, ...]
 
 
 def retry_non_motion_call(
@@ -58,7 +49,7 @@ def retry_non_motion_call(
     retry_delay_s: float,
     stop_event: threading.Event | None = None,
 ) -> _ResultT:
-    """按旧回放策略重试非直接运动调用。"""
+    """重试不直接提交运动的 RobotControl HTTP 调用。"""
 
     last_error: BaseException | None = None
     for attempt in range(1, retry_count + 1):
@@ -93,32 +84,35 @@ def connect_arm(
     settings: ReplayServiceSettings,
     stop_event: threading.Event | None = None,
 ) -> ConnectedArm:
-    """连接一台机械臂并设置固定 tool/wobj。"""
+    """通过 RobotControl 读取一侧机械臂身份并应用固定 tool/wobj。"""
 
     if arm_side not in {"left", "right"}:
         raise ValueError(f"不支持的机械臂侧别：{arm_side}")
-    ec: dict[str, object] = {}
-    robot = xCoreSDK_python.xMateErProRobot(robot_ip)
-    info = cast(
-        _RobotInfoProtocol,
-        retry_non_motion_call(
-            f"robotInfo({robot_ip})",
-            lambda: robot.robotInfo(ec),
-            settings.non_motion_retry_count,
-            settings.non_motion_retry_delay_s,
-            stop_event,
-        ),
+    base_url = settings.arm.robot_control_base_url.rstrip("/")
+    payload = retry_non_motion_call(
+        f"RobotControl robotInfo({arm_side})",
+        lambda: _request(base_url, arm_side, "robot-info", timeout_s=settings.arm.http_timeout_s),
+        settings.non_motion_retry_count,
+        settings.non_motion_retry_delay_s,
+        stop_event,
     )
-    if ec.get("ec", 0) != 0:
-        raise RuntimeError(f"读取机械臂机器人信息失败：arm_side={arm_side}, ip={robot_ip}")
-    connected_arm = ConnectedArm(arm_side, robot_ip, robot, info.type, info.id, ec)
-    _raise_if_stopped(stop_event)
-    apply_named_toolset(connected_arm, settings, stop_event)
-    detected_arm_side = detect_arm_side(info.type, settings.arm)
+    robot_type = _string(payload, "robot_type")
+    robot_uid = _string(payload, "robot_uid")
+    detected_arm_side = detect_arm_side(robot_type, settings.arm)
     if detected_arm_side != arm_side:
-        raise RuntimeError(f"连接到的机械臂侧别不匹配：expected={arm_side}, ip={robot_ip}, actual={detected_arm_side}")
-    _raise_if_stopped(stop_event)
-    return ConnectedArm(detected_arm_side, robot_ip, robot, info.type, info.id, ec)
+        raise RuntimeError(
+            f"连接到的机械臂侧别不匹配：expected={arm_side}, ip={robot_ip}, actual={detected_arm_side}"
+        )
+    arm = ConnectedArm(arm_side, robot_ip, base_url, robot_type, robot_uid)
+    apply_named_toolset(arm, settings, stop_event)
+    logger.info(
+        "RobotControl 机械臂连接与身份校验完成 arm_side={} ip={} robot_type={} robot_uid={}",
+        arm_side,
+        robot_ip,
+        robot_type,
+        robot_uid,
+    )
+    return arm
 
 
 def prepare_nrt_motion(
@@ -126,74 +120,51 @@ def prepare_nrt_motion(
     settings: ReplayServiceSettings,
     stop_event: threading.Event | None = None,
 ) -> None:
-    """按旧自动回放的控制器顺序进入可执行 NRT 状态。"""
+    """保持原回放顺序，通过显式 HTTP 接口准备 NRT 运动。"""
 
+    arm_settings = settings.arm
     with connected_arm.command_lock:
-        robot = connected_arm.robot
-        ec = connected_arm.ec
-        arm_settings = settings.arm
-        _raise_if_stopped(stop_event)
-        robot.stop(ec)
-        _raise_if_sdk_error(connected_arm, "stop")
-        _raise_if_stopped(stop_event)
-        robot.setMotionControlMode(xCoreSDK_python.MotionControlMode.NrtCommandMode, ec)
-        _raise_if_sdk_error(connected_arm, "setMotionControlMode(NrtCommandMode)")
-        _raise_if_stopped(stop_event)
-        robot.setOperateMode(xCoreSDK_python.OperateMode.automatic, ec)
-        _raise_if_sdk_error(connected_arm, "setOperateMode(automatic)")
-        _raise_if_stopped(stop_event)
-        robot.setPowerState(True, ec)
-        _raise_if_sdk_error(connected_arm, "setPowerState(True)")
-        _wait_power_on(
-            robot,
-            ec,
-            arm_settings.power_on_timeout_s,
-            arm_settings.power_on_poll_interval_s,
-            stop_event,
-        )
-        _raise_if_stopped(stop_event)
-        robot.setDefaultConfOpt(False, ec)
-        _raise_if_sdk_error(connected_arm, "setDefaultConfOpt(False)")
-        _raise_if_stopped(stop_event)
+        _post(connected_arm, "stop")
+        _post(connected_arm, "set-motion-control-mode")
+        _post(connected_arm, "set-operate-mode")
+        _post(connected_arm, "set-power-state", {"enabled": True})
+        _wait_power_on(connected_arm, arm_settings, stop_event)
+        _post(connected_arm, "set-default-conf-opt", {"enabled": False})
         apply_named_toolset(connected_arm, settings, stop_event)
-        _raise_if_stopped(stop_event)
-        robot.setDefaultSpeed(arm_settings.default_cartesian_speed_mm_s, ec)
-        _raise_if_sdk_error(connected_arm, f"setDefaultSpeed({arm_settings.default_cartesian_speed_mm_s})")
-        _raise_if_stopped(stop_event)
-        robot.setDefaultZone(arm_settings.default_cartesian_zone_mm, ec)
-        _raise_if_sdk_error(connected_arm, f"setDefaultZone({arm_settings.default_cartesian_zone_mm})")
-        if robot.powerState(ec) != xCoreSDK_python.PowerState.on:
+        _post(
+            connected_arm,
+            "set-default-speed",
+            {"speed_mm_s": arm_settings.default_cartesian_speed_mm_s},
+        )
+        _post(
+            connected_arm,
+            "set-default-zone",
+            {"zone_mm": arm_settings.default_cartesian_zone_mm},
+        )
+        if read_power_state(connected_arm) != "on":
             raise RuntimeError(f"{connected_arm.arm_side} 臂 NRT 准备完成后电机未处于 on 状态")
-        _raise_if_sdk_error(connected_arm, "powerState")
 
 
 def close_arm(connected_arm: ConnectedArm) -> None:
-    """尽力停止、下电并断开机械臂。"""
+    """尽力停止、退出拖动并下电；SDK 连接继续由 RobotControl 管理。"""
 
     with connected_arm.command_lock:
-        robot = connected_arm.robot
-        ec = connected_arm.ec
-        for operation in (
-            robot.stop,
-            robot.disableDrag,
-            lambda context: robot.setPowerState(False, context),
-            robot.disconnectFromRobot,
+        for operation, body in (
+            ("stop", None),
+            ("disable-drag", None),
+            ("set-power-state", {"enabled": False}),
         ):
             try:
-                operation(ec)
+                _post(connected_arm, operation, body)
             except Exception as error:
-                logger.warning("关闭 {} 臂时发生异常：{}", connected_arm.arm_side, error)
+                logger.warning("关闭 {} 臂时发生异常 operation={} error={}", connected_arm.arm_side, operation, error)
 
 
 def stop_arm(connected_arm: ConnectedArm) -> None:
-    """停止一侧 AR5 当前规划运动，不执行下电或复位。"""
+    """停止一侧 AR5 当前规划运动。"""
 
     with connected_arm.command_lock:
-        connected_arm.robot.stop(connected_arm.ec)
-        if connected_arm.ec.get("ec", 0) != 0:
-            raise RuntimeError(
-                f"{connected_arm.arm_side} 臂 robot.stop 失败：{connected_arm.ec}"
-            )
+        _post(connected_arm, "stop")
 
 
 def apply_named_toolset(
@@ -201,67 +172,184 @@ def apply_named_toolset(
     settings: ReplayServiceSettings,
     stop_event: threading.Event | None = None,
 ) -> None:
-    """以旧重试语义应用当前回放固定的 tool/wobj 坐标系。"""
+    """应用当前回放固定的 tool/wobj。"""
 
-    arm_settings = settings.arm
-    result = retry_non_motion_call(
-        f"setToolset({connected_arm.robot_ip})",
-        lambda: connected_arm.robot.setToolset(arm_settings.tool_name, arm_settings.wobj_name, connected_arm.ec),
-        settings.non_motion_retry_count,
-        settings.non_motion_retry_delay_s,
-        stop_event,
+    _raise_if_stopped(stop_event)
+    _post(
+        connected_arm,
+        "set-toolset",
+        {"tool_name": settings.arm.tool_name, "wobj_name": settings.arm.wobj_name},
     )
-    if result is None or connected_arm.ec.get("ec", 0) != 0:
-        raise RuntimeError(
-            f"设置默认工具/工件失败：ip={connected_arm.robot_ip}, "
-            f"tool={arm_settings.tool_name}, wobj={arm_settings.wobj_name}"
-        )
 
 
-def _wait_power_on(
-    robot: xCoreSDK_python.xMateErProRobot,
-    ec: dict[str, object],
-    timeout_s: float,
-    poll_interval_s: float,
-    stop_event: threading.Event | None = None,
+def read_cart_posture(connected_arm: ConnectedArm) -> CartesianPose:
+    payload = _request(connected_arm.base_url, connected_arm.arm_side, "cart-posture")
+    return CartesianPose(
+        _float_tuple(payload, "trans_m", 3),
+        _float_tuple(payload, "rpy_rad", 3),
+        _bool(payload, "has_elbow"),
+        _float(payload, "elbow_rad"),
+        _int_tuple(payload, "conf_data"),
+    )
+
+
+def calculate_ik(connected_arm: ConnectedArm, pose: CartesianPose) -> tuple[float, ...]:
+    payload = _post(
+        connected_arm,
+        "calc-ik",
+        {
+            "trans_m": pose.trans_m,
+            "rpy_rad": pose.rpy_rad,
+            "has_elbow": pose.has_elbow,
+            "elbow_rad": pose.elbow_rad,
+            "conf_data": pose.conf_data,
+        },
+    )
+    return _float_tuple(payload, "joints_rad", 7)
+
+
+def move_reset(connected_arm: ConnectedArm) -> None:
+    _post(connected_arm, "move-reset")
+
+
+def move_append_abs_j(
+    connected_arm: ConnectedArm,
+    targets: Sequence[tuple[Sequence[float], float, float]],
 ) -> None:
-    """等待 SDK 的电源状态变为 on，超时即按旧准备语义失败。"""
+    _post(
+        connected_arm,
+        "move-append",
+        {
+            "targets": [
+                {"joints_rad": list(joints), "speed_mm_s": speed, "zone_mm": zone}
+                for joints, speed, zone in targets
+            ]
+        },
+    )
 
-    deadline = time.monotonic() + timeout_s
-    while time.monotonic() < deadline:
-        _raise_if_stopped(stop_event)
-        if robot.powerState(ec) == xCoreSDK_python.PowerState.on:
-            return
-        if ec.get("ec", 0) != 0:
-            raise RuntimeError(f"读取机械臂电源状态失败：{ec}")
-        if stop_event is not None:
-            stop_event.wait(timeout=poll_interval_s)
-        else:
-            time.sleep(poll_interval_s)
-    raise RuntimeError("机械臂未在超时内确认上电")
+
+def move_start(connected_arm: ConnectedArm) -> None:
+    _post(connected_arm, "move-start")
+
+
+def read_operation_state(connected_arm: ConnectedArm) -> str:
+    return _string(_request(connected_arm.base_url, connected_arm.arm_side, "operation-state"), "state")
+
+
+def read_operate_mode(connected_arm: ConnectedArm) -> str:
+    return _string(_request(connected_arm.base_url, connected_arm.arm_side, "operate-mode"), "mode")
+
+
+def read_power_state(connected_arm: ConnectedArm) -> str:
+    return _string(_request(connected_arm.base_url, connected_arm.arm_side, "power-state"), "state")
+
+
+def read_arm_diagnostic(
+    base_url: str, arm_side: str
+) -> tuple[str, str, str, str, str]:
+    """只读获取机械臂身份、工作模式、运行状态和电机状态。"""
+
+    identity = _request(base_url.rstrip("/"), arm_side, "robot-info")
+    operation = _request(base_url.rstrip("/"), arm_side, "operation-state")
+    operate = _request(base_url.rstrip("/"), arm_side, "operate-mode")
+    power = _request(base_url.rstrip("/"), arm_side, "power-state")
+    return (
+        _string(identity, "robot_type"),
+        _string(identity, "robot_uid"),
+        _string(operate, "mode"),
+        _string(operation, "state"),
+        _string(power, "state"),
+    )
 
 
 def detect_arm_side(robot_type: str, settings: ReplayArmSettings) -> str:
-    """按控制器上报型号识别左右臂，拒绝未知机型。"""
-
-    for arm_side, expected_robot_type in (("left", settings.left_arm_type), ("right", settings.right_arm_type)):
-        if robot_type == expected_robot_type:
+    for arm_side, expected in (("left", settings.left_arm_type), ("right", settings.right_arm_type)):
+        if robot_type == expected:
             return arm_side
     raise ValueError(f"未识别的机器人型号：{robot_type}")
 
 
-def _raise_if_sdk_error(connected_arm: ConnectedArm, operation: str) -> None:
-    """在每一条 NRT 准备命令后立即保留旧流程的失败边界。"""
+def _wait_power_on(
+    arm: ConnectedArm, settings: ReplayArmSettings, stop_event: threading.Event | None
+) -> None:
+    deadline = time.monotonic() + settings.power_on_timeout_s
+    while time.monotonic() < deadline:
+        _raise_if_stopped(stop_event)
+        if read_power_state(arm) == "on":
+            return
+        if stop_event is not None:
+            stop_event.wait(settings.power_on_poll_interval_s)
+        else:
+            time.sleep(settings.power_on_poll_interval_s)
+    raise RuntimeError("机械臂未在超时内确认上电")
 
-    if connected_arm.ec.get("ec", 0) != 0:
-        raise RuntimeError(f"{connected_arm.arm_side} 臂 {operation} 失败：{connected_arm.ec}")
+
+def _post(arm: ConnectedArm, operation: str, body: Mapping[str, object] | None = None) -> dict[str, object]:
+    return _request(arm.base_url, arm.arm_side, operation, body=body, method="POST")
+
+
+def _request(
+    base_url: str,
+    side: str,
+    operation: str,
+    *,
+    body: Mapping[str, object] | None = None,
+    method: str = "GET",
+    timeout_s: float = 10.0,
+) -> dict[str, object]:
+    url = f"{base_url}/api/v1/ar5/{side}/{operation}"
+    data = None if body is None else json.dumps(dict(body), ensure_ascii=False).encode("utf-8")
+    request = Request(url, data=data, method=method, headers={"Content-Type": "application/json"})
+    try:
+        with _DIRECT_OPENER.open(request, timeout=timeout_s) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except HTTPError as error:
+        detail = error.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"RobotControl HTTP {error.code} operation={operation} detail={detail}") from error
+    except (URLError, TimeoutError, OSError) as error:
+        raise RuntimeError(f"RobotControl 请求失败 operation={operation} url={url}: {error}") from error
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"RobotControl 响应不是 JSON object operation={operation}")
+    return {str(key): value for key, value in payload.items()}
+
+
+def _string(payload: Mapping[str, object], name: str) -> str:
+    value = payload.get(name)
+    if not isinstance(value, str) or not value:
+        raise RuntimeError(f"RobotControl 响应字段 {name} 不是非空字符串：{value!r}")
+    return value
+
+
+def _float(payload: Mapping[str, object], name: str) -> float:
+    value = payload.get(name)
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        raise RuntimeError(f"RobotControl 响应字段 {name} 不是数值：{value!r}")
+    return float(value)
+
+
+def _bool(payload: Mapping[str, object], name: str) -> bool:
+    value = payload.get(name)
+    if not isinstance(value, bool):
+        raise RuntimeError(f"RobotControl 响应字段 {name} 不是 bool：{value!r}")
+    return value
+
+
+def _float_tuple(payload: Mapping[str, object], name: str, length: int) -> tuple[float, ...]:
+    value = payload.get(name)
+    if not isinstance(value, list) or len(value) != length:
+        raise RuntimeError(f"RobotControl 响应字段 {name} 长度不是 {length}：{value!r}")
+    return tuple(_float({name: item}, name) for item in value)
+
+
+def _int_tuple(payload: Mapping[str, object], name: str) -> tuple[int, ...]:
+    value = payload.get(name)
+    if not isinstance(value, list):
+        raise RuntimeError(f"RobotControl 响应字段 {name} 不是数组：{value!r}")
+    if any(isinstance(item, bool) or not isinstance(item, int) for item in value):
+        raise RuntimeError(f"RobotControl 响应字段 {name} 包含非整数：{value!r}")
+    return tuple(value)
 
 
 def _raise_if_stopped(stop_event: threading.Event | None) -> None:
-    """阻止停止锁存后的连接、准备和重试继续发送普通指令。"""
-
     if stop_event is not None and stop_event.is_set():
         raise RuntimeError("检测到停止请求，禁止继续准备机械臂")
-
-
-# endregion

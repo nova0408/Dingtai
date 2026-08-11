@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: RecordReplay HTTP API
-  version: 3.3.0
+  version: 3.7.0
   description: >-
     双臂记录回放服务 HTTP API。POST /start 可能控制真实设备，必须由现场人员确认安全后调用。
     状态 WebSocket 通过 API Gateway 的 /api/v1/record-replay-ws 提供 WSS 入口。
@@ -43,7 +43,7 @@ paths:
     post:
       operationId: update_config
       summary: 更新运行参数
-      description: 回放线程运行期间拒绝修改；动作顺序、speed、zone 和 index 由 idle 时读取的 action_sequence.json 承载。
+      description: 回放线程运行期间拒绝修改；动作顺序、speed 和 zone 由 idle 时读取的 action_sequence.json 承载，托盘 index 由每次 plan/start 请求传入。
       requestBody:
         required: true
         content:
@@ -242,6 +242,7 @@ components:
         - stop_requested
         - execution_failed
         - not_found
+        - method_not_allowed
         - internal_error
         - null
     RecordReplayErrorResponse:
@@ -262,10 +263,11 @@ components:
             - stop_requested
             - execution_failed
             - not_found
+            - method_not_allowed
             - internal_error
         error_text:
           type: string
-          description: 中文错误说明
+          description: 中文错误说明；未知异常包含可与服务日志关联的 request_id、异常类型和限长原因
     CsvFileStatus:
       type: object
       required: [name, row_count]
