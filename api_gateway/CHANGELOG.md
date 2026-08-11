@@ -1,6 +1,12 @@
 # API Gateway 版本日志
 
-当前版本：`0.5.0`
+当前版本：`0.5.1`
+
+## 0.5.1 - 2026-08-11
+
+### 修复
+
+- Gateway 健康响应补充标准 `service_version` 字段，同时保留 `gateway_version` 兼容旧客户端。
 
 ## Unreleased
 

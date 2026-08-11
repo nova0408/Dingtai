@@ -47,8 +47,8 @@ def load_replay_rows(csv_path: Path) -> list[ReplayRow]:
                 arm_joint_rad = tuple(math.radians(value) for value in joint_values)
                 if pose_text.lower() != "nan":
                     arm_pose = parse_pose_values(pose_text)
-            elif action_type == "m11":
-                joint_values = tuple(parse_joint_values(joints_text, expected_len=11))
+            elif action_type == "m6":
+                joint_values = tuple(parse_joint_values(joints_text, expected_len=6))
             elif action_type in ("gripper", "lift"):
                 pose_value = float(pose_text)
             rows.append(

@@ -43,8 +43,10 @@ Orin 本机访问示例：CameraPipeline HTTP `http://127.0.0.1:6400`、CameraPi
 ```text
 GET  https://<orin-ip>/api/v1/camera/health
 GET  https://<orin-ip>/api/v1/camera/cameras/head_camera/status
+GET  https://<orin-ip>/api/v1/record-replay/health
 GET  https://<orin-ip>/api/v1/record-replay/status
 GET  https://<orin-ip>/api/v1/robot-control/health
+GET  https://<orin-ip>/api/v1/calibration/health
 GET  https://<orin-ip>/api/v1/calibration/status
 SSE  https://<orin-ip>/api/v1/robot-control/status/stream?interval_s=0.2
 WS   wss://<orin-ip>/api/v1/camera-ws/cameras/head_camera/color

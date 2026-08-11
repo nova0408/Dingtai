@@ -40,6 +40,9 @@ class CalibrationServer:
 
             def do_GET(self) -> None:
                 path = urlsplit(self.path).path
+                if path == "/api/v1/health":
+                    self._send(HTTPStatus.OK, application.health())
+                    return
                 if path == "/api/v1/status":
                     self._send(HTTPStatus.OK, application.status())
                     return

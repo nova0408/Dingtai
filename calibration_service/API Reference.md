@@ -1,6 +1,6 @@
 # Calibration Service API Reference
 
-文档版本：`1.3.0`（2026-08-11）
+文档版本：`1.4.1`（2026-08-11）
 默认内部地址：`http://127.0.0.1:6600`  
 正式外部前缀：`https://<orin-host>/api/v1/calibration`
 
@@ -11,6 +11,7 @@ CameraPipeline 拍摄和执行计算，不发送设备控制请求。设备姿�
 
 | 方法 | 内部路径 | 作用 |
 | --- | --- | --- |
+| GET | `/api/v1/health` | 读取服务版本和任务状态，不访问设备 |
 | GET | `/api/v1/status` | 读取任务状态、当前标定类型和样本数量 |
 | GET | `/api/v1/results/hand-eye` | 读取左手眼在手上 `T_tool_cam` |
 | GET | `/api/v1/results/head-eye/{arm_side}` | 读取头部眼在手外 `T_base_camera` |

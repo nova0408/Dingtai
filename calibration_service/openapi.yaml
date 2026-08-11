@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Dingtai Calibration Service
-  version: 1.4.0
+  version: 1.4.1
   description: >-
     手眼标定与先验记录服务。只读取 RobotControl 状态，只请求 CameraPipeline
     拍摄和检测，不发送设备控制请求。计算结果先进入临时缓存，二次确认后写入
@@ -9,6 +9,24 @@ info:
 servers:
   - url: http://127.0.0.1:6600
 paths:
+  /api/v1/health:
+    get:
+      operationId: get_calibration_health
+      description: 读取服务版本和任务状态，不访问设备。
+      responses:
+        '200':
+          description: 标定服务健康信息
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [service_version, state, accepted, data, error]
+                properties:
+                  service_version: {type: string}
+                  state: {type: string, enum: [idle, busy]}
+                  accepted: {type: boolean}
+                  data: {type: object}
+                  error: {type: [string, 'null']}
   /api/v1/status:
     get:
       operationId: get_calibration_status

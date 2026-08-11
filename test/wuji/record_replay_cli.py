@@ -77,9 +77,10 @@ from test.wuji.xcoresdk_arm_cli_test import (
     _shutdown_robot,
 )
 
-from camera_pipeline.client import CameraName, CameraPipelineClient
+from camera_pipeline.client import CameraName as PipelineCameraName, CameraPipelineClient
 from camera_pipeline.service.protocol import CharucoDetectionRequest
 from record_replay.offset_detection import camera_ball_transform_m
+from record_replay.camera_client import CameraName as ReplayCameraName
 from record_replay.offset_detector_gateway import (
     CameraPipelineThreeBallDetector,
     load_three_ball_priors,
@@ -89,7 +90,7 @@ from sdk.xcoresdk import xCoreSDK_python
 from src.wuji.agv_client import WujiAgvClient
 from src.wuji.head_client import WujiHeadClient
 
-RECORD_REPLAY_CLI_VERSION = "1.10.0"
+RECORD_REPLAY_CLI_VERSION = "1.10.1"
 "与 record_replay 服务对齐的人工回放语义版本。"
 
 # region CSV 序号配置
@@ -162,7 +163,7 @@ DEFAULT_AGV_NAVIGATION_POLL_INTERVAL_S = 0.2
 "AGV 导航状态轮询间隔，单位 s。"
 
 SHARED_TUNNEL_BODY_PORT = DEFAULT_PORT - 1
-"共享 SSH 隧道中 M11、body 与 head 的本地端口。"
+"共享 SSH 隧道中 M6、body 与 head 的本地端口。"
 
 SHARED_TUNNEL_GRIPPER_PORT = GRIPPER_PORT - 1
 "共享 SSH 隧道中 gripper 的本地端口。"
@@ -323,17 +324,14 @@ NON_MOTION_RETRY_COUNT = 3
 NON_MOTION_RETRY_DELAY_S = 0.5
 "非直接运动指令的重试间隔，单位 s。"
 
-M11_STATE_READ_TIMEOUT_S = 10.0
-"读取至少 11 个有效右手执行器状态的总超时时间，单位 s。"
+M6_ACTUATOR_COUNT = 6
+"当前右手 M6 的执行器数量。"
 
-M11_STATE_READ_POLL_INTERVAL_S = 0.1
+M6_STATE_READ_TIMEOUT_S = 10.0
+"读取完整 M6 右手执行器状态的总超时时间，单位 s。"
+
+M6_STATE_READ_POLL_INTERVAL_S = 0.1
 "右手状态内容无效时的重新读取间隔，单位 s。"
-
-RIGHT_HAND_M11_ROOT_ACTUATOR_IDS: tuple[int, ...] = (3, 5, 7, 9)
-"右手 M11 四指根部执行器索引。"
-
-RIGHT_HAND_M11_TIP_ACTUATOR_IDS: tuple[int, ...] = (4, 6, 8, 10)
-"右手 M11 四指指尖执行器索引。"
 
 LIFT_ENABLE_STATE_TIMEOUT_S = 10.0
 "下发 lift enable 后等待 get_enable() 状态为 True 的总超时时间，单位 s。"
@@ -419,7 +417,7 @@ class ReplayRuntime:
 
 @dataclass(slots=True)
 class ReplaySharedTunnelGroup:
-    """持有双臂、AGV、gripper、M11/body 共用的单一 SSH 隧道及三个 channel。"""
+    """持有双臂、AGV、gripper、M6/body 共用的单一 SSH 隧道及三个 channel。"""
 
     process: subprocess.Popen[bytes]
     gripper_channel: object
@@ -497,8 +495,8 @@ def _load_replay_rows(csv_path: Path) -> list[ReplayRow]:
                 arm_joint_rad = tuple(_deg_to_rad(list(joint_values)))
                 if pose_text.lower() != "nan":
                     arm_pose = _parse_pose_values(pose_text)
-            elif action_type == "m11":
-                joint_values = tuple(_parse_joint_values(joints_text, expected_len=11))
+            elif action_type == "m6":
+                joint_values = tuple(_parse_joint_values(joints_text, expected_len=M6_ACTUATOR_COUNT))
             elif action_type in ("gripper", "lift"):
                 pose_value = float(pose_text)
             rows.append(
@@ -872,7 +870,7 @@ def _build_csv_execution_plans(
 
 
 def _create_replay_shared_tunnel_group() -> ReplaySharedTunnelGroup:
-    """创建同时承载双臂、AGV、gripper 与 M11/body 的单一 SSH 隧道。"""
+    """创建同时承载双臂、AGV、gripper 与 M6/body 的单一 SSH 隧道。"""
 
     forwards = (
         ("127.0.0.1", SHARED_TUNNEL_BODY_PORT, WUYOU_QMLINKER_HOST, DEFAULT_PORT),
@@ -903,7 +901,7 @@ def _create_replay_shared_tunnel_group() -> ReplaySharedTunnelGroup:
         command.extend(("-L", f"{local_host}:{local_port}:{remote_host}:{remote_port}"))
     command.append(SSH_ALIAS)
     logger.info(
-        "启动共享 SSH 隧道 left_arm={} right_arm={} arm_ports={} body/m11={} gripper={} agv={} alias={}",
+        "启动共享 SSH 隧道 left_arm={} right_arm={} arm_ports={} body/m6={} gripper={} agv={} alias={}",
         LEFT_ARM_CONTROLLER_IP,
         RIGHT_ARM_CONTROLLER_IP,
         ARM_SSH_FORWARD_PORTS,
@@ -1410,10 +1408,10 @@ def _detect_current_three_ball_basis_transform(
         detection_timeout_ms=OFFSET_BALL_DETECTION_TIMEOUT_MS,
     )
     detector = CameraPipelineThreeBallDetector(
-        camera_name=CameraName(camera_name),
+        camera_name=ReplayCameraName(camera_name),
         priors=load_three_ball_priors(prior_capture_path),
         settings=settings,
-        service_addr=str(service_addr),
+        service_url=str(service_addr),
     )
     samples_mm = detector.capture_samples(OFFSET_BALL_CAPTURE_SAMPLE_COUNT)
     basis_transform = camera_ball_transform_m(samples_mm, settings)
@@ -1591,7 +1589,7 @@ def _detect_current_camera_board_transform_m(head_channel: object) -> np.ndarray
     try:
         _set_head_charuco_detection_pose(WujiHeadClient(head_channel))
         request = CharucoDetectionRequest(
-            camera_name=CameraName(DEFAULT_HEAD_CAMERA_NAME),
+            camera_name=PipelineCameraName(DEFAULT_HEAD_CAMERA_NAME),
             dictionary_name=DEFAULT_DICTIONARY_NAME,
             squares_x=DEFAULT_SQUARES_X,
             squares_y=DEFAULT_SQUARES_Y,
@@ -1955,16 +1953,9 @@ def _execute_gripper_row(runtime: ReplayRuntime, row: ReplayRow) -> None:
 
 def _get_right_hand_positions(runtime: ReplayRuntime) -> list[float]:
     if runtime.right_hand is None:
-        raise RuntimeError("当前 runtime 未配置右手 m11 客户端")
+        raise RuntimeError("当前 runtime 未配置右手 M6 客户端")
     right_hand = runtime.right_hand
-    required_count = (
-        max(
-            *RIGHT_HAND_M11_ROOT_ACTUATOR_IDS,
-            *RIGHT_HAND_M11_TIP_ACTUATOR_IDS,
-        )
-        + 1
-    )
-    deadline = time.monotonic() + M11_STATE_READ_TIMEOUT_S
+    deadline = time.monotonic() + M6_STATE_READ_TIMEOUT_S
     read_index = 0
     last_invalid_reason = "尚未读取"
     while True:
@@ -1986,8 +1977,10 @@ def _get_right_hand_positions(runtime: ReplayRuntime) -> list[float]:
                 actuators = state.get("actuators")
                 if not isinstance(actuators, list):
                     last_invalid_reason = "actuators 不是 list"
-                elif len(actuators) < required_count:
-                    last_invalid_reason = f"执行器数量不足 required={required_count} actual={len(actuators)}"
+                elif len(actuators) != M6_ACTUATOR_COUNT:
+                    last_invalid_reason = (
+                        f"执行器数量与 M6 不一致 expected={M6_ACTUATOR_COUNT} actual={len(actuators)}"
+                    )
                 else:
                     for index, actuator in enumerate(actuators):
                         if not isinstance(actuator, dict):
@@ -2000,7 +1993,7 @@ def _get_right_hand_positions(runtime: ReplayRuntime) -> list[float]:
                             positions = []
                             break
                         positions.append(float(position))
-                    if len(positions) >= required_count:
+                    if len(positions) == M6_ACTUATOR_COUNT:
                         if read_index > 1:
                             logger.success(
                                 "右手状态重试后恢复 read={} actuator_count={}",
@@ -2011,7 +2004,7 @@ def _get_right_hand_positions(runtime: ReplayRuntime) -> list[float]:
         remaining_s = deadline - time.monotonic()
         if remaining_s <= 0.0:
             raise TimeoutError(
-                f"读取有效右手状态超时 timeout={M11_STATE_READ_TIMEOUT_S:.1f} s "
+                f"读取有效右手状态超时 timeout={M6_STATE_READ_TIMEOUT_S:.1f} s "
                 f"read={read_index} last_reason={last_invalid_reason}"
             )
         logger.warning(
@@ -2020,15 +2013,15 @@ def _get_right_hand_positions(runtime: ReplayRuntime) -> list[float]:
             last_invalid_reason,
             remaining_s,
         )
-        time.sleep(min(M11_STATE_READ_POLL_INTERVAL_S, remaining_s))
+        time.sleep(min(M6_STATE_READ_POLL_INTERVAL_S, remaining_s))
 
 
-def _execute_m11_row(runtime: ReplayRuntime, row: ReplayRow) -> None:
+def _execute_m6_row(runtime: ReplayRuntime, row: ReplayRow) -> None:
     if runtime.right_hand is None:
-        raise RuntimeError("当前 runtime 未配置右手 m11 客户端")
+        raise RuntimeError("当前 runtime 未配置右手 M6 客户端")
     right_hand = runtime.right_hand
-    if row.joint_values is None:
-        raise RuntimeError(f"m11 joints 未在启动阶段完成预解析 file={row.csv_name} row={row.row_index}")
+    if row.joint_values is None or len(row.joint_values) != M6_ACTUATOR_COUNT:
+        raise RuntimeError(f"M6 joints 未在启动阶段完成预解析 file={row.csv_name} row={row.row_index}")
     target_positions = list(row.joint_values)
     current_positions = _get_right_hand_positions(runtime)
     for actuator_id, target_value in enumerate(target_positions):
@@ -2037,19 +2030,12 @@ def _execute_m11_row(runtime: ReplayRuntime, row: ReplayRow) -> None:
         f"right_hand.set_hand_state({row.csv_name}:{row.row_index})",
         lambda: right_hand.set_hand_state(current_positions),
     ):
-        raise RuntimeError("右手 m11 下发失败")
+        raise RuntimeError("右手 M6 下发失败")
     logger.info(
-        "已下发右手 m11 目标 file={} row={} root=[{}] tip=[{}]",
+        "已下发右手 M6 目标 file={} row={} positions=[{}]",
         row.csv_name,
         row.row_index,
-        _format_sequence(
-            [current_positions[actuator_id] for actuator_id in RIGHT_HAND_M11_ROOT_ACTUATOR_IDS],
-            decimals=4,
-        ),
-        _format_sequence(
-            [current_positions[actuator_id] for actuator_id in RIGHT_HAND_M11_TIP_ACTUATOR_IDS],
-            decimals=4,
-        ),
+        _format_sequence(current_positions, decimals=4),
     )
 
 
@@ -2267,8 +2253,8 @@ def _execute_row(
     if row.action_type == "gripper":
         _execute_gripper_row(runtime, row)
         return
-    if row.action_type == "m11":
-        _execute_m11_row(runtime, row)
+    if row.action_type == "m6":
+        _execute_m6_row(runtime, row)
         return
     if row.action_type == "lift":
         _execute_lift_row(runtime, row)
@@ -2629,7 +2615,7 @@ def _print_replay_summary(
     if arm_side == "left":
         print("gripper 动作策略：仅下发，不等待到位")
     else:
-        print("m11 动作策略：读取当前 11 轴状态后整体下发，不等待到位")
+        print("m6 动作策略：读取当前 6 轴状态后整体下发，不等待到位")
     print(
         "lift 动作策略：等待到位后才允许继续下一步，"
         f"pulse={DEFAULT_REPLAY_LIFT_PULSE_INTERVAL_S:.1f}s "

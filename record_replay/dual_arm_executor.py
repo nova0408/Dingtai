@@ -16,13 +16,41 @@ from .arm_actions import flush_pending_arm_segment
 from .charuco_offset import CharucoOffsetInitializer
 from .context import ReplayContext
 from .contracts import ReplayServiceState, ReplayRow
-from .hand_actions import execute_gripper_row, execute_lift_row, execute_m11_row
+from .hand_actions import execute_gripper_row, execute_lift_row, execute_m6_row
 from .offset_updater import GlobalOffsetUpdater
 from .runtime import ReplayRuntime, close_runtime, create_runtime, prepare_runtime
 from .settings import ReplayServiceSettings
 
 SYNC_BARRIER_TIMEOUT_S = 60.0
 "open_door/close_door 起点屏障最长等待时间。"
+
+
+class NamedActionExecutionError(RuntimeError):
+    """携带臂侧、动作、CSV 和失败阶段的命名动作异常。"""
+
+    def __init__(
+        self,
+        *,
+        arm_side: str,
+        sequence: int,
+        total: int,
+        action: NamedActionPlan,
+        stage: str,
+        cause: BaseException,
+    ) -> None:
+        self.arm_side = arm_side
+        self.sequence = sequence
+        self.total = total
+        self.action_name = action.item.function_name
+        self.csv_name = action.csv_asset.path.name
+        self.stage = stage
+        self.cause_type = type(cause).__name__
+        super().__init__(
+            "命名动作执行失败 "
+            f"arm_side={arm_side} sequence={sequence}/{total} "
+            f"action={self.action_name} csv={self.csv_name} stage={stage} "
+            f"cause_type={self.cause_type} cause={cause}"
+        )
 
 
 class DualArmExecutor:
@@ -132,7 +160,10 @@ class DualArmExecutor:
             close_runtime(left_runtime)
             logger.info("双臂执行器 runtime 释放完成")
         if errors:
-            raise RuntimeError("命名动作执行失败") from errors[0]
+            details = "；".join(str(error) for error in errors)
+            raise RuntimeError(
+                f"双臂命名动作执行失败 failure_count={len(errors)} details={details}"
+            ) from errors[0]
 
     def _execute_both_sides(
         self,
@@ -243,8 +274,32 @@ class DualArmExecutor:
                 action.item.zone,
                 action.item.index,
             )
-            _wait_action_start(barrier, action.item.function_name, runtime)
-            self._execute_action(context, runtime, action, offset_updater)
+            stage = "start_barrier"
+            try:
+                _wait_action_start(barrier, action.item.function_name, runtime)
+                stage = "execute_action"
+                self._execute_action(context, runtime, action, offset_updater)
+            except BaseException as error:
+                logger.exception(
+                    "命名动作失败 arm_side={} sequence={}/{} action={} csv={} stage={} "
+                    "error_type={} detail={}",
+                    runtime.connected_arm.arm_side,
+                    action_position + 1,
+                    len(actions),
+                    action.item.function_name,
+                    action.csv_asset.path.name,
+                    stage,
+                    type(error).__name__,
+                    error,
+                )
+                raise NamedActionExecutionError(
+                    arm_side=runtime.connected_arm.arm_side,
+                    sequence=action_position + 1,
+                    total=len(actions),
+                    action=action,
+                    stage=stage,
+                    cause=error,
+                ) from error
             logger.info(
                 "命名动作完成 arm_side={} sequence={}/{} action={} csv={}",
                 runtime.connected_arm.arm_side,
@@ -486,8 +541,8 @@ class DualArmExecutor:
         if row.action_type == "gripper":
             execute_gripper_row(runtime, row)
             return
-        if row.action_type == "m11":
-            execute_m11_row(runtime, row)
+        if row.action_type == "m6":
+            execute_m6_row(runtime, row)
             return
         if row.action_type == "lift":
             execute_lift_row(runtime, row)

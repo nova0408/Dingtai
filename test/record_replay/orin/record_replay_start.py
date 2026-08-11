@@ -45,7 +45,7 @@ def main(
     """确认现场安全后，显式指定托盘 index 和 AGV 选项并发送 start。"""
 
     logger.warning(
-        "本次回放将控制双臂、夹爪、M11 和 Lift，旧托盘当前位置={} 放置位置={}，新托盘当前位置={} 放置位置={}，AGV 导航={} 目标={}",
+        "本次回放将控制双臂、夹爪、M6 和 Lift，旧托盘当前位置={} 放置位置={}，新托盘当前位置={} 放置位置={}，AGV 导航={} 目标={}",
         old_tray_current_index,
         old_tray_put_index,
         new_tray_current_index,

@@ -54,7 +54,8 @@ Content-Type: application/json
 先读取配置响应中的 `available_dictionary_names`，再选择字典；服务不会接受当前
 OpenCV 未提供的字典名称。
 
-标定会话的 `start/end` 只用于提示、清空和封存本次内存样本，不会隐式移动设备、拍摄或
+只读 `GET /api/v1/health` 返回 `service_version` 和当前任务状态，不访问设备；正式客户端可用
+该字段进行版本校验。标定会话的 `start/end` 只用于提示、清空和封存本次内存样本，不会隐式移动设备、拍摄或
 求解。`cancel` 会丢弃样本和待确认缓存，不执行替换。正式替换时，旧文件会按
 `文件名_yymmdd_hhmmss.扩展名` 重命名保留，不会直接删除。`GET /api/v1/results/prior/head`
 与 `/results/prior/hand` 分别读取两个已确认的先验 JSON。

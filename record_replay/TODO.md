@@ -482,7 +482,7 @@ AGV 与左右 AR5 使用显式字段和显式 stop 调用；不循环遍历动�
 以下内容不修改：
 
 - CSV 表头 `timestamp,type,joints,pose`；
-- arm、gripper、m11、lift 等行的录制方式；
+- arm、gripper、m6、lift 等行的录制方式；
 - 关节、位姿、单位和时间戳；
 - 拖动示教的采样过程；
 - 已录制 CSV 的行顺序和数值。

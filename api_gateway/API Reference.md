@@ -1,7 +1,7 @@
 # Dingtai API Gateway API Reference
 
 文档版本：`1.7.0`（2026-08-11）
-Gateway 服务版本：`0.5.0`
+Gateway 服务版本：`0.5.1`
 正式客户端入口：`https://<orin-ip>`（标准 HTTPS 端口 `443`）
 
 Gateway 使用 aiohttp 直接终止 TLS 并监听外部客户端；默认绑定 `0.0.0.0:443`，同时在
@@ -76,13 +76,15 @@ GET /api/v1/gateway/health
 
 ```json
 {
-  "gateway_version": "0.2.1",
+  "service_version": "0.5.1",
+  "gateway_version": "0.5.1",
   "backend_ports": {
     "camera_http": 6400,
     "camera_websocket": 6401,
     "record_replay": 6300,
     "record_replay_websocket": 6301,
-    "robot_control": 6500
+    "robot_control": 6500,
+    "calibration": 6600
   },
   "backend_probe": false
 }
@@ -93,7 +95,9 @@ GET /api/v1/gateway/health
 ```http
 GET /api/v1/camera/health
 GET /api/v1/record-replay/status
+GET /api/v1/record-replay/health
 GET /api/v1/robot-control/health
+GET /api/v1/calibration/health
 ```
 
 ### 2.2 RobotControl AR5 七轴软限位

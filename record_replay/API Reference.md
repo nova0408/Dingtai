@@ -1,14 +1,14 @@
 # RecordReplay API Reference
 
-文档版本：`3.7.0`（2026-08-11）
-服务业务版本：`3.7.0`
+文档版本：`3.7.3`（2026-08-11）
+服务业务版本：`3.7.3`
 默认监听：`http://<orin>:6300`
 
 机器可读文件：[OpenAPI 3.1](openapi.yaml)。
 
 ## 1. 重要安全边界
 
-RecordReplay 会控制机械臂、AGV、夹爪、M11 和升降机构。服务启动只建立 HTTP 监听，
+RecordReplay 会控制机械臂、AGV、夹爪、M6 和升降机构。服务启动只建立 HTTP 监听，
 不会自动开始回放；`POST /start` 会启动真实业务线程。GUI 可以读取状态和配置，但不能
 把 `start` 当作普通查询接口调用。任何真实启动都必须由现场人员确认设备区域安全后手动发起。
 
@@ -19,7 +19,7 @@ RecordReplay 通过本服务内的 `camera_client.py` 调用 CameraPipeline 的 
 ## 2. 通用约定
 
 - Content-Type：`application/json; charset=utf-8`。
-- 当前服务版本：`3.7.0`，与 `record_replay/CHANGELOG.md` 一致。
+- 当前服务版本：`3.7.3`，与 `record_replay/CHANGELOG.md` 一致。
 - 根目录同步脚本支持 `-RecordReplayOnly`，只替换并重启 RecordReplay；替换前检查 RecordReplay
   为 `idle`/`waiting` 且 CameraPipeline 在 6200 端口就绪，替换后校验文件清单、SHA-256、只读
   `/status` 和版本，不发送 `/start`；`runtime_state.json` 等运行产物不纳入清单。
@@ -46,6 +46,7 @@ RecordReplay 通过本服务内的 `camera_client.py` 调用 CameraPipeline 的 
 
 | 方法 | 路径 | HTTP 成功码 | 作用 |
 | --- | --- | ---: | --- |
+| GET | `/health` | 200 | 读取服务版本、API 主版本和当前状态，不访问设备 |
 | GET | `/status` | 200 | 读取回放阶段、命名 CSV 清单和任务进度 |
 | GET | `/plan?old_tray_current_index={old_current}&old_tray_put_index={old_put}&new_tray_current_index={new_current}&new_tray_put_index={new_put}` | 200 | 启动前读取本次 CSV、动作参数和行数 |
 | GET | `/config` | 200 | 读取可调运行参数 |
@@ -70,7 +71,24 @@ wss://<orin-host>/api/v1/record-replay-ws
 
 未列出的路径返回 `404` 和上述 JSON 错误对象。`/stop` 不会恢复动作，`/reset` 不会自动上电、导航或续跑。
 
-## 4. GET /status
+## 4. GET /health
+
+```http
+GET /health
+```
+
+健康检查不连接现场设备，响应中的 `service_version` 是 GUI 进行版本校验的唯一版本字段：
+
+```json
+{
+  "service_version": "3.7.2",
+  "api_version": "1",
+  "state": "idle",
+  "hardware_access": "lazy"
+}
+```
+
+## 5. GET /status
 
 ```http
 GET /status

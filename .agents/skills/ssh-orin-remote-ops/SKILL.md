@@ -72,8 +72,9 @@ Calibration Service uses the Orin-local `http://127.0.0.1:6600/api/v1/status` re
 Restarting it does not capture a frame, calculate a prior, start calibration, control a device,
 or start RecordReplay.
 
-Use the all-service command only when the user explicitly authorizes restarting RecordReplay.
-Restarting a service does not authorize sending RecordReplay `/start` or running a replay test.
+Use the all-service command only when the task explicitly covers all affected services or a documented
+cross-service dependency requires it; a version change authorizes the ordinary restart required for that
+deployment. Restarting a service never authorizes sending RecordReplay `/start` or running a replay test.
 
 Deploy and restart only RobotControl:
 
@@ -143,20 +144,44 @@ updated based only on local edits:
 | Calibration Service | `calibration_service/__init__.py: CALIBRATION_SERVICE_VERSION` | `-CalibrationServiceOnly` |
 | API Gateway | `api_gateway/__init__.py: API_GATEWAY_VERSION` | `-ApiGatewayOnly` |
 
+Before a RobotControl version synchronization, also run the service contract checker
+`.agents/skills/robot-control-service-maintainer/scripts/check_robot_control_contract.ps1`; this is a pre-sync
+contract check, not a deployment rule owned by the RobotControl service skill.
+
 默认部署规则：只要任务修改了上述任一已部署服务的版本源或部署包，完成相关本地静态检查和契约
-检查后，必须执行对应的官方 `scripts/sync_and_restart_services.ps1` 同步并重启；除非用户明确要求
-“仅本地修改/不部署”，否则不能把代码修改交付为仅本地状态。单服务变更使用对应的 `*Only` 参数，
-跨服务协议或依赖变更使用全量命令。不要改用手写 `scp`、`ssh systemctl` 或 `RestartOnly` 替代默认
-同步部署。
+检查后，必须执行对应的官方 `scripts/sync_and_restart_services.ps1` 同步并重启；版本号变化本身即视为
+用户授权执行对应的普通同步，不需要再次询问“是否部署”，不得按“仅本地修改”跳过版本同步。未涉及
+版本号的普通代码修改才可由用户明确要求仅本地处理，并且最终必须标记为 `待授权部署`，不得暗示远端已更新。单服务变更使用对应的
+`*Only` 参数，跨服务协议或依赖变更使用全量命令。不要改用手写 `scp`、`ssh systemctl` 或
+`RestartOnly` 替代默认同步部署。
 
 同步部署前必须检查所有将上传并由远端 Bash 执行的 `.sh` 文件为 LF 换行；若发现 CRLF，先修复
 本地部署源文件并重新执行本地检查，再调用官方 PowerShell 脚本，不能重复提交已知会被 Bash 拒绝的
 产物。部署结果必须记录本地期望版本、远端实际版本、文件清单和 SHA-256 结果、远端备份、服务
 就绪状态及服务只读版本/健康响应。若 Orin 不可达、同步/就绪/版本校验失败，必须报告为未部署，
-不得根据本地文件推断远端状态。
-For changes spanning multiple services, use the full five-service deployment. Single-service
-CameraPipeline or Calibration Service changes use their corresponding `*Only` deployment. These operations never
-authorize RecordReplay `/start`, replay tests, device-control POSTs, or calibration capture.
+不得根据本地文件推断远端状态；同步失败后必须把准确的带参数手动命令交给用户。
+For changes spanning multiple services, use the full five-service deployment. Single-service changes use their
+corresponding `*Only` deployment. These operations never authorize RecordReplay `/start`, replay tests,
+device-control POSTs, or calibration capture.
+
+If automatic synchronization fails, provide the exact command matching the changed service:
+
+```powershell
+pwsh -NoProfile -File .\scripts\sync_and_restart_services.ps1 -CameraPipelineOnly
+pwsh -NoProfile -File .\scripts\sync_and_restart_services.ps1 -RecordReplayOnly
+pwsh -NoProfile -File .\scripts\sync_and_restart_services.ps1 -RobotControlOnly
+pwsh -NoProfile -File .\scripts\sync_and_restart_services.ps1 -CalibrationServiceOnly
+pwsh -NoProfile -File .\scripts\sync_and_restart_services.ps1 -ApiGatewayOnly
+```
+
+Explain that these commands synchronize and restart the selected service (or its documented dependency), perform
+manifest/version/readiness checks, and do not send RecordReplay `/start` or `/reset`. If RecordReplay is in
+`rapid_stop`, append `-Force` only when the user explicitly requests “强制同步” or “强制部署” in the current
+task; never reuse an earlier force authorization:
+
+```powershell
+pwsh -NoProfile -File .\scripts\sync_and_restart_services.ps1 -RecordReplayOnly -Force
+```
 
 ## Mandatory deployment disposition
 
@@ -166,8 +191,8 @@ explicit states:
 - `已部署`：the official synchronization command succeeded, with local expected version, remote
   actual version, file count/manifest result, backup, restart/readiness, and direct read-only
   response recorded.
-- `待授权部署`：deployment was not authorized. Give the exact scoped command and do not imply the
-  remote service contains the local change.
+- `待授权部署`：deployment was explicitly skipped or not authorized. Give the exact scoped command and do not
+  imply the remote service contains the local change.
 - `部署失败`：the command was attempted but sync, readiness, or version verification failed;
   preserve the failure output and report the remote version actually observed.
 

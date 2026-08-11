@@ -97,6 +97,7 @@ async def _gateway_health(request: web.Request) -> web.Response:
     routes: tuple[GatewayRoute, ...] = request.app["gateway_routes"]
     return web.json_response(
         {
+            "service_version": API_GATEWAY_VERSION,
             "gateway_version": API_GATEWAY_VERSION,
             "backend_ports": {
                 "camera_http": routes[1].upstream_port,

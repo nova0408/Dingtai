@@ -237,6 +237,16 @@ class CalibrationApplication:
                 error=self._last_error,
             )
 
+    def health(self) -> CalibrationResponse:
+        """返回服务版本和任务状态，不访问设备。"""
+
+        with self._lock:
+            busy = self._busy
+        return CalibrationResponse(
+            state="busy" if busy else "idle",
+            data={"hardware_access": "lazy"},
+        )
+
     def cancel(self) -> CalibrationResponse:
         """取消当前采样或计算结果，清理缓存但不替换 RecordReplay 文件。"""
 
@@ -689,6 +699,7 @@ class CalibrationApplication:
                 accepted=False,
                 error="必须显式确认 replacement_id 后才能替换文件",
             )
+
         expired_pending: PendingReplacement | None = None
         with self._lock:
             if self._busy:

@@ -1,7 +1,7 @@
 # 双臂记录回放服务
 
-当前 RecordReplay 服务业务语义版本：`3.7.0`。本次升级沿用
-`test/wuji/record_replay_cli.py` 的动作命名作为参考，但不改变该人工验证入口的版本语义。
+当前 RecordReplay 服务业务语义版本：`3.7.3`；对应人工验证入口
+`test/wuji/record_replay_cli.py` 的版本为 `1.10.1`。两者均使用 M6 右手动作语义。
 
 面向 GUI 和其它项目的完整 HTTP 契约见 [API Reference](API%20Reference.md)，机器可读描述见
 [OpenAPI](openapi.yaml)。
@@ -164,7 +164,7 @@ idle
 
 ## 测试安全红线
 
-`record_replay` 会直接控制机械臂、AGV、夹爪、M11 和升降机构。禁止 Codex、CI、
+`record_replay` 会直接控制机械臂、AGV、夹爪、M6 和升降机构。禁止 Codex、CI、
 hook 或其他无人值守流程运行任何 record_replay 测试、启动 service 冒烟，或发送
 `POST /start`。即使测试当前使用 fake，也只能做静态检查，不能自动执行。
 
@@ -216,7 +216,7 @@ python test/record_replay/local/record_replay_local_manual.py
 `settings.py`；允许现场修改的运行参数由 `service/config_store.py` 持久化：
 
 - `ReplayArmSettings`：NRT、tool/wobj、reset 与机械臂型号；
-- `ReplayHandSettings`：夹爪/M11/升降动作与容差；
+- `ReplayHandSettings`：夹爪/M6/升降动作与容差；
 - `ReplayOffsetSettings`：offset 触发、采样、ChArUco 安全门和三球鲁棒聚合；
 - `OffsetConfig`：相机名、先验捕获与手眼结果路径；
 - `ReplayServiceSettings`：AGV、触发文件及非运动调用重试。
@@ -256,7 +256,7 @@ GUI 可以轮询只读 `/status`，也可以订阅 `wss://<orin-host>/api/v1/rec
 服务端日志保留完整堆栈。短暂断网后重新连接即可恢复；GUI
 负责根据四个托盘位置 index 编排下一次 start，服务不提供循环执行。
 
-HTTP API：`GET /status`、`GET /plan?old_tray_current_index={old_current}&old_tray_put_index={old_put}&new_tray_current_index={new_current}&new_tray_put_index={new_put}`、`GET /config`、`GET /device-status`、`POST /config`、
+HTTP API：`GET /health`、`GET /status`、`GET /plan?old_tray_current_index={old_current}&old_tray_put_index={old_put}&new_tray_current_index={new_current}&new_tray_put_index={new_put}`、`GET /config`、`GET /device-status`、`POST /config`、
 `POST /prior/ball-pose`、`POST /prior/charuco`、`POST /start`、`POST /stop`、
 `POST /reset`。`GET /plan` 只在 `idle` 时读取并校验本次动作 JSON 与实际 CSV，返回 GUI 执行前展示所需的 CSV、动作类型、speed、zone、index 和行数；它不连接设备、不创建线程，也不允许通过 HTTP 修改这些字段。配置更新 body
 只包含非动作数字参数；动作 speed/zone 不通过 HTTP 任意修改，必须编辑顺序 JSON，且服务 `busy` 期间拒绝修改配置。两个 prior 接口接收完整 JSON，

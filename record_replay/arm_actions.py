@@ -120,11 +120,20 @@ def execute_arm_segment(
     """将连续 arm 行合并为一次 MoveAbsJ append/start。
 
     ``final_arm_segment`` 指示本段是否包含该 CSV 最后一条 arm 记录；CSV 中间因夹爪、
-    M11 或升降记录而切开的 arm 段不能因此误用 CaptureAction 的 ``final_speed``。
+    M6 或升降记录而切开的 arm 段不能因此误用 CaptureAction 的 ``final_speed``。
     """
 
     if not rows:
         return
+    logger.info(
+        "连续 MoveAbsJ 段开始 arm_side={} file={} rows={}-{} count={} final_arm_segment={}",
+        runtime.connected_arm.arm_side,
+        rows[0].csv_name,
+        rows[0].row_index,
+        rows[-1].row_index,
+        len(rows),
+        final_arm_segment,
+    )
     _raise_if_stop_requested(runtime)
     targets = [build_arm_target(runtime, row) for row in rows]
     _raise_if_stop_requested(runtime)
@@ -152,8 +161,16 @@ def execute_arm_segment(
         _raise_if_stop_requested(runtime)
         move_append_abs_j(runtime.connected_arm, commands)
         _raise_if_stop_requested(runtime)
-        move_start(runtime.connected_arm)
+        _start_move_with_retry(runtime, rows)
     _wait_until_motion_finished(runtime)
+    logger.info(
+        "连续 MoveAbsJ 段完成 arm_side={} file={} rows={}-{} count={}",
+        runtime.connected_arm.arm_side,
+        rows[0].csv_name,
+        rows[0].row_index,
+        rows[-1].row_index,
+        len(rows),
+    )
 
 
 def flush_pending_arm_segment(
@@ -172,16 +189,79 @@ def flush_pending_arm_segment(
 def _wait_until_motion_finished(
     runtime: ReplayRuntime,
 ) -> None:
-    """轮询控制器直到运动进入 idle 或 unknown。"""
+    """轮询控制器直到运动明确进入 idle。"""
 
+    last_state: str | None = None
+    poll_count = 0
     while True:
         if runtime.stop_event.is_set():
             raise RuntimeError("检测到停止请求，终止等待机械臂运动")
         if runtime.stop_event.wait(timeout=runtime.settings.arm.motion_state_poll_interval_s):
             raise RuntimeError("检测到停止请求，终止等待机械臂运动")
         state = read_operation_state(runtime.connected_arm)
-        if state in {"idle", "unknown"}:
+        poll_count += 1
+        if state != last_state:
+            logger.info(
+                "等待机械臂运动完成 arm_side={} state={} poll_count={}",
+                runtime.connected_arm.arm_side,
+                state,
+                poll_count,
+            )
+            last_state = state
+        if state == "idle":
+            logger.info(
+                "机械臂运动已完成 arm_side={} poll_count={}",
+                runtime.connected_arm.arm_side,
+                poll_count,
+            )
             return
+        if state == "unknown":
+            raise RuntimeError(
+                f"无法确认机械臂运动是否完成 arm_side={runtime.connected_arm.arm_side} "
+                f"operation_state=unknown poll_count={poll_count}"
+            )
+
+
+def _start_move_with_retry(runtime: ReplayRuntime, rows: list[ReplayRow]) -> None:
+    """处理控制器保存诊断期间拒绝 ``moveStart`` 的短暂窗口。"""
+
+    retry_count = max(1, runtime.settings.non_motion_retry_count)
+    retry_delay_s = runtime.settings.non_motion_retry_delay_s
+    for attempt in range(1, retry_count + 1):
+        try:
+            move_start(runtime.connected_arm)
+            return
+        except RuntimeError as error:
+            if not _is_diagnosis_save_busy(error) or attempt >= retry_count:
+                raise RuntimeError(
+                    f"moveStart 下发失败 arm_side={runtime.connected_arm.arm_side} "
+                    f"file={rows[0].csv_name} rows={rows[0].row_index}-{rows[-1].row_index} "
+                    f"attempt={attempt}/{retry_count} cause={error}"
+                ) from error
+            logger.warning(
+                "moveStart 暂被控制器诊断保存占用，准备重试 arm_side={} file={} rows={}-{} "
+                "attempt={}/{} retry_delay_s={} cause={}",
+                runtime.connected_arm.arm_side,
+                rows[0].csv_name,
+                rows[0].row_index,
+                rows[-1].row_index,
+                attempt,
+                retry_count,
+                retry_delay_s,
+                error,
+            )
+            if runtime.stop_event.wait(timeout=retry_delay_s):
+                raise RuntimeError(
+                    f"moveStart 重试期间收到停止请求 arm_side={runtime.connected_arm.arm_side} "
+                    f"file={rows[0].csv_name} rows={rows[0].row_index}-{rows[-1].row_index}"
+                ) from error
+
+
+def _is_diagnosis_save_busy(error: RuntimeError) -> bool:
+    """识别 xCoreSDK ``-60611`` 诊断保存临时占用错误。"""
+
+    detail = str(error).lower()
+    return "-60611" in detail or "saving diagnosis data" in detail
 
 
 def _wait_until_reset_ready(
@@ -189,7 +269,7 @@ def _wait_until_reset_ready(
     first_row: ReplayRow,
     last_row: ReplayRow,
 ) -> None:
-    """按旧回放语义等待连续段 reset 可用，超时后仍尝试 reset。"""
+    """等待连续段明确回到 idle 后再调用 ``moveReset``。"""
 
     arm_settings = runtime.settings.arm
     deadline = time.time() + arm_settings.reset_ready_timeout_s
@@ -212,13 +292,14 @@ def _wait_until_reset_ready(
             break
         if runtime.stop_event.wait(timeout=min(arm_settings.reset_ready_poll_interval_s, remaining_s)):
             raise RuntimeError("检测到停止请求，终止等待机械臂复位")
-    logger.warning(
-        "等待 moveReset 就绪超时，继续执行 arm_side={} file={} rows={}-{} {}",
-        runtime.connected_arm.arm_side,
-        first_row.csv_name,
-        first_row.row_index,
-        last_row.row_index,
-        last_state_text,
+    raise RuntimeError(
+        "等待 moveReset 就绪超时，拒绝覆盖上一段运动 arm_side={} file={} rows={}-{} {}".format(
+            runtime.connected_arm.arm_side,
+            first_row.csv_name,
+            first_row.row_index,
+            last_row.row_index,
+            last_state_text,
+        )
     )
 
 

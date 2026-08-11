@@ -18,6 +18,7 @@ from ..contracts import ReplayErrorCode
 from ..device_status import DeviceStatusResponse
 from .protocol import (
     PriorUploadResponse,
+    RecordReplayHealthResponse,
     RecordReplayErrorResponse,
     RecordReplayPlanResponse,
     RecordReplayResponse,
@@ -27,7 +28,7 @@ _ERROR_NOT_FOUND: Final[ReplayErrorCode] = "not_found"
 _ERROR_INTERNAL: Final[ReplayErrorCode] = "internal_error"
 _ERROR_INVALID_STATE: Final[ReplayErrorCode] = "invalid_state"
 _ERROR_METHOD_NOT_ALLOWED: Final[ReplayErrorCode] = "method_not_allowed"
-_GET_PATHS: Final = frozenset({"/status", "/plan", "/config", "/device-status"})
+_GET_PATHS: Final = frozenset({"/health", "/status", "/plan", "/config", "/device-status"})
 _POST_PATHS: Final = frozenset(
     {"/start", "/stop", "/reset", "/config", "/prior/ball-pose", "/prior/charuco"}
 )
@@ -38,6 +39,7 @@ ApiResponse = (
     | RecordReplayErrorResponse
     | DeviceStatusResponse
     | PriorUploadResponse
+    | RecordReplayHealthResponse
 )
 
 
@@ -83,6 +85,9 @@ class RecordReplayServer:
                 self._begin_request()
                 try:
                     path = urlsplit(self.path).path
+                    if path == "/health":
+                        self._send(HTTPStatus.OK, application.health())
+                        return
                     if path == "/status":
                         self._send(HTTPStatus.OK, application.status())
                         return

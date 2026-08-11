@@ -26,6 +26,11 @@ class RecordReplayClient:
     def get_status(self) -> dict[str, object]:
         return self._request("GET", "/status")
 
+    def get_health(self) -> dict[str, object]:
+        """读取服务版本和状态，不连接现场设备。"""
+
+        return self._request("GET", "/health")
+
     def get_plan(
         self,
         old_tray_current_index: int,

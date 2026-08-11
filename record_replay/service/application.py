@@ -8,6 +8,7 @@ from pathlib import Path
 
 from loguru import logger
 
+from .. import RECORD_REPLAY_VERSION
 from ..action_sequence import (
     ActionSequencePlan,
     ActionSequenceValidationError,
@@ -23,6 +24,8 @@ from .config_store import RuntimeConfigStore, RuntimeParameterValue
 from .prior_store import PriorKind, PriorReplacement, RecordReplayPriorStore
 from .protocol import (
     PriorUploadResponse,
+    RECORD_REPLAY_API_VERSION,
+    RecordReplayHealthResponse,
     RecordReplayPlanResponse,
     ReplayPlanAction,
     RecordReplayResponse,
@@ -331,6 +334,15 @@ class RecordReplayApplication:
             current_left_total_rows=snapshot.current_left_total_rows,
             current_right_total_rows=snapshot.current_right_total_rows,
             offset_statuses=snapshot.offset_statuses,
+        )
+
+    def health(self) -> RecordReplayHealthResponse:
+        """返回服务版本和状态，不连接或控制任何现场设备。"""
+
+        return RecordReplayHealthResponse(
+            service_version=RECORD_REPLAY_VERSION,
+            api_version=RECORD_REPLAY_API_VERSION,
+            state=self._context.snapshot().state,
         )
 
     def get_plan(
