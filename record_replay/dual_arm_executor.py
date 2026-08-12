@@ -15,7 +15,7 @@ from .action_sequence import (
 from .arm_actions import flush_pending_arm_segment
 from .charuco_offset import CharucoOffsetInitializer
 from .context import ReplayContext
-from .contracts import ReplayServiceState, ReplayRow
+from .contracts import ReplayExecutionPhase, ReplayServiceState, ReplayRow
 from .hand_actions import execute_gripper_row, execute_lift_row, execute_m6_row
 from .offset_updater import GlobalOffsetUpdater
 from .runtime import ReplayRuntime, close_runtime, create_runtime, prepare_runtime
@@ -75,6 +75,10 @@ class DualArmExecutor:
         close_door_start_barrier: threading.Barrier | None = None
         errors: list[BaseException] = []
         try:
+            context.set_state(
+                ReplayServiceState.BUSY,
+                execution_phase=ReplayExecutionPhase.PREPARING_DEVICES,
+            )
             logger.info(
                 "双臂执行器初始化开始 preloaded_csv_count={} charuco_required={}",
                 len(preloaded_rows_by_path),
@@ -113,12 +117,20 @@ class DualArmExecutor:
                 prepare_runtime(right_runtime)
                 logger.info("右臂 runtime NRT 与附属设备准备完成")
             if charuco_initializer is not None and _plan_requires_charuco(plan, settings):
+                context.set_state(
+                    ReplayServiceState.BUSY,
+                    execution_phase=ReplayExecutionPhase.INITIALIZING_CHARUCO,
+                )
                 logger.info(
                     "机械臂 runtime 准备完成，开始头部 ChArUco offset 初始化 runtime_count={}",
                     1 if right_runtime is None else 2,
                 )
                 charuco_initializer.initialize(
                     [left_runtime] if right_runtime is None else [left_runtime, right_runtime]
+                )
+                context.set_state(
+                    ReplayServiceState.BUSY,
+                    execution_phase=ReplayExecutionPhase.PREPARING_DEVICES,
                 )
                 logger.info("头部 ChArUco offset 初始化完成，准备执行左右臂 CSV")
             if right_runtime is not None:
@@ -148,6 +160,11 @@ class DualArmExecutor:
             if right_runtime is not None:
                 flush_pending_arm_segment(right_runtime)
         finally:
+            if context.snapshot().state is not ReplayServiceState.RAPID_STOP:
+                context.set_state(
+                    ReplayServiceState.BUSY,
+                    execution_phase=ReplayExecutionPhase.RELEASING_RESOURCES,
+                )
             logger.info(
                 "双臂执行器开始释放 runtime left_created={} right_created={}",
                 left_runtime is not None,
@@ -249,6 +266,7 @@ class DualArmExecutor:
                 )
             context.set_state(
                 ReplayServiceState.BUSY,
+                execution_phase=ReplayExecutionPhase.WAITING_ACTION_START,
                 left_csv_state=(
                     action.csv_asset.path.stem
                     if runtime.connected_arm.arm_side == "left"
@@ -277,6 +295,10 @@ class DualArmExecutor:
             stage = "start_barrier"
             try:
                 _wait_action_start(barrier, action.item.function_name, runtime)
+                context.set_state(
+                    ReplayServiceState.BUSY,
+                    execution_phase=ReplayExecutionPhase.EXECUTING_ACTION,
+                )
                 stage = "execute_action"
                 self._execute_action(context, runtime, action, offset_updater)
             except BaseException as error:
@@ -357,7 +379,7 @@ class DualArmExecutor:
                 raise RuntimeError(f"未实现的命名动作：{action.item.function_name}")
         if not runtime.preloaded_rows_by_path.get(action.csv_asset.path):
             return
-        self._update_offset_after_configured_action(runtime, action, offset_updater)
+        self._update_offset_after_configured_action(context, runtime, action, offset_updater)
 
     def _execute_capture_action(
         self,
@@ -420,6 +442,7 @@ class DualArmExecutor:
 
     def _update_offset_after_configured_action(
         self,
+        context: ReplayContext,
         runtime: ReplayRuntime,
         action: NamedActionPlan,
         offset_updater: GlobalOffsetUpdater | None,
@@ -432,6 +455,10 @@ class DualArmExecutor:
             return
         if offset_updater is None:
             raise RuntimeError(f"{action.item.function_name} 动作缺少三球检测服务")
+        context.set_state(
+            ReplayServiceState.BUSY,
+            execution_phase=ReplayExecutionPhase.UPDATING_OFFSET,
+        )
         offset_updater.update(runtime)
 
     def _execute_get_tray(self, context: ReplayContext, runtime: ReplayRuntime, action: NamedActionPlan) -> None:

@@ -1,7 +1,7 @@
 # RecordReplay API Reference
 
-文档版本：`3.7.3`（2026-08-11）
-服务业务版本：`3.7.3`
+文档版本：`3.8.0`（2026-08-12）
+服务业务版本：`3.8.0`
 默认监听：`http://<orin>:6300`
 
 机器可读文件：[OpenAPI 3.1](openapi.yaml)。
@@ -19,7 +19,7 @@ RecordReplay 通过本服务内的 `camera_client.py` 调用 CameraPipeline 的 
 ## 2. 通用约定
 
 - Content-Type：`application/json; charset=utf-8`。
-- 当前服务版本：`3.7.3`，与 `record_replay/CHANGELOG.md` 一致。
+- 当前服务版本：`3.8.0`，与 `record_replay/CHANGELOG.md` 一致。
 - 根目录同步脚本支持 `-RecordReplayOnly`，只替换并重启 RecordReplay；替换前检查 RecordReplay
   为 `idle`/`waiting` 且 CameraPipeline 在 6200 端口就绪，替换后校验文件清单、SHA-256、只读
   `/status` 和版本，不发送 `/start`；`runtime_state.json` 等运行产物不纳入清单。
@@ -65,6 +65,8 @@ wss://<orin-host>/api/v1/record-replay-ws
 ```
 
 连接建立后立即收到当前状态，之后每次状态快照变化推送一条 `event=record_replay.status` 消息。
+消息中的 `state` 表示顶层服务状态，`execution_phase` 表示当前更具体的执行阶段；客户端应优先
+使用 `execution_phase` 展示“运行中”的具体原因。
 一次执行成功完成时，额外推送一条 `event=record_replay.completed` 且 `completed=true` 的结束消息；
 该消息中的 `total_execution_count` 已经加一，客户端可使用结束事件或计数判断本次完成。
 慢客户端只保留最新状态，不会阻塞回放线程；GUI 负责决定下一次 start 的托盘 index，不由服务循环。
@@ -81,7 +83,7 @@ GET /health
 
 ```json
 {
-  "service_version": "3.7.2",
+  "service_version": "3.8.0",
   "api_version": "1",
   "state": "idle",
   "hardware_access": "lazy"
@@ -99,6 +101,7 @@ GET /status
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
 | `state` | enum | `idle`、`busy` 或 `rapid_stop`；停止后必须人工 reset 才能回到 `idle` |
+| `execution_phase` | enum | `idle`、`agv_navigation`、`preparing_devices`、`initializing_charuco`、`waiting_action_start`、`executing_action`、`updating_offset`、`releasing_resources` 或 `rapid_stop` |
 | `accepted` | boolean | 请求是否被接受；正常查询为 `true` |
 | `error_code` | string/null | 稳定错误码；正常为 `null` |
 | `action_sequence_sha256` | string/null | 当前冻结动作顺序 JSON 的 SHA-256 |
@@ -157,6 +160,18 @@ GET /status
     idle -> busy -> idle
     人工 stop 或任一阶段异常 -> rapid_stop -> 人工 reset -> idle
 ```
+
+`state=busy` 时，`execution_phase` 的含义如下：
+
+| `execution_phase` | 含义 |
+| --- | --- |
+| `agv_navigation` | 正在等待 AGV 到达本次目标 |
+| `preparing_devices` | 正在创建、连接或准备左右机械臂及附属设备 |
+| `initializing_charuco` | 正在初始化头部 ChArUco offset |
+| `waiting_action_start` | 已进入当前命名动作，正在等待动作起点屏障 |
+| `executing_action` | 正在执行当前命名动作的 CSV |
+| `updating_offset` | 当前命名动作完成后正在更新三球 offset |
+| `releasing_resources` | 回放完成，正在释放设备 runtime |
 
 启用 AGV 时只在回放前导航到请求中的 `agv_target`；回放完成后不自动导航到终点。
 Rapid Stop 期间，AR5 的队列提交与 `robot.stop()` 使用同侧命令锁串行化；该锁只保护指令
@@ -413,6 +428,7 @@ print(client.get_config())
 
 | 文档版本 | 日期 | 内容 |
 | --- | --- | --- |
+| `3.8.0` | 2026-08-12 | 状态快照和 WebSocket 新增 `execution_phase`，细分回放执行阶段。 |
 | `3.6.1` | 2026-08-11 | 增加原生致命信号线程栈、设备调用边界和 WebSocket 生命周期日志；恢复状态补充错误说明 |
 | `3.6.0` | 2026-08-11 | 错误响应增加请求追踪和具体异常摘要，补充结构化 405 与关键日志约定 |
 | `3.5.0` | 2026-08-11 | ChArUco 历史改为不区分左右臂的全局有效样本池 |

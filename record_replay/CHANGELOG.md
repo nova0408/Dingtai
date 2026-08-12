@@ -1,6 +1,16 @@
 # RecordReplay 版本日志
 
-当前版本：`3.7.3`
+当前版本：`3.8.0`
+
+## 3.8.0 - 2026-08-12
+
+### 变更
+
+- 状态快照和状态 WebSocket 新增 `execution_phase`，细分 AGV 导航、设备准备、ChArUco
+  初始化、动作起点等待、动作执行、offset 更新和资源释放阶段；顶层 `state` 仍用于表示
+  `idle`、`busy` 和 `rapid_stop`。
+- HTTP `/status`、`/config` 与 WebSocket 使用同一份具体阶段快照，客户端不需要根据当前动作
+  字段自行推断服务阶段。
 
 ## 3.7.3 - 2026-08-11
 

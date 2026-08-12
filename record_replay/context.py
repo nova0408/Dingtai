@@ -12,6 +12,7 @@ from .contracts import (
     ReplayExecutionTaskStatus,
     ReplayExecutionCompletedEvent,
     ReplayErrorCode,
+    ReplayExecutionPhase,
     ReplayOffsetStatus,
     ReplayServiceState,
     ReplayStatusSnapshot,
@@ -53,7 +54,10 @@ class ReplayContext:
         self._status_subscribers: list[
             Queue[ReplayStatusSnapshot | ReplayExecutionCompletedEvent]
         ] = []
-        self._snapshot = ReplayStatusSnapshot(state=ReplayServiceState.IDLE)
+        self._snapshot = ReplayStatusSnapshot(
+            state=ReplayServiceState.IDLE,
+            execution_phase=ReplayExecutionPhase.IDLE,
+        )
 
     # endregion
 
@@ -69,6 +73,7 @@ class ReplayContext:
         self,
         state: ReplayServiceState,
         *,
+        execution_phase: ReplayExecutionPhase | None = None,
         left_csv_state: str | None = None,
         plan_index: int | None = None,
         error_code: ReplayErrorCode | None = None,
@@ -83,9 +88,19 @@ class ReplayContext:
             next_plan_index = (
                 self._snapshot.plan_index if plan_index is None else plan_index
             )
+            next_execution_phase = (
+                ReplayExecutionPhase.IDLE
+                if state is ReplayServiceState.IDLE
+                else ReplayExecutionPhase.RAPID_STOP
+                if state is ReplayServiceState.RAPID_STOP
+                else self._snapshot.execution_phase
+                if execution_phase is None
+                else execution_phase
+            )
             self._snapshot = replace(
                 self._snapshot,
                 state=state,
+                execution_phase=next_execution_phase,
                 left_csv_state=left_csv_state,
                 plan_index=None if clear_task else next_plan_index,
                 current_task_index=(

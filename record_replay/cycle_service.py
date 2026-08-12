@@ -13,7 +13,7 @@ from .agv_navigation import AgvClient, stop_navigation, wait_until_arrived
 from .arm_gateway import stop_arm
 from .charuco_offset import CharucoOffsetInitializer
 from .context import ReplayContext
-from .contracts import ReplayCsvFileStatus, ReplayServiceState
+from .contracts import ReplayCsvFileStatus, ReplayExecutionPhase, ReplayServiceState
 from .dual_arm_executor import DualArmExecutor
 from .execution_plan import build_execution_task_statuses
 from .offset_updater import GlobalOffsetUpdater
@@ -66,7 +66,10 @@ class RecordReplayCycleService:
             if enable_agv_navigation:
                 if not agv_target.strip():
                     raise ValueError("AGV 导航目标不能为空")
-                self._context.set_state(ReplayServiceState.BUSY)
+                self._context.set_state(
+                    ReplayServiceState.BUSY,
+                    execution_phase=ReplayExecutionPhase.AGV_NAVIGATION,
+                )
                 logger.info("AGV 导航开始 target={}", agv_target)
                 wait_until_arrived(
                     self._agv_client,

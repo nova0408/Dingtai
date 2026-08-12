@@ -17,7 +17,7 @@ from ..action_sequence import (
     load_replay_deployment_config,
 )
 from ..context import ReplayContext
-from ..contracts import ReplayErrorCode, ReplayServiceState
+from ..contracts import ReplayErrorCode, ReplayExecutionPhase, ReplayServiceState
 from ..cycle_service import RecordReplayCycleService
 from ..device_status import DeviceStatusReader, DeviceStatusResponse
 from .config_store import RuntimeConfigStore, RuntimeParameterValue
@@ -220,7 +220,10 @@ class RecordReplayApplication:
             )
             self._worker = worker
             try:
-                self._context.set_state(ReplayServiceState.BUSY)
+                self._context.set_state(
+                    ReplayServiceState.BUSY,
+                    execution_phase=ReplayExecutionPhase.PREPARING_DEVICES,
+                )
                 self._state_store.save(ReplayServiceState.BUSY)
                 worker.start()
             except Exception as error:
@@ -305,6 +308,7 @@ class RecordReplayApplication:
         current_task_sequence = 0 if snapshot.current_task_index is None else snapshot.current_task_index + 1
         return RecordReplayResponse(
             state=snapshot.state,
+            execution_phase=snapshot.execution_phase,
             accepted=accepted,
             error_code=snapshot.error_code if error_code is None else error_code,
             action_sequence_sha256=snapshot.action_sequence_sha256,
@@ -421,6 +425,7 @@ class RecordReplayApplication:
         response = self.status()
         return RecordReplayResponse(
             state=response.state,
+            execution_phase=response.execution_phase,
             accepted=response.accepted,
             error_code=response.error_code,
             action_sequence_sha256=response.action_sequence_sha256,

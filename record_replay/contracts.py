@@ -28,6 +28,25 @@ class ReplayServiceState(str, Enum):
 # endregion
 
 
+class ReplayExecutionPhase(str, Enum):
+    """回放执行期间可观测的具体阶段。"""
+
+    IDLE = "idle"
+    AGV_NAVIGATION = "agv_navigation"
+    PREPARING_DEVICES = "preparing_devices"
+    INITIALIZING_CHARUCO = "initializing_charuco"
+    WAITING_ACTION_START = "waiting_action_start"
+    EXECUTING_ACTION = "executing_action"
+    UPDATING_OFFSET = "updating_offset"
+    RELEASING_RESOURCES = "releasing_resources"
+    RAPID_STOP = "rapid_stop"
+
+    def __str__(self) -> str:
+        """保持 Python 3.11 ``StrEnum`` 的字符串表现。"""
+
+        return self.value
+
+
 # region 数据结构
 
 
@@ -114,6 +133,8 @@ class ReplayStatusSnapshot:
 
     state: ReplayServiceState
     "服务阶段。"
+    execution_phase: ReplayExecutionPhase = ReplayExecutionPhase.IDLE
+    "回放当前具体执行阶段；空闲和 rapid_stop 与顶层状态保持一致。"
     error_code: ReplayErrorCode | None = None
     "稳定错误码；正常状态为 null。"
     total_execution_count: int = 0

@@ -1,6 +1,6 @@
 # 双臂记录回放服务
 
-当前 RecordReplay 服务业务语义版本：`3.7.3`；对应人工验证入口
+当前 RecordReplay 服务业务语义版本：`3.8.0`；对应人工验证入口
 `test/wuji/record_replay_cli.py` 的版本为 `1.10.1`。两者均使用 M6 右手动作语义。
 
 面向 GUI 和其它项目的完整 HTTP 契约见 [API Reference](API%20Reference.md)，机器可读描述见
@@ -108,6 +108,11 @@ idle
   -> rapid_stop         (人工 stop 或运动阶段失败，等待人工 reset)
 ```
 
+状态快照另外提供 `execution_phase`，用于区分 `busy` 内部的具体阶段：
+`agv_navigation`、`preparing_devices`、`initializing_charuco`、`waiting_action_start`、
+`executing_action`、`updating_offset` 和 `releasing_resources`。`state` 仍表示顶层服务状态，
+GUI 不需要根据当前动作字段反推阶段。
+
 正常完成后回到 `idle`；人工 stop 或运动阶段失败时先停止 AGV/已连接左右 AR5，再进入 `rapid_stop`，并将错误文本写入
 `ReplayContext.snapshot()`。`run_once()` 执行边界也会拒绝已锁存的 `rapid_stop` 或停止事件。
 只有人工处理后调用 `POST /reset` 才能恢复 `idle`，不会自动续跑。
@@ -136,6 +141,7 @@ idle
 调用方通过 `ReplayContext.snapshot()` 获得 `ReplayStatusSnapshot`：
 
 - `state`：当前服务阶段；
+- `execution_phase`：当前具体执行阶段；空闲为 `idle`，异常锁存为 `rapid_stop`；
 - `left_csv_state`：当前左臂命名动作对应的 CSV 文件 stem；
 - `plan_index`：当前左臂计划下标；
 - `error_text`：失败原因；

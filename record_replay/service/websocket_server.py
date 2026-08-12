@@ -158,6 +158,7 @@ def _status_json(
         "event": event_name,
         "completed": completed,
         "state": snapshot.state.value,
+        "execution_phase": snapshot.execution_phase.value,
         "accepted": True,
         "error_code": snapshot.error_code,
         "total_execution_count": snapshot.total_execution_count,

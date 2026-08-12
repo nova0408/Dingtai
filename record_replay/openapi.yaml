@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: RecordReplay HTTP API
-  version: 3.7.3
+  version: 3.8.0
   description: >-
     双臂记录回放服务 HTTP API。POST /start 可能控制真实设备，必须由现场人员确认安全后调用。
     状态 WebSocket 通过 API Gateway 的 /api/v1/record-replay-ws 提供 WSS 入口。
@@ -245,13 +245,9 @@ components:
     ReplayState:
       type: string
       enum: [idle, busy, rapid_stop]
-  responses:
-    ErrorResponse:
-      description: 请求或业务错误
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/RecordReplayErrorResponse'
+    ReplayExecutionPhase:
+      type: string
+      enum: [idle, agv_navigation, preparing_devices, initializing_charuco, waiting_action_start, executing_action, updating_offset, releasing_resources, rapid_stop]
     ErrorCode:
       type: [string, 'null']
       enum:
@@ -344,9 +340,10 @@ components:
         non_motion_retry_delay_s: {type: number, minimum: 0, default: 0.5}
     RecordReplayResponse:
       type: object
-      required: [state, accepted, error_code, action_sequence_sha256, left_csv_state, plan_index, error_text, left_csv_files, right_csv_files, execution_tasks, current_task_sequence, current_task_active, total_execution_count, old_tray_current_index, old_tray_put_index, new_tray_current_index, new_tray_put_index, agv_navigation_enabled, agv_target, current_left_csv, current_left_action_name, current_left_action_index, current_right_csv, current_right_action_name, current_right_action_index, current_left_row, current_right_row, current_left_total_rows, current_right_total_rows, offset_statuses, parameters]
+      required: [state, execution_phase, accepted, error_code, action_sequence_sha256, left_csv_state, plan_index, error_text, left_csv_files, right_csv_files, execution_tasks, current_task_sequence, current_task_active, total_execution_count, old_tray_current_index, old_tray_put_index, new_tray_current_index, new_tray_put_index, agv_navigation_enabled, agv_target, current_left_csv, current_left_action_name, current_left_action_index, current_right_csv, current_right_action_name, current_right_action_index, current_left_row, current_right_row, current_left_total_rows, current_right_total_rows, offset_statuses, parameters]
       properties:
         state: {$ref: '#/components/schemas/ReplayState'}
+        execution_phase: {$ref: '#/components/schemas/ReplayExecutionPhase'}
         accepted: {type: boolean}
         error_code: {$ref: '#/components/schemas/ErrorCode'}
         action_sequence_sha256: {type: [string, 'null']}
@@ -469,3 +466,10 @@ components:
         gripper: {$ref: '#/components/schemas/GripperDeviceStatus'}
         head: {$ref: '#/components/schemas/HeadDeviceStatus'}
         lift: {$ref: '#/components/schemas/LiftDeviceStatus'}
+  responses:
+    ErrorResponse:
+      description: 请求或业务错误
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/RecordReplayErrorResponse'

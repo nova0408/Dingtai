@@ -9,6 +9,7 @@ from ..contracts import (
     ReplayExecutionTaskStatus,
     ReplayOffsetStatus,
     ReplayErrorCode,
+    ReplayExecutionPhase,
     ReplayServiceState,
 )
 from .config_store import RuntimeParameters
@@ -138,6 +139,7 @@ class RecordReplayResponse:
     """HTTP API 返回的服务状态与可选持久化参数。"""
 
     state: ReplayServiceState
+    execution_phase: ReplayExecutionPhase = ReplayExecutionPhase.IDLE
     error_code: ReplayErrorCode | None = None
     accepted: bool = True
     action_sequence_sha256: str | None = None
