@@ -203,7 +203,7 @@ centered = pts - center.reshape(1, 3)
 ## 修改流程
 
 1. 先定位最小归属模块，确认新逻辑应放在 `src`、`test` 还是 `experiments`。
-2. 修改前按项目规则在 `.archive` 下做快照。
+2. 修改前按项目规则检查 Git 工作区状态和当前 diff。
 3. 先设计数据结构和职责边界，再写函数实现。
 4. 写代码时同步补齐 class docstring、dataclass 字段说明、函数 NumPy 风格 docstring、关键 NumPy 行内中文注释和 region 分区。
 5. 修改后做最小验证：优先 `py_compile`、导入检查、无硬件冒烟；涉及硬件时明确“未连接硬件验证”。

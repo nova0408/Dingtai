@@ -1,18 +1,5 @@
 {
   "hooks": {
-    "PreToolUse": [
-      {
-        "matcher": "apply_patch|Edit|Write",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "powershell -NoProfile -ExecutionPolicy Bypass -File .codex/hooks/pre_tool_use_safe_edit.ps1",
-            "timeout": 30,
-            "statusMessage": "Snapshotting files before edit"
-          }
-        ]
-      }
-    ],
     "PostToolUse": [
       {
         "matcher": "apply_patch|Edit|Write",

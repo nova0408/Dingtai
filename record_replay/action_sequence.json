@@ -12,7 +12,10 @@
     "offset": {
       "camera_name": "left_hand_camera",
       "calculate_after_action_name": "calibration",
-      "target_action_names": ["get_tray", "put_new_tray"],
+      "target_action_names": [
+        "get_tray",
+        "put_new_tray"
+      ],
       "sample_count": 2,
       "detection_timeout_ms": 30000,
       "detection_attempts_per_sample": 3,
@@ -20,8 +23,14 @@
       "mad_scale": 3.5,
       "min_outlier_threshold_mm": 2.0,
       "narrow_consistency_tolerance_mm": 8.0,
-      "left_charuco_target_action_names": ["open_door", "close_door"],
-      "right_charuco_target_action_names": ["open_door", "close_door"],
+      "left_charuco_target_action_names": [
+        "open_door",
+        "close_door"
+      ],
+      "right_charuco_target_action_names": [
+        "open_door",
+        "close_door"
+      ],
       "charuco_head_yaw_deg": 60.0,
       "charuco_head_pitch_deg": 45.0,
       "charuco_head_settle_s": 1.0,
@@ -40,9 +49,24 @@
     }
   },
   "left": [
-    {"function_name": "go_out", "type": "fast", "speed": 1000.0, "zone": 10.0},
-    {"function_name": "open_door", "type": "fast", "speed": 1000.0, "zone": 80.0},
-    {"function_name": "before_calibration", "type": "fast", "speed": 1000.0, "zone": 10.0},
+    {
+      "function_name": "go_out",
+      "type": "fast",
+      "speed": 1000.0,
+      "zone": 10.0
+    },
+    {
+      "function_name": "open_door",
+      "type": "fast",
+      "speed": 1000.0,
+      "zone": 80.0
+    },
+    {
+      "function_name": "before_calibration",
+      "type": "fast",
+      "speed": 1000.0,
+      "zone": 10.0
+    },
     {
       "function_name": "calibration",
       "type": "capture",
@@ -51,13 +75,48 @@
       "final_speed": 200.0,
       "settle_delay": 0.0
     },
-    {"function_name": "get_tray", "type": "precise", "speed": 200.0, "zone": 0.0},
-    {"function_name": "after_get_tray", "type": "fast", "speed": 1000.0, "zone": 10.0},
-    {"function_name": "put_tray", "type": "precise", "speed": 200.0, "zone": 0.0},
-    {"function_name": "before_get_new_tray", "type": "fast", "speed": 1000.0, "zone": 10.0},
-    {"function_name": "get_new_tray", "type": "precise", "speed": 200.0, "zone": 0.0},
-    {"function_name": "before_put_new_tray", "type": "fast", "speed": 1000.0, "zone": 10.0},
-    {"function_name": "put_new_tray", "type": "precise", "speed": 200.0, "zone": 0.0},
+    {
+      "function_name": "get_tray",
+      "type": "precise",
+      "speed": 1000.0,
+      "zone": 0.0
+    },
+    {
+      "function_name": "after_get_tray",
+      "type": "fast",
+      "speed": 1000.0,
+      "zone": 10.0
+    },
+    {
+      "function_name": "put_tray",
+      "type": "precise",
+      "speed": 1000.0,
+      "zone": 0.0
+    },
+    {
+      "function_name": "before_get_new_tray",
+      "type": "fast",
+      "speed": 1000.0,
+      "zone": 10.0
+    },
+    {
+      "function_name": "get_new_tray",
+      "type": "precise",
+      "speed": 1000.0,
+      "zone": 0.0
+    },
+    {
+      "function_name": "before_put_new_tray",
+      "type": "fast",
+      "speed": 1000.0,
+      "zone": 10.0
+    },
+    {
+      "function_name": "put_new_tray",
+      "type": "precise",
+      "speed": 1000.0,
+      "zone": 0.0
+    },
     {
       "function_name": "calibration_new_tray",
       "type": "capture",
@@ -66,14 +125,49 @@
       "final_speed": 200.0,
       "settle_delay": 0.0
     },
-    {"function_name": "after_put_new_tray", "type": "fast", "speed": 1000.0, "zone": 10.0},
-    {"function_name": "close_door", "type": "fast", "speed": 1000.0, "zone": 80.0},
-    {"function_name": "go_home", "type": "fast", "speed": 1000.0, "zone": 10.0}
+    {
+      "function_name": "after_put_new_tray",
+      "type": "fast",
+      "speed": 1000.0,
+      "zone": 10.0
+    },
+    {
+      "function_name": "close_door",
+      "type": "fast",
+      "speed": 1000.0,
+      "zone": 80.0
+    },
+    {
+      "function_name": "go_home",
+      "type": "fast",
+      "speed": 1000.0,
+      "zone": 10.0
+    }
   ],
   "right": [
-    {"function_name": "go_out", "type": "fast", "speed": 1000.0, "zone": 10.0},
-    {"function_name": "open_door", "type": "fast", "speed": 1000.0, "zone": 10.0},
-    {"function_name": "close_door", "type": "fast", "speed": 1000.0, "zone": 10.0},
-    {"function_name": "go_home", "type": "fast", "speed": 1000.0, "zone": 10.0}
+    {
+      "function_name": "go_out",
+      "type": "fast",
+      "speed": 1000.0,
+      "zone": 10.0
+    },
+    {
+      "function_name": "open_door",
+      "type": "fast",
+      "speed": 1000.0,
+      "zone": 10.0
+    },
+    {
+      "function_name": "close_door",
+      "type": "fast",
+      "speed": 1000.0,
+      "zone": 10.0
+    },
+    {
+      "function_name": "go_home",
+      "type": "fast",
+      "speed": 1000.0,
+      "zone": 10.0
+    }
   ]
 }

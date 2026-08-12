@@ -17,7 +17,6 @@
 - `debug/`：临时调试入口，不作为长期公共接口。
 - `.agents/skills/`：仓库级 Codex skills。每个 skill 自己维护 `scripts/`、`references/`、`assets/`。
 - `.codex/`：项目级 Codex 配置与 hooks。hooks 负责可确定执行的前后置检查。
-- `.archive/`：修改前快照目录，快照必须保留从项目根目录开始的相对路径结构。
 
 ---
 
@@ -27,15 +26,13 @@
 - 代码必须具备 Windows 与 Linux 的兼容性
 - 修改代码前先定位最小归属模块，再在正确层级做最小范围修改。
 - 读取和写入文本文件必须显式使用 UTF-8。
-- 修改文件前必须在 `.archive/` 下生成快照。
-- 任何删除、移动、重命名、批量清理操作前，必须先在 `.archive/` 下生成快照；不能先删后补，也不能假设 hook 一定会兜底。
+- 修改前先用 `git status` 和 `git diff` 确认工作区边界；文件恢复与变更审查统一由 Git 管理。
 - 文件编辑后优先运行最小静态检查；Python 文件默认走 `ruff` 后 `pyright`。
 - 涉及硬件、GUI 或实时相机链路时，明确说明哪些只是语法/静态验证，哪些没有实际连接硬件验证。
 - `src/` 下 Python 代码必须遵循 `.agents/skills/dingtai-src-python-style/SKILL.md`。
 - 涉及几何、姿态、角度、颜色时，优先使用 `src.utils.datas` 已有类型。
 - 禁止使用 `getattr` 这类魔术式调用。
 - 已经具备明确类型的属性和变量禁止再套类型转换，尽可能不使用类型转换；只有在外部输入、反序列化或类型无法静态确定时才允许做最小必要转换。
-- Windows PowerShell 文本编辑优先使用 `.agents/skills/windows-powershell-utf8-safe-edit/scripts/` 下脚本。
 - 静态检查统一使用 `.agents/skills/dingtai-static-check-workflow/scripts/check/` 下脚本。
 - 静态检查默认使用 DingTai Conda 环境。
 
@@ -56,11 +53,11 @@ powershell -ExecutionPolicy Bypass -File .\.agents\skills\dingtai-static-check-w
 powershell -ExecutionPolicy Bypass -File .\.agents\skills\dingtai-static-check-workflow\scripts\check\run_pyright.ps1 -Target .\test
 ```
 
-UTF-8 快照与替换：
+Git 变更检查：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\.agents\skills\windows-powershell-utf8-safe-edit\scripts\utf8_snapshot.ps1 -Path .\src\example.py
-powershell -ExecutionPolicy Bypass -File .\.agents\skills\windows-powershell-utf8-safe-edit\scripts\utf8_replace.ps1 -Path .\src\example.py -Pattern "old" -Replacement "new"
+git status --short
+git diff -- .\src\example.py
 ```
 
 ---
@@ -68,8 +65,7 @@ powershell -ExecutionPolicy Bypass -File .\.agents\skills\windows-powershell-utf
 ## Codex Hooks
 
 - `.codex/hooks.json` 是项目级 hooks 入口。
-- `PreToolUse` 在 `apply_patch` 前解析补丁路径，并为已有文件生成 `.archive` 快照。
-- 删除类操作不能只依赖 hook；在模型决策层也必须先确认快照已存在，再执行删除、移动或重命名。
+- hooks 不再生成编辑前快照；文件恢复与变更审查统一由 Git 管理。
 - `PostToolUse` 在 `apply_patch` 后扫描 UTF-8、字面量 ``
  ``、字面量 `
 `、替换字符和 NUL。

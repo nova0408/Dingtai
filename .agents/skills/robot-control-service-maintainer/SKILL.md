@@ -43,7 +43,7 @@ description: 安全维护 Dingtai 根目录 robot_control 统一机器人控制�
 ## 修改流程
 
 1. 先阅读 `robot_control/README.md`、`API Reference.md`、`CHANGELOG.md`、`openapi.yaml`、服务入口和 `robot_control/devices/` 内的设备适配器。
-2. 修改已有文件前，在项目根 `.archive/` 中按相对路径生成 UTF-8 快照；删除、移动和重命名也必须先快照。
+2. 修改已有文件前，先用 Git 检查当前工作区和目标路径；恢复、审查和变更追踪统一由 Git 管理。
 3. 先设计 dataclass、设备边界和错误语义，再修改 gateway、application、server 或 client。
 4. 仅为控制能力补充实现，不为通过检查改变默认单位、时序、重试、模式或设备安全门。
 5. 任何协议或行为变化都要升级 `robot_control/CHANGELOG.md` 版本号；同一批改动只升级一次，

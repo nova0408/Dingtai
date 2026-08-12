@@ -124,11 +124,7 @@ def prepare_nrt_motion(
 
     arm_settings = settings.arm
     with connected_arm.command_lock:
-        _post(connected_arm, "stop")
-        _post(connected_arm, "set-motion-control-mode")
-        _post(connected_arm, "set-operate-mode")
-        _post(connected_arm, "set-power-state", {"enabled": True})
-        _wait_power_on(connected_arm, arm_settings, stop_event)
+        _prepare_nrt_motion_locked(connected_arm, arm_settings, stop_event)
         _post(connected_arm, "set-default-conf-opt", {"enabled": False})
         apply_named_toolset(connected_arm, settings, stop_event)
         _post(
@@ -143,6 +139,34 @@ def prepare_nrt_motion(
         )
         if read_power_state(connected_arm) != "on":
             raise RuntimeError(f"{connected_arm.arm_side} 臂 NRT 准备完成后电机未处于 on 状态")
+
+
+def restore_nrt_motion_state_locked(
+    connected_arm: ConnectedArm,
+    settings: ReplayServiceSettings,
+    stop_event: threading.Event | None = None,
+) -> None:
+    """在已持有命令锁时恢复 NRT、自动模式和电机上电状态。
+
+    该恢复流程不清空已排入的 MoveAbsJ 队列，供 ``moveStart`` 因电机状态拒绝
+    后在同一命令临界区内使用。
+    """
+
+    _prepare_nrt_motion_locked(connected_arm, settings.arm, stop_event)
+
+
+def _prepare_nrt_motion_locked(
+    connected_arm: ConnectedArm,
+    arm_settings: ReplayArmSettings,
+    stop_event: threading.Event | None,
+) -> None:
+    """执行必须在 ``connected_arm.command_lock`` 内完成的 NRT 状态准备。"""
+
+    _raise_if_stopped(stop_event)
+    _post(connected_arm, "set-motion-control-mode")
+    _post(connected_arm, "set-operate-mode")
+    _post(connected_arm, "set-power-state", {"enabled": True})
+    _wait_power_on(connected_arm, arm_settings, stop_event)
 
 
 def close_arm(connected_arm: ConnectedArm) -> None:

@@ -5,7 +5,6 @@ import ast
 import csv
 import gc
 import math
-import subprocess
 import sys
 import time
 from dataclasses import dataclass
@@ -24,11 +23,10 @@ if str(PROJECT_ROOT) not in sys.path:
 from common import (
     DEFAULT_PORT,
     GRIPPER_PORT,
-    SshTunnelGroup,
     close_wuyou_channel,
-    create_wuyou_channel,
-    stop_ssh_process,
+    WUYOU_QMLINKER_HOST,
 )
+from qmlinker import create_channel
 
 from sdk.xcoresdk import xCoreSDK_python
 from src.wuji.body_client import WujiBodyClient
@@ -38,13 +36,6 @@ from src.wuji.right_hand_client import WujiRightHandClient
 # 机械臂控制器位于 Orin 所连交换机的新网段。
 LEFT_ARM_CONTROLLER_IP = "192.168.100.161"
 RIGHT_ARM_CONTROLLER_IP = "192.168.100.160"
-# 两台机械臂分别使用独立 loopback 地址，以复用 SDK 固定端口。
-LEFT_ARM_IP = "127.0.0.2"
-RIGHT_ARM_IP = "127.0.0.3"
-ARM_SSH_ALIAS = "orin"
-# 实测当前 xCoreSDK 构造对象需要 6666/7777；同时保留控制器与升级服务端口。
-ARM_SSH_FORWARD_PORTS: tuple[int, ...] = (5050, 4567, 6666, 7777)
-ARM_SSH_START_WAIT_S = 1.0
 MM_PER_M = 1000.0
 DEFAULT_CARTESIAN_SPEED = 50.0
 DEFAULT_CARTESIAN_ZONE = 1.0
@@ -55,6 +46,14 @@ DEFAULT_PREDEFINED_JOINT_ZONE = 10.0
 DEFAULT_POWER_ON_TIMEOUT_S = 3.0
 DEFAULT_REQUEST_TIMEOUT_S = 10.0
 POSITION_POLL_INTERVAL_S = 0.2
+# 右手状态轮询间隔，单位 s。
+HAND_POSITION_POLL_INTERVAL_S = 0.1
+# 连续稳定采样数量，单位 次。
+HAND_STABLE_SAMPLE_COUNT = 3
+# 连续采样中每个执行器允许的最大波动，单位 归一化位置。
+HAND_STABILITY_TOLERANCE = 0.1
+# 右手状态稳定等待上限，单位 s；超时后继续后续流程。
+HAND_STABILITY_TIMEOUT_S = 5.0
 LIFT_MOTION_TIMEOUT_S = 20.0
 LIFT_POLL_INTERVAL_S = 0.1
 LIFT_HEIGHT_TOLERANCE_MM = 1.0
@@ -76,7 +75,7 @@ class ConnectedArm:
     "机械臂侧别，取值为 `left` 或 `right`。"
 
     robot_ip: str
-    "SDK 本地连接地址，经 SSH 转发到机器人控制器。"
+    "SDK 直连的机器人控制器地址。"
 
     robot: xCoreSDK_python.xMateErProRobot
     "SDK 机器人对象。"
@@ -95,9 +94,7 @@ class ConnectedArm:
 class PersistentHandClients:
     """CLI 生命周期内复用的手部客户端。"""
 
-    gripper_process: SshTunnelGroup
     gripper: DahuanGripperClient
-    right_hand_process: SshTunnelGroup
     right_hand: WujiRightHandClient
     body: WujiBodyClient
 
@@ -308,6 +305,15 @@ def _set_m6_four_finger_positions(
     _validate_m6_positions(positions)
     for actuator_id in M6_FOUR_FINGER_ACTUATOR_IDS:
         positions[actuator_id] = target_value
+    return bool(hand.set_hand_state(positions))
+
+
+def _set_m6_individual_positions(hand: WujiRightHandClient, positions: list[float]) -> bool:
+    """按执行器顺序单独设置 M6 六个自由度。"""
+
+    _validate_m6_positions(positions)
+    if any(not math.isfinite(value) or not 0.0 <= value <= 1.0 for value in positions):
+        raise ValueError("M6 六个目标值都必须是 0-1 之间的有限数")
     return bool(hand.set_hand_state(positions))
 
 
@@ -774,20 +780,25 @@ def _manual_m6_record(hand: WujiRightHandClient, records: list[dict[str, str]]) 
     _validate_m6_positions(positions)
     print("当前四指值（食指/中指/无名指/小指）：")
     print(_format_joint_values([positions[index] for index in M6_FOUR_FINGER_ACTUATOR_IDS]))
-    raw_value = input("请输入四指统一目标值，单位归一化 0-1，直接回车取消：").strip()
+    raw_value = input("请输入四指统一目标值，或输入 s 单独控制 M6 六轴，单位归一化 0-1，直接回车取消：").strip()
     if raw_value == "":
         print("已取消 M6 手动记录")
         return
-    target_value = float(raw_value)
-    if not 0.0 <= target_value <= 1.0:
-        raise ValueError("四指目标值必须在 0-1 之间")
-    if not _set_m6_four_finger_positions(hand, positions, target_value):
-        raise RuntimeError("M6 四指手动下发失败")
-    time.sleep(2.0)
-    current_state = hand.get_hand_state(include_tactile=False)
-    if current_state is None:
-        raise RuntimeError("右手状态不可用")
-    current_positions = [float(item["position"]) for item in current_state["actuators"]]
+    if raw_value.lower() == "s":
+        raw_positions = input("请输入 M6 六个目标值，按执行器顺序输入，单位归一化 0-1，直接回车取消：").strip()
+        if raw_positions == "":
+            print("已取消 M6 手动记录")
+            return
+        target_positions = _parse_float_list(raw_positions, expected_len=M6_ACTUATOR_COUNT)
+        if not _set_m6_individual_positions(hand, target_positions):
+            raise RuntimeError("M6 六轴手动下发失败")
+    else:
+        target_value = float(raw_value)
+        if not 0.0 <= target_value <= 1.0:
+            raise ValueError("四指目标值必须在 0-1 之间")
+        if not _set_m6_four_finger_positions(hand, positions, target_value):
+            raise RuntimeError("M6 四指手动下发失败")
+    current_positions = _poll_m6_until_stable(hand, "M6 手动记录")
     record = {
         "timestamp": datetime.now().isoformat(timespec="seconds"),
         "type": "m6",
@@ -943,12 +954,25 @@ def _temporary_hand_control(connected_arm: ConnectedArm, hand_clients: Persisten
         _validate_m6_positions(positions)
         print("当前右手执行器值：")
         print(_format_joint_values(positions))
-        print("输入轴编号进行单轴控制，输入 r 控制四个手指（大拇指除外），输入 q 返回")
+        print("输入 s 单独控制 M6 六轴，输入轴编号控制单轴，输入 r 控制四指（大拇指除外），输入 q 返回")
         raw_mode = input("请选择控制类型：").strip().lower()
         if raw_mode == "q":
             print("已退出手掌控制模式")
             return
-        if raw_mode == "r":
+        if raw_mode == "s":
+            raw_values = input("请输入 M6 六个目标值，按执行器顺序输入，单位归一化 0-1：").strip()
+            if raw_values.lower() == "q":
+                print("已退出手掌控制模式")
+                return
+            try:
+                target_positions = _parse_float_list(raw_values, expected_len=M6_ACTUATOR_COUNT)
+                if not _set_m6_individual_positions(hand, target_positions):
+                    print("右手下发失败")
+                    continue
+            except ValueError as error:
+                print(f"M6 六轴目标值输入无效：{error}")
+                continue
+        elif raw_mode == "r":
             selected_values = [positions[actuator_id] for actuator_id in M6_FOUR_FINGER_ACTUATOR_IDS]
             print(f"当前四指值（食指/中指/无名指/小指）：{_format_joint_values(selected_values)}")
             raw_value = input("请输入四指统一目标值，单位归一化 0-1: ").strip().lower()
@@ -990,11 +1014,7 @@ def _temporary_hand_control(connected_arm: ConnectedArm, hand_clients: Persisten
             if not hand.set_right_hand_axis(axis_index, target_value):
                 print("右手下发失败")
                 continue
-        time.sleep(1.0)
-        current_state = hand.get_hand_state(include_tactile=False)
-        if current_state is None:
-            raise RuntimeError("右手状态不可用")
-        current_positions = _get_actuator_positions(current_state)
+        current_positions = _poll_m6_until_stable(hand, "右手手动控制")
         print("右手已更新为：")
         print(_format_joint_values(current_positions))
         print("手掌控制完成，已返回原本的控制模式")
@@ -1050,49 +1070,6 @@ def _write_drag_records_csv(records: list[dict[str, str]], arm_side: str) -> Pat
 
 
 # region 机器人控制
-def _start_arm_ssh_tunnel() -> subprocess.Popen[bytes]:
-    """通过 Orin 为两台机械臂建立 SDK 固定端口转发。"""
-
-    arm_routes = (
-        (LEFT_ARM_IP, LEFT_ARM_CONTROLLER_IP),
-        (RIGHT_ARM_IP, RIGHT_ARM_CONTROLLER_IP),
-    )
-    command = [
-        "ssh",
-        "-o",
-        "ExitOnForwardFailure=yes",
-        "-o",
-        "ServerAliveInterval=5",
-        "-o",
-        "ServerAliveCountMax=3",
-        "-o",
-        "TCPKeepAlive=yes",
-        "-N",
-    ]
-    for local_ip, controller_ip in arm_routes:
-        for port in ARM_SSH_FORWARD_PORTS:
-            command.extend(["-L", f"{local_ip}:{port}:{controller_ip}:{port}"])
-    command.append(ARM_SSH_ALIAS)
-
-    logger.info(
-        "启动双臂 SSH 转发，left={} -> {}，right={} -> {}，ports={}",
-        LEFT_ARM_IP,
-        LEFT_ARM_CONTROLLER_IP,
-        RIGHT_ARM_IP,
-        RIGHT_ARM_CONTROLLER_IP,
-        ARM_SSH_FORWARD_PORTS,
-    )
-    process = subprocess.Popen(command, stderr=subprocess.PIPE)
-    time.sleep(ARM_SSH_START_WAIT_S)
-    if process.poll() is None:
-        logger.success("双臂 SSH 转发启动成功，pid={}", process.pid)
-        return process
-
-    stderr_data = process.stderr.read() if process.stderr is not None else b""
-    error_text = stderr_data.decode("utf-8", errors="replace").strip()
-    raise RuntimeError(f"双臂 SSH 转发启动失败：{error_text or 'ssh 提前退出'}")
-
-
 def _detect_arm_side(robot_type: str) -> str:
     """根据控制器上报的机型名称判断左右臂。"""
 
@@ -1106,8 +1083,8 @@ def _connect_arms() -> dict[str, ConnectedArm]:
     """连接多台机械臂，并按控制器上报的型号归类左右臂。"""
 
     configs = [
-        ("left", LEFT_ARM_IP),
-        ("right", RIGHT_ARM_IP),
+        ("left", LEFT_ARM_CONTROLLER_IP),
+        ("right", RIGHT_ARM_CONTROLLER_IP),
     ]
     connected_arms: dict[str, ConnectedArm] = {}
     try:
@@ -1240,7 +1217,7 @@ def _cartesian_control_loop(
         _print_motion_speed_status("笛卡尔", cartesian_speed, cartesian_zone)
         print("输入新的 xyzrpy，单位分别为 mm 和 deg")
         print("也支持输入完整 pose 列格式：[x, y, z, r, p, y, hasElbow, elbowDeg, confData]")
-        print("输入 s 调整速度，输入 h 进入手掌控制模式（轴编号/r），输入 l 进入 lift 控制模式，输入 q 返回主菜单")
+        print("输入 s 调整速度，输入 h 进入手掌控制模式（s/轴编号/r），输入 l 进入 lift 控制模式，输入 q 返回主菜单")
         raw_text = input("目标 xyzrpy: ").strip()
         if raw_text.lower() == "s":
             cartesian_speed = _prompt_motion_speed(cartesian_speed, "笛卡尔")
@@ -1358,7 +1335,7 @@ def _joint_control_loop(
         print(f"当前关节值 (deg): {_format_sequence(_rad_to_deg(joint_values))}")
         _print_motion_speed_status("关节", joint_speed, joint_zone)
         print("输入新的关节值，单位 deg，支持空格、英文逗号或中文逗号分隔")
-        print("输入 s 调整速度，输入 h 进入手掌控制模式（轴编号/r），输入 l 进入 lift 控制模式，输入 q 返回主菜单")
+        print("输入 s 调整速度，输入 h 进入手掌控制模式（s/轴编号/r），输入 l 进入 lift 控制模式，输入 q 返回主菜单")
         raw_text = input("目标关节值：").strip()
         if raw_text.lower() == "s":
             joint_speed = _prompt_motion_speed(joint_speed, "关节")
@@ -1617,25 +1594,43 @@ def _poll_gripper_until_idle(client: DahuanGripperClient, target_position: int) 
         time.sleep(POSITION_POLL_INTERVAL_S)
 
 
-def _poll_right_hand_until_idle(
-    hand: WujiRightHandClient,
-    target_name: str,
-    target_position: float,
-) -> None:
-    deadline = time.monotonic() + DEFAULT_REQUEST_TIMEOUT_S
+def _poll_m6_until_stable(hand: WujiRightHandClient, action_name: str) -> list[float]:
+    """按 M6 实际状态等待右手稳定，不以目标下发值判断到位。"""
+
+    deadline = time.monotonic() + HAND_STABILITY_TIMEOUT_S
+    recent_positions: list[list[float]] = []
     while True:
         state = hand.get_hand_state(include_tactile=False)
         if state is None:
             raise RuntimeError("右手状态不可用")
         positions = _get_actuator_positions(state)
         _validate_m6_positions(positions)
-        finger_positions = [positions[actuator_id] for actuator_id in M6_FOUR_FINGER_ACTUATOR_IDS]
-        print(f"hand {target_name}: four_fingers={_format_sequence(finger_positions, decimals=6)}")
-        if all(math.isclose(position, target_position, abs_tol=1e-3) for position in finger_positions):
-            return
+        recent_positions.append(positions)
+        if len(recent_positions) > HAND_STABLE_SAMPLE_COUNT:
+            recent_positions.pop(0)
+        print(f"hand {action_name}: positions={_format_sequence(positions, decimals=6)}")
+        if len(recent_positions) == HAND_STABLE_SAMPLE_COUNT and all(
+            max(sample[actuator_id] for sample in recent_positions)
+            - min(sample[actuator_id] for sample in recent_positions)
+            <= HAND_STABILITY_TOLERANCE
+            for actuator_id in range(M6_ACTUATOR_COUNT)
+        ):
+            return positions
         if time.monotonic() >= deadline:
-            raise TimeoutError("右手联调执行超时")
-        time.sleep(POSITION_POLL_INTERVAL_S)
+            logger.warning(
+                "{} 在 {:.1f} s 内未达到稳定判定，继续后续流程；最近状态={}",
+                action_name,
+                HAND_STABILITY_TIMEOUT_S,
+                _format_sequence(positions, decimals=6),
+            )
+            return positions
+        time.sleep(HAND_POSITION_POLL_INTERVAL_S)
+
+
+def _poll_right_hand_until_idle(hand: WujiRightHandClient, target_name: str) -> None:
+    """等待联调中的右手实际状态稳定。"""
+
+    _poll_m6_until_stable(hand, f"联调 {target_name}")
 
 
 def _move_arm_to_joint(
@@ -1728,7 +1723,7 @@ def _run_interlock_sequence(connected_arm: ConnectedArm, hand_clients: Persisten
                 target_position = target.hand_four_finger_position
                 if not _set_m6_four_finger_positions(hand, current_positions, target_position):
                     raise RuntimeError("右手联调下发失败")
-                _poll_right_hand_until_idle(hand, f"{target.target_type}-{target.target_id}", target_position)
+                _poll_right_hand_until_idle(hand, f"{target.target_type}-{target.target_id}")
                 break
             time.sleep(0.05)
 
@@ -1777,34 +1772,24 @@ def _main_menu(connected_arms: dict[str, ConnectedArm], hand_clients: Persistent
 def main() -> int:
     """程序入口。"""
 
-    arm_ssh_process = _start_arm_ssh_tunnel()
+    connected_arms = _connect_arms()
+    gripper_channel = create_channel(f"{WUYOU_QMLINKER_HOST}:{GRIPPER_PORT}")
+    right_hand_channel = create_channel(f"{WUYOU_QMLINKER_HOST}:{DEFAULT_PORT}")
+    hand_clients = PersistentHandClients(
+        gripper=DahuanGripperClient(gripper_channel),
+        right_hand=WujiRightHandClient(right_hand_channel),
+        body=WujiBodyClient(right_hand_channel),
+    )
     try:
-        connected_arms = _connect_arms()
-        gripper_process, gripper_channel = create_wuyou_channel(GRIPPER_PORT)
-        right_hand_process, right_hand_channel = create_wuyou_channel(DEFAULT_PORT)
-        hand_clients = PersistentHandClients(
-            gripper_process=gripper_process,
-            gripper=DahuanGripperClient(gripper_channel),
-            right_hand_process=right_hand_process,
-            right_hand=WujiRightHandClient(right_hand_channel),
-            body=WujiBodyClient(right_hand_channel),
-        )
-        try:
-            _main_menu(connected_arms, hand_clients)
-            return 0
-        finally:
-            preserved_gripper_process = hand_clients.gripper_process
-            preserved_right_hand_process = hand_clients.right_hand_process
-            for connected_arm in connected_arms.values():
-                _shutdown_robot(connected_arm.robot, connected_arm.ec)
-            del hand_clients
-            gc.collect()
-            close_wuyou_channel(gripper_channel)
-            close_wuyou_channel(right_hand_channel)
-            stop_ssh_process(preserved_gripper_process)
-            stop_ssh_process(preserved_right_hand_process)
+        _main_menu(connected_arms, hand_clients)
+        return 0
     finally:
-        stop_ssh_process(arm_ssh_process)
+        for connected_arm in connected_arms.values():
+            _shutdown_robot(connected_arm.robot, connected_arm.ec)
+        del hand_clients
+        gc.collect()
+        close_wuyou_channel(gripper_channel)
+        close_wuyou_channel(right_hand_channel)
 
 
 if __name__ == "__main__":

@@ -68,6 +68,14 @@ class ReplayHandSettings:
     "读取完整 M6 右手执行器状态的总超时时间，单位 s。"
     m6_state_read_poll_interval_s: float = 0.1
     "右手状态内容无效时的重新读取间隔，单位 s。"
+    m6_motion_poll_interval_s: float = 0.1
+    "M6 目标下发后读取实际状态的轮询间隔，单位 s。"
+    m6_motion_stable_sample_count: int = 3
+    "M6 运动结束所需的连续稳定采样次数，单位 次。"
+    m6_motion_stability_tolerance: float = 0.1
+    "M6 连续稳定采样中每个执行器允许的最大最小值差，单位 归一化位置。"
+    m6_motion_stability_timeout_s: float = 5.0
+    "M6 等待实际状态稳定的最长时间，单位 s；超时后继续后续流程。"
     lift_enable_state_timeout_s: float = 10.0
     "下发 lift enable 后等待 get_enable() 状态为 True 的总超时时间，单位 s。"
     lift_enable_retry_interval_s: float = 0.2

@@ -116,7 +116,7 @@ def prepare_gripper_before_replay(runtime: ReplayRuntime) -> None:
 
 
 def execute_m6_row(runtime: ReplayRuntime, row: ReplayRow) -> None:
-    """读取有效的右手 M6 状态后整体下发目标。
+    """读取有效的右手 M6 状态后整体下发目标并等待实际状态稳定。
 
     Parameters
     ----------
@@ -135,7 +135,8 @@ def execute_m6_row(runtime: ReplayRuntime, row: ReplayRow) -> None:
     Notes
     -----
     空执行器列表属于瞬时通信无效状态，不会直接中止双臂并行执行。只有读取到完整状态后
-    才会把 CSV 目标覆盖到当前状态并整体下发。
+    才会把 CSV 目标覆盖到当前状态并整体下发。下发后只根据连续 M6 实际状态采样判断
+    是否稳定，不与 CSV 目标值比较；5 秒内未稳定时记录告警并继续后续流程。
     """
 
     _raise_if_stopped(runtime)
@@ -157,6 +158,7 @@ def execute_m6_row(runtime: ReplayRuntime, row: ReplayRow) -> None:
         runtime.stop_event,
     ):
         raise RuntimeError("右手 M6 下发失败")
+    _wait_m6_until_stable(runtime, row.csv_name, row.row_index)
     logger.info(
         "已下发右手 M6 目标 file={} row={} positions={}",
         row.csv_name,
@@ -224,36 +226,17 @@ def _read_valid_m6_positions(runtime: ReplayRuntime) -> list[float]:
                 runtime.settings.non_motion_retry_delay_s,
                 runtime.stop_event,
             )
+            positions = _parse_m6_positions(state)
         except Exception as exc:
             last_invalid_reason = f"RPC 失败：{exc}"
         else:
-            if state is None:
-                last_invalid_reason = "state=None"
-            elif not isinstance(state, dict):
-                last_invalid_reason = f"state 不是 dict actual={type(state).__name__}"
-            else:
-                actuators = state.get("actuators")
-                if not isinstance(actuators, list):
-                    last_invalid_reason = "actuators 不是 list"
-                elif len(actuators) != M6_ACTUATOR_COUNT:
-                    last_invalid_reason = (
-                        f"执行器数量与 M6 不一致 expected={M6_ACTUATOR_COUNT} actual={len(actuators)}"
-                    )
-                else:
-                    for index, actuator in enumerate(actuators):
-                        if not isinstance(actuator, dict) or not isinstance(actuator.get("position"), int | float):
-                            last_invalid_reason = f"actuators[{index}].position 非数值"
-                            positions = []
-                            break
-                        positions.append(float(actuator["position"]))
-                    if len(positions) == M6_ACTUATOR_COUNT:
-                        if read_index > 1:
-                            logger.success(
-                                "右手状态重试后恢复 read={} actuator_count={}",
-                                read_index,
-                                len(positions),
-                            )
-                        return positions
+            if read_index > 1:
+                logger.success(
+                    "右手状态重试后恢复 read={} actuator_count={}",
+                    read_index,
+                    len(positions),
+                )
+            return positions
         remaining_s = deadline - time.monotonic()
         if remaining_s <= 0.0:
             raise TimeoutError(
@@ -267,6 +250,115 @@ def _read_valid_m6_positions(runtime: ReplayRuntime) -> list[float]:
             remaining_s,
         )
         _wait_or_raise(runtime, min(hand_settings.m6_state_read_poll_interval_s, remaining_s))
+
+
+def _parse_m6_positions(state: object) -> list[float]:
+    """解析一份右手状态中的六轴实际位置。
+
+    Parameters
+    ----------
+    state:
+        ``QMHand.get_hand_state`` 返回的状态对象，必须包含六个带数值
+        ``position`` 字段的执行器记录。
+
+    Returns
+    -------
+    list[float]
+        按 M6 执行器编号排列的六个归一化实际位置。
+
+    Raises
+    ------
+    RuntimeError
+        状态为空、结构不正确、执行器数量不是 6 或执行器位置不是数值。
+    """
+
+    if state is None:
+        raise RuntimeError("state=None")
+    if not isinstance(state, dict):
+        raise RuntimeError(f"state 不是 dict actual={type(state).__name__}")
+    actuators = state.get("actuators")
+    if not isinstance(actuators, list):
+        raise RuntimeError("actuators 不是 list")
+    if len(actuators) != M6_ACTUATOR_COUNT:
+        raise RuntimeError(
+            f"执行器数量与 M6 不一致 expected={M6_ACTUATOR_COUNT} actual={len(actuators)}"
+        )
+    positions: list[float] = []
+    for index, actuator in enumerate(actuators):
+        if not isinstance(actuator, dict) or not isinstance(actuator.get("position"), int | float):
+            raise RuntimeError(f"actuators[{index}].position 非数值")
+        positions.append(float(actuator["position"]))
+    return positions
+
+
+def _wait_m6_until_stable(runtime: ReplayRuntime, csv_name: str, row_index: int) -> None:
+    """按 M6 实际状态等待运动稳定，超时后放行后续 CSV。
+
+    Parameters
+    ----------
+    runtime:
+        当前单臂回放上下文，提供右手客户端、停止事件和轮询配置。
+    csv_name:
+        当前 M6 记录所属 CSV 文件名，用于日志定位。
+    row_index:
+        当前 M6 记录在 CSV 中的源数据行号，用于日志定位。
+
+    Notes
+    -----
+    每次采样间隔由 ``ReplayHandSettings.m6_motion_poll_interval_s`` 控制，默认 0.1 s。
+    最近连续 3 次有效采样中，六个轴分别满足最大值减最小值不超过 0.1 时认为运动结束。
+    该判定只观察实际状态，不比较本次下发的目标值；5 s 内未稳定只记录告警，不抛出错误。
+    """
+
+    right_hand = runtime.hand_body.right_hand
+    if right_hand is None:
+        raise RuntimeError("当前 runtime 未配置右手 M6 客户端")
+    hand_settings = runtime.settings.hand
+    deadline = time.monotonic() + hand_settings.m6_motion_stability_timeout_s
+    recent_positions: list[list[float]] = []
+    last_positions: list[float] | None = None
+    last_invalid_reason = "尚未读取"
+    sample_count = 0
+    while True:
+        _raise_if_stopped(runtime)
+        try:
+            positions = _parse_m6_positions(right_hand.get_hand_state(include_tactile=False))
+        except Exception as error:
+            last_invalid_reason = str(error)
+        else:
+            sample_count += 1
+            last_positions = positions
+            recent_positions.append(positions)
+            if len(recent_positions) > hand_settings.m6_motion_stable_sample_count:
+                recent_positions.pop(0)
+            if len(recent_positions) == hand_settings.m6_motion_stable_sample_count and all(
+                max(sample[actuator_id] for sample in recent_positions)
+                - min(sample[actuator_id] for sample in recent_positions)
+                <= hand_settings.m6_motion_stability_tolerance
+                for actuator_id in range(M6_ACTUATOR_COUNT)
+            ):
+                logger.info(
+                    "右手 M6 实际状态已稳定 file={} row={} samples={} positions={}",
+                    csv_name,
+                    row_index,
+                    sample_count,
+                    [round(value, 4) for value in positions],
+                )
+                return
+        remaining_s = deadline - time.monotonic()
+        if remaining_s <= 0.0:
+            logger.warning(
+                "右手 M6 实际状态 {:.1f} s 内未稳定，继续后续流程 file={} row={} "
+                "samples={} last_positions={} last_reason={}",
+                hand_settings.m6_motion_stability_timeout_s,
+                csv_name,
+                row_index,
+                sample_count,
+                last_positions,
+                last_invalid_reason,
+            )
+            return
+        _wait_or_raise(runtime, min(hand_settings.m6_motion_poll_interval_s, remaining_s))
 
 
 # endregion

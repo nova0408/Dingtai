@@ -17,6 +17,7 @@ from .arm_gateway import (
     move_append_abs_j,
     move_reset,
     move_start,
+    restore_nrt_motion_state_locked,
     read_cart_posture,
     read_operate_mode,
     read_operation_state,
@@ -232,6 +233,30 @@ def _start_move_with_retry(runtime: ReplayRuntime, rows: list[ReplayRow]) -> Non
             move_start(runtime.connected_arm)
             return
         except RuntimeError as error:
+            if _is_motor_power_state_unsupported(error):
+                if attempt >= retry_count:
+                    raise RuntimeError(
+                        f"moveStart 下发失败 arm_side={runtime.connected_arm.arm_side} "
+                        f"file={rows[0].csv_name} rows={rows[0].row_index}-{rows[-1].row_index} "
+                        f"attempt={attempt}/{retry_count} cause={error}"
+                    ) from error
+                _raise_if_stop_requested(runtime)
+                logger.warning(
+                    "moveStart 被电机状态拒绝，准备恢复 NRT 与使能状态后重试 "
+                    "arm_side={} file={} rows={} attempt={}/{} cause={}",
+                    runtime.connected_arm.arm_side,
+                    rows[0].csv_name,
+                    f"{rows[0].row_index}-{rows[-1].row_index}",
+                    attempt,
+                    retry_count,
+                    error,
+                )
+                restore_nrt_motion_state_locked(
+                    runtime.connected_arm,
+                    runtime.settings,
+                    runtime.stop_event,
+                )
+                continue
             if not _is_diagnosis_save_busy(error) or attempt >= retry_count:
                 raise RuntimeError(
                     f"moveStart 下发失败 arm_side={runtime.connected_arm.arm_side} "
@@ -262,6 +287,13 @@ def _is_diagnosis_save_busy(error: RuntimeError) -> bool:
 
     detail = str(error).lower()
     return "-60611" in detail or "saving diagnosis data" in detail
+
+
+def _is_motor_power_state_unsupported(error: RuntimeError) -> bool:
+    """识别 xCoreSDK ``-17`` 电机使能状态不正确错误。"""
+
+    detail = str(error).lower()
+    return "ec=-17" in detail and "motor power state unsupported operation" in detail
 
 
 def _wait_until_reset_ready(

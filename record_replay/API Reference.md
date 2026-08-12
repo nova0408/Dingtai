@@ -1,7 +1,7 @@
 # RecordReplay API Reference
 
-文档版本：`3.8.0`（2026-08-12）
-服务业务版本：`3.8.0`
+文档版本：`3.9.0`（2026-08-12）
+服务业务版本：`3.9.0`
 默认监听：`http://<orin>:6300`
 
 机器可读文件：[OpenAPI 3.1](openapi.yaml)。
@@ -19,7 +19,7 @@ RecordReplay 通过本服务内的 `camera_client.py` 调用 CameraPipeline 的 
 ## 2. 通用约定
 
 - Content-Type：`application/json; charset=utf-8`。
-- 当前服务版本：`3.8.0`，与 `record_replay/CHANGELOG.md` 一致。
+- 当前服务版本：`3.9.0`，与 `record_replay/CHANGELOG.md` 一致。
 - 根目录同步脚本支持 `-RecordReplayOnly`，只替换并重启 RecordReplay；替换前检查 RecordReplay
   为 `idle`/`waiting` 且 CameraPipeline 在 6200 端口就绪，替换后校验文件清单、SHA-256、只读
   `/status` 和版本，不发送 `/start`；`runtime_state.json` 等运行产物不纳入清单。
@@ -83,7 +83,7 @@ GET /health
 
 ```json
 {
-  "service_version": "3.8.0",
+  "service_version": "3.9.0",
   "api_version": "1",
   "state": "idle",
   "hardware_access": "lazy"
@@ -428,6 +428,8 @@ print(client.get_config())
 
 | 文档版本 | 日期 | 内容 |
 | --- | --- | --- |
+| `3.9.0` | 2026-08-12 | 右手 M6 下发后按实际六轴状态连续采样判断稳定；5 s 未稳定时告警放行，不比较下发目标值。 |
+| `3.8.1` | 2026-08-12 | `moveStart` 遇到 `ec=-17` 时，重试前恢复 NRT、自动模式和电机上电状态。 |
 | `3.8.0` | 2026-08-12 | 状态快照和 WebSocket 新增 `execution_phase`，细分回放执行阶段。 |
 | `3.6.1` | 2026-08-11 | 增加原生致命信号线程栈、设备调用边界和 WebSocket 生命周期日志；恢复状态补充错误说明 |
 | `3.6.0` | 2026-08-11 | 错误响应增加请求追踪和具体异常摘要，补充结构化 405 与关键日志约定 |
