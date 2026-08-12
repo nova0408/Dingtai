@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Dingtai API Gateway
-  version: 0.4.0
+  version: 0.5.1
   description: >-
     统一客户端入口。业务请求按 URL 前缀转发到 CameraPipeline、RecordReplay、RobotControl 或
     Calibration Service；Gateway 由 aiohttp 直接提供 TLS，并默认同时监听 IPv4
@@ -17,6 +17,10 @@ paths:
       responses:
         '200':
           description: Gateway 可响应
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/GatewayHealthResponse'}
+        '500': {$ref: '#/components/responses/GatewayErrorResponse'}
   /api/v1/camera/{path}:
     parameters:
       - name: path
@@ -25,10 +29,18 @@ paths:
         schema: {type: string}
     get:
       summary: 转发 CameraPipeline HTTP GET
-      responses: {'200': {description: 后端响应}}
+      responses:
+        '200': {description: 后端响应}
+        '500': {$ref: '#/components/responses/GatewayErrorResponse'}
+        '502': {$ref: '#/components/responses/GatewayErrorResponse'}
+        '503': {$ref: '#/components/responses/GatewayErrorResponse'}
     post:
       summary: 转发 CameraPipeline HTTP POST
-      responses: {'200': {description: 后端响应}}
+      responses:
+        '200': {description: 后端响应}
+        '500': {$ref: '#/components/responses/GatewayErrorResponse'}
+        '502': {$ref: '#/components/responses/GatewayErrorResponse'}
+        '503': {$ref: '#/components/responses/GatewayErrorResponse'}
   /api/v1/camera-ws/{path}:
     parameters:
       - name: path
@@ -46,10 +58,25 @@ paths:
         schema: {type: string}
     get:
       summary: 转发 RecordReplay 请求
-      responses: {'200': {description: 后端响应}}
+      responses:
+        '200': {description: RecordReplay 后端响应}
+        '400': {description: RecordReplay 结构化业务错误}
+        '404': {description: RecordReplay 路径不存在}
+        '405': {description: RecordReplay 方法不允许}
+        '500': {description: RecordReplay 或 Gateway 内部结构化错误}
+        '502': {$ref: '#/components/responses/GatewayErrorResponse'}
+        '503': {$ref: '#/components/responses/GatewayErrorResponse'}
     post:
       summary: 转发 RecordReplay 请求
-      responses: {'200': {description: 后端响应}}
+      responses:
+        '200': {description: RecordReplay 后端响应}
+        '202': {description: RecordReplay 已接受启动请求}
+        '400': {description: RecordReplay 结构化业务错误}
+        '404': {description: RecordReplay 路径不存在}
+        '405': {description: RecordReplay 方法不允许}
+        '500': {description: RecordReplay 或 Gateway 内部结构化错误}
+        '502': {$ref: '#/components/responses/GatewayErrorResponse'}
+        '503': {$ref: '#/components/responses/GatewayErrorResponse'}
   /api/v1/record-replay-ws:
     get:
       summary: 转发 RecordReplay 状态 WebSocket 握手
@@ -68,7 +95,11 @@ paths:
     post:
       summary: 转发 RobotControl 控制请求
       description: 可能控制真实设备，只能由现场人员手动发起。
-      responses: {'202': {description: 后端响应}}
+      responses:
+        '202': {description: 后端响应}
+        '500': {$ref: '#/components/responses/GatewayErrorResponse'}
+        '502': {$ref: '#/components/responses/GatewayErrorResponse'}
+        '503': {$ref: '#/components/responses/GatewayErrorResponse'}
   /api/v1/robot-control/status/stream:
     get:
       summary: 转发 RobotControl SSE 只读状态流
@@ -92,8 +123,56 @@ paths:
         schema: {type: string}
     get:
       summary: 转发 Calibration Service GET
-      responses: {'200': {description: 后端响应}}
+      responses:
+        '200': {description: 后端响应}
+        '500': {$ref: '#/components/responses/GatewayErrorResponse'}
+        '502': {$ref: '#/components/responses/GatewayErrorResponse'}
+        '503': {$ref: '#/components/responses/GatewayErrorResponse'}
     post:
       summary: 转发 Calibration Service 拍摄、计算或确认请求
       description: 不发送设备控制请求；正式先验替换必须经过 Calibration Service 二次确认，旧文件改名保留。
-      responses: {'200': {description: 后端响应}}
+      responses:
+        '200': {description: 后端响应}
+        '500': {$ref: '#/components/responses/GatewayErrorResponse'}
+        '502': {$ref: '#/components/responses/GatewayErrorResponse'}
+        '503': {$ref: '#/components/responses/GatewayErrorResponse'}
+
+components:
+  responses:
+    GatewayErrorResponse:
+      description: Gateway 自身产生的结构化错误；后端错误保持后端原始 JSON
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/GatewayErrorResponse'}
+  schemas:
+    GatewayHealthResponse:
+      type: object
+      additionalProperties: false
+      required: [service_version, gateway_version, backend_ports, backend_probe]
+      properties:
+        service_version: {type: string}
+        gateway_version:
+          type: string
+          description: 兼容旧客户端的 Gateway 版本字段，与 service_version 相同。
+        backend_ports:
+          type: object
+          additionalProperties: {type: integer, minimum: 1}
+        backend_probe: {type: boolean, const: false}
+    GatewayErrorResponse:
+      type: object
+      additionalProperties: false
+      required: [error_code, error_text]
+      properties:
+        error_code:
+          type: string
+          enum:
+            - gateway_not_ready
+            - gateway_upstream_unavailable
+            - gateway_internal_error
+            - gateway_not_found
+            - gateway_method_not_allowed
+            - gateway_forbidden
+            - gateway_request_rejected
+        error_text:
+          type: string
+          description: 中文错误说明，包含可与 Gateway 日志关联的 request_id

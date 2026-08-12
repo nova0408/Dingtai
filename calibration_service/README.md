@@ -26,7 +26,9 @@
 
 1. 由现场人员通过 RobotControl 接口或其它安全操作方式把设备放到拍摄姿态。
 2. 调用 `POST /api/v1/prior/head` 或 `POST /api/v1/prior/hand`；接口只生成待确认缓存，
-   不会立即替换 RecordReplay 正式文件。
+   不会立即替换 RecordReplay 正式文件。响应包含 `replacement_id`、`expires_at` 和完整的
+   `data.result`；头部与手部先验的 `result` 就是临时目录中对应 JSON 的完整内容；
+   必须在结果生成后的 30 秒内确认或取消，超时后服务自动丢弃待确认结果。
 3. 左手眼在手上标定时，调用 `POST /api/v1/start`（经 Gateway 为
    `/api/v1/calibration/start`），
    `calibration_kind=left_eye_in_hand`；现场人员每次调整左臂姿态后调用
@@ -52,10 +54,35 @@ Content-Type: application/json
 先读取配置响应中的 `available_dictionary_names`，再选择字典；服务不会接受当前
 OpenCV 未提供的字典名称。
 
-标定会话的 `start/end` 只用于提示、清空和封存本次内存样本，不会隐式移动设备、拍摄或
+只读 `GET /api/v1/health` 返回 `service_version` 和当前任务状态，不访问设备；正式客户端可用
+该字段进行版本校验。标定会话的 `start/end` 只用于提示、清空和封存本次内存样本，不会隐式移动设备、拍摄或
 求解。`cancel` 会丢弃样本和待确认缓存，不执行替换。正式替换时，旧文件会按
 `文件名_yymmdd_hhmmss.扩展名` 重命名保留，不会直接删除。`GET /api/v1/results/prior/head`
 与 `/results/prior/hand` 分别读取两个已确认的先验 JSON。
+
+所有待确认结果的确认窗口均为 30 秒。超时后临时结果和 `replacement_id` 失效，
+RecordReplay 正式文件保持不变；`GET /api/v1/status` 的 `pending_replacement` 会变为 `null`。
+
+待确认响应统一保留原有的 `calibration_kind`、`result_path`、`message`、状态和确认字段，
+并增加未写入正式文件的 `result`。例如头部先验为：
+
+```json
+{
+  "data": {
+    "calibration_kind": "head",
+    "result": {
+      "marker_count": 7,
+      "charuco_count": 7,
+      "reprojection_error_px": 0.12,
+      "camera_board_transform": [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]],
+      "translation_mm": [0, 0, 0],
+      "rpy_deg": [0, 0, 0]
+    },
+    "replacement_id": "...",
+    "requires_confirmation": true
+  }
+}
+```
 
 这些接口只触发拍摄和计算，不替代设备控制接口。重启服务不会自动拍摄、计算或启动
 RecordReplay 回放。

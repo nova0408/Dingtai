@@ -1,7 +1,7 @@
 # Dingtai API Gateway API Reference
 
-文档版本：`1.6.0`（2026-08-10）
-Gateway 服务版本：`0.3.0`
+文档版本：`1.7.0`（2026-08-11）
+Gateway 服务版本：`0.5.1`
 正式客户端入口：`https://<orin-ip>`（标准 HTTPS 端口 `443`）
 
 Gateway 使用 aiohttp 直接终止 TLS 并监听外部客户端；默认绑定 `0.0.0.0:443`，同时在
@@ -55,6 +55,13 @@ Orin 本机的服务间访问和只读诊断必须直接使用内部端口，不
 Gateway 的 `443` 和 `/api/v1/*` 前缀只面向外部客户端。部署脚本对 Gateway 自身的健康检查
 可以访问 Gateway 的 `443`，但不能据此改变 Orin 本机访问后端服务的边界。
 
+Gateway 为每个 HTTP 请求生成 `X-Request-ID` 并写入访问日志；上游响应本身带请求 ID 时，
+Gateway 另以 `X-Upstream-Request-ID` 保留，便于关联两层日志。后端返回的非 2xx JSON 会保持
+原样；Gateway 自身的路由、CORS、会话和上游连接错误统一返回
+`{"error_code": "gateway_*", "error_text": "...；request_id=..."}`。其中 `502` 表示无法连接
+上游，`503` 表示 Gateway 客户端会话尚未就绪，`500` 表示 Gateway 未预期异常；完整异常堆栈
+保留在 Gateway 日志中。
+
 ## 2. Gateway 接口
 
 ### 2.1 健康检查
@@ -69,13 +76,15 @@ GET /api/v1/gateway/health
 
 ```json
 {
-  "gateway_version": "0.2.1",
+  "service_version": "0.5.1",
+  "gateway_version": "0.5.1",
   "backend_ports": {
     "camera_http": 6400,
     "camera_websocket": 6401,
     "record_replay": 6300,
     "record_replay_websocket": 6301,
-    "robot_control": 6500
+    "robot_control": 6500,
+    "calibration": 6600
   },
   "backend_probe": false
 }
@@ -86,7 +95,9 @@ GET /api/v1/gateway/health
 ```http
 GET /api/v1/camera/health
 GET /api/v1/record-replay/status
+GET /api/v1/record-replay/health
 GET /api/v1/robot-control/health
+GET /api/v1/calibration/health
 ```
 
 ### 2.2 RobotControl AR5 七轴软限位
@@ -159,6 +170,7 @@ RobotControl 的控制 POST 和 RecordReplay 的 `/start` 仍必须由现场人�
 
 | 文档版本 | 日期 | 内容 |
 | --- | --- | --- |
+| `1.7.0` | 2026-08-11 | Gateway 错误统一为带 request_id 的 JSON，并补充关键链路日志约定。 |
 | `1.5.0` | 2026-08-07 | 补充 RobotControl AR5 七轴软限位读取接口的统一 Gateway 访问路径和响应契约。 |
 | `1.4.0` | 2026-08-07 | 增加 RecordReplay 状态 WebSocket 的 WSS 统一入口。 |
 | `1.3.0` | 2026-08-04 | Gateway 默认同时监听 IPv4 `0.0.0.0:443` 与 IPv6 `[::]:443`；后端 loopback、证书和 CORS 约束不变。 |

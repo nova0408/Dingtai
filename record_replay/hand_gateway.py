@@ -21,7 +21,7 @@ class HandBodyRuntime:
     gripper: QMGripper | None = None
     "左侧大寰夹爪，仅 left runtime 有效。"
     right_hand: QMHand | None = None
-    "右侧 M11 灵巧手，仅 right runtime 有效。"
+    "右侧 M6 灵巧手，仅 right runtime 有效。"
 
 
 # endregion

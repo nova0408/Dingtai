@@ -49,20 +49,20 @@ class RobotControlClient:
     def get_agv_navigation_targets(self, timeout_s: float = 5.0) -> dict[str, Any]:
         """读取 AGV 当前地图和可导航目标点。"""
 
-        return self._request("GET", "/api/v1/qmlinker/agv/targets", timeout_s=timeout_s)
+        return self._request("GET", "/api/v1/agv/targets", timeout_s=timeout_s)
 
     def get_agv_base_state(self, timeout_s: float = 5.0) -> dict[str, Any]:
         """读取 AGV 底盘状态。"""
 
         return self._request(
-            "GET", "/api/v1/qmlinker/agv/base-state", timeout_s=timeout_s
+            "GET", "/api/v1/agv/base-state", timeout_s=timeout_s
         )
 
     def get_agv_base_mode(self, timeout_s: float = 5.0) -> dict[str, Any]:
         """读取 AGV 底盘控制模式和工作模式。"""
 
         return self._request(
-            "GET", "/api/v1/qmlinker/agv/base-mode", timeout_s=timeout_s
+            "GET", "/api/v1/agv/base-mode", timeout_s=timeout_s
         )
 
     def get_agv_base_operation_state(self, timeout_s: float = 5.0) -> dict[str, Any]:
@@ -70,7 +70,7 @@ class RobotControlClient:
 
         return self._request(
             "GET",
-            "/api/v1/qmlinker/agv/base-operation-state",
+            "/api/v1/agv/base-operation-state",
             timeout_s=timeout_s,
         )
 
@@ -79,7 +79,7 @@ class RobotControlClient:
 
         return self._request(
             "GET",
-            "/api/v1/qmlinker/agv/base-task-process",
+            "/api/v1/agv/base-task-process",
             timeout_s=timeout_s,
         )
 
@@ -87,7 +87,7 @@ class RobotControlClient:
         """读取 AGV 底盘电量和充电状态。"""
 
         return self._request(
-            "GET", "/api/v1/qmlinker/agv/base-battery", timeout_s=timeout_s
+            "GET", "/api/v1/agv/base-battery", timeout_s=timeout_s
         )
 
     def get_ar5_soft_limits(self, side: str, timeout_s: float = 5.0) -> dict[str, Any]:
@@ -115,7 +115,7 @@ class RobotControlClient:
             body["pitch_deg"] = pitch_deg
         if not body:
             raise ValueError("head request requires at least one field")
-        return self._request("POST", "/api/v1/qmlinker/head", body)
+        return self._request("POST", "/api/v1/head", body)
 
     def qmlinker_set_lift(
         self,
@@ -132,12 +132,12 @@ class RobotControlClient:
             body["height_mm"] = height_mm
         if not body:
             raise ValueError("lift request requires at least one field")
-        return self._request("POST", "/api/v1/qmlinker/lift", body)
+        return self._request("POST", "/api/v1/lift", body)
 
     def qmlinker_set_gripper_position(self, position: int) -> dict[str, Any]:
         """设置 qmlinker 夹爪位置。"""
 
-        return self._request("POST", "/api/v1/qmlinker/gripper", {"position": position})
+        return self._request("POST", "/api/v1/gripper", {"position": position})
 
     def qmlinker_set_right_hand(
         self, positions: list[float] | tuple[float, ...]
@@ -145,14 +145,14 @@ class RobotControlClient:
         """设置 qmlinker 右手全部执行器位置。"""
 
         return self._request(
-            "POST", "/api/v1/qmlinker/right-hand", {"positions": positions}
+            "POST", "/api/v1/right-hand", {"positions": positions}
         )
 
     def qmlinker_navigate_to(self, target: str) -> dict[str, Any]:
         """请求 qmlinker AGV 导航到指定目标。"""
 
         return self._request(
-            "POST", "/api/v1/qmlinker/agv/navigate", {"target": target}
+            "POST", "/api/v1/agv/navigate", {"target": target}
         )
 
     def ar5_set_power(self, side: str, enabled: bool) -> dict[str, Any]:
@@ -267,26 +267,26 @@ class RobotControlClient:
         """设置左夹爪使能；仅供现场人员明确手动调用。"""
 
         return self._request(
-            "POST", "/api/v1/qmlinker/gripper/enable", {"enabled": enabled}
+            "POST", "/api/v1/gripper/enable", {"enabled": enabled}
         )
 
     def calibrate_gripper(self) -> dict[str, Any]:
         """请求左夹爪校准；仅供现场人员明确手动调用。"""
 
-        return self._request("POST", "/api/v1/qmlinker/gripper/calibrate")
+        return self._request("POST", "/api/v1/gripper/calibrate")
 
     def set_right_hand_enabled(self, enabled: bool) -> dict[str, Any]:
         """设置右手使能；仅供现场人员明确手动调用。"""
 
         return self._request(
-            "POST", "/api/v1/qmlinker/right-hand/enable", {"enabled": enabled}
+            "POST", "/api/v1/right-hand/enable", {"enabled": enabled}
         )
 
     def set_agv_enabled(self, enabled: bool) -> dict[str, Any]:
         """设置 AGV 使能；仅供现场人员明确手动调用。"""
 
         return self._request(
-            "POST", "/api/v1/qmlinker/agv/enable", {"enabled": enabled}
+            "POST", "/api/v1/agv/enable", {"enabled": enabled}
         )
 
     def translate_agv(self, speed_mps: float, direction_deg: float) -> dict[str, Any]:
@@ -294,14 +294,14 @@ class RobotControlClient:
 
         return self._request(
             "POST",
-            "/api/v1/qmlinker/agv/translate",
+            "/api/v1/agv/translate",
             {"speed_mps": speed_mps, "direction_deg": direction_deg},
         )
 
     def stop_agv(self) -> dict[str, Any]:
         """停止 AGV 当前导航或实时移动；不等同硬件急停。"""
 
-        return self._request("POST", "/api/v1/qmlinker/agv/stop")
+        return self._request("POST", "/api/v1/agv/stop")
 
     def subscribe_status(self, interval_s: float = 0.2) -> Iterator[dict[str, Any]]:
         """订阅 RobotControl 的 SSE 设备状态事件流。

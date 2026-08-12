@@ -8,11 +8,13 @@ from pathlib import Path
 
 from loguru import logger
 
+from .. import RECORD_REPLAY_VERSION
 from ..action_sequence import (
     ActionSequencePlan,
     ActionSequenceValidationError,
     NamedActionPlan,
     load_action_sequence,
+    load_replay_deployment_config,
 )
 from ..context import ReplayContext
 from ..contracts import ReplayErrorCode, ReplayServiceState
@@ -22,6 +24,8 @@ from .config_store import RuntimeConfigStore, RuntimeParameterValue
 from .prior_store import PriorKind, PriorReplacement, RecordReplayPriorStore
 from .protocol import (
     PriorUploadResponse,
+    RECORD_REPLAY_API_VERSION,
+    RecordReplayHealthResponse,
     RecordReplayPlanResponse,
     ReplayPlanAction,
     RecordReplayResponse,
@@ -85,7 +89,20 @@ class RecordReplayApplication:
         self._lock = threading.Lock()
         self._worker: threading.Thread | None = None
         initial_state = self._state_store.load()
-        self._context.set_state(initial_state)
+        if initial_state is ReplayServiceState.RAPID_STOP:
+            recovery_text = (
+                "服务启动时从 runtime_state.json 恢复到 rapid_stop；上次持久化状态为 busy、"
+                "rapid_stop 或状态文件无效。为防止异常中止后自动续跑，请检查上次进程日志并人工 reset"
+            )
+            self._context.set_state(
+                initial_state,
+                error_code="rapid_stop",
+                error_text=recovery_text,
+            )
+            logger.warning("RecordReplay 启动状态恢复：{}", recovery_text)
+        else:
+            self._context.set_state(initial_state)
+            logger.info("RecordReplay 启动状态恢复 state={}", initial_state)
         self._context.set_total_execution_count(0)
         self._state_store.save(initial_state)
 
@@ -101,6 +118,16 @@ class RecordReplayApplication:
         """启动唯一业务线程；已有任务运行时拒绝重复启动。"""
 
         with self._lock:
+            logger.info(
+                "收到 RecordReplay 启动请求 old_current={} old_put={} new_current={} "
+                "new_put={} agv_enabled={} agv_target={}",
+                old_tray_current_index,
+                old_tray_put_index,
+                new_tray_current_index,
+                new_tray_put_index,
+                enable_agv_navigation,
+                agv_target,
+            )
             _validate_start_parameters(
                 old_tray_current_index,
                 old_tray_put_index,
@@ -110,7 +137,12 @@ class RecordReplayApplication:
                 agv_target,
             )
             if self._worker is not None and self._worker.is_alive():
-                return self.status(accepted=False, error_code="busy")
+                logger.warning("拒绝 RecordReplay 启动请求：已有回放线程仍在运行")
+                return self.status(
+                    accepted=False,
+                    error_code="busy",
+                    error_text="已有回放线程仍在运行，请等待当前任务结束后重试",
+                )
             current_state = self._context.snapshot().state
             if current_state is ReplayServiceState.RAPID_STOP:
                 return self.status(
@@ -134,33 +166,42 @@ class RecordReplayApplication:
                     new_tray_current_index=new_tray_current_index,
                     new_tray_put_index=new_tray_put_index,
                 )
-                prior_result = self._prior_store.validate_all(plan.deployment.offset_config)
-                if not prior_result.valid:
-                    error_text = prior_result.error_text()
-                    self._context.set_state(
-                        ReplayServiceState.IDLE,
-                        error_code="invalid_plan",
-                        error_text=error_text,
-                    )
-                    return self.status(
-                        accepted=False,
-                        error_code="invalid_plan",
-                        error_text=error_text,
-                    )
-                self._context.apply_offset_settings(plan.deployment.offset_settings)
-                cycle_service = self._cycle_service_factory(plan)
-                _, plan = cycle_service.refresh_deployment_status(plan)
-            except Exception as exc:
+            except ActionSequenceValidationError as error:
+                error_text = f"动作计划校验失败：{error}"
+                logger.warning("RecordReplay 启动前计划校验失败：{}", error)
                 self._context.set_state(
                     ReplayServiceState.IDLE,
                     error_code="invalid_plan",
-                    error_text=f"回放初始化失败：{exc}",
+                    error_text=error_text,
                 )
                 return self.status(
                     accepted=False,
                     error_code="invalid_plan",
-                    error_text=f"回放初始化失败：{exc}",
+                    error_text=error_text,
                 )
+            prior_result = self._prior_store.validate_all(plan.deployment.offset_config)
+            if not prior_result.valid:
+                error_text = prior_result.error_text()
+                logger.warning("RecordReplay 启动前先验校验失败：{}", error_text)
+                self._context.set_state(
+                    ReplayServiceState.IDLE,
+                    error_code="invalid_plan",
+                    error_text=error_text,
+                )
+                return self.status(
+                    accepted=False,
+                    error_code="invalid_plan",
+                    error_text=error_text,
+                )
+            self._context.apply_offset_settings(plan.deployment.offset_settings)
+            cycle_service = self._cycle_service_factory(plan)
+            _, plan = cycle_service.refresh_deployment_status(plan)
+            logger.info(
+                "RecordReplay 启动计划已冻结 sha256={} left_actions={} right_actions={}",
+                plan.source_sha256,
+                len(plan.left_actions),
+                len(plan.right_actions),
+            )
             self._context.reset_for_next_cycle()
             self._context.set_start_parameters(
                 old_tray_current_index,
@@ -170,22 +211,40 @@ class RecordReplayApplication:
                 enable_agv_navigation,
                 agv_target,
             )
-            self._context.set_state(ReplayServiceState.BUSY)
-            self._state_store.save(ReplayServiceState.BUSY)
             self._cycle_service = cycle_service
-            self._worker = threading.Thread(
+            worker = threading.Thread(
                 target=self._run_once,
                 args=(enable_agv_navigation, agv_target, plan),
                 name="record-replay-worker",
                 daemon=False,
             )
-            self._worker.start()
+            self._worker = worker
+            try:
+                self._context.set_state(ReplayServiceState.BUSY)
+                self._state_store.save(ReplayServiceState.BUSY)
+                worker.start()
+            except Exception as error:
+                logger.exception("RecordReplay 回放线程启动失败 type={}", type(error).__name__)
+                self._worker = None
+                self._cycle_service = None
+                self._context.set_state(
+                    ReplayServiceState.IDLE,
+                    error_code="internal_error",
+                    error_text=f"回放线程启动失败：{type(error).__name__}: {error}",
+                )
+                try:
+                    self._state_store.save(ReplayServiceState.IDLE)
+                except Exception:
+                    logger.exception("回放线程启动回滚时，持久化 idle 状态失败")
+                raise
+            logger.info("RecordReplay 回放线程已启动 worker={}", worker.name)
         return self.status()
 
     def stop(self) -> RecordReplayResponse:
         """锁存 rapid_stop，停止 AGV 和当前已连接的左右 AR5。"""
 
         with self._lock:
+            logger.warning("收到 RecordReplay 人工停止请求")
             self._context.stop_event.set()
             self._context.set_state(
                 ReplayServiceState.RAPID_STOP,
@@ -199,7 +258,7 @@ class RecordReplayApplication:
             try:
                 cycle_service.stop_devices()
             except Exception as error:
-                logger.error("设备停止调用存在失败：{}", error)
+                logger.exception("RecordReplay 人工停止设备失败 type={}", type(error).__name__)
                 with self._lock:
                     self._context.set_state(
                         ReplayServiceState.RAPID_STOP,
@@ -209,6 +268,7 @@ class RecordReplayApplication:
                     self._state_store.save(ReplayServiceState.RAPID_STOP)
         if worker is not None and worker is not threading.current_thread():
             worker.join()
+        logger.info("RecordReplay 人工停止流程结束 state={}", self._context.snapshot().state)
         return self.status()
 
     def reset(self) -> RecordReplayResponse:
@@ -229,6 +289,7 @@ class RecordReplayApplication:
                 )
             self._context.reset_after_manual_reset()
             self._state_store.save(ReplayServiceState.IDLE)
+            logger.info("RecordReplay rapid_stop 已人工复位为 idle")
         return self.status()
 
     def status(
@@ -275,6 +336,15 @@ class RecordReplayApplication:
             offset_statuses=snapshot.offset_statuses,
         )
 
+    def health(self) -> RecordReplayHealthResponse:
+        """返回服务版本和状态，不连接或控制任何现场设备。"""
+
+        return RecordReplayHealthResponse(
+            service_version=RECORD_REPLAY_VERSION,
+            api_version=RECORD_REPLAY_API_VERSION,
+            state=self._context.snapshot().state,
+        )
+
     def get_plan(
         self,
         old_tray_current_index: int,
@@ -285,6 +355,13 @@ class RecordReplayApplication:
         """读取一次 start 对应的回放计划，不连接设备、不创建线程。"""
 
         with self._lock:
+            logger.info(
+                "读取 RecordReplay 计划 old_current={} old_put={} new_current={} new_put={}",
+                old_tray_current_index,
+                old_tray_put_index,
+                new_tray_current_index,
+                new_tray_put_index,
+            )
             snapshot = self._context.snapshot()
             if self._worker is not None and self._worker.is_alive():
                 return RecordReplayPlanResponse(
@@ -311,6 +388,7 @@ class RecordReplayApplication:
                     new_tray_put_index=new_tray_put_index,
                 )
             except ActionSequenceValidationError as error:
+                logger.warning("读取 RecordReplay 计划失败：{}", error)
                 return RecordReplayPlanResponse(
                     state=snapshot.state,
                     accepted=False,
@@ -320,6 +398,12 @@ class RecordReplayApplication:
             row_counts = {
                 path: len(rows) for path, rows in plan.preloaded_rows_by_path
             }
+            logger.info(
+                "RecordReplay 计划读取完成 sha256={} left_actions={} right_actions={}",
+                plan.source_sha256,
+                len(plan.left_actions),
+                len(plan.right_actions),
+            )
             return RecordReplayPlanResponse(
                 state=snapshot.state,
                 action_sequence_sha256=plan.source_sha256,
@@ -380,8 +464,15 @@ class RecordReplayApplication:
                     "invalid_state",
                     "服务当前不在 idle 状态，不能修改运行参数",
                 )
-            parameters = self._config_store.update(changes)
+            try:
+                parameters = self._config_store.update(changes)
+            except ValueError as error:
+                raise RecordReplayApplicationError(
+                    "invalid_request",
+                    f"运行参数校验失败：{error}",
+                ) from error
             self._context.update_settings(parameters.to_service_settings())
+            logger.info("RecordReplay 运行参数已更新 fields={}", sorted(changes))
         return self.get_parameters()
 
     def get_device_status(self) -> DeviceStatusResponse:
@@ -393,7 +484,9 @@ class RecordReplayApplication:
                     "busy",
                     "回放正在执行，拒绝并发读取设备状态",
                 )
-            return self._device_status_reader.read()
+            response = self._device_status_reader.read()
+            logger.info("RecordReplay 设备状态读取完成 all_connected={}", response.all_connected)
+            return response
 
     def replace_ball_pose_prior(self, payload: object) -> PriorUploadResponse:
         """替换三球 JSON 先验并备份旧文件。"""
@@ -421,6 +514,12 @@ class RecordReplayApplication:
         """在唯一业务线程中执行一次并保留失败快照。"""
 
         try:
+            logger.info(
+                "RecordReplay 后台执行开始 sha256={} agv_enabled={} agv_target={}",
+                plan.source_sha256,
+                enable_agv_navigation,
+                agv_target,
+            )
             cycle_service = self._cycle_service
             if cycle_service is None:
                 raise RuntimeError("回放业务尚未初始化")
@@ -430,10 +529,40 @@ class RecordReplayApplication:
                 plan=plan,
             )
             self._context.complete_execution()
-        except Exception:
-            logger.error("record replay cycle failed")
+            logger.info(
+                "RecordReplay 后台执行成功 total_execution_count={}",
+                self._context.snapshot().total_execution_count,
+            )
+        except Exception as error:
+            snapshot = self._context.snapshot()
+            if snapshot.error_code is None:
+                self._context.set_state(
+                    ReplayServiceState.RAPID_STOP,
+                    error_code="internal_error",
+                    error_text=f"后台执行发生未处理异常：{type(error).__name__}: {error}",
+                )
+            logger.exception(
+                "RecordReplay 后台执行失败 type={} state={} error_code={}",
+                type(error).__name__,
+                self._context.snapshot().state,
+                self._context.snapshot().error_code,
+            )
         finally:
-            self._state_store.save(self._context.snapshot().state)
+            final_state = self._context.snapshot().state
+            try:
+                self._state_store.save(final_state)
+            except Exception as error:
+                logger.exception(
+                    "RecordReplay 后台结束状态持久化失败 state={} type={}",
+                    final_state,
+                    type(error).__name__,
+                )
+                if self._context.snapshot().error_code is None:
+                    self._context.set_state(
+                        ReplayServiceState.RAPID_STOP,
+                        error_code="internal_error",
+                        error_text=f"执行结果状态持久化失败：{type(error).__name__}: {error}",
+                    )
 
     def _replace_prior(self, kind: PriorKind, payload: object) -> PriorUploadResponse:
         """按统一动作 JSON 的先验路径替换 JSON 并转换为 HTTP 响应对象。"""
@@ -446,22 +575,32 @@ class RecordReplayApplication:
                     "invalid_state",
                     "服务当前不在 idle 状态，不能替换先验",
                 )
-            plan = load_action_sequence(
-                self._context.config.action_sequence_path,
-                self._context.config.left_record_dir,
-                self._context.config.right_record_dir,
+            deployment = load_replay_deployment_config(
+                self._context.config.action_sequence_path
             )
-            offset_config = plan.deployment.offset_config
+            offset_config = deployment.offset_config
             if kind == "ball_pose":
                 target_path = offset_config.prior_capture_path
             else:
                 target_path = offset_config.charuco_prior_path
             if target_path is None:
                 raise RuntimeError(f"统一 JSON 未配置 {kind} 先验路径")
-            replacement: PriorReplacement = self._prior_store.replace_json(
+            try:
+                replacement: PriorReplacement = self._prior_store.replace_json(
+                    kind,
+                    payload,
+                    target_path=target_path,
+                )
+            except ValueError as error:
+                raise RecordReplayApplicationError(
+                    "invalid_request",
+                    f"{kind} 先验内容校验失败：{error}",
+                ) from error
+            logger.info(
+                "RecordReplay 先验已替换 kind={} file={} backup={}",
                 kind,
-                payload,
-                target_path=target_path,
+                replacement.file_name,
+                replacement.backup_file,
             )
             return PriorUploadResponse(True, replacement.file_name, replacement.backup_file)
 
@@ -484,8 +623,14 @@ def _validate_start_parameters(
     )
     for name, value in tray_indices:
         if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
-            raise ValueError(f"{name} 必须是大于 0 的整数")
+            raise RecordReplayApplicationError(
+                "invalid_index",
+                f"{name} 必须是大于 0 的整数",
+            )
     if not isinstance(enable_agv_navigation, bool):
-        raise ValueError("enable_agv_navigation 必须是 bool")
+        raise RecordReplayApplicationError(
+            "invalid_request",
+            "enable_agv_navigation 必须是 bool",
+        )
     if not isinstance(agv_target, str) or not agv_target.strip():
-        raise ValueError("agv_target 必须是非空字符串")
+        raise RecordReplayApplicationError("invalid_request", "agv_target 必须是非空字符串")

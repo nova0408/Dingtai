@@ -1,14 +1,14 @@
 # 双臂记录回放服务
 
-当前 RecordReplay 服务业务语义版本：`3.3.0`。本次升级沿用
-`test/wuji/record_replay_cli.py` 的动作命名作为参考，但不改变该人工验证入口的版本语义。
+当前 RecordReplay 服务业务语义版本：`3.7.3`；对应人工验证入口
+`test/wuji/record_replay_cli.py` 的版本为 `1.10.1`。两者均使用 M6 右手动作语义。
 
 面向 GUI 和其它项目的完整 HTTP 契约见 [API Reference](API%20Reference.md)，机器可读描述见
 [OpenAPI](openapi.yaml)。
 
 本服务从 `test/wuji/record_replay_cli.py` 拆分而来，位于仓库根目录，和
-`camera_pipeline` 同级。业务代码不导入 `test`，在 Orin 上直接连接机械臂、
-qmlinker、AGV 和 Orin 本机部署的 camera_pipeline，并由 HTTP API 触发一次执行。
+`camera_pipeline` 同级。业务代码不导入 `test`；机械臂通过 Orin 本机 RobotControl 服务访问，
+手部、AGV 与 CameraPipeline 仍由各自网关管理，并由 HTTP API 触发一次执行。
 三球和 Board 检测全部通过本服务内的 `camera_client.py` HTTP 协议适配完成；本服务不导入
 CameraPipeline Python 包、不引用仓库 `src/`，也不自行订阅相机帧或实现检测算法。
 
@@ -32,8 +32,9 @@ CameraPipeline Python 包、不引用仓库 `src/`，也不自行订阅相机帧
   S/V 下限不高于 140/120，以免只分割出球体高饱和高亮局部。
 - `record_replay/records/left/`：提前录制的左臂 CSV。
 - `record_replay/records/right/`：提前录制的右臂 CSV。
-- `record_replay/action_sequence.json`：统一承载动作顺序、动作类别、每项 speed、zone、可选
-  index、offset 策略和先验文件入口。
+- `record_replay/action_sequence.json`：统一承载动作顺序、动作类别、每项 speed、zone、offset
+  策略和先验文件入口。四个托盘位置 index 不写入该文件，只由每次 `GET /plan` 或
+  `POST /start` 请求传入。
 
 CSV 文件名使用 `<action>_<arm>[_<timestamp>].csv`；多目标动作使用
 `<action>_<index>_<arm>[_<timestamp>].csv`，例如 `get_tray_1_left_20260630_154830.csv`。
@@ -41,8 +42,9 @@ CSV 文件名使用 `<action>_<arm>[_<timestamp>].csv`；多目标动作使用
 `11_before_put_new_tray_left.csv`。该前缀只用于动作名匹配，不改写实际文件名；执行、状态展示和
 CSV 行记录仍按磁盘上的完整文件名处理。`Sxx` 仍不参与动作名解析。
 
-部署时必须把代码、先验 JSON、ChArUco offset 历史 CSV、两侧相机外参和两侧回放 CSV 作为同一个
-`record_replay/` 目录同步到 Orin，并参与文件清单和 SHA-256 一致性校验。
+部署脚本只同步 `record_replay/` 中的服务代码和静态配置；`prior_data/` 与 `records/` 属于远端
+现场数据目录，不进入上传包、部署清单或 SHA-256 校验。替换服务代码时会原样保留 Orin 上已有的
+两个目录，本机同名目录中的先验和 CSV 不会覆盖远端数据。
 
 仓库根目录的 `scripts/sync_and_restart_services.ps1` 支持 RecordReplay 专用同步：
 
@@ -51,9 +53,9 @@ pwsh -NoProfile -File .\scripts\sync_and_restart_services.ps1 -RecordReplayOnly
 ```
 
 该入口只同步并重启 `record-replay.service`，替换前检查 RecordReplay 处于 `idle`/`waiting` 且
-CameraPipeline 已在 6200 端口就绪，同步后校验完整文件清单、SHA-256、只读 `/status` 和服务
-版本；不会同步或重启其它服务，也不会发送 `POST /start`。`runtime_state.json` 等运行产物不纳入
-部署清单。仅重启而不替换文件时可使用
+CameraPipeline 已在 6200 端口就绪，同步后校验代码文件清单、SHA-256、只读 `/status` 和服务
+版本；不会同步或重启其它服务，也不会发送 `POST /start`。`prior_data/`、`records/`、
+`runtime_state.json` 等现场数据或运行产物不纳入部署清单。仅重启而不替换文件时可使用
 `-RestartOnly -RecordReplayOnly`，同样只执行只读 `/status` 就绪检查。
 
 `-RestartOnly` 支持四个服务并按依赖顺序收敛重启：
@@ -79,8 +81,8 @@ Orin HTTP 服务只读取已部署到 `/home/wuji-brain/workspace/record_replay/
 `prior_data/` 的远端副本。
 
 人工 CLI 在启用头部 ChArUco 纠偏前读取
-`record_replay/prior_data/charuco_offset_history.csv`。同侧机械臂至少需要 6 条
-`accepted=true` 的有效历史；xyz/rpy 各分量必须位于历史均值 ±4σ 内，平移和旋转
+`record_replay/prior_data/charuco_offset_history.csv`。全部机械臂共用全局历史样本池，至少需要
+6 条 `accepted=true` 的有效历史；`arm_side` 只记录数据来源，不参与筛选。xyz/rpy 各分量必须位于历史均值 ±4σ 内，平移和旋转
 模长还必须同时低于历史 4σ 上界及 60 mm/5° 绝对安全上限。运行时只读该 CSV，
 不会自动追加检测结果；新增实验数据必须先由人工判断可靠性，再手动录入并设置
 `accepted`。单次候选 offset 未通过安全检查时会重新检测目标板并计算，最多尝试
@@ -109,6 +111,8 @@ idle
 正常完成后回到 `idle`；人工 stop 或运动阶段失败时先停止 AGV/已连接左右 AR5，再进入 `rapid_stop`，并将错误文本写入
 `ReplayContext.snapshot()`。`run_once()` 执行边界也会拒绝已锁存的 `rapid_stop` 或停止事件。
 只有人工处理后调用 `POST /reset` 才能恢复 `idle`，不会自动续跑。
+如果进程在 `busy` 时因原生 SDK 致命信号等原因异常退出，重启后会锁存为 `rapid_stop`，并在
+`error_code/error_text` 中说明这是持久化状态恢复结果；必须结合上一进程 journal 排查后人工复位。
 每侧 AR5 的准备、轨迹队列提交和 `robot.stop()` 由独立命令锁串行化；运动等待不持有该锁，
 以避免停止请求与新的 `moveAppend`/`moveStart` 并发交错。AGV 与左右 AR5 的 Stop 调用并行发起，
 避免单个 Stop 超时延后其它设备停止。
@@ -160,7 +164,7 @@ idle
 
 ## 测试安全红线
 
-`record_replay` 会直接控制机械臂、AGV、夹爪、M11 和升降机构。禁止 Codex、CI、
+`record_replay` 会直接控制机械臂、AGV、夹爪、M6 和升降机构。禁止 Codex、CI、
 hook 或其他无人值守流程运行任何 record_replay 测试、启动 service 冒烟，或发送
 `POST /start`。即使测试当前使用 fake，也只能做静态检查，不能自动执行。
 
@@ -212,7 +216,7 @@ python test/record_replay/local/record_replay_local_manual.py
 `settings.py`；允许现场修改的运行参数由 `service/config_store.py` 持久化：
 
 - `ReplayArmSettings`：NRT、tool/wobj、reset 与机械臂型号；
-- `ReplayHandSettings`：夹爪/M11/升降动作与容差；
+- `ReplayHandSettings`：夹爪/M6/升降动作与容差；
 - `ReplayOffsetSettings`：offset 触发、采样、ChArUco 安全门和三球鲁棒聚合；
 - `OffsetConfig`：相机名、先验捕获与手眼结果路径；
 - `ReplayServiceSettings`：AGV、触发文件及非运动调用重试。
@@ -247,10 +251,12 @@ GUI 可以轮询只读 `/status`，也可以订阅 `wss://<orin-host>/api/v1/rec
 连接建立后立即收到当前状态，后续推送 `record_replay.status`；一次成功完成时额外推送
 `record_replay.completed` 结束事件，计数已同步加一。状态和结束事件同时包含 `error_code` 与中文
 `error_text`。HTTP 非 2xx 响应统一返回 `{"error_code":"...","error_text":"中文说明"}`，
-其中 `400` 表示请求或业务拒绝、`404` 表示路径不存在、`500` 表示服务内部错误。短暂断网后重新连接即可恢复；GUI
+其中 `400` 表示请求或业务拒绝、`404` 表示路径不存在、`405` 表示方法不适用于已知路径、
+`500` 表示服务内部错误。响应头包含 `X-Request-ID`；未知异常的 JSON 会给出同一请求 ID、异常类型和限长原因，
+服务端日志保留完整堆栈。短暂断网后重新连接即可恢复；GUI
 负责根据四个托盘位置 index 编排下一次 start，服务不提供循环执行。
 
-HTTP API：`GET /status`、`GET /plan?old_tray_current_index={old_current}&old_tray_put_index={old_put}&new_tray_current_index={new_current}&new_tray_put_index={new_put}`、`GET /config`、`GET /device-status`、`POST /config`、
+HTTP API：`GET /health`、`GET /status`、`GET /plan?old_tray_current_index={old_current}&old_tray_put_index={old_put}&new_tray_current_index={new_current}&new_tray_put_index={new_put}`、`GET /config`、`GET /device-status`、`POST /config`、
 `POST /prior/ball-pose`、`POST /prior/charuco`、`POST /start`、`POST /stop`、
 `POST /reset`。`GET /plan` 只在 `idle` 时读取并校验本次动作 JSON 与实际 CSV，返回 GUI 执行前展示所需的 CSV、动作类型、speed、zone、index 和行数；它不连接设备、不创建线程，也不允许通过 HTTP 修改这些字段。配置更新 body
 只包含非动作数字参数；动作 speed/zone 不通过 HTTP 任意修改，必须编辑顺序 JSON，且服务 `busy` 期间拒绝修改配置。两个 prior 接口接收完整 JSON，
@@ -333,6 +339,10 @@ bash scripts/restart_record_replay_service.sh
 
 ## 本机与 Orin 文件一致性
 
-本机 `record_replay/` 是唯一源代码。禁止只修改 Orin 上的副本。每次部署后必须对
+本机 `record_replay/` 是唯一源代码。禁止只修改 Orin 上的代码副本。每次部署后必须对
 本机与 `/home/wuji-brain/workspace/record_replay/` 生成相对文件清单和 SHA-256，排除
-`__pycache__`、`.pyc`、日志和运行产物；只有文件清单与每个哈希都一致时才能报告同步完成。
+`prior_data/`、`records/`、`__pycache__`、`.pyc`、日志和运行产物；只有纳入部署范围的文件
+清单与每个哈希都一致时才能报告代码同步完成。
+机械臂 xCoreSDK 连接由 RobotControl 独占管理。RecordReplay 通过
+`http://127.0.0.1:6500/api/v1/ar5/{side}/{operation}` 调用显式 SDK 封装，不再直接连接控制器；
+连续轨迹、CSV 顺序、offset 和错误恢复仍由 RecordReplay 编排。

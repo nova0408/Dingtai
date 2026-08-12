@@ -69,17 +69,33 @@ class RecordReplayWebSocketServer:
 
             def handle(self) -> None:
                 subscriber = None
+                client_address = self.client_address
                 try:
+                    logger.info("RecordReplay WebSocket 握手开始 client={}", client_address)
                     self.request.settimeout(5.0)
                     path, headers = _read_handshake(self.request)
                     if urlsplit(path).path != "/api/v1/ws" or "sec-websocket-key" not in headers:
+                        logger.warning(
+                            "RecordReplay WebSocket 握手拒绝 client={} path={}",
+                            client_address,
+                            path,
+                        )
                         _send_http_error(self.request, 400, "invalid record replay websocket request")
                         return
                     _send_handshake(self.request, headers["sec-websocket-key"])
                     self.request.settimeout(1.0)
                     subscriber = context.subscribe_status()
+                    logger.info(
+                        "RecordReplay WebSocket 订阅已建立 client={} path={}",
+                        client_address,
+                        path,
+                    )
                     while not stop_event.is_set():
                         if not _handle_control_frame(self.request):
+                            logger.info(
+                                "RecordReplay WebSocket 收到关闭或无效控制帧 client={}",
+                                client_address,
+                            )
                             return
                         try:
                             message = subscriber.get(timeout=0.2)
@@ -90,13 +106,25 @@ class RecordReplayWebSocketServer:
                         else:
                             payload = _snapshot_json(message)
                         _send_text_frame(self.request, payload)
-                except (ConnectionError, OSError, TimeoutError):
+                except (ConnectionError, OSError, TimeoutError) as error:
+                    logger.info(
+                        "RecordReplay WebSocket 连接结束 client={} type={} detail={}",
+                        client_address,
+                        type(error).__name__,
+                        error,
+                    )
                     return
                 except Exception as exc:  # noqa: BLE001
-                    logger.warning("record replay WebSocket connection failed: {}", exc)
+                    logger.exception(
+                        "RecordReplay WebSocket 未处理异常 client={} type={} detail={}",
+                        client_address,
+                        type(exc).__name__,
+                        exc,
+                    )
                 finally:
                     if subscriber is not None:
                         context.unsubscribe_status(subscriber)
+                    logger.info("RecordReplay WebSocket 连接清理完成 client={}", client_address)
 
         return Handler
 

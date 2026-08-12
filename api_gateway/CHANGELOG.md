@@ -1,6 +1,12 @@
 # API Gateway 版本日志
 
-当前版本：`0.4.0`
+当前版本：`0.5.1`
+
+## 0.5.1 - 2026-08-11
+
+### 修复
+
+- Gateway 健康响应补充标准 `service_version` 字段，同时保留 `gateway_version` 兼容旧客户端。
 
 ## Unreleased
 
@@ -10,6 +16,12 @@
 - 新 Orin 注册流程支持复用受控的现有 Root CA，避免每台 Orin 生成不同 CA。
 - Flutter Web 的 CORS 正式来源同步覆盖 `192.168.100.70` 和 `192.168.1.1–192.168.1.254`，
   仍拒绝任意 Origin 反射。
+
+## 0.5.0 - 2026-08-11
+
+- Gateway 自身的路由、CORS、客户端会话、上游连接和未知异常统一返回 `{error_code, error_text}` JSON，不再返回 aiohttp 默认纯文本错误页。
+- 每次请求生成 `X-Request-ID`，错误正文包含同一 ID；请求入口、上游非 2xx、连接失败、响应流、WebSocket、启动和清理均增加结构化日志及异常堆栈。
+- OpenAPI 补充 Gateway 错误模型以及 RecordReplay 的 202、400、404、405、500、502、503 响应。
 
 ## 0.3.0 - 2026-08-07
 

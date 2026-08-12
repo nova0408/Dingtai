@@ -42,6 +42,7 @@ ReplayErrorCode = Literal[
     "stop_requested",
     "execution_failed",
     "not_found",
+    "method_not_allowed",
     "internal_error",
 ]
 "RecordReplay 对外返回的稳定错误码集合。"
@@ -56,7 +57,7 @@ class ReplayRow:
     row_index: int
     "CSV 数据行序号，从 1 开始。"
     action_type: str
-    "动作类型，例如 arm、gripper、m11、lift。"
+    "动作类型，例如 arm、gripper、m6、lift。"
     joints_text: str
     "原始 joints 单元格文本。"
     pose_text: str

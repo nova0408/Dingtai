@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import faulthandler
 import signal
 import time
 from collections.abc import Sequence
@@ -85,14 +86,17 @@ AGV_HOST = "192.168.100.70"
 def main(argv: Sequence[str] | None = None) -> int:
     """启动只由 API 触发动作的 Orin 常驻服务。"""
 
+    faulthandler.enable(all_threads=True)
     startup_started_at = time.perf_counter()
     args = _parse_args(argv)
     logger.info(
-        "record replay service initializing host={} port={} prior_path={} config_path={}",
+        "record replay service initializing host={} port={} prior_path={} config_path={} "
+        "faulthandler_enabled={}",
         args.host,
         args.port,
         BALL_POSE_PRIOR_PATH,
         RUNTIME_CONFIG_PATH,
+        faulthandler.is_enabled(),
     )
     config_store = RuntimeConfigStore(RUNTIME_CONFIG_PATH)
     settings = config_store.load().to_service_settings()

@@ -29,6 +29,11 @@ class CalibrationServiceClient:
 
         return self._request("GET", "/status")
 
+    def get_health(self) -> dict[str, object]:
+        """读取服务版本和任务状态，不读取设备。"""
+
+        return self._request("GET", "/health")
+
     def get_hand_eye_config(self) -> dict[str, object]:
         """读取手眼 ChArUco 默认参数和当前 OpenCV 可用字典。"""
 

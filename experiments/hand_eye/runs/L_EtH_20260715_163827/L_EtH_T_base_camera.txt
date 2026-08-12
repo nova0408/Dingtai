@@ -1,0 +1,200 @@
+Eye-to-hand calibration result
+generated_at=2026-07-15T16:40:34
+method=PARK
+result_semantics=T_base_camera_mean (camera coordinates -> robot base coordinates)
+saved_npy=T_base_camera_mean computed from per-sample T_base_camera
+solve_input_robot=inv(T_base_gripper) reconstructed from SDK trans(m)+rpy(rad)
+robot_rpy_reconstruction=Rotation.from_euler("xyz", sdk_rpy_rad, degrees=False)
+solve_input_board=T_camera_board converted once from ChArUco mm to m
+internal_translation_unit=m
+display_translation_unit=mm
+per_sample_formula=T_base_camera_i = T_base_gripper_i @ mean(T_gripper_board) @ inv(T_camera_board_i)
+gripper_board_formula=T_gripper_board_i=inv(T_base_gripper_i) @ T_base_camera @ T_camera_board_i
+head_camera=head_camera
+head_yaw_deg=60.000000
+head_pitch_deg=45.000000
+dictionary=DICT_APRILTAG_16H5
+board=4x4
+square_length_mm=20
+marker_length_mm=14
+valid_sample_count=13
+valid_sample_indices=1,2,3,4,5,6,7,8,9,10,11,12,13
+
+Per-sample T_base_camera translation mean, unit m:
+x_mean_m=0.1284530297
+y_mean_m=-0.0917850757
+z_mean_m=0.2678152659
+Per-sample T_base_camera translation mean, unit mm:
+x_mean_mm=128.453030
+y_mean_mm=-91.785076
+z_mean_mm=267.815266
+Per-sample T_base_camera translation std, unit mm:
+x_std_mm=3.603369
+y_std_mm=3.512320
+z_std_mm=4.668125
+Per-sample T_base_camera local rotation-vector std, unit deg:
+rx_std_deg=0.899189
+ry_std_deg=0.966611
+rz_std_deg=0.376586
+translation_mean_error_mm=5.579033898
+translation_max_error_mm=15.475894812
+rotation_mean_error_deg=1.202254889
+rotation_max_error_deg=2.596339563
+
+T_base_camera_mean:
+[[ 0.6722525904  0.0810293462  0.735874106   0.1284530297]
+ [-0.7396938861  0.0325843663  0.6721541594 -0.0917850757]
+ [ 0.0304862207 -0.9961789519  0.0818418367  0.2678152659]
+ [ 0.            0.            0.            1.          ]]
+
+T_base_camera_mean translation_mm:
+[128.45303  -91.785076 267.815266]
+T_base_camera_mean rpy_XYZ_deg:
+[-83.057809  47.381129  -6.872938]
+
+T_base_camera_PARK_raw:
+[[ 0.6722444616  0.081010106   0.7358836502  0.1274263633]
+ [-0.739704961   0.0326862432  0.6721370248 -0.0923031296]
+ [ 0.0303966197 -0.9961771791  0.0818967232  0.2673702887]
+ [ 0.            0.            0.            1.          ]]
+T_base_camera_PARK_raw translation_mm:
+[127.426363 -92.30313  267.370289]
+T_base_camera_PARK_raw rpy_XYZ_deg:
+[-83.053024  47.381936  -6.871403]
+
+per_sample_records=L_EtH_base_camera_per_sample.csv
+
+[per_sample_T_camera_board]
+matrix_translation_unit=m
+display_translation_unit=mm
+rotation_display_convention=as_euler("XYZ", degrees=True)
+
+sample_001.T_camera_board:
+[[ 0.597496968  -0.8018316889 -0.0079571304  0.0195781212]
+ [ 0.7994189854  0.5964159062 -0.0722312436 -0.0414286999]
+ [ 0.0626630592  0.0367968679  0.9973561708  0.3070662317]
+ [ 0.            0.            0.            1.          ]]
+sample_001.translation_mm:
+[ 19.578121 -41.4287   307.066232]
+sample_001.rpy_XYZ_deg:
+[ 4.142284 -0.455915 53.307808]
+
+sample_002.T_camera_board:
+[[ 0.5979305968 -0.8015429879  0.0027999823  0.0195721198]
+ [ 0.7999249948  0.5964941563 -0.06568656   -0.041361142 ]
+ [ 0.0509804285  0.0415157799  0.9978363773  0.3072219466]
+ [ 0.            0.            0.            1.          ]]
+sample_002.translation_mm:
+[ 19.57212  -41.361142 307.221947]
+sample_002.rpy_XYZ_deg:
+[ 3.766289  0.160427 53.278002]
+
+sample_003.T_camera_board:
+[[ 0.8893236455 -0.302618994   0.3428194832 -0.0925856445]
+ [ 0.3349195075  0.9414905282 -0.0377426648 -0.1402356881]
+ [-0.311339649   0.1483823767  0.9386427932  0.3151241229]
+ [ 0.            0.            0.            1.          ]]
+sample_003.translation_mm:
+[ -92.585644 -140.235688  315.124123]
+sample_003.rpy_XYZ_deg:
+[ 2.302613 20.048746 18.792409]
+
+sample_004.T_camera_board:
+[[ 0.2552640843 -0.9662801165 -0.0338080429  0.0287737028]
+ [ 0.921259405   0.2536863157 -0.2948293775 -0.0760758067]
+ [ 0.2934644031  0.0441133736  0.9549516503  0.2906025597]
+ [ 0.            0.            0.            1.          ]]
+sample_004.translation_mm:
+[ 28.773703 -76.075807 290.60256 ]
+sample_004.rpy_XYZ_deg:
+[17.157418 -1.937427 75.202114]
+
+sample_005.T_camera_board:
+[[ 0.1244501871 -0.9423229104  0.3107083576  0.0439248752]
+ [ 0.8973919952  0.2404929464  0.3699334396 -0.0184750261]
+ [-0.4233199238  0.2327889072  0.8755624288  0.2400442176]
+ [ 0.            0.            0.            1.          ]]
+sample_005.translation_mm:
+[ 43.924875 -18.475026 240.044218]
+sample_005.rpy_XYZ_deg:
+[-22.904519  18.101925  82.476631]
+
+sample_006.T_camera_board:
+[[ 0.9934471358 -0.0201944568  0.1124943214 -0.0055423618]
+ [ 0.0541358624  0.9499939169 -0.3075400237 -0.1087253264]
+ [-0.1006583173  0.3116147328  0.9448619801  0.2408314986]
+ [ 0.            0.            0.            1.          ]]
+sample_006.translation_mm:
+[  -5.542362 -108.725326  240.831499]
+sample_006.rpy_XYZ_deg:
+[18.029381  6.459122  1.164529]
+
+sample_007.T_camera_board:
+[[ 0.6619518667 -0.1494882241  0.7344882552  0.0592646326]
+ [ 0.2620975875  0.9642132845 -0.0399699458 -0.074004022 ]
+ [-0.7022282967  0.21896578    0.6774432865  0.2795143798]
+ [ 0.            0.            0.            1.          ]]
+sample_007.translation_mm:
+[ 59.264633 -74.004022 279.51438 ]
+sample_007.rpy_XYZ_deg:
+[ 3.376603 47.263992 12.725609]
+
+sample_008.T_camera_board:
+[[ 0.5732802605 -0.6309709984 -0.5227096154 -0.013315507 ]
+ [ 0.3313971124  0.7619971281 -0.5563598931 -0.0779476592]
+ [ 0.749350183   0.1457256873  0.645939879   0.2426166554]
+ [ 0.            0.            0.            1.          ]]
+sample_008.translation_mm:
+[-13.315507 -77.947659 242.616655]
+sample_008.rpy_XYZ_deg:
+[ 40.738925 -31.514183  47.742709]
+
+sample_009.T_camera_board:
+[[ 0.0569377455 -0.9969822154 -0.0527688852  0.0496556087]
+ [ 0.6276916142  0.0768491813 -0.7746595644 -0.0884620788]
+ [ 0.7763770544  0.0109847824  0.6301729953  0.1890478924]
+ [ 0.            0.            0.            1.          ]]
+sample_009.translation_mm:
+[ 49.655609 -88.462079 189.047892]
+sample_009.rpy_XYZ_deg:
+[50.872205 -3.024839 86.731383]
+
+sample_010.T_camera_board:
+[[-0.0897289264 -0.9726934945  0.2140469237  0.0760901005]
+ [ 0.9796927257 -0.1248919312 -0.1568571601 -0.0362457001]
+ [ 0.1793066729  0.1956255895  0.9641471598  0.2443396987]
+ [ 0.            0.            0.            1.          ]]
+sample_010.translation_mm:
+[ 76.090101 -36.2457   244.339699]
+sample_010.rpy_XYZ_deg:
+[ 9.240495 12.359618 95.270499]
+
+sample_011.T_camera_board:
+[[-0.1712905831 -0.8402895277  0.5143666452  0.0714492324]
+ [ 0.9005481093  0.0782116301  0.4276634701 -0.0209882099]
+ [-0.3995905891  0.536466635   0.7433242298  0.2412290532]
+ [ 0.            0.            0.            1.          ]]
+sample_011.translation_mm:
+[ 71.449232 -20.98821  241.229053]
+sample_011.rpy_XYZ_deg:
+[-29.9135   30.95513 101.52172]
+
+sample_012.T_camera_board:
+[[ 0.8556500724 -0.5129352599  0.0689954541 -0.0038464059]
+ [ 0.4389697195  0.6486315985 -0.6217576979 -0.0784006073]
+ [ 0.2741688146  0.5622939344  0.7801647214  0.1794319596]
+ [ 0.            0.            0.            1.          ]]
+sample_012.translation_mm:
+[ -3.846406 -78.400607 179.43196 ]
+sample_012.rpy_XYZ_deg:
+[38.553337  3.956291 30.941359]
+
+sample_013.T_camera_board:
+[[ 0.8702255513 -0.3817809946  0.3113691733 -0.006049918 ]
+ [ 0.4434174505  0.8823974775 -0.1573393031 -0.0882955708]
+ [-0.2146822175  0.2749872068  0.9371731866  0.263085106 ]
+ [ 0.            0.            0.            1.          ]]
+sample_013.translation_mm:
+[ -6.049918 -88.295571 263.085106]
+sample_013.rpy_XYZ_deg:
+[ 9.530345 18.141763 23.687782]

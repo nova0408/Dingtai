@@ -248,7 +248,7 @@ JSON 顶层保存版本、统一 deployment 配置和左右臂两个顺序列表
 
 ```json
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "deployment": {
     "prior_files": {
       "ball_pose": "prior_data/ball_pose_prior.json",
@@ -278,13 +278,13 @@ JSON 顶层保存版本、统一 deployment 配置和左右臂两个顺序列表
       "final_speed": 100.0,
       "settle_delay": 0.5
     },
-    {"function_name": "get_tray", "type": "precise", "index": 1, "speed": 200.0, "zone": 0.0},
+    {"function_name": "get_tray", "type": "precise", "speed": 200.0, "zone": 0.0},
     {"function_name": "after_get_tray", "type": "fast", "speed": 1000.0, "zone": 10.0},
-    {"function_name": "put_tray", "type": "precise", "index": 4, "speed": 200.0, "zone": 0.0},
+    {"function_name": "put_tray", "type": "precise", "speed": 200.0, "zone": 0.0},
     {"function_name": "before_get_new_tray", "type": "fast", "speed": 1000.0, "zone": 10.0},
-    {"function_name": "get_new_tray", "type": "precise", "index": 1, "speed": 200.0, "zone": 0.0},
+    {"function_name": "get_new_tray", "type": "precise", "speed": 200.0, "zone": 0.0},
     {"function_name": "before_put_new_tray", "type": "fast", "speed": 1000.0, "zone": 10.0},
-    {"function_name": "put_new_tray", "type": "precise", "index": 1, "speed": 200.0, "zone": 0.0},
+    {"function_name": "put_new_tray", "type": "precise", "speed": 200.0, "zone": 0.0},
     {
       "function_name": "calibration_new_tray",
       "type": "capture",
@@ -364,7 +364,7 @@ start 前至少检查：
 - `speed`、`zone`、`final_speed`、`settle_delay` 是有限数值且在允许范围内；
 - precise 的 zone 必须为 0；
 - capture 必须提供 final_speed 和 settle_delay，非 capture 不得携带这两个字段；
-- 多目标动作必须提供正整数 index，普通动作不得携带 index；
+- 动作项不得携带 index；四个多目标动作的 index 必须由每次 plan/start 请求传入；
 - 每个动作项根据 function_name、index、arm 精确匹配且只匹配一个 CSV；
 - open_door 和 close_door 在左右列表中的出现次数相同，能够逐次配对起点同步；
 - JSON 引用的全部 CSV 均能成功解析，拍摄动作至少存在一条 arm 记录；
@@ -482,7 +482,7 @@ AGV 与左右 AR5 使用显式字段和显式 stop 调用；不循环遍历动�
 以下内容不修改：
 
 - CSV 表头 `timestamp,type,joints,pose`；
-- arm、gripper、m11、lift 等行的录制方式；
+- arm、gripper、m6、lift 等行的录制方式；
 - 关节、位姿、单位和时间戳；
 - 拖动示教的采样过程；
 - 已录制 CSV 的行顺序和数值。
@@ -541,7 +541,7 @@ AGV 与左右 AR5 使用显式字段和显式 stop 调用；不循环遍历动�
 
 - [x] 通过左右 JSON 数组承载当前动作顺序；
 - [x] 允许通过版本化 JSON 调整、删除、重复已知动作；
-- [x] 在多目标动作项中直接写入 index；
+- [x] index 由每次 plan/start 请求传入，不写入动作项；
 - [x] index 精确解析到唯一 CSV；
 - [x] 读取并校验 JSON 中明确的单次动作顺序；
 - [x] start 成功前冻结本轮执行列表和 JSON SHA-256；
@@ -549,7 +549,7 @@ AGV 与左右 AR5 使用显式字段和显式 stop 调用；不循环遍历动�
 - [x] 状态进度显示动作名和 index，不显示旧 CSV 序号。
 - [x] 状态响应增加 `offset_statuses`，分别显示头部与三球 offset 的可用/应用状态，并拒绝同一动作重叠配置。
 
-验收：同一套代码可通过 JSON 顺序和 index 选择不同动作及抓取/放置 CSV，顺序不受目录枚举顺序影响；busy 期间修改磁盘 JSON 不影响当前轮次。
+验收：同一套代码可通过 JSON 顺序和请求 index 选择不同动作及抓取/放置 CSV，顺序不受目录枚举顺序影响；busy 期间修改磁盘 JSON 不影响当前轮次。
 
 ### 阶段 4：双臂起点同步
 
@@ -675,7 +675,7 @@ ChArUco 稳定等待均已接入停止事件；停止事件生效后不会继续
 - 纯 AST 护栏检查已通过：`record_replay/` 未使用 `getattr`、`eval`、`exec` 或 `__import__` 等动态分发，
   显式动作分发仍使用 `match`；当前 19 个服务 CSV 均通过新命名解析，`get_tray_1_left` 和
   `put_tray_4_left` 的 index 绑定均通过。
-- 当前本机 `action_sequence.json` 使用 schema 3；离线读取为单次左臂动作任务。每次 start 的
+- 当前本机 `action_sequence.json` 使用 schema 4，动作项不保存 index；每次 plan/start 的
   `old_tray_current_index`、`old_tray_put_index`、`new_tray_current_index`、`new_tray_put_index`
   分别绑定 `get_tray`、`put_tray`、`get_new_tray`、`put_new_tray`，GUI 负责决定下一次参数。
 - 2026-08-07 对 Orin 当前部署文件做只读权限核对：`action_sequence.json` 为 `wuji-brain:wuji-brain`、

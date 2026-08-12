@@ -16,13 +16,41 @@ from .arm_actions import flush_pending_arm_segment
 from .charuco_offset import CharucoOffsetInitializer
 from .context import ReplayContext
 from .contracts import ReplayServiceState, ReplayRow
-from .hand_actions import execute_gripper_row, execute_lift_row, execute_m11_row
+from .hand_actions import execute_gripper_row, execute_lift_row, execute_m6_row
 from .offset_updater import GlobalOffsetUpdater
 from .runtime import ReplayRuntime, close_runtime, create_runtime, prepare_runtime
 from .settings import ReplayServiceSettings
 
 SYNC_BARRIER_TIMEOUT_S = 60.0
 "open_door/close_door 起点屏障最长等待时间。"
+
+
+class NamedActionExecutionError(RuntimeError):
+    """携带臂侧、动作、CSV 和失败阶段的命名动作异常。"""
+
+    def __init__(
+        self,
+        *,
+        arm_side: str,
+        sequence: int,
+        total: int,
+        action: NamedActionPlan,
+        stage: str,
+        cause: BaseException,
+    ) -> None:
+        self.arm_side = arm_side
+        self.sequence = sequence
+        self.total = total
+        self.action_name = action.item.function_name
+        self.csv_name = action.csv_asset.path.name
+        self.stage = stage
+        self.cause_type = type(cause).__name__
+        super().__init__(
+            "命名动作执行失败 "
+            f"arm_side={arm_side} sequence={sequence}/{total} "
+            f"action={self.action_name} csv={self.csv_name} stage={stage} "
+            f"cause_type={self.cause_type} cause={cause}"
+        )
 
 
 class DualArmExecutor:
@@ -47,8 +75,18 @@ class DualArmExecutor:
         close_door_start_barrier: threading.Barrier | None = None
         errors: list[BaseException] = []
         try:
+            logger.info(
+                "双臂执行器初始化开始 preloaded_csv_count={} charuco_required={}",
+                len(preloaded_rows_by_path),
+                charuco_initializer is not None and _plan_requires_charuco(plan, settings),
+            )
             _raise_if_stop_event(stop_event)
+            logger.info(
+                "准备创建左臂 runtime arm_ip={}",
+                context.config.device_connection.left_arm_ip,
+            )
             left_runtime = create_runtime("left", stop_event, context.config.device_connection, settings)
+            logger.info("左臂 runtime 创建完成，准备登记并进入 NRT")
             context.attach_runtimes(left_runtime, None)
             # 先登记已连接资源，再检查停止标志；这样 stop 与建连完成之间的竞态
             # 也能让 stop_devices 找到左臂并执行 robot.stop。
@@ -56,21 +94,33 @@ class DualArmExecutor:
             left_runtime.preloaded_rows_by_path = preloaded_rows_by_path
             left_runtime.offset_target_action_names = settings.offset.target_action_names
             prepare_runtime(left_runtime)
+            logger.info("左臂 runtime NRT 与附属设备准备完成")
             if plan.right_actions:
                 _raise_if_stop_event(stop_event)
+                logger.info(
+                    "准备创建右臂 runtime arm_ip={}",
+                    context.config.device_connection.right_arm_ip,
+                )
                 right_runtime = create_runtime(
                     "right", stop_event, context.config.device_connection, settings
                 )
+                logger.info("右臂 runtime 创建完成，准备登记并进入 NRT")
                 context.attach_runtimes(left_runtime, right_runtime)
                 # 右臂同样必须先登记，再检查停止标志，避免 stop 请求遗漏刚建好的连接。
                 _raise_if_stop_event(stop_event)
                 right_runtime.preloaded_rows_by_path = preloaded_rows_by_path
                 right_runtime.offset_target_action_names = settings.offset.target_action_names
                 prepare_runtime(right_runtime)
+                logger.info("右臂 runtime NRT 与附属设备准备完成")
             if charuco_initializer is not None and _plan_requires_charuco(plan, settings):
+                logger.info(
+                    "机械臂 runtime 准备完成，开始头部 ChArUco offset 初始化 runtime_count={}",
+                    1 if right_runtime is None else 2,
+                )
                 charuco_initializer.initialize(
                     [left_runtime] if right_runtime is None else [left_runtime, right_runtime]
                 )
+                logger.info("头部 ChArUco offset 初始化完成，准备执行左右臂 CSV")
             if right_runtime is not None:
                 open_door_start_barrier = _barrier_for_action(plan, "open_door")
                 close_door_start_barrier = _barrier_for_action(plan, "close_door")
@@ -98,13 +148,22 @@ class DualArmExecutor:
             if right_runtime is not None:
                 flush_pending_arm_segment(right_runtime)
         finally:
+            logger.info(
+                "双臂执行器开始释放 runtime left_created={} right_created={}",
+                left_runtime is not None,
+                right_runtime is not None,
+            )
             _break_barrier(open_door_start_barrier)
             _break_barrier(close_door_start_barrier)
             context.detach_runtimes()
             close_runtime(right_runtime)
             close_runtime(left_runtime)
+            logger.info("双臂执行器 runtime 释放完成")
         if errors:
-            raise RuntimeError("命名动作执行失败") from errors[0]
+            details = "；".join(str(error) for error in errors)
+            raise RuntimeError(
+                f"双臂命名动作执行失败 failure_count={len(errors)} details={details}"
+            ) from errors[0]
 
     def _execute_both_sides(
         self,
@@ -155,10 +214,12 @@ class DualArmExecutor:
 
         left_thread = threading.Thread(target=run_left, name="record-replay-left", daemon=False)
         right_thread = threading.Thread(target=run_right, name="record-replay-right", daemon=False)
+        logger.info("左右臂 CSV 执行线程准备启动")
         left_thread.start()
         right_thread.start()
         left_thread.join()
         right_thread.join()
+        logger.info("左右臂 CSV 执行线程均已结束 failure_count={}", len(errors))
 
     def _execute_side(
         self,
@@ -200,8 +261,53 @@ class DualArmExecutor:
                 open_door_start_barrier,
                 close_door_start_barrier,
             )
-            _wait_action_start(barrier, action.item.function_name, runtime)
-            self._execute_action(context, runtime, action, offset_updater)
+            logger.info(
+                "命名动作开始 arm_side={} sequence={}/{} action={} csv={} rows={} "
+                "speed={} zone={} index={}",
+                runtime.connected_arm.arm_side,
+                action_position + 1,
+                len(actions),
+                action.item.function_name,
+                action.csv_asset.path.name,
+                len(runtime.preloaded_rows_by_path.get(action.csv_asset.path, ())),
+                action.item.speed,
+                action.item.zone,
+                action.item.index,
+            )
+            stage = "start_barrier"
+            try:
+                _wait_action_start(barrier, action.item.function_name, runtime)
+                stage = "execute_action"
+                self._execute_action(context, runtime, action, offset_updater)
+            except BaseException as error:
+                logger.exception(
+                    "命名动作失败 arm_side={} sequence={}/{} action={} csv={} stage={} "
+                    "error_type={} detail={}",
+                    runtime.connected_arm.arm_side,
+                    action_position + 1,
+                    len(actions),
+                    action.item.function_name,
+                    action.csv_asset.path.name,
+                    stage,
+                    type(error).__name__,
+                    error,
+                )
+                raise NamedActionExecutionError(
+                    arm_side=runtime.connected_arm.arm_side,
+                    sequence=action_position + 1,
+                    total=len(actions),
+                    action=action,
+                    stage=stage,
+                    cause=error,
+                ) from error
+            logger.info(
+                "命名动作完成 arm_side={} sequence={}/{} action={} csv={}",
+                runtime.connected_arm.arm_side,
+                action_position + 1,
+                len(actions),
+                action.item.function_name,
+                action.csv_asset.path.name,
+            )
             context.refresh_offset_statuses()
             if runtime.connected_arm.arm_side == "left":
                 context.complete_execution_task()
@@ -435,8 +541,8 @@ class DualArmExecutor:
         if row.action_type == "gripper":
             execute_gripper_row(runtime, row)
             return
-        if row.action_type == "m11":
-            execute_m11_row(runtime, row)
+        if row.action_type == "m6":
+            execute_m6_row(runtime, row)
             return
         if row.action_type == "lift":
             execute_lift_row(runtime, row)

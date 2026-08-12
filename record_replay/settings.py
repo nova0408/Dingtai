@@ -29,6 +29,11 @@ class ReplayDeviceConnection:
 class ReplayArmSettings:
     """机械臂连接、NRT 准备与 MoveAbsJ 时序参数。"""
 
+    robot_control_base_url: str = "http://127.0.0.1:6500"
+    "RobotControl 本机服务地址；RecordReplay 不再直连 xCoreSDK。"
+    http_timeout_s: float = 10.0
+    "单次 RobotControl 机械臂 HTTP 请求超时，单位 s。"
+
     tool_name: str = "g_tool_0"
     "回放固定使用的工具坐标系名称。"
     wobj_name: str = "g_wobj_0"
@@ -57,11 +62,11 @@ class ReplayArmSettings:
 
 @dataclass(frozen=True, slots=True)
 class ReplayHandSettings:
-    """夹爪、M11 与升降动作参数。"""
+    """夹爪、M6 与升降动作参数。"""
 
-    m11_state_read_timeout_s: float = 10.0
-    "读取至少 11 个有效右手执行器状态的总超时时间，单位 s。"
-    m11_state_read_poll_interval_s: float = 0.1
+    m6_state_read_timeout_s: float = 10.0
+    "读取完整 M6 右手执行器状态的总超时时间，单位 s。"
+    m6_state_read_poll_interval_s: float = 0.1
     "右手状态内容无效时的重新读取间隔，单位 s。"
     lift_enable_state_timeout_s: float = 10.0
     "下发 lift enable 后等待 get_enable() 状态为 True 的总超时时间，单位 s。"
@@ -75,10 +80,6 @@ class ReplayHandSettings:
     "有效高度尚未到位时的轮询间隔，单位 s；负数通信无效值立即重读。"
     lift_height_tolerance_mm: float = 4.0
     "升降机构到位误差容忍，单位 mm。"
-    m11_root_actuator_ids: tuple[int, ...] = (3, 5, 7, 9)
-    "M11 根部执行器索引。"
-    m11_tip_actuator_ids: tuple[int, ...] = (4, 6, 8, 10)
-    "M11 指尖执行器索引。"
     gripper_calibration_wait_s: float = 3.0
     "夹爪校准命令后的固定等待时间，单位 s。"
     gripper_zero_position: int = 0
@@ -136,7 +137,7 @@ class ReplayOffsetSettings:
     charuco_safety_retry_delay_s: float = 1.0
     "ChArUco offset 安全检查失败后的重新检测间隔，单位 s。"
     charuco_history_min_accepted_samples: int = 6
-    "允许使用 ChArUco offset 的同侧有效历史最少条数。"
+    "允许使用 ChArUco offset 的全局有效历史最少条数。"
     charuco_sigma_limit: float = 4.0
     "ChArUco 历史分量与模长统计的标准差倍数。"
     charuco_max_translation_norm_mm: float = 60.0

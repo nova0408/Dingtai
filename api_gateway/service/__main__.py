@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import ssl
 from collections.abc import Sequence
 from pathlib import Path
 
 from aiohttp import web
 
+from .. import API_GATEWAY_VERSION
 from ..config import GatewaySettings
 from ..server import create_app, on_cleanup, on_startup
 
@@ -22,6 +24,10 @@ _DEFAULT_LISTEN_HOSTS = ("0.0.0.0", "::")
 def main(argv: Sequence[str] | None = None) -> int:
     """启动统一入口，不主动连接任意后端。"""
 
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+    )
     args = _parse_args(argv)
     settings = GatewaySettings(host=args.host, port=args.port)
     ssl_context = _create_ssl_context(args.tls_cert, args.tls_key)
@@ -31,6 +37,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     listen_host: str | tuple[str, ...] = settings.host
     if settings.host == "0.0.0.0":
         listen_host = _DEFAULT_LISTEN_HOSTS
+    logging.getLogger(__name__).info(
+        "API Gateway 启动 version=%s host=%s port=%s tls_cert=%s",
+        API_GATEWAY_VERSION,
+        listen_host,
+        settings.port,
+        args.tls_cert,
+    )
     web.run_app(
         app,
         host=listen_host,

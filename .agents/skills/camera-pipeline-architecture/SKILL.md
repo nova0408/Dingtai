@@ -1,6 +1,6 @@
 ---
 name: camera-pipeline-architecture
-description: Dingtai 项目 `camera_pipeline` 构造与版本维护原则。用于远端 Linux 部署的 `camera_pipeline` 相关代码编写、重构、API 或功能调整与评审，强制 pipeline_context 负责数据交换与管理，其余子模块保持单一职责、协议入参/协议出参，并同步维护 CHANGELOG 语义版本。
+description: Dingtai 项目 `camera_pipeline` 构造与版本维护原则。用于 `camera_pipeline` 相关代码编写、重构、API 或功能调整与评审，强制 pipeline_context 负责数据交换与管理，其余子模块保持单一职责、协议入参/协议出参，并同步维护 CHANGELOG 语义版本。
 ---
 
 # Camera Pipeline Architecture
@@ -94,21 +94,8 @@ description: Dingtai 项目 `camera_pipeline` 构造与版本维护原则。用�
 3. 修改公共 client、RPC operation、协议字段、算法功能、配置语义或服务行为时，必须在同一批改动中升级版本号，并在 CHANGELOG 顶部追加带日期的记录。
 4. 同一批改动只升级一次；同时包含多类改动时按影响最大的版本位升级，不得为每个文件分别升级。
 5. CameraPipeline 功能版本与 `camera_pipeline.service.protocol.PROTOCOL_VERSION` 相互独立。线协议不兼容时应另外升级协议版本，但不得用协议版本代替功能版本。
-6. 部署到 Orin 时必须同步 CHANGELOG，并将其纳入文件清单和 SHA-256 一致性校验。API 或功能已改变但版本号或日志未更新时，不得报告完成。
-7. 修改公共 client、API 或线协议后，必须把 CameraPipeline 与其 RecordReplay
-   消费端作为同一批次同步并重启。停止 RecordReplay 只能是文件替换期间的临时
-   步骤；完成部署前必须恢复并验证两个服务，禁止留下加载旧客户端的常驻进程。
-8. 双服务重启不授权发送 RecordReplay `/start`，也不授权运行任何回放测试。
-9. `SERVICE_VERSION` 发生变化后，在用户授权远端部署且本机静态/契约检查通过时，必须尝试执行
-   `scripts/sync_and_restart_services.ps1 -CameraPipelineOnly` 的单服务同步部署。必须记录本机期望版本、
-   远端实际版本、同步文件清单、SHA-256、备份和只读就绪结果；远端不可达或同步失败时不得报告版本
-   已更新。若公共 client、API 或线协议也发生变化，必须按双服务部署规则联动 RecordReplay，必要时使用
-   五服务完整部署。
-10. 无论是否获得远端部署授权，结束任务前都必须输出部署收尾状态：已部署并附证据，或明确标记
-    `待授权部署` 并给出准确命令。不得把“本机静态检查通过”当作远端版本已更新。
-11. 用户表示已手动同步或重启时，必须直接检查 CameraPipeline 的只读健康/版本响应；若本次改动
-    还影响 Calibration Service、RecordReplay 或其它下游，也必须逐项检查，不能由一个服务的
-    systemd active 或 Gateway health 推断其它服务已更新。
+6. 远端同步、重启、版本校验、跨服务联动和部署失败处置统一遵循
+   `.agents/skills/ssh-orin-remote-ops/SKILL.md`；本 skill 只定义 CameraPipeline 的架构、协议和功能版本语义。
 
 ## 评审检查点
 

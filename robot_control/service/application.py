@@ -222,6 +222,124 @@ class RobotControlApplication:
         self._gateway.ar5_stop(side)
         return self._accepted("ar5_stop", f"ar5_{side}")
 
+    def ar5_sdk_robot_info(self, side: str) -> dict[str, JsonValue]:
+        """读取 xCoreSDK ``robotInfo`` 稳定字段。"""
+
+        return self._gateway.ar5_sdk_robot_info(side)
+
+    def ar5_sdk_operation_state(self, side: str) -> dict[str, JsonValue]:
+        """读取 xCoreSDK ``operationState``。"""
+
+        return self._gateway.ar5_sdk_operation_state(side)
+
+    def ar5_sdk_operate_mode(self, side: str) -> dict[str, JsonValue]:
+        """读取 xCoreSDK ``operateMode``。"""
+
+        return self._gateway.ar5_sdk_operate_mode(side)
+
+    def ar5_sdk_power_state(self, side: str) -> dict[str, JsonValue]:
+        """读取 xCoreSDK ``powerState``。"""
+
+        return self._gateway.ar5_sdk_power_state(side)
+
+    def ar5_sdk_cart_posture(self, side: str) -> dict[str, JsonValue]:
+        """读取 xCoreSDK ``cartPosture(endInRef)``。"""
+
+        return self._gateway.ar5_sdk_cart_posture(side)
+
+    def ar5_sdk_set_motion_control_mode_nrt(self, side: str) -> ActionResponse:
+        """设置 xCoreSDK NRT 命令模式。"""
+
+        self._gateway.ar5_sdk_set_motion_control_mode_nrt(side)
+        return self._accepted("setMotionControlMode", f"ar5_{side}")
+
+    def ar5_sdk_set_operate_mode_automatic(self, side: str) -> ActionResponse:
+        """设置 xCoreSDK 自动工作模式。"""
+
+        self._gateway.ar5_sdk_set_operate_mode_automatic(side)
+        return self._accepted("setOperateMode", f"ar5_{side}")
+
+    def ar5_sdk_set_power_state(self, side: str, enabled: bool) -> ActionResponse:
+        """设置 xCoreSDK 电机状态。"""
+
+        self._gateway.ar5_sdk_set_power_state(side, enabled)
+        return self._accepted("setPowerState", f"ar5_{side}")
+
+    def ar5_sdk_set_default_conf_opt(self, side: str, enabled: bool) -> ActionResponse:
+        """设置 xCoreSDK 默认构型策略。"""
+
+        self._gateway.ar5_sdk_set_default_conf_opt(side, enabled)
+        return self._accepted("setDefaultConfOpt", f"ar5_{side}")
+
+    def ar5_sdk_set_default_speed(self, side: str, speed_mm_s: float) -> ActionResponse:
+        """设置 xCoreSDK 默认速度。"""
+
+        self._gateway.ar5_sdk_set_default_speed(side, speed_mm_s)
+        return self._accepted("setDefaultSpeed", f"ar5_{side}")
+
+    def ar5_sdk_set_default_zone(self, side: str, zone_mm: float) -> ActionResponse:
+        """设置 xCoreSDK 默认 zone。"""
+
+        self._gateway.ar5_sdk_set_default_zone(side, zone_mm)
+        return self._accepted("setDefaultZone", f"ar5_{side}")
+
+    def ar5_sdk_set_toolset(
+        self, side: str, tool_name: str, wobj_name: str
+    ) -> ActionResponse:
+        """设置 xCoreSDK 命名 tool/wobj。"""
+
+        self._gateway.ar5_sdk_set_toolset(side, tool_name, wobj_name)
+        return self._accepted("setToolset", f"ar5_{side}")
+
+    def ar5_sdk_calc_ik(
+        self,
+        side: str,
+        *,
+        trans_m: tuple[float, ...],
+        rpy_rad: tuple[float, ...],
+        has_elbow: bool,
+        elbow_rad: float,
+        conf_data: tuple[int, ...],
+    ) -> dict[str, JsonValue]:
+        """调用 xCoreSDK ``model().calcIk``。"""
+
+        return self._gateway.ar5_sdk_calc_ik(
+            side,
+            trans_m=trans_m,
+            rpy_rad=rpy_rad,
+            has_elbow=has_elbow,
+            elbow_rad=elbow_rad,
+            conf_data=conf_data,
+        )
+
+    def ar5_sdk_move_reset(self, side: str) -> ActionResponse:
+        """调用 xCoreSDK ``moveReset``。"""
+
+        self._gateway.ar5_sdk_move_reset(side)
+        return self._accepted("moveReset", f"ar5_{side}")
+
+    def ar5_sdk_move_append_abs_j(
+        self,
+        side: str,
+        targets: tuple[tuple[tuple[float, ...], float, float], ...],
+    ) -> ActionResponse:
+        """调用 xCoreSDK 批量 ``moveAppend(MoveAbsJ)``。"""
+
+        data = self._gateway.ar5_sdk_move_append_abs_j(side, targets)
+        return ActionResponse(ROBOT_CONTROL_VERSION, "1", True, data)
+
+    def ar5_sdk_move_start(self, side: str) -> ActionResponse:
+        """调用 xCoreSDK ``moveStart``。"""
+
+        self._gateway.ar5_sdk_move_start(side)
+        return self._accepted("moveStart", f"ar5_{side}")
+
+    def ar5_sdk_disable_drag(self, side: str) -> ActionResponse:
+        """调用 xCoreSDK ``disableDrag``。"""
+
+        self._gateway.ar5_sdk_disable_drag(side)
+        return self._accepted("disableDrag", f"ar5_{side}")
+
     def ar5_get_soft_limits(self, side: str) -> dict[str, JsonValue]:
         """读取指定 AR5 七个轴的软限位。"""
 

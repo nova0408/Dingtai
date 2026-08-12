@@ -1,5 +1,5 @@
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "deployment": {
     "prior_files": {
       "ball_pose": "prior_data/ball_pose_prior.json",
@@ -51,13 +51,13 @@
       "final_speed": 200.0,
       "settle_delay": 0.0
     },
-    {"function_name": "get_tray", "type": "precise", "speed": 200.0, "zone": 0.0, "index": 1},
+    {"function_name": "get_tray", "type": "precise", "speed": 200.0, "zone": 0.0},
     {"function_name": "after_get_tray", "type": "fast", "speed": 1000.0, "zone": 10.0},
-    {"function_name": "put_tray", "type": "precise", "speed": 200.0, "zone": 0.0, "index": 4},
+    {"function_name": "put_tray", "type": "precise", "speed": 200.0, "zone": 0.0},
     {"function_name": "before_get_new_tray", "type": "fast", "speed": 1000.0, "zone": 10.0},
-    {"function_name": "get_new_tray", "type": "precise", "speed": 200.0, "zone": 0.0, "index": 1},
+    {"function_name": "get_new_tray", "type": "precise", "speed": 200.0, "zone": 0.0},
     {"function_name": "before_put_new_tray", "type": "fast", "speed": 1000.0, "zone": 10.0},
-    {"function_name": "put_new_tray", "type": "precise", "speed": 200.0, "zone": 0.0, "index": 1},
+    {"function_name": "put_new_tray", "type": "precise", "speed": 200.0, "zone": 0.0},
     {
       "function_name": "calibration_new_tray",
       "type": "capture",

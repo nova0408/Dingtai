@@ -1,0 +1,3 @@
+T_charuco_off xyzrpy(mm,deg)=[21.45, -3.52, 2.88, -0.34, 0.26, -0.43]
+T_three_ball_off xyzrpy(mm,deg)=[18.52, 3.39, -9.15, 0.40, -0.62, -0.93]
+T_delta xyzrpy(mm,deg)=[3.10, -6.95, 12.36, -0.73, 0.89, 0.49]

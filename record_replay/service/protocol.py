@@ -14,6 +14,27 @@ from ..contracts import (
 from .config_store import RuntimeParameters
 
 
+RECORD_REPLAY_API_VERSION = "1"
+"RecordReplay HTTP API 主版本。"
+
+
+@dataclass(frozen=True, slots=True)
+class RecordReplayHealthResponse:
+    """不访问现场设备的服务健康信息。"""
+
+    service_version: str
+    "RecordReplay 当前业务版本，供客户端做版本校验。"
+
+    api_version: str
+    "对外 HTTP API 主版本。"
+
+    state: ReplayServiceState
+    "服务当前回放状态；读取状态不会触发任何动作。"
+
+    hardware_access: str = "lazy"
+    "健康检查不访问硬件，仅在实际业务请求中按需连接。"
+
+
 @dataclass(frozen=True, slots=True)
 class RecordReplayErrorResponse:
     """HTTP 非 2xx 响应使用的稳定 JSON 错误对象。"""

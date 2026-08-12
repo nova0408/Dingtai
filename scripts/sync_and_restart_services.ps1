@@ -7,7 +7,8 @@ param(
     [switch]$RobotControlOnly,
     [switch]$ApiGatewayOnly,
     [switch]$CalibrationServiceOnly,
-    [switch]$RestartOnly
+    [switch]$RestartOnly,
+    [switch]$Force
 )
 
 Set-StrictMode -Version Latest
@@ -58,6 +59,27 @@ function Test-DeployFile {
     return $File.FullName -notmatch "[\\/]__pycache__[\\/]" -and
         $File.FullName -notmatch "[\\/]\.archive[\\/]" -and
         $File.FullName -notmatch "[\\/]api_gateway[\\/]certificates[\\/]generated[\\/]"
+}
+
+function Test-RecordReplayDeployFile {
+    param(
+        [Parameter(Mandatory)]
+        [System.IO.FileInfo]$File,
+        [Parameter(Mandatory)]
+        [string]$RecordReplayRoot
+    )
+
+    if (-not (Test-DeployFile -File $File)) {
+        return $false
+    }
+    $relativePath = [System.IO.Path]::GetRelativePath(
+        $RecordReplayRoot,
+        $File.FullName
+    ).Replace("\", "/")
+    return -not (
+        $relativePath.StartsWith("prior_data/", [System.StringComparison]::OrdinalIgnoreCase) -or
+        $relativePath.StartsWith("records/", [System.StringComparison]::OrdinalIgnoreCase)
+    )
 }
 
 function Get-SourceVersion {
@@ -157,6 +179,15 @@ if ($ApiGatewayOnly -and ($CameraPipelineOnly -or $RecordReplayOnly -or $RobotCo
 }
 if ($RobotControlOnly -and ($CameraPipelineOnly -or $RecordReplayOnly -or $ApiGatewayOnly -or $CalibrationServiceOnly)) {
     throw "-RobotControlOnly 不能与其他 *Only 选项同时使用。"
+}
+if ($Force -and (-not $RecordReplayOnly -or $RestartOnly)) {
+    throw "-Force 只能与 -RecordReplayOnly 同时用于同步部署，不能用于全量、其它服务或 -RestartOnly。"
+}
+if ($Force) {
+    Write-Warning (
+        "已启用 RecordReplay 强制同步模式：仅允许越过 rapid_stop 状态检查；" +
+        "busy、未知状态及其它部署安全检查仍会拒绝。"
+    )
 }
 if ($RestartOnly) {
     # 下游服务依赖：CameraPipeline -> RecordReplay；RobotControl/Calibration Service -> API Gateway。
@@ -415,7 +446,11 @@ if [[ -d "${workspace}/api_gateway" ]]; then
 fi
 mv "${stage_path}/api_gateway" "${workspace}/api_gateway"
 install -m 0644 "${workspace}/api_gateway/service/api-gateway.service" "/etc/systemd/system/${unit}"
-"/home/wuji-brain/miniconda3/envs/wuji/bin/python" -m pip install --disable-pip-version-check --no-input -r "${workspace}/api_gateway/requirements.txt"
+if [[ -f "${workspace}/api_gateway/requirements.txt" ]]; then
+  "/home/wuji-brain/miniconda3/envs/wuji/bin/python" -m pip install --disable-pip-version-check --no-input -r "${workspace}/api_gateway/requirements.txt"
+else
+  echo "[deploy] api_gateway/requirements.txt not present; skip API Gateway dependency installation"
+fi
 systemctl daemon-reload
 systemctl enable "${unit}"
 systemctl restart --no-block "${unit}"
@@ -671,7 +706,9 @@ if ($RecordReplayOnly) {
     try {
         $deployFiles = @(
             Get-ChildItem -LiteralPath $recordReplayPath -Recurse -File |
-                Where-Object { Test-DeployFile -File $_ }
+                Where-Object {
+                    Test-RecordReplayDeployFile -File $_ -RecordReplayRoot $recordReplayPath
+                }
         )
         if ($deployFiles.Count -eq 0) {
             throw "RecordReplay 部署清单为空"
@@ -699,7 +736,10 @@ if ($RecordReplayOnly) {
             "--exclude=*/.archive/*",
             "--exclude=*.pyc",
             "--exclude=*.log",
-            "--exclude=record_replay/prior_data/ball_debug_overlay.jpg",
+            "--exclude=record_replay/prior_data",
+            "--exclude=record_replay/prior_data/*",
+            "--exclude=record_replay/records",
+            "--exclude=record_replay/records/*",
             "-C",
             $projectRoot,
             "record_replay"
@@ -713,6 +753,7 @@ workspace="$1"
 stage_path="$2"
 manifest_path="$3"
 expected_record_version="$4"
+force_record_replay_state="$5"
 unit="record-replay.service"
 archive_root="${workspace}/.archive/service_deploy/$(basename "${stage_path}")"
 deploy_log_since="$(date '+%Y-%m-%d %H:%M:%S')"
@@ -727,6 +768,17 @@ case "${stage_path}" in
   "${workspace}/.deploy_stage/record-replay-"*) ;;
   *) echo "[deploy] invalid RecordReplay stage path: ${stage_path}"; exit 1 ;;
 esac
+if [[ "${force_record_replay_state}" != "true" && "${force_record_replay_state}" != "false" ]]; then
+  echo "[deploy] invalid force_record_replay_state: ${force_record_replay_state}"
+  exit 1
+fi
+
+for exempt_dir in prior_data records; do
+  if [[ -e "${stage_path}/record_replay/${exempt_dir}" ]]; then
+    echo "[deploy] staged RecordReplay package must not contain exempt directory: ${exempt_dir}"
+    exit 1
+  fi
+done
 
 expected_count="$(wc -l < "${manifest_path}")"
 actual_stage_count="$(find "${stage_path}/record_replay" -type f ! -name '*.pyc' ! -name '*.log' ! -path '*/__pycache__/*' ! -path '*/.archive/*' | wc -l)"
@@ -752,10 +804,13 @@ json_field() {
     'import json, sys; print(json.load(sys.stdin)[sys.argv[1]])' "${field}"
 }
 
+service_state="not_running"
 if ss -ltn '( sport = :6300 )' | grep -q LISTEN; then
   status_payload="$(curl -fsS --max-time 5 http://127.0.0.1:6300/status)"
   service_state="$(printf '%s' "${status_payload}" | json_field state)"
-  if [[ "${service_state}" != "idle" && "${service_state}" != "waiting" ]]; then
+  if [[ "${service_state}" == "rapid_stop" && "${force_record_replay_state}" == "true" ]]; then
+    echo "[deploy] WARNING: explicitly forced RecordReplay deployment from rapid_stop"
+  elif [[ "${service_state}" != "idle" && "${service_state}" != "waiting" ]]; then
     echo "[deploy] refused: RecordReplay current state is ${service_state}"
     exit 1
   fi
@@ -793,6 +848,39 @@ if [[ -d "${workspace}/record_replay" ]]; then
   mv "${workspace}/record_replay" "${archive_root}/record_replay"
 fi
 mv "${stage_path}/record_replay" "${workspace}/record_replay"
+for exempt_dir in prior_data records; do
+  archived_dir="${archive_root}/record_replay/${exempt_dir}"
+  target_dir="${workspace}/record_replay/${exempt_dir}"
+  if [[ -e "${archived_dir}" ]]; then
+    mv "${archived_dir}" "${target_dir}"
+    echo "[deploy] preserved remote RecordReplay directory: ${exempt_dir}"
+  else
+    mkdir -p "${target_dir}"
+    echo "[deploy] created missing remote RecordReplay directory: ${exempt_dir}"
+  fi
+done
+runtime_state_path="${workspace}/record_replay/runtime_state.json"
+archived_runtime_state_path="${archive_root}/record_replay/runtime_state.json"
+case "${service_state}" in
+  idle|waiting)
+    printf '{\n  "state": "idle"\n}\n' > "${runtime_state_path}"
+    echo "[deploy] restored pre-deploy RecordReplay state: idle"
+    ;;
+  rapid_stop)
+    printf '{\n  "state": "rapid_stop"\n}\n' > "${runtime_state_path}"
+    echo "[deploy] preserved pre-deploy RecordReplay state: rapid_stop"
+    ;;
+  not_running)
+    if [[ -f "${archived_runtime_state_path}" ]]; then
+      cp -- "${archived_runtime_state_path}" "${runtime_state_path}"
+      echo "[deploy] preserved existing RecordReplay runtime_state.json"
+    fi
+    ;;
+  *)
+    echo "[deploy] refused unexpected captured RecordReplay state: ${service_state}"
+    exit 1
+    ;;
+esac
 
 install -m 0644 \
   "${workspace}/record_replay/service/record-replay.service" \
@@ -841,6 +929,7 @@ echo "[deploy] RecordReplay updated and restarted; version=${record_version}; GE
 
         Write-Host "即将同步 $($deployFiles.Count) 个 RecordReplay 文件到 $SshTarget"
         Write-Host "远端旧版本会备份到：$RemoteWorkspace/.archive/service_deploy/record-replay-$timestamp"
+        $forceRecordReplayState = if ($Force) { "true" } else { "false" }
         Invoke-CheckedCommand -FilePath "ssh.exe" -ArgumentList @(
             $SshOptions + @($SshTarget, "mkdir -p '$remoteStagePath'")
         )
@@ -858,7 +947,8 @@ echo "[deploy] RecordReplay updated and restarted; version=${record_version}; GE
         )
 
         $remoteCommand = "sudo -S -p '' bash '/tmp/dingtai_record_replay_deploy.sh' " +
-            "'$RemoteWorkspace' '$remoteStagePath' '$remoteManifestPath' '$expectedRecordReplayVersion'"
+            "'$RemoteWorkspace' '$remoteStagePath' '$remoteManifestPath' " +
+            "'$expectedRecordReplayVersion' '$forceRecordReplayState'"
         $RemoteSudoPassword | & ssh.exe @SshOptions $SshTarget $remoteCommand
         if ($LASTEXITCODE -ne 0) {
             throw "远端 RecordReplay 同步或重启失败，请检查上方日志。"
@@ -898,7 +988,9 @@ try {
         Get-ChildItem -LiteralPath $cameraPipelinePath -Recurse -File |
             Where-Object { Test-DeployFile -File $_ }
         Get-ChildItem -LiteralPath $recordReplayPath -Recurse -File |
-            Where-Object { Test-DeployFile -File $_ }
+            Where-Object {
+                Test-RecordReplayDeployFile -File $_ -RecordReplayRoot $recordReplayPath
+            }
         Get-ChildItem -LiteralPath $calibrationServicePath -Recurse -File |
             Where-Object { Test-DeployFile -File $_ }
         Get-ChildItem -LiteralPath $robotControlPath -Recurse -File |
@@ -931,7 +1023,10 @@ try {
         "--exclude=*/__pycache__/*",
         "--exclude=*/.archive",
         "--exclude=*/.archive/*",
-        "--exclude=record_replay/prior_data/ball_debug_overlay.jpg",
+        "--exclude=record_replay/prior_data",
+        "--exclude=record_replay/prior_data/*",
+        "--exclude=record_replay/records",
+        "--exclude=record_replay/records/*",
         "--exclude=api_gateway/certificates/generated",
         "--exclude=api_gateway/certificates/generated/*",
         "--exclude=*.key.pem",
@@ -1027,6 +1122,13 @@ cleanup() {
 }
 trap cleanup EXIT
 
+for exempt_dir in prior_data records; do
+  if [[ -e "${stage_path}/record_replay/${exempt_dir}" ]]; then
+    echo "[deploy] staged RecordReplay package must not contain exempt directory: ${exempt_dir}"
+    exit 1
+  fi
+done
+
 expected_count="$(wc -l < "${manifest_path}")"
 actual_stage_count="$(
   find "${stage_path}/camera_pipeline" "${stage_path}/record_replay" "${stage_path}/calibration_service" "${stage_path}/robot_control" "${stage_path}/api_gateway" \
@@ -1056,6 +1158,7 @@ if ! camera_import_output="$(
   printf '%s\n' "${camera_import_output}"
   exit 1
 fi
+service_state="not_running"
 if ss -ltn '( sport = :6300 )' | grep -q LISTEN; then
   status_payload="$(curl -fsS --max-time 5 http://127.0.0.1:6300/status)"
   service_state="$(
@@ -1140,6 +1243,35 @@ for restart_script_name in \
 done
 mv "${stage_path}/camera_pipeline" "${workspace}/camera_pipeline"
 mv "${stage_path}/record_replay" "${workspace}/record_replay"
+for exempt_dir in prior_data records; do
+  archived_dir="${archive_root}/record_replay/${exempt_dir}"
+  target_dir="${workspace}/record_replay/${exempt_dir}"
+  if [[ -e "${archived_dir}" ]]; then
+    mv "${archived_dir}" "${target_dir}"
+    echo "[deploy] preserved remote RecordReplay directory: ${exempt_dir}"
+  else
+    mkdir -p "${target_dir}"
+    echo "[deploy] created missing remote RecordReplay directory: ${exempt_dir}"
+  fi
+done
+runtime_state_path="${workspace}/record_replay/runtime_state.json"
+archived_runtime_state_path="${archive_root}/record_replay/runtime_state.json"
+case "${service_state}" in
+  idle|waiting)
+    printf '{\n  "state": "idle"\n}\n' > "${runtime_state_path}"
+    echo "[deploy] restored pre-deploy RecordReplay state: idle"
+    ;;
+  not_running)
+    if [[ -f "${archived_runtime_state_path}" ]]; then
+      cp -- "${archived_runtime_state_path}" "${runtime_state_path}"
+      echo "[deploy] preserved existing RecordReplay runtime_state.json"
+    fi
+    ;;
+  *)
+    echo "[deploy] refused unexpected captured RecordReplay state: ${service_state}"
+    exit 1
+    ;;
+esac
 mv "${stage_path}/calibration_service" "${workspace}/calibration_service"
 mv "${stage_path}/robot_control" "${workspace}/robot_control"
 mv "${stage_path}/api_gateway" "${workspace}/api_gateway"
@@ -1176,7 +1308,11 @@ install -m 0644 \
 install -m 0644 \
   "${workspace}/api_gateway/service/api-gateway.service" \
   "/etc/systemd/system/${gateway_unit}"
-"/home/wuji-brain/miniconda3/envs/wuji/bin/python" -m pip install --disable-pip-version-check --no-input -r "${workspace}/api_gateway/requirements.txt"
+if [[ -f "${workspace}/api_gateway/requirements.txt" ]]; then
+  "/home/wuji-brain/miniconda3/envs/wuji/bin/python" -m pip install --disable-pip-version-check --no-input -r "${workspace}/api_gateway/requirements.txt"
+else
+  echo "[deploy] api_gateway/requirements.txt not present; skip API Gateway dependency installation"
+fi
 systemctl daemon-reload
 systemctl enable "${camera_unit}" "${record_unit}" "${robot_unit}" "${calibration_unit}" "${gateway_unit}"
 

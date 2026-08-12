@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: RecordReplay HTTP API
-  version: 3.3.0
+  version: 3.7.3
   description: >-
     双臂记录回放服务 HTTP API。POST /start 可能控制真实设备，必须由现场人员确认安全后调用。
     状态 WebSocket 通过 API Gateway 的 /api/v1/record-replay-ws 提供 WSS 入口。
@@ -14,6 +14,20 @@ externalDocs:
   description: 完整中文接口说明与安全边界
   url: ./API%20Reference.md
 paths:
+  /health:
+    get:
+      operationId: get_health
+      summary: 读取服务健康信息和版本
+      description: 不连接现场设备，仅返回 RecordReplay 版本、API 主版本和当前服务状态。
+      responses:
+        '200':
+          description: 服务健康信息
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RecordReplayHealthResponse'
+        '500':
+          $ref: '#/components/responses/ErrorResponse'
   /status:
     get:
       operationId: get_status
@@ -43,7 +57,7 @@ paths:
     post:
       operationId: update_config
       summary: 更新运行参数
-      description: 回放线程运行期间拒绝修改；动作顺序、speed、zone 和 index 由 idle 时读取的 action_sequence.json 承载。
+      description: 回放线程运行期间拒绝修改；动作顺序、speed 和 zone 由 idle 时读取的 action_sequence.json 承载，托盘 index 由每次 plan/start 请求传入。
       requestBody:
         required: true
         content:
@@ -123,7 +137,7 @@ paths:
       description: >-
         先全量校验先验、命名动作 JSON 和 CSV 唯一映射；录制 CSV 文件名允许使用
         01_、10_、11_ 等纯数字首段前缀，前缀只用于动作名匹配，实际执行仍使用原始文件名。
-        校验通过后可能控制机械臂、AGV、夹爪、M11 和升降机构，必须现场确认安全。
+        校验通过后可能控制机械臂、AGV、夹爪、M6 和升降机构，必须现场确认安全。
       requestBody:
         required: true
         content:
@@ -218,6 +232,19 @@ paths:
         '500':
           $ref: '#/components/responses/ErrorResponse'
 components:
+  schemas:
+    RecordReplayHealthResponse:
+      type: object
+      additionalProperties: false
+      required: [service_version, api_version, state, hardware_access]
+      properties:
+        service_version: {type: string}
+        api_version: {type: string}
+        state: {type: string, enum: [idle, busy, rapid_stop]}
+        hardware_access: {type: string, enum: [lazy]}
+    ReplayState:
+      type: string
+      enum: [idle, busy, rapid_stop]
   responses:
     ErrorResponse:
       description: 请求或业务错误
@@ -225,10 +252,6 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/RecordReplayErrorResponse'
-  schemas:
-    ReplayState:
-      type: string
-      enum: [idle, busy, rapid_stop]
     ErrorCode:
       type: [string, 'null']
       enum:
@@ -242,6 +265,7 @@ components:
         - stop_requested
         - execution_failed
         - not_found
+        - method_not_allowed
         - internal_error
         - null
     RecordReplayErrorResponse:
@@ -262,10 +286,11 @@ components:
             - stop_requested
             - execution_failed
             - not_found
+            - method_not_allowed
             - internal_error
         error_text:
           type: string
-          description: 中文错误说明
+          description: 中文错误说明；未知异常包含可与服务日志关联的 request_id、异常类型和限长原因
     CsvFileStatus:
       type: object
       required: [name, row_count]

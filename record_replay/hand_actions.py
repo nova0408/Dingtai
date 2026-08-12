@@ -1,4 +1,4 @@
-"""左夹爪、右 M11 与升降机构的回放动作。"""
+"""左夹爪、右 M6 与升降机构的回放动作。"""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from .arm_gateway import retry_non_motion_call
 from .contracts import ReplayRow
 from .runtime import ReplayRuntime
 
-RIGHT_HAND_ACTUATOR_COUNT = 11
+M6_ACTUATOR_COUNT = 6
 RIGHT_HAND_SPEED_RATIO = 0.5
 RIGHT_HAND_FORCE_LIMIT = 0.5
 
@@ -115,22 +115,22 @@ def prepare_gripper_before_replay(runtime: ReplayRuntime) -> None:
         current_position = read_position()
 
 
-def execute_m11_row(runtime: ReplayRuntime, row: ReplayRow) -> None:
-    """读取有效的右手 11 轴状态后整体下发目标。
+def execute_m6_row(runtime: ReplayRuntime, row: ReplayRow) -> None:
+    """读取有效的右手 M6 状态后整体下发目标。
 
     Parameters
     ----------
     runtime:
         当前单臂回放上下文，提供右手客户端及状态读取超时配置。
     row:
-        M11 CSV 记录，``joints_text`` 包含 11 个归一化执行器目标值。
+        M6 CSV 记录，``joints_text`` 包含 6 个归一化执行器目标值。
 
     Raises
     ------
     RuntimeError
         当前 runtime 未配置右手客户端，或目标下发失败。
     TimeoutError
-        总超时内没有读取到至少 11 个带有效 ``position`` 的执行器状态。
+        总超时内没有读取到完整的 6 个带有效 ``position`` 的执行器状态。
 
     Notes
     -----
@@ -141,13 +141,13 @@ def execute_m11_row(runtime: ReplayRuntime, row: ReplayRow) -> None:
     _raise_if_stopped(runtime)
     right_hand = runtime.hand_body.right_hand
     if right_hand is None:
-        raise RuntimeError("当前 runtime 未配置右手 M11 客户端")
-    positions = _read_valid_m11_positions(runtime)
-    if row.joint_values is None or len(row.joint_values) != RIGHT_HAND_ACTUATOR_COUNT:
-        raise RuntimeError(f"M11 joints 未在启动阶段完成预解析 file={row.csv_name} row={row.row_index}")
+        raise RuntimeError("当前 runtime 未配置右手 M6 客户端")
+    positions = _read_valid_m6_positions(runtime)
+    if row.joint_values is None or len(row.joint_values) != M6_ACTUATOR_COUNT:
+        raise RuntimeError(f"M6 joints 未在启动阶段完成预解析 file={row.csv_name} row={row.row_index}")
     for actuator_id, target_value in enumerate(row.joint_values):
         positions[actuator_id] = target_value
-    commands = [_build_m11_command(actuator_id, value) for actuator_id, value in enumerate(positions)]
+    commands = [_build_m6_command(actuator_id, value) for actuator_id, value in enumerate(positions)]
     _raise_if_stopped(runtime)
     if not retry_non_motion_call(
         f"right_hand.set_hand_state({row.csv_name}:{row.row_index})",
@@ -156,10 +156,16 @@ def execute_m11_row(runtime: ReplayRuntime, row: ReplayRow) -> None:
         runtime.settings.non_motion_retry_delay_s,
         runtime.stop_event,
     ):
-        raise RuntimeError("右手 M11 下发失败")
+        raise RuntimeError("右手 M6 下发失败")
+    logger.info(
+        "已下发右手 M6 目标 file={} row={} positions={}",
+        row.csv_name,
+        row.row_index,
+        [round(value, 4) for value in positions],
+    )
 
 
-def _build_m11_command(actuator_id: int, value: float) -> dict[str, float | int]:
+def _build_m6_command(actuator_id: int, value: float) -> dict[str, float | int]:
     """构造 qmlinker 单个右手执行器命令。"""
 
     position = float(value)
@@ -173,18 +179,18 @@ def _build_m11_command(actuator_id: int, value: float) -> dict[str, float | int]
     }
 
 
-def _read_valid_m11_positions(runtime: ReplayRuntime) -> list[float]:
+def _read_valid_m6_positions(runtime: ReplayRuntime) -> list[float]:
     """在总超时内持续读取结构完整的右手执行器位置。
 
     Parameters
     ----------
     runtime:
-        当前单臂回放上下文，提供右手客户端、M11 索引及状态读取配置。
+        当前单臂回放上下文，提供右手客户端及 M6 状态读取配置。
 
     Returns
     -------
     list[float]
-        当前右手执行器位置，至少覆盖所有 M11 索引，数值为设备归一化位置。
+        当前右手 6 个执行器位置，数值为设备归一化位置。
 
     Raises
     ------
@@ -195,16 +201,15 @@ def _read_valid_m11_positions(runtime: ReplayRuntime) -> list[float]:
 
     Notes
     -----
-    重读次数不设上限，唯一边界是 ``m11_state_read_timeout_s``。该函数只验证通信状态，
+    重读次数不设上限，唯一边界是 ``m6_state_read_timeout_s``。该函数只验证通信状态，
     不下发执行器目标。
     """
 
     right_hand = runtime.hand_body.right_hand
     if right_hand is None:
-        raise RuntimeError("当前 runtime 未配置右手 M11 客户端")
+        raise RuntimeError("当前 runtime 未配置右手 M6 客户端")
     hand_settings = runtime.settings.hand
-    required_count = max(*hand_settings.m11_root_actuator_ids, *hand_settings.m11_tip_actuator_ids) + 1
-    deadline = time.monotonic() + hand_settings.m11_state_read_timeout_s
+    deadline = time.monotonic() + hand_settings.m6_state_read_timeout_s
     read_index = 0
     last_invalid_reason = "尚未读取"
     while True:
@@ -230,8 +235,10 @@ def _read_valid_m11_positions(runtime: ReplayRuntime) -> list[float]:
                 actuators = state.get("actuators")
                 if not isinstance(actuators, list):
                     last_invalid_reason = "actuators 不是 list"
-                elif len(actuators) < required_count:
-                    last_invalid_reason = f"执行器数量不足 required={required_count} actual={len(actuators)}"
+                elif len(actuators) != M6_ACTUATOR_COUNT:
+                    last_invalid_reason = (
+                        f"执行器数量与 M6 不一致 expected={M6_ACTUATOR_COUNT} actual={len(actuators)}"
+                    )
                 else:
                     for index, actuator in enumerate(actuators):
                         if not isinstance(actuator, dict) or not isinstance(actuator.get("position"), int | float):
@@ -239,7 +246,7 @@ def _read_valid_m11_positions(runtime: ReplayRuntime) -> list[float]:
                             positions = []
                             break
                         positions.append(float(actuator["position"]))
-                    if len(positions) >= required_count:
+                    if len(positions) == M6_ACTUATOR_COUNT:
                         if read_index > 1:
                             logger.success(
                                 "右手状态重试后恢复 read={} actuator_count={}",
@@ -250,7 +257,7 @@ def _read_valid_m11_positions(runtime: ReplayRuntime) -> list[float]:
         remaining_s = deadline - time.monotonic()
         if remaining_s <= 0.0:
             raise TimeoutError(
-                f"读取有效右手状态超时 timeout={hand_settings.m11_state_read_timeout_s:.1f} s "
+                f"读取有效右手状态超时 timeout={hand_settings.m6_state_read_timeout_s:.1f} s "
                 f"read={read_index} last_reason={last_invalid_reason}"
             )
         logger.warning(
@@ -259,7 +266,7 @@ def _read_valid_m11_positions(runtime: ReplayRuntime) -> list[float]:
             last_invalid_reason,
             remaining_s,
         )
-        _wait_or_raise(runtime, min(hand_settings.m11_state_read_poll_interval_s, remaining_s))
+        _wait_or_raise(runtime, min(hand_settings.m6_state_read_poll_interval_s, remaining_s))
 
 
 # endregion
@@ -486,7 +493,7 @@ def _read_lift_height(result: object) -> float:
 
 
 def _raise_if_stopped(runtime: ReplayRuntime) -> None:
-    """阻止停止锁存后的夹爪、M11、升降普通指令。"""
+    """阻止停止锁存后的夹爪、M6、升降普通指令。"""
 
     if runtime.stop_event.is_set():
         raise RuntimeError("检测到停止请求，禁止继续发送手部或升降指令")

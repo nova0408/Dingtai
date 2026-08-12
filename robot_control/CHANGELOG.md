@@ -1,6 +1,16 @@
 # RobotControl 版本日志
 
-当前版本：`0.10.1`
+当前版本：`0.11.0`
+
+## 0.11.0 - 2026-08-11
+
+### 变更
+
+- HTTP 路径移除无业务意义的 `/qmlinker` 资源层，头部、升降、手部和 AGV 改为
+  `/api/v1/{device}`，不保留旧路径兼容。
+- 新增 `/api/v1/ar5/{side}` 下 xCoreSDK 原操作的显式封装，覆盖 RecordReplay 所需的
+  robotInfo、状态读取、toolset、NRT/自动/电机设置、TCP、IK、MoveAbsJ 队列和停止清理。
+- xCoreSDK 连接继续只由 RobotControl 延迟创建并持有，避免 RecordReplay 与状态流建立重复连接。
 
 ## 0.10.1 - 2026-08-07
 

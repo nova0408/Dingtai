@@ -10,10 +10,19 @@ import numpy as np
 from loguru import logger
 from scipy.spatial.transform import Rotation
 
-from sdk.xcoresdk import xCoreSDK_python
-
 from .action_sequence import NamedActionPlan
-from .arm_gateway import retry_non_motion_call
+from .arm_gateway import (
+    CartesianPose,
+    calculate_ik,
+    move_append_abs_j,
+    move_reset,
+    move_start,
+    read_cart_posture,
+    read_operate_mode,
+    read_operation_state,
+    read_power_state,
+    retry_non_motion_call,
+)
 from .contracts import ReplayRow
 from .runtime import ReplayRuntime
 
@@ -24,7 +33,7 @@ class ArmMoveTarget:
 
     row: ReplayRow
     "源 CSV 动作行。"
-    joint: xCoreSDK_python.JointPosition
+    joint_rad: tuple[float, ...]
     "目标关节，单位 rad。"
     source: str
     "目标来源，csv-joints、tcp-ik 或 csv-joints-fallback。"
@@ -44,54 +53,49 @@ def build_arm_target(runtime: ReplayRuntime, row: ReplayRow) -> ArmMoveTarget:
             raise RuntimeError(f"arm joints 未在启动阶段完成预解析 file={row.csv_name} row={row.row_index}")
         return ArmMoveTarget(
             row,
-            xCoreSDK_python.JointPosition(list(row.arm_joint_rad)),
+            tuple(row.arm_joint_rad),
             "csv-joints",
         )
     pose = row.arm_pose
-    robot = runtime.connected_arm.robot
-    ec = runtime.connected_arm.ec
     current_pose = retry_non_motion_call(
         f"cartPosture(endInRef:{row.csv_name}:{row.row_index})",
-        lambda: robot.cartPosture(xCoreSDK_python.endInRef, ec),
+        lambda: read_cart_posture(runtime.connected_arm),
         runtime.settings.non_motion_retry_count,
         runtime.settings.non_motion_retry_delay_s,
         runtime.stop_event,
     )
-    if ec.get("ec", 0) != 0:
-        raise RuntimeError("读取当前笛卡尔位姿失败")
-    target_pose = xCoreSDK_python.CartesianPosition(_mm_to_m(list(pose.xyz_mm)) + _deg_to_rad(list(pose.rpy_deg)))
-    target_pose.confData = list(current_pose.confData)
-    target_pose.hasElbow = current_pose.hasElbow
-    target_pose.elbow = current_pose.elbow
+    target_pose = CartesianPose(
+        tuple(_mm_to_m(list(pose.xyz_mm))),
+        tuple(_deg_to_rad(list(pose.rpy_deg))),
+        current_pose.has_elbow,
+        current_pose.elbow_rad,
+        current_pose.conf_data,
+    )
+    has_elbow = target_pose.has_elbow
+    elbow_rad = target_pose.elbow_rad
+    conf_data = target_pose.conf_data
     if pose.has_elbow is not None:
-        target_pose.hasElbow = pose.has_elbow
+        has_elbow = pose.has_elbow
     if pose.elbow_deg is not None:
-        target_pose.elbow = _deg_to_rad([pose.elbow_deg])[0]
+        elbow_rad = _deg_to_rad([pose.elbow_deg])[0]
     if pose.conf_data is not None:
-        target_pose.confData = list(pose.conf_data)
+        conf_data = tuple(pose.conf_data)
+    target_pose = CartesianPose(
+        target_pose.trans_m, target_pose.rpy_rad, has_elbow, elbow_rad, conf_data
+    )
     offset_matrix, offset_source = _resolve_cartesian_offset(runtime, row.csv_name)
     applies_offset = offset_matrix is not None
     if offset_matrix is not None:
         target_pose = _apply_global_offset(target_pose, offset_matrix)
-    toolset = retry_non_motion_call(
-        f"toolset(replay-arm-ik:{row.csv_name}:{row.row_index})",
-        lambda: robot.toolset(ec),
-        runtime.settings.non_motion_retry_count,
-        runtime.settings.non_motion_retry_delay_s,
-        runtime.stop_event,
-    )
-    if ec.get("ec", 0) != 0:
-        raise RuntimeError("回放 arm 读取 toolset 失败")
-    result = robot.model().calcIk(target_pose, toolset, ec)
-    if ec.get("ec", 0) == 0:
-        joint = _normalize_ik_result(result)
+    try:
+        joint_rad = calculate_ik(runtime.connected_arm, target_pose)
         source = "tcp-ik" if not applies_offset else f"tcp-ik-offset-{offset_source}"
-        return ArmMoveTarget(row, joint, source)
+        return ArmMoveTarget(row, joint_rad, source)
+    except RuntimeError:
+        logger.exception("RobotControl calcIk 失败 file={} row={}", row.csv_name, row.row_index)
     if row.arm_joint_rad is None:
         raise RuntimeError(f"CSV joints 兜底未在启动阶段完成预解析 file={row.csv_name} row={row.row_index}")
-    ec["ec"] = 0
     fallback_reason = "offset 后 T_new_tcp 逆解失败，本行未实施 offset" if applies_offset else "原始 TCP 逆解失败"
-    ec["message"] = f"{fallback_reason}，已改用 CSV 记录关节值"
     logger.warning(
         "{}，最终兜底为 CSV joints MoveAbsJ file={} row={}",
         fallback_reason,
@@ -99,7 +103,7 @@ def build_arm_target(runtime: ReplayRuntime, row: ReplayRow) -> ArmMoveTarget:
         row.row_index,
     )
     source = "csv-joints-fallback" if not applies_offset else "csv-joints-fallback-offset-ik"
-    return ArmMoveTarget(row, xCoreSDK_python.JointPosition(list(row.arm_joint_rad)), source)
+    return ArmMoveTarget(row, tuple(row.arm_joint_rad), source)
 
 
 # endregion
@@ -116,11 +120,20 @@ def execute_arm_segment(
     """将连续 arm 行合并为一次 MoveAbsJ append/start。
 
     ``final_arm_segment`` 指示本段是否包含该 CSV 最后一条 arm 记录；CSV 中间因夹爪、
-    M11 或升降记录而切开的 arm 段不能因此误用 CaptureAction 的 ``final_speed``。
+    M6 或升降记录而切开的 arm 段不能因此误用 CaptureAction 的 ``final_speed``。
     """
 
     if not rows:
         return
+    logger.info(
+        "连续 MoveAbsJ 段开始 arm_side={} file={} rows={}-{} count={} final_arm_segment={}",
+        runtime.connected_arm.arm_side,
+        rows[0].csv_name,
+        rows[0].row_index,
+        rows[-1].row_index,
+        len(rows),
+        final_arm_segment,
+    )
     _raise_if_stop_requested(runtime)
     targets = [build_arm_target(runtime, row) for row in rows]
     _raise_if_stop_requested(runtime)
@@ -133,32 +146,31 @@ def execute_arm_segment(
         is_final_point = final_arm_segment and segment_end
         zone = _resolve_action_zone(action, is_final_point)
         speed = _resolve_action_speed(action, is_final_point)
-        commands.append(xCoreSDK_python.MoveAbsJCommand(target.joint, speed, zone))
-    robot = runtime.connected_arm.robot
-    ec = runtime.connected_arm.ec
+        commands.append((target.joint_rad, speed, zone))
     _raise_if_stop_requested(runtime)
-    _wait_until_reset_ready(robot, ec, runtime, rows[0], rows[-1])
+    _wait_until_reset_ready(runtime, rows[0], rows[-1])
     with runtime.connected_arm.command_lock:
         _raise_if_stop_requested(runtime)
         retry_non_motion_call(
             f"moveReset(replay-arm-segment:{runtime.connected_arm.arm_side}:{rows[0].csv_name}:{rows[0].row_index}-{rows[-1].row_index})",
-            lambda: robot.moveReset(ec),
+            lambda: move_reset(runtime.connected_arm),
             runtime.settings.non_motion_retry_count,
             runtime.settings.non_motion_retry_delay_s,
             runtime.stop_event,
         )
-        if ec.get("ec", 0) != 0:
-            raise RuntimeError("回放 arm 连续段 moveReset 失败")
         _raise_if_stop_requested(runtime)
-        command_id = xCoreSDK_python.PyString()
-        robot.moveAppend(commands, command_id, ec)
-        if ec.get("ec", 0) != 0:
-            raise RuntimeError("回放 arm 连续段 moveAppend 失败")
+        move_append_abs_j(runtime.connected_arm, commands)
         _raise_if_stop_requested(runtime)
-        robot.moveStart(ec)
-        if ec.get("ec", 0) != 0:
-            raise RuntimeError("回放 arm 连续段 moveStart 失败")
-    _wait_until_motion_finished(robot, ec, runtime)
+        _start_move_with_retry(runtime, rows)
+    _wait_until_motion_finished(runtime)
+    logger.info(
+        "连续 MoveAbsJ 段完成 arm_side={} file={} rows={}-{} count={}",
+        runtime.connected_arm.arm_side,
+        rows[0].csv_name,
+        rows[0].row_index,
+        rows[-1].row_index,
+        len(rows),
+    )
 
 
 def flush_pending_arm_segment(
@@ -175,32 +187,89 @@ def flush_pending_arm_segment(
 
 
 def _wait_until_motion_finished(
-    robot: xCoreSDK_python.xMateErProRobot,
-    ec: dict[str, object],
     runtime: ReplayRuntime,
 ) -> None:
-    """轮询控制器直到运动进入 idle 或 unknown。"""
+    """轮询控制器直到运动明确进入 idle。"""
 
+    last_state: str | None = None
+    poll_count = 0
     while True:
         if runtime.stop_event.is_set():
             raise RuntimeError("检测到停止请求，终止等待机械臂运动")
         if runtime.stop_event.wait(timeout=runtime.settings.arm.motion_state_poll_interval_s):
             raise RuntimeError("检测到停止请求，终止等待机械臂运动")
-        state = robot.operationState(ec)
-        if ec.get("ec", 0) != 0:
-            raise RuntimeError(f"查询运动状态失败：{ec}")
-        if state in (xCoreSDK_python.OperationState.idle, xCoreSDK_python.OperationState.unknown):
+        state = read_operation_state(runtime.connected_arm)
+        poll_count += 1
+        if state != last_state:
+            logger.info(
+                "等待机械臂运动完成 arm_side={} state={} poll_count={}",
+                runtime.connected_arm.arm_side,
+                state,
+                poll_count,
+            )
+            last_state = state
+        if state == "idle":
+            logger.info(
+                "机械臂运动已完成 arm_side={} poll_count={}",
+                runtime.connected_arm.arm_side,
+                poll_count,
+            )
             return
+        if state == "unknown":
+            raise RuntimeError(
+                f"无法确认机械臂运动是否完成 arm_side={runtime.connected_arm.arm_side} "
+                f"operation_state=unknown poll_count={poll_count}"
+            )
+
+
+def _start_move_with_retry(runtime: ReplayRuntime, rows: list[ReplayRow]) -> None:
+    """处理控制器保存诊断期间拒绝 ``moveStart`` 的短暂窗口。"""
+
+    retry_count = max(1, runtime.settings.non_motion_retry_count)
+    retry_delay_s = runtime.settings.non_motion_retry_delay_s
+    for attempt in range(1, retry_count + 1):
+        try:
+            move_start(runtime.connected_arm)
+            return
+        except RuntimeError as error:
+            if not _is_diagnosis_save_busy(error) or attempt >= retry_count:
+                raise RuntimeError(
+                    f"moveStart 下发失败 arm_side={runtime.connected_arm.arm_side} "
+                    f"file={rows[0].csv_name} rows={rows[0].row_index}-{rows[-1].row_index} "
+                    f"attempt={attempt}/{retry_count} cause={error}"
+                ) from error
+            logger.warning(
+                "moveStart 暂被控制器诊断保存占用，准备重试 arm_side={} file={} rows={}-{} "
+                "attempt={}/{} retry_delay_s={} cause={}",
+                runtime.connected_arm.arm_side,
+                rows[0].csv_name,
+                rows[0].row_index,
+                rows[-1].row_index,
+                attempt,
+                retry_count,
+                retry_delay_s,
+                error,
+            )
+            if runtime.stop_event.wait(timeout=retry_delay_s):
+                raise RuntimeError(
+                    f"moveStart 重试期间收到停止请求 arm_side={runtime.connected_arm.arm_side} "
+                    f"file={rows[0].csv_name} rows={rows[0].row_index}-{rows[-1].row_index}"
+                ) from error
+
+
+def _is_diagnosis_save_busy(error: RuntimeError) -> bool:
+    """识别 xCoreSDK ``-60611`` 诊断保存临时占用错误。"""
+
+    detail = str(error).lower()
+    return "-60611" in detail or "saving diagnosis data" in detail
 
 
 def _wait_until_reset_ready(
-    robot: xCoreSDK_python.xMateErProRobot,
-    ec: dict[str, object],
     runtime: ReplayRuntime,
     first_row: ReplayRow,
     last_row: ReplayRow,
 ) -> None:
-    """按旧回放语义等待连续段 reset 可用，超时后仍尝试 reset。"""
+    """等待连续段明确回到 idle 后再调用 ``moveReset``。"""
 
     arm_settings = runtime.settings.arm
     deadline = time.time() + arm_settings.reset_ready_timeout_s
@@ -208,11 +277,11 @@ def _wait_until_reset_ready(
     last_state_text = ""
     while time.time() < deadline:
         _raise_if_stop_requested(runtime)
-        operation_state = robot.operationState(ec)
-        operate_mode = robot.operateMode(ec)
-        power_state = robot.powerState(ec)
+        operation_state = read_operation_state(runtime.connected_arm)
+        operate_mode = read_operate_mode(runtime.connected_arm)
+        power_state = read_power_state(runtime.connected_arm)
         last_state_text = f"operate_mode={operate_mode} operation_state={operation_state} power_state={power_state}"
-        if operation_state == xCoreSDK_python.OperationState.idle:
+        if operation_state == "idle":
             idle_count += 1
             if idle_count >= arm_settings.reset_ready_stable_idle_checks:
                 return
@@ -223,13 +292,14 @@ def _wait_until_reset_ready(
             break
         if runtime.stop_event.wait(timeout=min(arm_settings.reset_ready_poll_interval_s, remaining_s)):
             raise RuntimeError("检测到停止请求，终止等待机械臂复位")
-    logger.warning(
-        "等待 moveReset 就绪超时，继续执行 arm_side={} file={} rows={}-{} {}",
-        runtime.connected_arm.arm_side,
-        first_row.csv_name,
-        first_row.row_index,
-        last_row.row_index,
-        last_state_text,
+    raise RuntimeError(
+        "等待 moveReset 就绪超时，拒绝覆盖上一段运动 arm_side={} file={} rows={}-{} {}".format(
+            runtime.connected_arm.arm_side,
+            first_row.csv_name,
+            first_row.row_index,
+            last_row.row_index,
+            last_state_text,
+        )
     )
 
 
@@ -307,40 +377,26 @@ def _raise_if_stop_requested(runtime: ReplayRuntime) -> None:
 
 
 def _apply_global_offset(
-    target_pose: xCoreSDK_python.CartesianPosition,
+    target_pose: CartesianPose,
     offset_matrix: object,
-) -> xCoreSDK_python.CartesianPosition:
+) -> CartesianPose:
     """对目标 TCP 应用 T_new_tcp = T_off @ T_tcp。"""
 
     matrix = np.asarray(offset_matrix, dtype=np.float64)
     if matrix.shape != (4, 4):
         raise ValueError(f"全局纠偏矩阵必须为 (4, 4)，实际为 {matrix.shape}")
     tcp_matrix = np.eye(4, dtype=np.float64)
-    tcp_matrix[:3, :3] = Rotation.from_euler("xyz", target_pose.rpy, degrees=False).as_matrix()
-    tcp_matrix[:3, 3] = np.asarray(target_pose.trans, dtype=np.float64)
+    tcp_matrix[:3, :3] = Rotation.from_euler("xyz", target_pose.rpy_rad, degrees=False).as_matrix()
+    tcp_matrix[:3, 3] = np.asarray(target_pose.trans_m, dtype=np.float64)
     corrected = matrix @ tcp_matrix
     rpy_rad = Rotation.from_matrix(corrected[:3, :3]).as_euler("xyz", degrees=False)
-    corrected_pose = xCoreSDK_python.CartesianPosition(corrected[:3, 3].tolist() + rpy_rad.tolist())
-    corrected_pose.confData = list(target_pose.confData)
-    corrected_pose.hasElbow = target_pose.hasElbow
-    corrected_pose.elbow = target_pose.elbow
-    return corrected_pose
-
-
-def _normalize_ik_result(result: object) -> xCoreSDK_python.JointPosition:
-    """将 SDK 的合法 IK 返回形式统一为 7 轴 JointPosition。"""
-
-    if isinstance(result, xCoreSDK_python.JointPosition):
-        values = [float(value) for value in result.joints]
-    elif isinstance(result, np.ndarray):
-        values = [float(value) for value in result.reshape(-1).tolist()]
-    elif isinstance(result, (list, tuple)):
-        values = [float(value) for value in result]
-    else:
-        raise RuntimeError(f"calcIk 成功，但返回值类型不支持：{type(result).__name__}")
-    if len(values) != 7:
-        raise RuntimeError(f"calcIk 成功，但返回关节数异常：len={len(values)}")
-    return xCoreSDK_python.JointPosition(values)
+    return CartesianPose(
+        tuple(float(value) for value in corrected[:3, 3]),
+        tuple(float(value) for value in rpy_rad),
+        target_pose.has_elbow,
+        target_pose.elbow_rad,
+        target_pose.conf_data,
+    )
 
 
 # endregion

@@ -43,8 +43,10 @@ Orin 本机访问示例：CameraPipeline HTTP `http://127.0.0.1:6400`、CameraPi
 ```text
 GET  https://<orin-ip>/api/v1/camera/health
 GET  https://<orin-ip>/api/v1/camera/cameras/head_camera/status
+GET  https://<orin-ip>/api/v1/record-replay/health
 GET  https://<orin-ip>/api/v1/record-replay/status
 GET  https://<orin-ip>/api/v1/robot-control/health
+GET  https://<orin-ip>/api/v1/calibration/health
 GET  https://<orin-ip>/api/v1/calibration/status
 SSE  https://<orin-ip>/api/v1/robot-control/status/stream?interval_s=0.2
 WS   wss://<orin-ip>/api/v1/camera-ws/cameras/head_camera/color
@@ -52,6 +54,11 @@ WS   wss://<orin-ip>/api/v1/record-replay-ws
 ```
 
 `GET /api/v1/gateway/health` 只表示 Gateway 自身能够响应，并返回后端端口配置；它不会探测后端服务、相机或机器人。后端服务健康检查必须访问对应的带前缀 URL。
+
+所有 HTTP 响应带 Gateway 的 `X-Request-ID`；上游已有请求 ID 时另保留为
+`X-Upstream-Request-ID`。Gateway 自身产生的路由、CORS、会话、上游连接和未知异常
+统一返回 `{error_code, error_text}` JSON，错误文本包含同一请求 ID；上游服务已经返回的错误
+JSON 则保持原样。Gateway 日志记录请求耗时、上游非 2xx、连接异常和完整堆栈。
 
 ## 客户端使用
 

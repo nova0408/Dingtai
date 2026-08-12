@@ -1,6 +1,6 @@
 # RobotControl API Reference
 
-当前契约版本：`0.10.1`
+当前契约版本：`0.11.0`
 HTTP API 主版本：`1`
 
 本文档描述 `robot_control` 对外 HTTP API 的实际调用方式、状态字段、单位和安全边界。
@@ -36,7 +36,7 @@ Gateway 只移除 `/api/v1/robot-control` 前缀后转发到 RobotControl 的
 
 ```json
 {
-  "service_version": "0.10.1",
+  "service_version": "0.11.0",
   "api_version": "1",
   "hardware_access": "lazy"
 }
@@ -48,7 +48,7 @@ Gateway 只移除 `/api/v1/robot-control` 前缀后转发到 RobotControl 的
 
 ```json
 {
-  "service_version": "0.10.1",
+  "service_version": "0.11.0",
   "api_version": "1",
   "devices": [
     {
@@ -106,9 +106,9 @@ Gateway 只移除 `/api/v1/robot-control` 前缀后转发到 RobotControl 的
 
 `/api/v1/status` 的只读别名，响应结构相同。
 
-### 3.4 `GET /api/v1/qmlinker/agv/targets`
+### 3.4 `GET /api/v1/agv/targets`
 
-读取当前 Woosh 地图和可用于 `POST /api/v1/qmlinker/agv/navigate` 的目标点列表。
+读取当前 Woosh 地图和可用于 `POST /api/v1/agv/navigate` 的目标点列表。
 此接口只读取地图缓存，不发送导航、停止、使能或速度控制请求。
 
 响应示例：
@@ -136,24 +136,24 @@ Gateway 只移除 `/api/v1/robot-control` 前缀后转发到 RobotControl 的
 m；`yaw_rad` 单位为 rad；`resolution` 保留 Woosh 地图接口的原始值。若远端地图服务
 不可用或尚未获得地图数据，HTTP 返回 `503`。
 
-### 3.5 `GET /api/v1/qmlinker/agv/base-state`
+### 3.5 `GET /api/v1/agv/base-state`
 
 读取 Woosh SDK 的底盘状态枚举，返回字段 `robot_state`。状态枚举值沿用 Woosh 协议，查询失败返回 `503`。
 
-### 3.6 `GET /api/v1/qmlinker/agv/base-mode`
+### 3.6 `GET /api/v1/agv/base-mode`
 
 读取 Woosh SDK 的底盘控制模式和工作模式，返回 `robot_mode`、`work_mode`。
 
-### 3.7 `GET /api/v1/qmlinker/agv/base-operation-state`
+### 3.7 `GET /api/v1/agv/base-operation-state`
 
 读取底盘原始运行位，返回 `nav_bits`、`robot_bits`；业务可按 Woosh SDK 位定义自行解析。
 
-### 3.8 `GET /api/v1/qmlinker/agv/base-task-process`
+### 3.8 `GET /api/v1/agv/base-task-process`
 
 读取当前任务和动作进度，返回 `task_id`、`task_type`、`task_state`、`action_type`、`action_state`、
 `wait_id`、`dest`、`msg`、`time`。
 
-### 3.9 `GET /api/v1/qmlinker/agv/base-battery`
+### 3.9 `GET /api/v1/agv/base-battery`
 
 读取底盘电量和充电状态，返回 `power`、`charge_state`。
 
@@ -182,7 +182,7 @@ Accept: text/event-stream
 ```text
 event: robot_status
 id: 0
-data: {"service_version":"0.10.1","api_version":"1","devices":[]}
+data: {"service_version":"0.11.0","api_version":"1","devices":[]}
 
 ```
 
@@ -302,7 +302,7 @@ Codex、CI、hook 和自动化测试不得调用这些接口。
 ### 5.1 头部
 
 ```text
-POST /api/v1/qmlinker/head
+POST /api/v1/head
 ```
 
 至少提供一个字段：
@@ -316,7 +316,7 @@ POST /api/v1/qmlinker/head
 ### 5.2 升降
 
 ```text
-POST /api/v1/qmlinker/lift
+POST /api/v1/lift
 ```
 
 至少提供一个字段：
@@ -330,7 +330,7 @@ POST /api/v1/qmlinker/lift
 ### 5.3 左夹爪
 
 ```text
-POST /api/v1/qmlinker/gripper
+POST /api/v1/gripper
 ```
 
 ```json
@@ -340,7 +340,7 @@ POST /api/v1/qmlinker/gripper
 #### 夹爪使能
 
 ```text
-POST /api/v1/qmlinker/gripper/enable
+POST /api/v1/gripper/enable
 ```
 
 ```json
@@ -350,7 +350,7 @@ POST /api/v1/qmlinker/gripper/enable
 #### 夹爪校准
 
 ```text
-POST /api/v1/qmlinker/gripper/calibrate
+POST /api/v1/gripper/calibrate
 ```
 
 请求体可为空对象 `{}`。校准是否完成必须通过状态读取确认。
@@ -358,7 +358,7 @@ POST /api/v1/qmlinker/gripper/calibrate
 ### 5.4 右手
 
 ```text
-POST /api/v1/qmlinker/right-hand
+POST /api/v1/right-hand
 ```
 
 ```json
@@ -370,7 +370,7 @@ POST /api/v1/qmlinker/right-hand
 #### 右手使能
 
 ```text
-POST /api/v1/qmlinker/right-hand/enable
+POST /api/v1/right-hand/enable
 ```
 
 ```json
@@ -380,7 +380,7 @@ POST /api/v1/qmlinker/right-hand/enable
 ### 5.5 AGV 导航
 
 ```text
-POST /api/v1/qmlinker/agv/navigate
+POST /api/v1/agv/navigate
 ```
 
 ```json
@@ -390,7 +390,7 @@ POST /api/v1/qmlinker/agv/navigate
 #### AGV 使能
 
 ```text
-POST /api/v1/qmlinker/agv/enable
+POST /api/v1/agv/enable
 ```
 
 ```json
@@ -400,7 +400,7 @@ POST /api/v1/qmlinker/agv/enable
 #### AGV 实时平移
 
 ```text
-POST /api/v1/qmlinker/agv/translate
+POST /api/v1/agv/translate
 ```
 
 ```json
@@ -414,7 +414,7 @@ POST /api/v1/qmlinker/agv/translate
 #### AGV 实时停止
 
 ```text
-POST /api/v1/qmlinker/agv/stop
+POST /api/v1/agv/stop
 ```
 
 请求 qmlinker 停止当前导航或实时平移。它是软件停止语义，不等同于硬件急停；现场仍须
@@ -542,11 +542,26 @@ POST /api/v1/ar5/{side}/move-elbow
 
 ## 7. 控制响应
 
+### 7.1 RecordReplay 使用的 AR5 SDK 显式接口
+
+RobotControl 是唯一 xCoreSDK 对象所有者。RecordReplay 只访问以下本机接口：
+
+- GET：`robot-info`、`operation-state`、`operate-mode`、`power-state`、`cart-posture`；
+- POST：`stop`、`disable-drag`、`set-motion-control-mode`、`set-operate-mode`、
+  `set-power-state`、`set-default-conf-opt`、`set-default-speed`、`set-default-zone`、
+  `set-toolset`、`calc-ik`、`move-reset`、`move-append`、`move-start`。
+
+路径统一为 `/api/v1/ar5/{side}/{operation}`。`cart-posture` 使用 `trans_m`、`rpy_rad`、
+`elbow_rad` 和 `conf_data`；`calc-ik` 使用相同字段并返回 `joints_rad`；`move-append`
+接收 `targets[]`，每项包含七维 `joints_rad`、`speed_mm_s` 和 `zone_mm`。这些接口是
+底层 SDK 操作的一对一显式封装，不包含 RecordReplay 动作顺序或 CSV 业务逻辑。
+
+
 控制请求成功只表示服务已接受并完成对应调用，不表示动作已经物理完成：
 
 ```json
 {
-  "service_version": "0.10.1",
+  "service_version": "0.11.0",
   "api_version": "1",
   "accepted": true,
   "data": {
