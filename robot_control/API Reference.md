@@ -1,6 +1,6 @@
 # RobotControl API Reference
 
-当前契约版本：`0.13.0`
+当前契约版本：`0.14.0`
 HTTP API 主版本：`1`
 
 本文档描述 `robot_control` 对外 HTTP API 的实际调用方式、状态字段、单位和安全边界。
@@ -36,7 +36,7 @@ Gateway 只移除 `/api/v1/robot-control` 前缀后转发到 RobotControl 的
 
 ```json
 {
-  "service_version": "0.13.0",
+  "service_version": "0.14.0",
   "api_version": "1",
   "hardware_access": "lazy"
 }
@@ -48,7 +48,7 @@ Gateway 只移除 `/api/v1/robot-control` 前缀后转发到 RobotControl 的
 
 ```json
 {
-  "service_version": "0.13.0",
+  "service_version": "0.14.0",
   "api_version": "1",
   "devices": [
     {
@@ -182,7 +182,7 @@ Accept: text/event-stream
 ```text
 event: robot_status
 id: 0
-data: {"service_version":"0.13.0","api_version":"1","devices":[]}
+data: {"service_version":"0.14.0","api_version":"1","devices":[]}
 
 ```
 
@@ -556,22 +556,41 @@ POST /api/v1/ar5/{side}/move-elbow
 
 RobotControl 是唯一 xCoreSDK 对象所有者。RecordReplay 只访问以下本机接口：
 
-- GET：`robot-info`、`operation-state`、`operate-mode`、`power-state`、`cart-posture`；
+- GET：`robot-info`、`operation-state`、`operate-mode`、`power-state`、`cart-posture`、
+  `motion-progress`；
 - POST：`stop`、`disable-drag`、`set-motion-control-mode`、`set-operate-mode`、
   `set-power-state`、`set-default-conf-opt`、`set-default-speed`、`set-default-zone`、
-  `set-toolset`、`calc-ik`、`move-reset`、`move-append`、`move-start`。
+  `set-toolset`、`calc-ik`、`move-reset`、`move-append`、`move-start`、
+  `clear-servo-alarm`。
 
 路径统一为 `/api/v1/ar5/{side}/{operation}`。`cart-posture` 使用 `trans_m`、`rpy_rad`、
 `elbow_rad` 和 `conf_data`；`calc-ik` 使用相同字段并返回 `joints_rad`；`move-append`
 接收 `targets[]`，每项包含七维 `joints_rad`、`speed_mm_s` 和 `zone_mm`。这些接口是
 底层 SDK 操作的一对一显式封装，不包含 RecordReplay 动作顺序或 CSV 业务逻辑。
 
+`move-append` 成功响应的 `data` 与 `motion-progress` 结构一致：
+
+```json
+{
+  "command_id": "absj#270",
+  "target_count": 7,
+  "last_reached_waypoint_index": 1,
+  "collision_detected": true,
+  "collision_code": 30400,
+  "collision_detail": "30400.collision_fc"
+}
+```
+
+`last_reached_waypoint_index` 只接受当前 `command_id` 的 `moveExecution` 且
+`reachTarget=true` 事件；尚未确认任何点时为 `null`。`clear-servo-alarm` 调用 SDK
+`clearServoAlarm()`，成功后清除当前碰撞锁存，不自动执行 `moveStart`、上电或恢复轨迹。
+
 
 控制请求成功只表示服务已接受并完成对应调用，不表示动作已经物理完成：
 
 ```json
 {
-  "service_version": "0.13.0",
+  "service_version": "0.14.0",
   "api_version": "1",
   "accepted": true,
   "data": {

@@ -562,13 +562,38 @@ class RobotControlGateway:
     ) -> dict[str, JsonValue]:
         """封装批量 ``moveAppend(MoveAbsJ)``。"""
 
-        count = self._ar5_client(side).sdk_move_append_abs_j(targets)
-        return {"count": count}
+        progress = self._ar5_client(side).sdk_move_append_abs_j(targets)
+        return {
+            "command_id": progress.command_id,
+            "target_count": progress.target_count,
+            "last_reached_waypoint_index": progress.last_reached_waypoint_index,
+            "collision_detected": progress.collision_detected,
+            "collision_code": progress.collision_code,
+            "collision_detail": progress.collision_detail,
+        }
 
     def ar5_sdk_move_start(self, side: str) -> None:
         """封装 ``moveStart``。"""
 
         self._ar5_client(side).sdk_move_start()
+
+    def ar5_sdk_motion_progress(self, side: str) -> dict[str, JsonValue]:
+        """读取当前 NRT 路径的事件进度与碰撞锁存。"""
+
+        progress = self._ar5_client(side).sdk_motion_progress()
+        return {
+            "command_id": progress.command_id,
+            "target_count": progress.target_count,
+            "last_reached_waypoint_index": progress.last_reached_waypoint_index,
+            "collision_detected": progress.collision_detected,
+            "collision_code": progress.collision_code,
+            "collision_detail": progress.collision_detail,
+        }
+
+    def ar5_sdk_clear_servo_alarm(self, side: str) -> None:
+        """清除 AR5 伺服报警。"""
+
+        self._ar5_client(side).sdk_clear_servo_alarm()
 
     def ar5_sdk_disable_drag(self, side: str) -> None:
         """封装 ``disableDrag``。"""

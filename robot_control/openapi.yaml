@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: RobotControl HTTP API
-  version: 0.13.0
+  version: 0.14.0
   description: >-
     qmlinker 与 AR5 xCoreSDK 统一服务。GET 状态接口可用于只读诊断；POST 控制接口可能
     使真实设备动作，只能由现场人员手动发起。
@@ -360,6 +360,16 @@ paths:
     $ref: '#/components/pathItems/Ar5SdkRead'
   /api/v1/ar5/{side}/joint-position:
     $ref: '#/components/pathItems/Ar5SdkRead'
+  /api/v1/ar5/{side}/motion-progress:
+    get:
+      description: 返回当前 NRT 路径 ID、waypoint 到达进度和 collision_fc 锁存。
+      parameters:
+        - {$ref: '#/components/parameters/Ar5Side'}
+      responses:
+        '200':
+          description: Current NRT motion progress
+          content:
+            application/json: {schema: {$ref: '#/components/schemas/Ar5MotionProgress'} }
   /api/v1/ar5/{side}/operate-mode:
     $ref: '#/components/pathItems/Ar5SdkRead'
   /api/v1/ar5/{side}/power-state:
@@ -387,6 +397,8 @@ paths:
   /api/v1/ar5/{side}/move-append:
     $ref: '#/components/pathItems/Ar5SdkWrite'
   /api/v1/ar5/{side}/move-start:
+    $ref: '#/components/pathItems/Ar5SdkWrite'
+  /api/v1/ar5/{side}/clear-servo-alarm:
     $ref: '#/components/pathItems/Ar5SdkWrite'
   /api/v1/ar5/{side}/disable-drag:
     $ref: '#/components/pathItems/Ar5SdkWrite'
@@ -543,6 +555,16 @@ components:
               axis_index: {type: integer, minimum: 0, maximum: 6}
               lower_rad: {type: number}
               upper_rad: {type: number}
+    Ar5MotionProgress:
+      type: object
+      required: [command_id, target_count, last_reached_waypoint_index, collision_detected, collision_code, collision_detail]
+      properties:
+        command_id: {type: [string, 'null']}
+        target_count: {type: integer, minimum: 0}
+        last_reached_waypoint_index: {type: [integer, 'null'], minimum: 0}
+        collision_detected: {type: boolean}
+        collision_code: {type: [integer, 'null']}
+        collision_detail: {type: [string, 'null']}
     QmlinkerHeadRequest:
       type: object
       minProperties: 1

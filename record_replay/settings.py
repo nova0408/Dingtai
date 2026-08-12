@@ -68,6 +68,8 @@ class ReplayArmSettings:
     "IK 跳变时 TCP 单次微调量，单位 mm。"
     ik_tcp_repair_attempt_count: int = 3
     "IK 跳变时 TCP 微调重算 IK 的最大尝试次数。"
+    collision_recovery_delay_s: float = 1.0
+    "收到 collision_fc 后尝试清除伺服报警前的固定等待时间，单位 s。"
     reset_ready_timeout_s: float = 2.0
     "调用 moveReset 前的就绪等待超时，单位 s。"
     reset_ready_stable_idle_checks: int = 2

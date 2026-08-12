@@ -1,6 +1,13 @@
 # RecordReplay 版本日志
 
-当前版本：`3.15.0`
+当前版本：`3.16.0`
+
+## 3.16.0 - 2026-08-12
+
+- MoveAbsJ 等待期间读取 RobotControl 当前 `cmdID` 的 waypoint 到达进度和 `collision_fc` 锁存。
+- 收到碰撞后等待 `1 s`，调用 SDK `clearServoAlarm()`，恢复 NRT、自动模式和电机上电状态。
+- 从最后一个 `reachTarget=true` waypoint 的下一点重新下发未完成轨迹，完成后继续后续 CSV 操作。
+- 每个 waypoint 最多自动恢复一次；同一位置再次碰撞时停止并进入现有失败/rapid_stop 流程。
 
 ## 3.15.0 - 2026-08-12
 

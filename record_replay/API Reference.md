@@ -1,7 +1,7 @@
 # RecordReplay API Reference
 
-文档版本：`3.15.0`（2026-08-12）
-服务业务版本：`3.15.0`
+文档版本：`3.16.0`（2026-08-12）
+服务业务版本：`3.16.0`
 默认监听：`http://<orin>:6300`
 
 机器可读文件：[OpenAPI 3.1](openapi.yaml)。
@@ -19,7 +19,7 @@ RecordReplay 通过本服务内的 `camera_client.py` 调用 CameraPipeline 的 
 ## 2. 通用约定
 
 - Content-Type：`application/json; charset=utf-8`。
-- 当前服务版本：`3.15.0`，与 `record_replay/CHANGELOG.md` 一致。
+- 当前服务版本：`3.16.0`，与 `record_replay/CHANGELOG.md` 一致。
 - 根目录同步脚本支持 `-RecordReplayOnly`，只替换并重启 RecordReplay；替换前检查 RecordReplay
   为 `idle`/`waiting` 且 CameraPipeline 在 6200 端口就绪，替换后校验文件清单、SHA-256、只读
   `/status` 和版本，不发送 `/start`；`runtime_state.json` 等运行产物不纳入清单。
@@ -83,7 +83,7 @@ GET /health
 
 ```json
 {
-  "service_version": "3.15.0",
+  "service_version": "3.16.0",
   "api_version": "1",
   "state": "idle",
   "hardware_access": "lazy"
@@ -153,6 +153,11 @@ GET /status
 
 连续轨迹会批量提交给控制器，`current_*_row` 表示服务正在调度或处理的 CSV 源数据行，
 不表示控制器已经物理到达该点。
+
+每批 MoveAbsJ 使用 RobotControl 返回的 `cmdID` 读取 `moveExecution` waypoint 进度。
+收到 `30400.collision_fc` 后固定等待 1 s，调用 `clearServoAlarm()`，恢复 NRT、自动模式和
+电机上电状态，再从最后一个 `reachTarget=true` 点的下一 waypoint 重发。每个 waypoint
+最多自动恢复一次；同一位置再次碰撞会结束本轮并进入 `rapid_stop`。
 
 状态流程：
 
@@ -428,6 +433,7 @@ print(client.get_config())
 
 | 文档版本 | 日期 | 内容 |
 | --- | --- | --- |
+| `3.16.0` | 2026-08-12 | collision_fc 后等待 1 s 清除伺服报警并恢复状态；按 cmdID 重发未完成 waypoint，每个位置最多恢复一次。 |
 | `3.15.0` | 2026-08-12 | IK 跳变门控以当前 CSV 行原始 joints 为基准；TCP 微调候选也按该基准判断，失败后回退原始 joints。 |
 | `3.14.0` | 2026-08-12 | 增加 IK 跳变门控；异常时沿 TCP X/Y/Z 轴分别微调 1 mm，最多重算 3 次，失败后回退 CSV 原始 joints。 |
 | `3.13.0` | 2026-08-12 | 每次 AR5 moveStart 前刷新软限位缓存；append 越界目标钳制到边界内 1 deg，并记录实际关节值。 |

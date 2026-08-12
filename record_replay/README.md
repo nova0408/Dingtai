@@ -1,6 +1,6 @@
 # 双臂记录回放服务
 
-当前 RecordReplay 服务业务语义版本：`3.15.0`；对应人工验证入口
+当前 RecordReplay 服务业务语义版本：`3.16.0`；对应人工验证入口
 `test/wuji/record_replay_cli.py` 的版本为 `1.10.1`。两者均使用 M6 右手动作语义。
 
 面向 GUI 和其它项目的完整 HTTP 契约见 [API Reference](API%20Reference.md)，机器可读描述见
@@ -236,6 +236,7 @@ python test/record_replay/local/record_replay_local_manual.py
 右手 M6 每次下发目标后固定等待 0.5 s，再按 0.2 s 轮询六轴实际状态，连续 3 次采样中每个轴的最大值与最小值
 差值均不超过 0.1 时认为运动结束；5 s 内未稳定只记录告警并放行后续 CSV，不与下发目标值比较。
 机械臂连续 MoveAbsJ 段默认批量下发；下发后先等待 1 s 观察状态，未看到 moving 时再以 0.1 s 间隔读取实时七轴关节位置，最多确认 5 s。M6 下发前还会检查最后一个 arm 点的实时位置，未到位时使用单点 MoveAbsJ 补位并再次确认，仍未到位则拒绝下发 M6。
+MoveAbsJ 等待同时按本次 `cmdID` 读取 waypoint 到达进度和 `collision_fc` 锁存。碰撞后固定等待 1 s，清除伺服报警并恢复 NRT、自动和上电状态，再从最后一个确认到达点的下一 waypoint 重发；每个 waypoint 最多自动恢复一次，同一位置再次碰撞时停止。
 每个含 pose 的 CSV 行都以该行记录的原始 joints 为 IK 门控基准；单轴差超过 `45 deg` 时，先沿基坐标 TCP 的 X/Y/Z 轴分别微调 `1 mm` 重算 IK，最多尝试 3 次；仍无法得到相对该行原始 joints 的非跳变解时使用原始 joints，异常 IK 结果不会进入 MoveAbsJ 队列。
 顺序 JSON 的左右数组都必须非空；fast 动作要求非零 zone，precise 动作固定 zone 为 0，
 capture 必须显式提供 `final_speed` 与 `settle_delay`，且普通动作不得携带这些专用字段。

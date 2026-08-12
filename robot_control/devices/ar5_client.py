@@ -3,8 +3,8 @@ from __future__ import annotations
 import math
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
-from threading import RLock
+from dataclasses import dataclass, replace
+from threading import Lock, RLock
 from typing import Literal
 
 import numpy as np
@@ -96,6 +96,24 @@ class Ar5SoftLimitSnapshot:
 
     limits_rad: tuple[tuple[float, float], ...]
     "七个轴的下限和上限，顺序与控制器轴号一致，单位 rad。"
+
+
+@dataclass(frozen=True, slots=True)
+class Ar5MotionProgress:
+    """当前 NRT 批量轨迹的事件进度与碰撞锁存。"""
+
+    command_id: str | None = None
+    "xCoreSDK 为最近一次 ``moveAppend`` 分配的路径 ID。"
+    target_count: int = 0
+    "当前路径包含的 waypoint 数量。"
+    last_reached_waypoint_index: int | None = None
+    "事件明确确认到达的最后一个 waypoint 下标，从 0 开始。"
+    collision_detected: bool = False
+    "当前路径是否收到控制器碰撞事件。"
+    collision_code: int | None = None
+    "控制器碰撞错误码；``collision_fc`` 为 30400。"
+    collision_detail: str | None = None
+    "控制器碰撞详情。"
 
 
 # endregion
@@ -196,8 +214,10 @@ class Ar5Client:
 
         self._config = config
         self._lock = RLock()
+        self._event_lock = Lock()
         self._ec: dict[str, object] = {}
         self._soft_limit_cache: Ar5SoftLimitSnapshot | None = None
+        self._motion_progress = Ar5MotionProgress()
         self._event_callbacks: dict[
             xCoreSDK_python.Event, Callable[[dict[str, object]], None]
         ] = {}
@@ -454,7 +474,7 @@ class Ar5Client:
 
     def sdk_move_append_abs_j(
         self, targets: tuple[tuple[tuple[float, ...], float, float], ...]
-    ) -> int:
+    ) -> Ar5MotionProgress:
         """一对一封装一组 ``MoveAbsJCommand`` 的 ``moveAppend``。"""
 
         if not targets:
@@ -488,13 +508,38 @@ class Ar5Client:
                 f"moveAppend(MoveAbsJ,count={len(commands)})",
                 lambda ec: self._robot.moveAppend(commands, command_id, ec),
             )
-        return len(commands)
+            progress = Ar5MotionProgress(
+                command_id=str(command_id.content()),
+                target_count=len(commands),
+            )
+            with self._event_lock:
+                self._motion_progress = progress
+        return progress
 
     def sdk_move_start(self) -> None:
         """一对一封装 ``moveStart``。"""
 
         with self._lock:
             self._call_none("moveStart", self._robot.moveStart)
+
+    def sdk_motion_progress(self) -> Ar5MotionProgress:
+        """返回事件回调维护的当前 NRT 路径进度快照。"""
+
+        with self._event_lock:
+            return self._motion_progress
+
+    def sdk_clear_servo_alarm(self) -> None:
+        """调用 ``clearServoAlarm``，成功后清除当前路径碰撞锁存。"""
+
+        with self._lock:
+            self._call_none("clearServoAlarm", self._robot.clearServoAlarm)
+            with self._event_lock:
+                self._motion_progress = replace(
+                    self._motion_progress,
+                    collision_detected=False,
+                    collision_code=None,
+                    collision_detail=None,
+                )
 
     def sdk_disable_drag(self) -> None:
         """一对一封装 ``disableDrag``。"""
@@ -577,6 +622,16 @@ class Ar5Client:
                 self._config.robot_ip,
                 event_info,
             )
+            code = event_info.get("ecode")
+            detail = event_info.get("edetail")
+            if code == 30400 or detail == "30400.collision_fc":
+                with self._event_lock:
+                    self._motion_progress = replace(
+                        self._motion_progress,
+                        collision_detected=True,
+                        collision_code=30400,
+                        collision_detail="30400.collision_fc",
+                    )
 
         def handle_move_execution(event_info: dict[str, object]) -> None:
             logger.info(
@@ -585,6 +640,30 @@ class Ar5Client:
                 self._config.robot_ip,
                 event_info,
             )
+            command_id = event_info.get("cmdID")
+            waypoint_index = event_info.get("wayPointIndex")
+            reach_target = event_info.get("reachTarget")
+            if (
+                not isinstance(command_id, str)
+                or isinstance(waypoint_index, bool)
+                or not isinstance(waypoint_index, int)
+                or reach_target is not True
+            ):
+                return
+            with self._event_lock:
+                progress = self._motion_progress
+                if (
+                    command_id != progress.command_id
+                    or waypoint_index < 0
+                    or waypoint_index >= progress.target_count
+                ):
+                    return
+                last_reached = progress.last_reached_waypoint_index
+                if last_reached is None or waypoint_index > last_reached:
+                    self._motion_progress = replace(
+                        progress,
+                        last_reached_waypoint_index=waypoint_index,
+                    )
 
         callbacks = {
             xCoreSDK_python.Event.logReporter: handle_log_reporter,

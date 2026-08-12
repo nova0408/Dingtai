@@ -52,6 +52,24 @@ class ArmSoftLimits:
     "各轴下限和上限，单位 rad。"
 
 
+@dataclass(frozen=True, slots=True)
+class ArmMotionProgress:
+    """RobotControl 维护的当前 NRT 路径事件进度。"""
+
+    command_id: str | None
+    "xCoreSDK 路径 ID。"
+    target_count: int
+    "当前路径 waypoint 数量。"
+    last_reached_waypoint_index: int | None
+    "事件确认到达的最后一个 waypoint 下标。"
+    collision_detected: bool
+    "是否锁存碰撞。"
+    collision_code: int | None
+    "碰撞错误码。"
+    collision_detail: str | None
+    "碰撞详情。"
+
+
 def retry_non_motion_call(
     label: str,
     operation: Callable[[], _ResultT],
@@ -249,8 +267,8 @@ def move_reset(connected_arm: ConnectedArm) -> None:
 def move_append_abs_j(
     connected_arm: ConnectedArm,
     targets: Sequence[tuple[Sequence[float], float, float]],
-) -> None:
-    _post(
+) -> ArmMotionProgress:
+    payload = _post(
         connected_arm,
         "move-append",
         {
@@ -260,10 +278,33 @@ def move_append_abs_j(
             ]
         },
     )
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        raise RuntimeError(
+            f"RobotControl move-append 响应字段 data 不是 object：{data!r}"
+        )
+    return _parse_motion_progress({str(key): value for key, value in data.items()})
 
 
 def move_start(connected_arm: ConnectedArm) -> None:
     _post(connected_arm, "move-start")
+
+
+def read_motion_progress(connected_arm: ConnectedArm) -> ArmMotionProgress:
+    """读取当前 NRT 路径的 waypoint 进度与碰撞锁存。"""
+
+    payload = _request(
+        connected_arm.base_url,
+        connected_arm.arm_side,
+        "motion-progress",
+    )
+    return _parse_motion_progress(payload)
+
+
+def clear_servo_alarm(connected_arm: ConnectedArm) -> None:
+    """通过 RobotControl 调用 xCoreSDK ``clearServoAlarm``。"""
+
+    _post(connected_arm, "clear-servo-alarm")
 
 
 def read_operation_state(connected_arm: ConnectedArm) -> str:
@@ -424,6 +465,36 @@ def _int(payload: Mapping[str, object], name: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int):
         raise RuntimeError(f"RobotControl 响应字段 {name} 不是整数：{value!r}")
     return value
+
+
+def _optional_int(payload: Mapping[str, object], name: str) -> int | None:
+    value = payload.get(name)
+    if value is None:
+        return None
+    return _int(payload, name)
+
+
+def _optional_string(payload: Mapping[str, object], name: str) -> str | None:
+    value = payload.get(name)
+    if value is None:
+        return None
+    return _string(payload, name)
+
+
+def _parse_motion_progress(payload: Mapping[str, object]) -> ArmMotionProgress:
+    """解析 RobotControl 当前 NRT 路径进度。"""
+
+    return ArmMotionProgress(
+        command_id=_optional_string(payload, "command_id"),
+        target_count=_int(payload, "target_count"),
+        last_reached_waypoint_index=_optional_int(
+            payload,
+            "last_reached_waypoint_index",
+        ),
+        collision_detected=_bool(payload, "collision_detected"),
+        collision_code=_optional_int(payload, "collision_code"),
+        collision_detail=_optional_string(payload, "collision_detail"),
+    )
 
 
 def _raise_if_stopped(stop_event: threading.Event | None) -> None:

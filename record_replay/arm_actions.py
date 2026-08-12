@@ -12,14 +12,17 @@ from scipy.spatial.transform import Rotation
 
 from .action_sequence import NamedActionPlan
 from .arm_gateway import (
+    ArmMotionProgress,
     CartesianPose,
     calculate_ik,
+    clear_servo_alarm,
     move_append_abs_j,
     move_reset,
     move_start,
     restore_nrt_motion_state_locked,
     read_cart_posture,
     read_joint_position,
+    read_motion_progress,
     read_operate_mode,
     read_operation_state,
     read_power_state,
@@ -315,22 +318,7 @@ def execute_arm_segment(
         speed = _resolve_action_speed(action, is_final_point)
         commands.append((target.joint_rad, speed, zone))
     commands = _clamp_commands_to_soft_limits(runtime, targets, commands)
-    _raise_if_stop_requested(runtime)
-    _wait_until_reset_ready(runtime, rows[0], rows[-1])
-    with runtime.connected_arm.command_lock:
-        _raise_if_stop_requested(runtime)
-        retry_non_motion_call(
-            f"moveReset(replay-arm-segment:{runtime.connected_arm.arm_side}:{rows[0].csv_name}:{rows[0].row_index}-{rows[-1].row_index})",
-            lambda: move_reset(runtime.connected_arm),
-            runtime.settings.non_motion_retry_count,
-            runtime.settings.non_motion_retry_delay_s,
-            runtime.stop_event,
-        )
-        _raise_if_stop_requested(runtime)
-        move_append_abs_j(runtime.connected_arm, commands)
-        _raise_if_stop_requested(runtime)
-        _start_move_with_retry(runtime, rows)
-    _wait_until_motion_finished(runtime, commands[-1][0])
+    _execute_command_batch_with_collision_recovery(runtime, rows, commands)
     logger.info(
         "连续 MoveAbsJ 段完成 arm_side={} file={} rows={}-{} count={}",
         runtime.connected_arm.arm_side,
@@ -434,26 +422,21 @@ def _execute_single_arm_correction(
         runtime.connected_arm.arm_side,
         speed,
     )
-    with runtime.connected_arm.command_lock:
-        _raise_if_stop_requested(runtime)
-        retry_non_motion_call(
-            f"moveReset(m6-precondition:{runtime.connected_arm.arm_side})",
-            lambda: move_reset(runtime.connected_arm),
-            runtime.settings.non_motion_retry_count,
-            runtime.settings.non_motion_retry_delay_s,
-            runtime.stop_event,
-        )
-        _raise_if_stop_requested(runtime)
-        correction_target = ArmMoveTarget(correction_rows[0], target_joint_rad, "m6-precondition")
-        commands = _clamp_commands_to_soft_limits(
-            runtime,
-            [correction_target],
-            [(target_joint_rad, speed, 0.0)],
-        )
-        move_append_abs_j(runtime.connected_arm, commands)
-        _raise_if_stop_requested(runtime)
-        _start_move_with_retry(runtime, correction_rows)
-    _wait_until_motion_finished(runtime, commands[0][0])
+    correction_target = ArmMoveTarget(
+        correction_rows[0],
+        target_joint_rad,
+        "m6-precondition",
+    )
+    commands = _clamp_commands_to_soft_limits(
+        runtime,
+        [correction_target],
+        [(target_joint_rad, speed, 0.0)],
+    )
+    _execute_command_batch_with_collision_recovery(
+        runtime,
+        correction_rows,
+        commands,
+    )
     logger.info(
         "M6 前单点 MoveAbsJ 补位完成 arm_side={}",
         runtime.connected_arm.arm_side,
@@ -557,10 +540,142 @@ def _clamp_commands_to_soft_limits(
     return clamped_commands
 
 
+def _execute_command_batch_with_collision_recovery(
+    runtime: ReplayRuntime,
+    rows: list[ReplayRow],
+    commands: list[tuple[tuple[float, ...], float, float]],
+) -> None:
+    """执行命令批次；碰撞后清错、恢复状态并重发未完成 waypoint。"""
+
+    remaining_rows = rows
+    remaining_commands = commands
+    recovered_waypoints: set[tuple[str, int]] = set()
+    while remaining_commands:
+        progress = _submit_command_batch(
+            runtime,
+            remaining_rows,
+            remaining_commands,
+        )
+        command_id = progress.command_id
+        if command_id is None:
+            raise RuntimeError("RobotControl moveAppend 未返回 command_id")
+        collision = _wait_until_motion_finished(
+            runtime,
+            remaining_commands[-1][0],
+            command_id,
+        )
+        if collision is None:
+            return
+        next_waypoint_index = (
+            0
+            if collision.last_reached_waypoint_index is None
+            else collision.last_reached_waypoint_index + 1
+        )
+        if next_waypoint_index >= len(remaining_commands):
+            _recover_after_collision(runtime, remaining_rows)
+            logger.info(
+                "碰撞发生前当前批次 waypoint 已全部确认到达，恢复后继续后续操作 "
+                "arm_side={} file={} command_id={}",
+                runtime.connected_arm.arm_side,
+                remaining_rows[0].csv_name,
+                collision.command_id,
+            )
+            return
+        recovery_row = remaining_rows[next_waypoint_index]
+        recovery_waypoint = (recovery_row.csv_name, recovery_row.row_index)
+        if recovery_waypoint in recovered_waypoints:
+            raise RuntimeError(
+                "同一 waypoint 已自动恢复过一次，再次碰撞后停止 "
+                f"arm_side={runtime.connected_arm.arm_side} "
+                f"file={recovery_row.csv_name} row={recovery_row.row_index}"
+            )
+        recovered_waypoints.add(recovery_waypoint)
+        logger.warning(
+            "检测到 collision_fc，准备恢复并重发未完成 waypoint "
+            "arm_side={} file={} rows={}-{} command_id={} last_reached={} "
+            "next_waypoint={} recovery_row={} recovery_count_for_row=1/1",
+            runtime.connected_arm.arm_side,
+            remaining_rows[0].csv_name,
+            remaining_rows[0].row_index,
+            remaining_rows[-1].row_index,
+            collision.command_id,
+            collision.last_reached_waypoint_index,
+            next_waypoint_index,
+            recovery_row.row_index,
+        )
+        _recover_after_collision(runtime, remaining_rows)
+        remaining_rows = remaining_rows[next_waypoint_index:]
+        remaining_commands = remaining_commands[next_waypoint_index:]
+
+
+def _submit_command_batch(
+    runtime: ReplayRuntime,
+    rows: list[ReplayRow],
+    commands: list[tuple[tuple[float, ...], float, float]],
+) -> ArmMotionProgress:
+    """重置控制器队列并提交一批 MoveAbsJ waypoint。"""
+
+    _raise_if_stop_requested(runtime)
+    _wait_until_reset_ready(runtime, rows[0], rows[-1])
+    with runtime.connected_arm.command_lock:
+        _raise_if_stop_requested(runtime)
+        retry_non_motion_call(
+            "moveReset(replay-arm-segment:"
+            f"{runtime.connected_arm.arm_side}:{rows[0].csv_name}:"
+            f"{rows[0].row_index}-{rows[-1].row_index})",
+            lambda: move_reset(runtime.connected_arm),
+            runtime.settings.non_motion_retry_count,
+            runtime.settings.non_motion_retry_delay_s,
+            runtime.stop_event,
+        )
+        _raise_if_stop_requested(runtime)
+        progress = move_append_abs_j(runtime.connected_arm, commands)
+        if progress.command_id is None:
+            raise RuntimeError("RobotControl moveAppend 未返回 command_id")
+        _raise_if_stop_requested(runtime)
+        _start_move_with_retry(runtime, rows)
+    return progress
+
+
+def _recover_after_collision(
+    runtime: ReplayRuntime,
+    rows: list[ReplayRow],
+) -> None:
+    """等待固定时间、清除伺服报警并恢复 NRT/自动/上电状态。"""
+
+    delay_s = runtime.settings.arm.collision_recovery_delay_s
+    if runtime.stop_event.wait(timeout=delay_s):
+        raise RuntimeError("碰撞恢复等待期间收到停止请求")
+    with runtime.connected_arm.command_lock:
+        _raise_if_stop_requested(runtime)
+        logger.warning(
+            "碰撞恢复开始清除伺服报警 arm_side={} file={} rows={}-{} delay_s={}",
+            runtime.connected_arm.arm_side,
+            rows[0].csv_name,
+            rows[0].row_index,
+            rows[-1].row_index,
+            delay_s,
+        )
+        clear_servo_alarm(runtime.connected_arm)
+        restore_nrt_motion_state_locked(
+            runtime.connected_arm,
+            runtime.settings,
+            runtime.stop_event,
+        )
+        logger.info(
+            "碰撞恢复状态调整完成 arm_side={} file={} rows={}-{}",
+            runtime.connected_arm.arm_side,
+            rows[0].csv_name,
+            rows[0].row_index,
+            rows[-1].row_index,
+        )
+
+
 def _wait_until_motion_finished(
     runtime: ReplayRuntime,
     target_joint_rad: tuple[float, ...],
-) -> None:
+    command_id: str,
+) -> ArmMotionProgress | None:
     """确认机械臂运动完成，兼容控制器短暂漏报 ``moving`` 的情况。"""
 
     wait_started_at = time.monotonic()
@@ -574,6 +689,24 @@ def _wait_until_motion_finished(
             raise RuntimeError("检测到停止请求，终止等待机械臂运动")
         if runtime.stop_event.wait(timeout=runtime.settings.arm.motion_state_poll_interval_s):
             raise RuntimeError("检测到停止请求，终止等待机械臂运动")
+        progress = read_motion_progress(runtime.connected_arm)
+        if progress.command_id != command_id:
+            raise RuntimeError(
+                "RobotControl 当前路径 ID 与等待目标不一致 "
+                f"arm_side={runtime.connected_arm.arm_side} "
+                f"expected={command_id} actual={progress.command_id}"
+            )
+        if progress.collision_detected:
+            logger.warning(
+                "运动等待检测到碰撞 arm_side={} command_id={} code={} detail={} "
+                "last_reached_waypoint_index={}",
+                runtime.connected_arm.arm_side,
+                command_id,
+                progress.collision_code,
+                progress.collision_detail,
+                progress.last_reached_waypoint_index,
+            )
+            return progress
         state = read_operation_state(runtime.connected_arm)
         poll_count += 1
         if state == "moving":
@@ -597,7 +730,7 @@ def _wait_until_motion_finished(
                     poll_count,
                     time.monotonic() - wait_started_at,
                 )
-                return
+                return None
             if time.monotonic() < moving_deadline:
                 continue
             if position_check_deadline is None:
@@ -648,7 +781,7 @@ def _wait_until_motion_finished(
                         time.monotonic() - wait_started_at,
                         max_error_rad,
                     )
-                    return
+                    return None
             if time.monotonic() >= position_check_deadline:
                 logger.warning(
                     "实时关节位置确认超时，继续后续流程 arm_side={} poll_count={} "
@@ -659,7 +792,7 @@ def _wait_until_motion_finished(
                     max_error_rad,
                     runtime.settings.arm.motion_position_check_timeout_s,
                 )
-                return
+                return None
             continue
         if state == "unknown":
             raise RuntimeError(

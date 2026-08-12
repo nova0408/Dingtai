@@ -230,6 +230,16 @@ class RobotControlClient:
 
         return self._request("POST", f"/api/v1/ar5/{side}/recover-estop")
 
+    def get_motion_progress(self, side: str) -> dict[str, Any]:
+        """读取当前 NRT 路径进度与碰撞锁存。"""
+
+        return self._request("GET", f"/api/v1/ar5/{side}/motion-progress")
+
+    def clear_servo_alarm(self, side: str) -> dict[str, Any]:
+        """调用 xCoreSDK 清除伺服报警。"""
+
+        return self._request("POST", f"/api/v1/ar5/{side}/clear-servo-alarm")
+
     def set_drag_enabled(self, side: str, enabled: bool) -> dict[str, Any]:
         """设置 AR5 拖动状态；仅供现场人员明确手动调用。"""
 

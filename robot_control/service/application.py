@@ -237,6 +237,11 @@ class RobotControlApplication:
 
         return self._gateway.ar5_sdk_joint_position(side)
 
+    def ar5_sdk_motion_progress(self, side: str) -> dict[str, JsonValue]:
+        """读取当前 NRT 路径的 waypoint 进度和碰撞锁存。"""
+
+        return self._gateway.ar5_sdk_motion_progress(side)
+
     def ar5_sdk_operate_mode(self, side: str) -> dict[str, JsonValue]:
         """读取 xCoreSDK ``operateMode``。"""
 
@@ -338,6 +343,12 @@ class RobotControlApplication:
 
         self._gateway.ar5_sdk_move_start(side)
         return self._accepted("moveStart", f"ar5_{side}")
+
+    def ar5_sdk_clear_servo_alarm(self, side: str) -> ActionResponse:
+        """调用 xCoreSDK ``clearServoAlarm``。"""
+
+        self._gateway.ar5_sdk_clear_servo_alarm(side)
+        return self._accepted("clearServoAlarm", f"ar5_{side}")
 
     def ar5_sdk_disable_drag(self, side: str) -> ActionResponse:
         """调用 xCoreSDK ``disableDrag``。"""

@@ -1,6 +1,16 @@
 # RobotControl 版本日志
 
-当前版本：`0.13.0`
+当前版本：`0.14.0`
+
+## 0.14.0 - 2026-08-12
+
+### 新增
+
+- xCoreSDK `moveExecution` 回调按 `cmdID` 锁存最后一个明确到达的 waypoint，下标从 0 开始。
+- `logReporter` 收到 `30400.collision_fc` 时为当前路径锁存碰撞状态。
+- 新增只读 `GET /api/v1/ar5/{side}/motion-progress`，返回路径 ID、目标数、最后到达点和碰撞信息。
+- 新增 `POST /api/v1/ar5/{side}/clear-servo-alarm`，一对一调用 SDK `clearServoAlarm()`；调用成功后清除碰撞锁存。
+- `move-append` 响应改为返回当前路径进度对象，供 RecordReplay 精确关联本次批量轨迹。
 
 ## 0.13.0 - 2026-08-12
 

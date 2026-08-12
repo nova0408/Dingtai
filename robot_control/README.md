@@ -10,7 +10,7 @@
 ## 当前边界
 
 - qmlinker：head、lift、可选的腰部 Pitch 只读状态、左夹爪、右手和 AGV；不再提供 qmlinker 左右臂部件。
-- AR5：左右控制器状态、上下电、工作模式、急停恢复、拖动、Jog、MoveAbsJ、MoveL、elbow 和 stop。
+- AR5：左右控制器状态、上下电、工作模式、急停恢复、伺服报警清除、NRT waypoint/碰撞进度、拖动、Jog、MoveAbsJ、MoveL、elbow 和 stop。
 - HTTP：默认监听 `127.0.0.1:6500`，适合由 SSH 隧道或现场人工配置的内网访问。
 - 硬件客户端：第一次 GET 或人工控制请求到达时才延迟创建。
 - AR5 控制客户端默认使用 `initialize_toolset=False`，连接和控制请求都不会自动写入
@@ -65,6 +65,7 @@ GET /api/v1/agv/base-operation-state
 GET /api/v1/agv/base-task-process
 GET /api/v1/agv/base-battery
 GET /api/v1/ar5/{side}/soft-limits
+GET /api/v1/ar5/{side}/motion-progress
 GET /api/v1/status/stream?interval_s=0.2
 ```
 
@@ -114,6 +115,10 @@ AGV、AR5 急停恢复、拖动和 Jog 路径及字段见 `openapi.yaml` 与 `AP
 不支持时完全省略 `qmlinker_waist` 设备，因为设计上将取消腰部这个自由度。AGV
 `translate` 是持续实时平移请求，必须由现场人员显式调用
 `/api/v1/agv/stop` 停止；该停止语义是软件停止，不等同于硬件急停。
+
+RecordReplay 通过 `motion-progress` 将 `moveExecution` 的 `cmdID`、最后到达 waypoint 与
+`30400.collision_fc` 锁存关联起来；碰撞恢复使用 `clear-servo-alarm` 一对一调用
+xCoreSDK `clearServoAlarm()`。该 POST 可能改变真实控制器故障状态，只能由明确的现场回放流程调用。
 
 这些接口可能使机械臂、AGV、夹爪、头部或升降机构动作。禁止 Codex、CI、hook 或自动化脚本发送控制 POST；只能由现场人员手动发起和验证。
 

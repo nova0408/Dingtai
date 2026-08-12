@@ -129,6 +129,7 @@ class RobotControlServer:
                                 "robot-info": application.ar5_sdk_robot_info,
                                 "operation-state": application.ar5_sdk_operation_state,
                                 "joint-position": application.ar5_sdk_joint_position,
+                                "motion-progress": application.ar5_sdk_motion_progress,
                                 "operate-mode": application.ar5_sdk_operate_mode,
                                 "power-state": application.ar5_sdk_power_state,
                                 "cart-posture": application.ar5_sdk_cart_posture,
@@ -410,6 +411,8 @@ class RobotControlServer:
                     )
                 if action == "move-start":
                     return application.ar5_sdk_move_start(side)
+                if action == "clear-servo-alarm":
+                    return application.ar5_sdk_clear_servo_alarm(side)
                 if action == "disable-drag":
                     return application.ar5_sdk_disable_drag(side)
                 raise ValueError("unsupported AR5 control action")
