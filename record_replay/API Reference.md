@@ -1,7 +1,7 @@
 # RecordReplay API Reference
 
-文档版本：`3.9.0`（2026-08-12）
-服务业务版本：`3.9.0`
+文档版本：`3.15.0`（2026-08-12）
+服务业务版本：`3.15.0`
 默认监听：`http://<orin>:6300`
 
 机器可读文件：[OpenAPI 3.1](openapi.yaml)。
@@ -19,7 +19,7 @@ RecordReplay 通过本服务内的 `camera_client.py` 调用 CameraPipeline 的 
 ## 2. 通用约定
 
 - Content-Type：`application/json; charset=utf-8`。
-- 当前服务版本：`3.9.0`，与 `record_replay/CHANGELOG.md` 一致。
+- 当前服务版本：`3.15.0`，与 `record_replay/CHANGELOG.md` 一致。
 - 根目录同步脚本支持 `-RecordReplayOnly`，只替换并重启 RecordReplay；替换前检查 RecordReplay
   为 `idle`/`waiting` 且 CameraPipeline 在 6200 端口就绪，替换后校验文件清单、SHA-256、只读
   `/status` 和版本，不发送 `/start`；`runtime_state.json` 等运行产物不纳入清单。
@@ -83,7 +83,7 @@ GET /health
 
 ```json
 {
-  "service_version": "3.9.0",
+  "service_version": "3.15.0",
   "api_version": "1",
   "state": "idle",
   "hardware_access": "lazy"
@@ -428,7 +428,17 @@ print(client.get_config())
 
 | 文档版本 | 日期 | 内容 |
 | --- | --- | --- |
+| `3.15.0` | 2026-08-12 | IK 跳变门控以当前 CSV 行原始 joints 为基准；TCP 微调候选也按该基准判断，失败后回退原始 joints。 |
+| `3.14.0` | 2026-08-12 | 增加 IK 跳变门控；异常时沿 TCP X/Y/Z 轴分别微调 1 mm，最多重算 3 次，失败后回退 CSV 原始 joints。 |
+| `3.13.0` | 2026-08-12 | 每次 AR5 moveStart 前刷新软限位缓存；append 越界目标钳制到边界内 1 deg，并记录实际关节值。 |
 | `3.9.0` | 2026-08-12 | 右手 M6 下发后按实际六轴状态连续采样判断稳定；5 s 未稳定时告警放行，不比较下发目标值。 |
+| `3.9.1` | 2026-08-12 | M6 稳定判定先确认实际状态发生变化；超过 5 s 只告警并继续等待，稳定前禁止进入下一条手臂指令。 |
+| `3.9.2` | 2026-08-12 | M6 下发后固定等待 0.5 s，再以 0.2 s 间隔读取实际状态判断稳定。 |
+| `3.9.3` | 2026-08-12 | M6 稳定判定只按连续 3 次实际采样的每轴波动 `<= 0.1` 判断；5 s 未稳定时告警并放行后续流程。 |
+| `3.9.4` | 2026-08-12 | 人工复位时同步将 `execution_phase` 清为 `idle`，避免保留 `rapid_stop` 阶段。 |
+| `3.12.0` | 2026-08-12 | `moveStart` 成功后确认状态；仍为 idle 时按 0.2 s 间隔最多重发 3 次。 |
+| `3.11.0` | 2026-08-12 | M6 下发前检查最后一个 arm 点的实时七轴位置；未到位时使用单点 MoveAbsJ 补位并再次确认。 |
+| `3.10.0` | 2026-08-12 | 机械臂首次 1 s 未观察到 moving 后按 0.1 s 轮询实时七轴位置，最多确认 5 s；到位完成或超时 warning 放行。 |
 | `3.8.1` | 2026-08-12 | `moveStart` 遇到 `ec=-17` 时，重试前恢复 NRT、自动模式和电机上电状态。 |
 | `3.8.0` | 2026-08-12 | 状态快照和 WebSocket 新增 `execution_phase`，细分回放执行阶段。 |
 | `3.6.1` | 2026-08-11 | 增加原生致命信号线程栈、设备调用边界和 WebSocket 生命周期日志；恢复状态补充错误说明 |

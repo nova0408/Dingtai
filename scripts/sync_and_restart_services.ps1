@@ -307,7 +307,7 @@ if ($CameraPipelineOnly -or $CalibrationServiceOnly) {
         )
 
         Write-Host "即将同步 $($deployFiles.Count) 个 $serviceLabel 文件到 $SshTarget"
-        Write-Host "远端旧版本会备份到：$RemoteWorkspace/.archive/service_deploy/$($packageName -replace '_', '-')-$timestamp"
+        Write-Host "远端旧版本由 Git 管理，部署时不生成 .archive 快照"
         Invoke-CheckedCommand -FilePath "ssh.exe" -ArgumentList @(
             $SshOptions + @($SshTarget, "mkdir -p '$remoteStagePath'")
         )
@@ -397,7 +397,6 @@ stage_path="$2"
 manifest_path="$3"
 expected_gateway_version="$4"
 unit="api-gateway.service"
-archive_root="${workspace}/.archive/service_deploy/$(basename "${stage_path}")"
 deploy_log_since="$(date '+%Y-%m-%d %H:%M:%S')"
 
 cleanup() {
@@ -440,9 +439,8 @@ for attempt in $(seq 1 15); do
   fi
   sleep 1
 done
-mkdir -p "${archive_root}"
 if [[ -d "${workspace}/api_gateway" ]]; then
-  mv "${workspace}/api_gateway" "${archive_root}/api_gateway"
+  rm -rf -- "${workspace:?}/api_gateway"
 fi
 mv "${stage_path}/api_gateway" "${workspace}/api_gateway"
 install -m 0644 "${workspace}/api_gateway/service/api-gateway.service" "/etc/systemd/system/${unit}"
@@ -563,7 +561,6 @@ stage_path="$2"
 manifest_path="$3"
 expected_robot_version="$4"
 unit="robot-control.service"
-archive_root="${workspace}/.archive/service_deploy/$(basename "${stage_path}")"
 deploy_log_since="$(date '+%Y-%m-%d %H:%M:%S')"
 
 cleanup() {
@@ -603,9 +600,8 @@ for attempt in $(seq 1 15); do
   sleep 1
 done
 
-mkdir -p "${archive_root}"
 if [[ -d "${workspace}/robot_control" ]]; then
-  mv "${workspace}/robot_control" "${archive_root}/robot_control"
+  rm -rf -- "${workspace:?}/robot_control"
 fi
 mv "${stage_path}/robot_control" "${workspace}/robot_control"
 
@@ -649,7 +645,7 @@ echo "[deploy] RobotControl updated and restarted; version=${robot_version}; GET
         )
 
         Write-Host "即将同步 $($deployFiles.Count) 个 RobotControl 文件到 $SshTarget"
-        Write-Host "远端旧版本会备份到：$RemoteWorkspace/.archive/service_deploy/robot-control-$timestamp"
+        Write-Host "远端旧版本由 Git 管理，部署时不生成 .archive 快照"
         Invoke-CheckedCommand -FilePath "ssh.exe" -ArgumentList @(
             $SshOptions + @($SshTarget, "mkdir -p '$remoteStagePath'")
         )
@@ -755,7 +751,7 @@ manifest_path="$3"
 expected_record_version="$4"
 force_record_replay_state="$5"
 unit="record-replay.service"
-archive_root="${workspace}/.archive/service_deploy/$(basename "${stage_path}")"
+preserve_root="${stage_path}/preserve"
 deploy_log_since="$(date '+%Y-%m-%d %H:%M:%S')"
 
 cleanup() {
@@ -835,24 +831,25 @@ for attempt in $(seq 1 15); do
   sleep 1
 done
 
-mkdir -p "${archive_root}"
 if [[ -e "${stage_path}/record_replay/.archive" ]]; then
   echo "[deploy] staged RecordReplay package must not contain runtime .archive"
   exit 1
 fi
-if [[ -d "${workspace}/record_replay/.archive" ]]; then
-  mkdir -p "${stage_path}/record_replay"
-  mv "${workspace}/record_replay/.archive" "${stage_path}/record_replay/.archive"
-fi
+mkdir -p "${preserve_root}"
+for preserved_name in prior_data records runtime_state.json; do
+  if [[ -e "${workspace}/record_replay/${preserved_name}" ]]; then
+    mv "${workspace}/record_replay/${preserved_name}" "${preserve_root}/${preserved_name}"
+  fi
+done
 if [[ -d "${workspace}/record_replay" ]]; then
-  mv "${workspace}/record_replay" "${archive_root}/record_replay"
+  rm -rf -- "${workspace:?}/record_replay"
 fi
 mv "${stage_path}/record_replay" "${workspace}/record_replay"
 for exempt_dir in prior_data records; do
-  archived_dir="${archive_root}/record_replay/${exempt_dir}"
+  preserved_dir="${preserve_root}/${exempt_dir}"
   target_dir="${workspace}/record_replay/${exempt_dir}"
-  if [[ -e "${archived_dir}" ]]; then
-    mv "${archived_dir}" "${target_dir}"
+  if [[ -e "${preserved_dir}" ]]; then
+    mv "${preserved_dir}" "${target_dir}"
     echo "[deploy] preserved remote RecordReplay directory: ${exempt_dir}"
   else
     mkdir -p "${target_dir}"
@@ -860,7 +857,7 @@ for exempt_dir in prior_data records; do
   fi
 done
 runtime_state_path="${workspace}/record_replay/runtime_state.json"
-archived_runtime_state_path="${archive_root}/record_replay/runtime_state.json"
+preserved_runtime_state_path="${preserve_root}/runtime_state.json"
 case "${service_state}" in
   idle|waiting)
     printf '{\n  "state": "idle"\n}\n' > "${runtime_state_path}"
@@ -871,8 +868,8 @@ case "${service_state}" in
     echo "[deploy] preserved pre-deploy RecordReplay state: rapid_stop"
     ;;
   not_running)
-    if [[ -f "${archived_runtime_state_path}" ]]; then
-      cp -- "${archived_runtime_state_path}" "${runtime_state_path}"
+    if [[ -f "${preserved_runtime_state_path}" ]]; then
+      mv "${preserved_runtime_state_path}" "${runtime_state_path}"
       echo "[deploy] preserved existing RecordReplay runtime_state.json"
     fi
     ;;
@@ -928,7 +925,7 @@ echo "[deploy] RecordReplay updated and restarted; version=${record_version}; GE
         )
 
         Write-Host "即将同步 $($deployFiles.Count) 个 RecordReplay 文件到 $SshTarget"
-        Write-Host "远端旧版本会备份到：$RemoteWorkspace/.archive/service_deploy/record-replay-$timestamp"
+        Write-Host "远端旧版本由 Git 管理，部署时不生成 .archive 快照"
         $forceRecordReplayState = if ($Force) { "true" } else { "false" }
         Invoke-CheckedCommand -FilePath "ssh.exe" -ArgumentList @(
             $SshOptions + @($SshTarget, "mkdir -p '$remoteStagePath'")
@@ -1069,7 +1066,7 @@ record_unit="record-replay.service"
 robot_unit="robot-control.service"
 calibration_unit="calibration.service"
 gateway_unit="api-gateway.service"
-archive_root="${workspace}/.archive/service_deploy/$(basename "${stage_path}")"
+preserve_root="${stage_path}/preserve"
 deploy_log_since="$(date '+%Y-%m-%d %H:%M:%S')"
 
 print_deploy_logs() {
@@ -1198,38 +1195,27 @@ for legacy_camera_unit in "${legacy_camera_units[@]}"; do
 done
 stop_service "${camera_unit}" 15
 
-mkdir -p "${archive_root}"
-mkdir -p "${archive_root}/systemd" "${archive_root}/scripts"
 for legacy_camera_unit in "${legacy_camera_units[@]}"; do
   legacy_unit_path="/etc/systemd/system/${legacy_camera_unit}"
   if [[ -e "${legacy_unit_path}" ]]; then
-    cp -a "${legacy_unit_path}" "${archive_root}/systemd/${legacy_camera_unit}"
     rm -f -- "${legacy_unit_path}"
   fi
 done
-if [[ -d "${workspace}/camera_pipeline" ]]; then
-  mv "${workspace}/camera_pipeline" "${archive_root}/camera_pipeline"
-fi
 if [[ -e "${stage_path}/record_replay/.archive" ]]; then
   echo "[deploy] staged RecordReplay package must not contain runtime .archive"
   exit 1
 fi
-if [[ -d "${workspace}/record_replay/.archive" ]]; then
-  mkdir -p "${stage_path}/record_replay"
-  mv "${workspace}/record_replay/.archive" "${stage_path}/record_replay/.archive"
-fi
-if [[ -d "${workspace}/record_replay" ]]; then
-  mv "${workspace}/record_replay" "${archive_root}/record_replay"
-fi
-if [[ -d "${workspace}/calibration_service" ]]; then
-  mv "${workspace}/calibration_service" "${archive_root}/calibration_service"
-fi
-if [[ -d "${workspace}/robot_control" ]]; then
-  mv "${workspace}/robot_control" "${archive_root}/robot_control"
-fi
-if [[ -d "${workspace}/api_gateway" ]]; then
-  mv "${workspace}/api_gateway" "${archive_root}/api_gateway"
-fi
+mkdir -p "${preserve_root}"
+for preserved_name in prior_data records runtime_state.json; do
+  if [[ -e "${workspace}/record_replay/${preserved_name}" ]]; then
+    mv "${workspace}/record_replay/${preserved_name}" "${preserve_root}/${preserved_name}"
+  fi
+done
+for package_name in camera_pipeline record_replay calibration_service robot_control api_gateway; do
+  if [[ -d "${workspace}/${package_name}" ]]; then
+    rm -rf -- "${workspace:?}/${package_name}"
+  fi
+done
 for restart_script_name in \
   "restart_camera_pipeline_service.sh" \
   "restart_record_replay_service.sh" \
@@ -1237,17 +1223,16 @@ for restart_script_name in \
   "restart_api_gateway_service.sh" \
   "restart_calibration_service.sh"; do
   if [[ -f "${workspace}/scripts/${restart_script_name}" ]]; then
-    mv "${workspace}/scripts/${restart_script_name}" \
-      "${archive_root}/scripts/${restart_script_name}"
+    rm -f -- "${workspace}/scripts/${restart_script_name}"
   fi
 done
 mv "${stage_path}/camera_pipeline" "${workspace}/camera_pipeline"
 mv "${stage_path}/record_replay" "${workspace}/record_replay"
 for exempt_dir in prior_data records; do
-  archived_dir="${archive_root}/record_replay/${exempt_dir}"
+  preserved_dir="${preserve_root}/${exempt_dir}"
   target_dir="${workspace}/record_replay/${exempt_dir}"
-  if [[ -e "${archived_dir}" ]]; then
-    mv "${archived_dir}" "${target_dir}"
+  if [[ -e "${preserved_dir}" ]]; then
+    mv "${preserved_dir}" "${target_dir}"
     echo "[deploy] preserved remote RecordReplay directory: ${exempt_dir}"
   else
     mkdir -p "${target_dir}"
@@ -1255,15 +1240,15 @@ for exempt_dir in prior_data records; do
   fi
 done
 runtime_state_path="${workspace}/record_replay/runtime_state.json"
-archived_runtime_state_path="${archive_root}/record_replay/runtime_state.json"
+preserved_runtime_state_path="${preserve_root}/runtime_state.json"
 case "${service_state}" in
   idle|waiting)
     printf '{\n  "state": "idle"\n}\n' > "${runtime_state_path}"
     echo "[deploy] restored pre-deploy RecordReplay state: idle"
     ;;
   not_running)
-    if [[ -f "${archived_runtime_state_path}" ]]; then
-      cp -- "${archived_runtime_state_path}" "${runtime_state_path}"
+    if [[ -f "${preserved_runtime_state_path}" ]]; then
+      mv "${preserved_runtime_state_path}" "${runtime_state_path}"
       echo "[deploy] preserved existing RecordReplay runtime_state.json"
     fi
     ;;
@@ -1465,7 +1450,7 @@ echo "[deploy] five services updated, restarted and version-verified: CameraPipe
     )
 
     Write-Host "即将同步 $($deployFiles.Count) 个文件到 $SshTarget"
-    Write-Host "远端旧版本会备份到：$RemoteWorkspace/.archive/service_deploy/$timestamp"
+    Write-Host "远端旧版本由 Git 管理，部署时不生成 .archive 快照"
     Write-Warning "本次会重启 CameraPipeline、RecordReplay、RobotControl 和 API Gateway，但不会发送 RecordReplay /start 请求。缺少先验只会在人工调用 /start 时报告。"
 
     Invoke-CheckedCommand -FilePath "ssh.exe" -ArgumentList @(

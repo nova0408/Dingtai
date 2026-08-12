@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: RobotControl HTTP API
-  version: 0.11.0
+  version: 0.13.0
   description: >-
     qmlinker 与 AR5 xCoreSDK 统一服务。GET 状态接口可用于只读诊断；POST 控制接口可能
     使真实设备动作，只能由现场人员手动发起。
@@ -242,8 +242,8 @@ paths:
     get:
       operationId: get_ar5_soft_limits
       description: >-
-        只读读取指定 AR5 控制器七个轴的软限位和软限位使能状态。上下限单位为 rad；不会改变
-        电源、工作模式或拖动状态。
+        从 xCoreSDK 读取指定 AR5 控制器七个轴的最新软限位和使能状态，并覆盖当前客户端缓存。
+        上下限单位为 rad；不会改变电源、工作模式或拖动状态。
       parameters:
         - {$ref: '#/components/parameters/Ar5Side'}
       responses:
@@ -357,6 +357,8 @@ paths:
   /api/v1/ar5/{side}/robot-info:
     $ref: '#/components/pathItems/Ar5SdkRead'
   /api/v1/ar5/{side}/operation-state:
+    $ref: '#/components/pathItems/Ar5SdkRead'
+  /api/v1/ar5/{side}/joint-position:
     $ref: '#/components/pathItems/Ar5SdkRead'
   /api/v1/ar5/{side}/operate-mode:
     $ref: '#/components/pathItems/Ar5SdkRead'

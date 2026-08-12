@@ -42,6 +42,16 @@ class CartesianPose:
     conf_data: tuple[int, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class ArmSoftLimits:
+    """RobotControl 缓存的七轴软限位快照。"""
+
+    enabled: bool
+    "控制器软限位使能状态。"
+    limits_rad: tuple[tuple[float, float], ...]
+    "各轴下限和上限，单位 rad。"
+
+
 def retry_non_motion_call(
     label: str,
     operation: Callable[[], _ResultT],
@@ -260,6 +270,41 @@ def read_operation_state(connected_arm: ConnectedArm) -> str:
     return _string(_request(connected_arm.base_url, connected_arm.arm_side, "operation-state"), "state")
 
 
+def read_joint_position(connected_arm: ConnectedArm) -> tuple[float, ...]:
+    """读取机械臂七轴实时关节位置，单位 rad。"""
+
+    return _float_tuple(
+        _request(connected_arm.base_url, connected_arm.arm_side, "joint-position"),
+        "joints_rad",
+        7,
+    )
+
+
+def read_soft_limits(connected_arm: ConnectedArm) -> ArmSoftLimits:
+    """读取 RobotControl 当前客户端缓存的七轴软限位。"""
+
+    payload = _request(connected_arm.base_url, connected_arm.arm_side, "soft-limits")
+    raw_limits = payload.get("limits_rad")
+    if not isinstance(raw_limits, list) or len(raw_limits) != 7:
+        raise RuntimeError(f"RobotControl 响应字段 limits_rad 长度不是 7：{raw_limits!r}")
+    limits_rad: list[tuple[float, float]] = []
+    for expected_axis_index, raw_limit in enumerate(raw_limits):
+        if not isinstance(raw_limit, dict):
+            raise RuntimeError(
+                "RobotControl 响应字段 limits_rad 包含非 object："
+                f"axis_index={expected_axis_index} value={raw_limit!r}"
+            )
+        limit = {str(key): value for key, value in raw_limit.items()}
+        axis_index = _int(limit, "axis_index")
+        if axis_index != expected_axis_index:
+            raise RuntimeError(
+                "RobotControl 软限位轴顺序异常："
+                f"expected={expected_axis_index} actual={axis_index}"
+            )
+        limits_rad.append((_float(limit, "lower_rad"), _float(limit, "upper_rad")))
+    return ArmSoftLimits(_bool(payload, "enabled"), tuple(limits_rad))
+
+
 def read_operate_mode(connected_arm: ConnectedArm) -> str:
     return _string(_request(connected_arm.base_url, connected_arm.arm_side, "operate-mode"), "mode")
 
@@ -372,6 +417,13 @@ def _int_tuple(payload: Mapping[str, object], name: str) -> tuple[int, ...]:
     if any(isinstance(item, bool) or not isinstance(item, int) for item in value):
         raise RuntimeError(f"RobotControl 响应字段 {name} 包含非整数：{value!r}")
     return tuple(value)
+
+
+def _int(payload: Mapping[str, object], name: str) -> int:
+    value = payload.get(name)
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise RuntimeError(f"RobotControl 响应字段 {name} 不是整数：{value!r}")
+    return value
 
 
 def _raise_if_stopped(stop_event: threading.Event | None) -> None:

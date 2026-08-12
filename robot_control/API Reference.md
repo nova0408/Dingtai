@@ -1,6 +1,6 @@
 # RobotControl API Reference
 
-当前契约版本：`0.11.0`
+当前契约版本：`0.13.0`
 HTTP API 主版本：`1`
 
 本文档描述 `robot_control` 对外 HTTP API 的实际调用方式、状态字段、单位和安全边界。
@@ -36,7 +36,7 @@ Gateway 只移除 `/api/v1/robot-control` 前缀后转发到 RobotControl 的
 
 ```json
 {
-  "service_version": "0.11.0",
+  "service_version": "0.13.0",
   "api_version": "1",
   "hardware_access": "lazy"
 }
@@ -48,7 +48,7 @@ Gateway 只移除 `/api/v1/robot-control` 前缀后转发到 RobotControl 的
 
 ```json
 {
-  "service_version": "0.11.0",
+  "service_version": "0.13.0",
   "api_version": "1",
   "devices": [
     {
@@ -182,7 +182,7 @@ Accept: text/event-stream
 ```text
 event: robot_status
 id: 0
-data: {"service_version":"0.11.0","api_version":"1","devices":[]}
+data: {"service_version":"0.13.0","api_version":"1","devices":[]}
 
 ```
 
@@ -202,7 +202,8 @@ for snapshot in client.subscribe_status(interval_s=0.2):
 ### 3.11 `GET /api/v1/ar5/{side}/soft-limits`
 
 读取指定 AR5 控制器的七个轴软限位。`side` 必须为 `left` 或 `right`；上下限沿用 xCoreSDK
-单位，为弧度 rad。该接口只读，不切换电源、工作模式或拖动状态。
+单位，为弧度 rad。每次请求均从 xCoreSDK 读取最新配置并覆盖当前客户端缓存；该接口只读，
+不切换电源、工作模式或拖动状态。
 
 请求示例：
 
@@ -282,6 +283,15 @@ AR5 `data` 使用结构化分组，完整示例：
 - `tcp.pose_matrix_m`：4×4 齐次矩阵，平移单位 m；`xyz_mm` 和 `rpy_deg` 分别为 mm、deg，姿态使用 SciPy 小写外禀 xyz；
 - `elbow.angle_deg`：臂角，单位 deg；`available` 表示当前点位是否携带臂角约束；
 - `status`：操作状态、工作模式和电机状态。
+
+RecordReplay 使用的 AR5 只读细粒度接口还包括：
+
+```text
+GET /api/v1/ar5/{side}/joint-position
+```
+
+响应为 `{"joints_rad": [j1, j2, j3, j4, j5, j6, j7]}`，读取 xCoreSDK `jointPos` 的实时
+七轴关节位置，单位为 rad。
 
 ### 4.2 qmlinker 腰部可选能力
 
@@ -561,7 +571,7 @@ RobotControl 是唯一 xCoreSDK 对象所有者。RecordReplay 只访问以下�
 
 ```json
 {
-  "service_version": "0.11.0",
+  "service_version": "0.13.0",
   "api_version": "1",
   "accepted": true,
   "data": {

@@ -46,8 +46,10 @@ DEFAULT_PREDEFINED_JOINT_ZONE = 10.0
 DEFAULT_POWER_ON_TIMEOUT_S = 3.0
 DEFAULT_REQUEST_TIMEOUT_S = 10.0
 POSITION_POLL_INTERVAL_S = 0.2
+# 右手 M6 下发后的固定等待时间，单位 s。
+HAND_MOTION_START_DELAY_S = 0.5
 # 右手状态轮询间隔，单位 s。
-HAND_POSITION_POLL_INTERVAL_S = 0.1
+HAND_POSITION_POLL_INTERVAL_S = 0.2
 # 连续稳定采样数量，单位 次。
 HAND_STABLE_SAMPLE_COUNT = 3
 # 连续采样中每个执行器允许的最大波动，单位 归一化位置。
@@ -1597,6 +1599,8 @@ def _poll_gripper_until_idle(client: DahuanGripperClient, target_position: int) 
 def _poll_m6_until_stable(hand: WujiRightHandClient, action_name: str) -> list[float]:
     """按 M6 实际状态等待右手稳定，不以目标下发值判断到位。"""
 
+    logger.info("{} 下发后固定等待时间 {:.1f} s", action_name, HAND_MOTION_START_DELAY_S)
+    time.sleep(HAND_MOTION_START_DELAY_S)
     deadline = time.monotonic() + HAND_STABILITY_TIMEOUT_S
     recent_positions: list[list[float]] = []
     while True:

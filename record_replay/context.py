@@ -416,6 +416,7 @@ class ReplayContext:
             self._snapshot = replace(
                 self._snapshot,
                 state=ReplayServiceState.IDLE,
+                execution_phase=ReplayExecutionPhase.IDLE,
                 error_code=None,
                 error_text=None,
             )

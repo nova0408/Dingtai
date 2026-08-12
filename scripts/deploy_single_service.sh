@@ -11,7 +11,6 @@ service_unit="$5"
 service_file_name="$6"
 expected_version="$7"
 readiness_mode="$8"
-archive_root="${workspace}/.archive/service_deploy/$(basename "${stage_path}")"
 deploy_log_since="$(date '+%Y-%m-%d %H:%M:%S')"
 
 cleanup() {
@@ -58,9 +57,8 @@ for attempt in $(seq 1 15); do
   sleep 1
 done
 
-mkdir -p "${archive_root}"
 if [[ -d "${workspace}/${package_name}" ]]; then
-  mv "${workspace}/${package_name}" "${archive_root}/${package_name}"
+  rm -rf -- "${workspace:?}/${package_name}"
 fi
 mv "${stage_path}/${package_name}" "${workspace}/${package_name}"
 install -m 0644 \

@@ -1,6 +1,23 @@
 # RobotControl 版本日志
 
-当前版本：`0.11.0`
+当前版本：`0.13.0`
+
+## 0.13.0 - 2026-08-12
+
+### 变更
+
+- 每次读取 AR5 软限位时均从 xCoreSDK 获取最新配置并覆盖客户端缓存，供
+  RecordReplay 在每次 `moveStart` 前使用。
+- `moveAppend(MoveAbsJ)` 调用前记录实际交给 SDK 的每个目标关节值（rad/deg）、速度和 zone。
+- 注册 xCoreSDK `logReporter` 与 `moveExecution` 事件回调，原样记录控制器
+  `ecode/edetail` 及路径执行事件，避免异步规划错误只出现在控制器侧。
+
+## 0.12.0 - 2026-08-12
+
+### 新增
+
+- 新增只读 `GET /api/v1/ar5/{side}/joint-position`，返回 xCoreSDK `jointPos` 的七轴实时
+  关节位置，单位为 rad，供 RecordReplay 判断 MoveAbsJ 目标是否到位。
 
 ## 0.11.0 - 2026-08-11
 

@@ -135,35 +135,59 @@ def execute_m6_row(runtime: ReplayRuntime, row: ReplayRow) -> None:
     Notes
     -----
     空执行器列表属于瞬时通信无效状态，不会直接中止双臂并行执行。只有读取到完整状态后
-    才会把 CSV 目标覆盖到当前状态并整体下发。下发后只根据连续 M6 实际状态采样判断
-    是否稳定，不与 CSV 目标值比较；5 秒内未稳定时记录告警并继续后续流程。
+    才会把 CSV 目标覆盖到当前状态并整体下发。下发后固定等待 0.5 s，再根据连续 M6
+    实际状态采样判断是否稳定，不与 CSV 目标值比较；5 秒内未稳定时记录告警并放行后续流程。
     """
 
-    _raise_if_stopped(runtime)
-    right_hand = runtime.hand_body.right_hand
-    if right_hand is None:
-        raise RuntimeError("当前 runtime 未配置右手 M6 客户端")
-    positions = _read_valid_m6_positions(runtime)
-    if row.joint_values is None or len(row.joint_values) != M6_ACTUATOR_COUNT:
-        raise RuntimeError(f"M6 joints 未在启动阶段完成预解析 file={row.csv_name} row={row.row_index}")
-    for actuator_id, target_value in enumerate(row.joint_values):
-        positions[actuator_id] = target_value
-    commands = [_build_m6_command(actuator_id, value) for actuator_id, value in enumerate(positions)]
-    _raise_if_stopped(runtime)
-    if not retry_non_motion_call(
-        f"right_hand.set_hand_state({row.csv_name}:{row.row_index})",
-        lambda: right_hand.set_hand_state(commands),
-        runtime.settings.non_motion_retry_count,
-        runtime.settings.non_motion_retry_delay_s,
-        runtime.stop_event,
-    ):
-        raise RuntimeError("右手 M6 下发失败")
-    _wait_m6_until_stable(runtime, row.csv_name, row.row_index)
     logger.info(
-        "已下发右手 M6 目标 file={} row={} positions={}",
+        "右手 M6 动作开始 file={} row={} target={}",
         row.csv_name,
         row.row_index,
-        [round(value, 4) for value in positions],
+        [round(value, 4) for value in row.joint_values or ()],
+    )
+    try:
+        _raise_if_stopped(runtime)
+        right_hand = runtime.hand_body.right_hand
+        if right_hand is None:
+            raise RuntimeError("当前 runtime 未配置右手 M6 客户端")
+        positions = _read_valid_m6_positions(runtime)
+        if row.joint_values is None or len(row.joint_values) != M6_ACTUATOR_COUNT:
+            raise RuntimeError(f"M6 joints 未在启动阶段完成预解析 file={row.csv_name} row={row.row_index}")
+        for actuator_id, target_value in enumerate(row.joint_values):
+            positions[actuator_id] = target_value
+        commands = [_build_m6_command(actuator_id, value) for actuator_id, value in enumerate(positions)]
+        _raise_if_stopped(runtime)
+        if not retry_non_motion_call(
+            f"right_hand.set_hand_state({row.csv_name}:{row.row_index})",
+            lambda: right_hand.set_hand_state(commands),
+            runtime.settings.non_motion_retry_count,
+            runtime.settings.non_motion_retry_delay_s,
+            runtime.stop_event,
+        ):
+            raise RuntimeError("右手 M6 下发失败")
+        logger.info(
+            "右手 M6 目标已下发，固定等待 {:.1f} s file={} row={} positions={}",
+            runtime.settings.hand.m6_motion_start_delay_s,
+            row.csv_name,
+            row.row_index,
+            [round(value, 4) for value in positions],
+        )
+        _wait_or_raise(runtime, runtime.settings.hand.m6_motion_start_delay_s)
+        stable = _wait_m6_until_stable(runtime, row.csv_name, row.row_index)
+    except Exception as error:
+        logger.exception(
+            "右手 M6 动作失败 file={} row={} error_type={} detail={}",
+            row.csv_name,
+            row.row_index,
+            type(error).__name__,
+            error,
+        )
+        raise
+    logger.info(
+        "右手 M6 动作完成 file={} row={} result={}",
+        row.csv_name,
+        row.row_index,
+        "stable" if stable else "timeout",
     )
 
 
@@ -291,8 +315,8 @@ def _parse_m6_positions(state: object) -> list[float]:
     return positions
 
 
-def _wait_m6_until_stable(runtime: ReplayRuntime, csv_name: str, row_index: int) -> None:
-    """按 M6 实际状态等待运动稳定，超时后放行后续 CSV。
+def _wait_m6_until_stable(runtime: ReplayRuntime, csv_name: str, row_index: int) -> bool:
+    """按 M6 实际状态等待运动稳定。
 
     Parameters
     ----------
@@ -305,9 +329,14 @@ def _wait_m6_until_stable(runtime: ReplayRuntime, csv_name: str, row_index: int)
 
     Notes
     -----
-    每次采样间隔由 ``ReplayHandSettings.m6_motion_poll_interval_s`` 控制，默认 0.1 s。
+    下发后先固定等待 ``ReplayHandSettings.m6_motion_start_delay_s``，默认 0.5 s；
+    之后每次采样间隔由 ``ReplayHandSettings.m6_motion_poll_interval_s`` 控制，默认 0.2 s。
     最近连续 3 次有效采样中，六个轴分别满足最大值减最小值不超过 0.1 时认为运动结束。
-    该判定只观察实际状态，不比较本次下发的目标值；5 s 内未稳定只记录告警，不抛出错误。
+    该判定只观察实际状态，不比较本次下发的目标值。超过 5 s 只记录告警并放行后续 CSV 指令。
+    Returns
+    -------
+    bool
+        ``True`` 表示连续采样判定稳定，``False`` 表示达到 5 s 超时后放行。
     """
 
     right_hand = runtime.hand_body.right_hand
@@ -344,11 +373,12 @@ def _wait_m6_until_stable(runtime: ReplayRuntime, csv_name: str, row_index: int)
                     sample_count,
                     [round(value, 4) for value in positions],
                 )
-                return
+                return True
         remaining_s = deadline - time.monotonic()
         if remaining_s <= 0.0:
             logger.warning(
-                "右手 M6 实际状态 {:.1f} s 内未稳定，继续后续流程 file={} row={} "
+                "右手 M6 实际状态 {:.1f} s 内未稳定，按超时策略放行后续流程 "
+                "file={} row={} "
                 "samples={} last_positions={} last_reason={}",
                 hand_settings.m6_motion_stability_timeout_s,
                 csv_name,
@@ -357,8 +387,13 @@ def _wait_m6_until_stable(runtime: ReplayRuntime, csv_name: str, row_index: int)
                 last_positions,
                 last_invalid_reason,
             )
-            return
-        _wait_or_raise(runtime, min(hand_settings.m6_motion_poll_interval_s, remaining_s))
+            return False
+        _wait_or_raise(
+            runtime,
+            hand_settings.m6_motion_poll_interval_s
+            if remaining_s <= 0.0
+            else min(hand_settings.m6_motion_poll_interval_s, remaining_s),
+        )
 
 
 # endregion

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from threading import RLock
 from typing import Literal
@@ -196,6 +197,10 @@ class Ar5Client:
         self._config = config
         self._lock = RLock()
         self._ec: dict[str, object] = {}
+        self._soft_limit_cache: Ar5SoftLimitSnapshot | None = None
+        self._event_callbacks: dict[
+            xCoreSDK_python.Event, Callable[[dict[str, object]], None]
+        ] = {}
         logger.info(
             "AR5 SDK connection requested: side={} robot_ip={} local_ip={}",
             config.side,
@@ -216,6 +221,7 @@ class Ar5Client:
         self._robot_type = str(robot_info.type)
         self._robot_uid = str(robot_info.id)
         try:
+            self._register_event_watchers_locked()
             if initialize_toolset:
                 self._apply_default_toolset_locked()
         except Exception:
@@ -371,6 +377,19 @@ class Ar5Client:
         with self._lock:
             return self._call_value("operationState", self._robot.operationState).name
 
+    def sdk_joint_position(self) -> tuple[float, ...]:
+        """返回原 SDK ``jointPos`` 的七轴实时关节位置，单位 rad。"""
+
+        with self._lock:
+            joint_rad = tuple(
+                float(value) for value in self._call_value("jointPos", self._robot.jointPos)
+            )
+        if len(joint_rad) != 7:
+            raise RuntimeError(
+                f"jointPos 返回关节数异常: expected=7 actual={len(joint_rad)}"
+            )
+        return joint_rad
+
     def sdk_operate_mode(self) -> str:
         """返回原 SDK ``operateMode`` 的枚举名称。"""
 
@@ -441,14 +460,30 @@ class Ar5Client:
         if not targets:
             raise ValueError("moveAppend targets 不能为空")
         commands = []
-        for joints_rad, speed_mm_s, zone_mm in targets:
+        append_log: list[dict[str, object]] = []
+        for target_index, (joints_rad, speed_mm_s, zone_mm) in enumerate(targets):
             if len(joints_rad) != 7:
                 raise ValueError(f"MoveAbsJ 关节数必须为 7，实际为 {len(joints_rad)}")
             commands.append(
                 xCoreSDK_python.MoveAbsJCommand(list(joints_rad), speed_mm_s, zone_mm)
             )
+            append_log.append(
+                {
+                    "target_index": target_index,
+                    "joints_rad": list(joints_rad),
+                    "joints_deg": [math.degrees(value) for value in joints_rad],
+                    "speed_mm_s": speed_mm_s,
+                    "zone_mm": zone_mm,
+                }
+            )
         with self._lock:
             command_id = xCoreSDK_python.PyString()
+            logger.info(
+                "AR5 SDK moveAppend actual targets: side={} robot_ip={} targets={}",
+                self._config.side,
+                self._config.robot_ip,
+                append_log,
+            )
             self._call_none(
                 f"moveAppend(MoveAbsJ,count={len(commands)})",
                 lambda ec: self._robot.moveAppend(commands, command_id, ec),
@@ -468,7 +503,7 @@ class Ar5Client:
             self._call_none("disableDrag", self._robot.disableDrag)
 
     def read_soft_limits(self) -> Ar5SoftLimitSnapshot:
-        """读取控制器当前七个轴的软限位配置。
+        """从 SDK 读取并覆盖当前客户端缓存的七轴软限位。
 
         Returns
         -------
@@ -482,44 +517,87 @@ class Ar5Client:
 
         Notes
         -----
-        该方法只调用 xCoreSDK 的 ``getSoftLimit``，不会切换电源、工作模式或拖动状态。
+        每次调用均执行 xCoreSDK ``getSoftLimit`` 并覆盖缓存，供 RecordReplay 在每次
+        ``moveStart`` 前获取最新快照；不会切换电源、工作模式或拖动状态。
         """
 
         with self._lock:
-            limits = xCoreSDK_python.PyTypeVectorArrayDouble2()
-            enabled = bool(
-                self._call_value(
-                    "getSoftLimit",
-                    lambda ec: self._robot.getSoftLimit(limits, ec),
-                )
+            self._soft_limit_cache = self._load_soft_limits_locked()
+            logger.info(
+                "AR5 soft limits refreshed and cached: side={} robot_ip={} enabled={} limits_rad={}",
+                self._config.side,
+                self._config.robot_ip,
+                self._soft_limit_cache.enabled,
+                self._soft_limit_cache.limits_rad,
             )
-            raw_limits = limits.content()
-            if len(raw_limits) != 7:
+            return self._soft_limit_cache
+
+    def _load_soft_limits_locked(self) -> Ar5SoftLimitSnapshot:
+        """在已持锁状态下从 SDK 读取并校验一份软限位快照。"""
+
+        limits = xCoreSDK_python.PyTypeVectorArrayDouble2()
+        enabled = bool(
+            self._call_value(
+                "getSoftLimit",
+                lambda ec: self._robot.getSoftLimit(limits, ec),
+            )
+        )
+        raw_limits = limits.content()
+        if len(raw_limits) != 7:
+            raise RuntimeError(f"AR5 软限位数量异常: expected=7 actual={len(raw_limits)}")
+
+        parsed_limits: list[tuple[float, float]] = []
+        for axis_index, pair in enumerate(raw_limits):
+            if len(pair) != 2:
                 raise RuntimeError(
-                    f"AR5 软限位数量异常: expected=7 actual={len(raw_limits)}"
+                    "AR5 软限位轴数据异常: "
+                    f"axis_index={axis_index} expected=2 actual={len(pair)}"
                 )
+            lower_rad = float(pair[0])
+            upper_rad = float(pair[1])
+            if (
+                not math.isfinite(lower_rad)
+                or not math.isfinite(upper_rad)
+                or lower_rad > upper_rad
+            ):
+                raise RuntimeError(
+                    "AR5 软限位范围异常: "
+                    f"axis_index={axis_index} lower_rad={lower_rad} upper_rad={upper_rad}"
+                )
+            parsed_limits.append((lower_rad, upper_rad))
+        return Ar5SoftLimitSnapshot(enabled, tuple(parsed_limits))
 
-            parsed_limits: list[tuple[float, float]] = []
-            for axis_index, pair in enumerate(raw_limits):
-                if len(pair) != 2:
-                    raise RuntimeError(
-                        "AR5 软限位轴数据异常: "
-                        f"axis_index={axis_index} expected=2 actual={len(pair)}"
-                    )
-                lower_rad = float(pair[0])
-                upper_rad = float(pair[1])
-                if (
-                    not math.isfinite(lower_rad)
-                    or not math.isfinite(upper_rad)
-                    or lower_rad > upper_rad
-                ):
-                    raise RuntimeError(
-                        "AR5 软限位范围异常: "
-                        f"axis_index={axis_index} lower_rad={lower_rad} upper_rad={upper_rad}"
-                    )
-                parsed_limits.append((lower_rad, upper_rad))
+    def _register_event_watchers_locked(self) -> None:
+        """注册原始控制器日志和非实时运动执行事件回调。"""
 
-            return Ar5SoftLimitSnapshot(enabled, tuple(parsed_limits))
+        def handle_log_reporter(event_info: dict[str, object]) -> None:
+            logger.error(
+                "AR5 SDK raw controller log: side={} robot_ip={} event={}",
+                self._config.side,
+                self._config.robot_ip,
+                event_info,
+            )
+
+        def handle_move_execution(event_info: dict[str, object]) -> None:
+            logger.info(
+                "AR5 SDK raw move execution event: side={} robot_ip={} event={}",
+                self._config.side,
+                self._config.robot_ip,
+                event_info,
+            )
+
+        callbacks = {
+            xCoreSDK_python.Event.logReporter: handle_log_reporter,
+            xCoreSDK_python.Event.moveExecution: handle_move_execution,
+        }
+        for event_type, callback in callbacks.items():
+            self._call_none(
+                f"setEventWatcher({event_type.name})",
+                lambda ec, selected_event=event_type, selected_callback=callback: (
+                    self._robot.setEventWatcher(selected_event, selected_callback, ec)
+                ),
+            )
+        self._event_callbacks = callbacks
 
     def configure_motion_context(self) -> None:
         """为后续运动显式配置已验证的默认工具与工件坐标系。
@@ -815,6 +893,17 @@ class Ar5Client:
                 self._call_none("disableDrag", self._robot.disableDrag)
             except Exception:
                 pass
+            for event_type in tuple(self._event_callbacks):
+                try:
+                    self._call_none(
+                        f"setNoneEventWatcher({event_type.name})",
+                        lambda ec, selected_event=event_type: (
+                            self._robot.setNoneEventWatcher(selected_event, ec)
+                        ),
+                    )
+                except Exception:
+                    pass
+            self._event_callbacks.clear()
             try:
                 self._call_none("disconnectFromRobot", self._robot.disconnectFromRobot)
             except Exception:
@@ -966,11 +1055,21 @@ class Ar5Client:
         )
 
     def _call_value(self, action: str, callback):  # noqa: ANN001, ANN202
-        """调用只读或本地计算 SDK 方法，不写入周期性日志。"""
+        """调用只读或本地计算 SDK 方法；失败时记录 SDK 原始错误字典。"""
 
         self._ec.clear()
-        value = callback(self._ec)
-        self._raise_for_error(action)
+        try:
+            value = callback(self._ec)
+            self._raise_for_error(action)
+        except Exception:
+            logger.error(
+                "AR5 SDK value request failed: side={} robot_ip={} action={} raw_ec={}",
+                self._config.side,
+                self._config.robot_ip,
+                action,
+                self._ec,
+            )
+            raise
         return value
 
     def _call_control_value(self, action: str, callback):  # noqa: ANN001, ANN202

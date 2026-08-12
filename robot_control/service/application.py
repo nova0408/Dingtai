@@ -232,6 +232,11 @@ class RobotControlApplication:
 
         return self._gateway.ar5_sdk_operation_state(side)
 
+    def ar5_sdk_joint_position(self, side: str) -> dict[str, JsonValue]:
+        """读取 xCoreSDK ``jointPos`` 七轴实时关节位置。"""
+
+        return self._gateway.ar5_sdk_joint_position(side)
+
     def ar5_sdk_operate_mode(self, side: str) -> dict[str, JsonValue]:
         """读取 xCoreSDK ``operateMode``。"""
 

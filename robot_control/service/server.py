@@ -128,6 +128,7 @@ class RobotControlServer:
                             readers = {
                                 "robot-info": application.ar5_sdk_robot_info,
                                 "operation-state": application.ar5_sdk_operation_state,
+                                "joint-position": application.ar5_sdk_joint_position,
                                 "operate-mode": application.ar5_sdk_operate_mode,
                                 "power-state": application.ar5_sdk_power_state,
                                 "cart-posture": application.ar5_sdk_cart_posture,

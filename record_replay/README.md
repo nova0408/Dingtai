@@ -1,6 +1,6 @@
 # 双臂记录回放服务
 
-当前 RecordReplay 服务业务语义版本：`3.9.0`；对应人工验证入口
+当前 RecordReplay 服务业务语义版本：`3.15.0`；对应人工验证入口
 `test/wuji/record_replay_cli.py` 的版本为 `1.10.1`。两者均使用 M6 右手动作语义。
 
 面向 GUI 和其它项目的完整 HTTP 契约见 [API Reference](API%20Reference.md)，机器可读描述见
@@ -233,8 +233,10 @@ python test/record_replay/local/record_replay_local_manual.py
 `action_sequence.json`，服务只在 `idle` 状态的下一次 `POST /start` 前重新读取并完整校验；
 进入 `busy` 后使用已冻结的内存计划，运行中修改磁盘文件不会改变当前轮次。
 该计划同时保存 JSON 引用的 CSV 行快照，执行器不会在 busy 期间重新读取这些 CSV。
-右手 M6 每次下发目标后按 0.1 s 轮询六轴实际状态，连续 3 次采样中每个轴的最大值与最小值
-差值均不超过 0.1 时认为运动结束；5 s 内未稳定只记录告警并继续后续 CSV，不与下发目标值比较。
+右手 M6 每次下发目标后固定等待 0.5 s，再按 0.2 s 轮询六轴实际状态，连续 3 次采样中每个轴的最大值与最小值
+差值均不超过 0.1 时认为运动结束；5 s 内未稳定只记录告警并放行后续 CSV，不与下发目标值比较。
+机械臂连续 MoveAbsJ 段默认批量下发；下发后先等待 1 s 观察状态，未看到 moving 时再以 0.1 s 间隔读取实时七轴关节位置，最多确认 5 s。M6 下发前还会检查最后一个 arm 点的实时位置，未到位时使用单点 MoveAbsJ 补位并再次确认，仍未到位则拒绝下发 M6。
+每个含 pose 的 CSV 行都以该行记录的原始 joints 为 IK 门控基准；单轴差超过 `45 deg` 时，先沿基坐标 TCP 的 X/Y/Z 轴分别微调 `1 mm` 重算 IK，最多尝试 3 次；仍无法得到相对该行原始 joints 的非跳变解时使用原始 joints，异常 IK 结果不会进入 MoveAbsJ 队列。
 顺序 JSON 的左右数组都必须非空；fast 动作要求非零 zone，precise 动作固定 zone 为 0，
 capture 必须显式提供 `final_speed` 与 `settle_delay`，且普通动作不得携带这些专用字段。
 SDK 原始 speed 边界为 `(0, 4000]` mm/s，服务为现场安全将 JSON speed/final_speed 收紧为 `[5, 4000]` mm/s，

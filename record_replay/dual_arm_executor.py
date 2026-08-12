@@ -12,7 +12,7 @@ from .action_sequence import (
     NamedActionPlan,
     SYNC_ACTION_ORDER,
 )
-from .arm_actions import flush_pending_arm_segment
+from .arm_actions import ensure_arm_position_before_m6, flush_pending_arm_segment
 from .charuco_offset import CharucoOffsetInitializer
 from .context import ReplayContext
 from .contracts import ReplayExecutionPhase, ReplayServiceState, ReplayRow
@@ -564,11 +564,12 @@ class DualArmExecutor:
         if row.action_type == "arm":
             runtime.pending_arm_rows.append(row)
             return
-        flush_pending_arm_segment(runtime, final_arm_segment)
+        final_arm_target = flush_pending_arm_segment(runtime, final_arm_segment)
         if row.action_type == "gripper":
             execute_gripper_row(runtime, row)
             return
         if row.action_type == "m6":
+            ensure_arm_position_before_m6(runtime, final_arm_target)
             execute_m6_row(runtime, row)
             return
         if row.action_type == "lift":

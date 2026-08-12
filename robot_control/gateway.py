@@ -508,6 +508,11 @@ class RobotControlGateway:
 
         return {"state": self._ar5_client(side).sdk_operation_state()}
 
+    def ar5_sdk_joint_position(self, side: str) -> dict[str, JsonValue]:
+        """封装 ``jointPos`` 七轴实时关节位置，单位 rad。"""
+
+        return {"joints_rad": list(self._ar5_client(side).sdk_joint_position())}
+
     def ar5_sdk_operate_mode(self, side: str) -> dict[str, JsonValue]:
         """封装 ``operateMode``。"""
 

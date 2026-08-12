@@ -52,6 +52,22 @@ class ReplayArmSettings:
     "等待控制器确认上电的状态轮询周期，单位 s。"
     motion_state_poll_interval_s: float = 0.1
     "等待机械臂运动完成的轮询周期，单位 s。"
+    motion_start_timeout_s: float = 1.0
+    "等待机械臂状态首次进入 moving 的初始时间，单位 s。"
+    motion_start_retry_interval_s: float = 0.2
+    "moveStart 成功后确认状态仍为 idle 时的重发间隔，单位 s。"
+    motion_start_retry_count: int = 3
+    "moveStart 成功但状态仍为 idle 时的最大重发次数，单位 次。"
+    motion_position_check_timeout_s: float = 5.0
+    "未观察到 moving 后，读取实时关节位置确认到位的最长时间，单位 s。"
+    motion_joint_position_tolerance_rad: float = 0.2
+    "实时关节位置相对 MoveAbsJ 最终目标的到位容差，单位 rad。"
+    ik_joint_jump_threshold_deg: float = 45.0
+    "IK 结果相对当前 CSV 行记录 joints 允许的单轴最大跳变，单位 deg。"
+    ik_tcp_repair_offset_mm: float = 1.0
+    "IK 跳变时 TCP 单次微调量，单位 mm。"
+    ik_tcp_repair_attempt_count: int = 3
+    "IK 跳变时 TCP 微调重算 IK 的最大尝试次数。"
     reset_ready_timeout_s: float = 2.0
     "调用 moveReset 前的就绪等待超时，单位 s。"
     reset_ready_stable_idle_checks: int = 2
@@ -68,14 +84,16 @@ class ReplayHandSettings:
     "读取完整 M6 右手执行器状态的总超时时间，单位 s。"
     m6_state_read_poll_interval_s: float = 0.1
     "右手状态内容无效时的重新读取间隔，单位 s。"
-    m6_motion_poll_interval_s: float = 0.1
+    m6_motion_start_delay_s: float = 0.5
+    "右手 M6 下发固定目标后的初始等待时间，单位 s。"
+    m6_motion_poll_interval_s: float = 0.2
     "M6 目标下发后读取实际状态的轮询间隔，单位 s。"
     m6_motion_stable_sample_count: int = 3
     "M6 运动结束所需的连续稳定采样次数，单位 次。"
     m6_motion_stability_tolerance: float = 0.1
     "M6 连续稳定采样中每个执行器允许的最大最小值差，单位 归一化位置。"
     m6_motion_stability_timeout_s: float = 5.0
-    "M6 等待实际状态稳定的最长时间，单位 s；超时后继续后续流程。"
+    "M6 等待实际状态稳定的最长时间，单位 s；超时后放行后续流程。"
     lift_enable_state_timeout_s: float = 10.0
     "下发 lift enable 后等待 get_enable() 状态为 True 的总超时时间，单位 s。"
     lift_enable_retry_interval_s: float = 0.2
