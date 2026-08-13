@@ -1,6 +1,6 @@
 # RobotControl API Reference
 
-当前契约版本：`0.16.1`
+当前契约版本：`0.17.1`
 HTTP API 主版本：`1`
 
 本文档描述 `robot_control` 对外 HTTP API 的实际调用方式、状态字段、单位和安全边界。
@@ -314,7 +314,8 @@ python -m robot_control.service --no-qmlinker-waist
 ```
 
 不支持时 `devices` 数组中不包含 `qmlinker_waist`。支持时才出现该设备，`data` 包含
-`enabled` 和 `pitch_deg`。腰部始终没有使能或角度控制接口。
+`enabled` 和 `pitch_deg`。支持时可通过 `POST /api/v1/waist` 控制使能或目标角度；不支持时
+该控制请求返回 `503`，且不会创建腰部客户端。
 
 ## 5. qmlinker 控制接口
 
@@ -347,9 +348,24 @@ POST /api/v1/lift
 {"height_mm": 100.0}
 ```
 
-可用字段为 `enable`、`height_mm`；高度单位 mm。
+可用字段为 `enable`、`height_mm`；高度单位 mm。目标会按 qmlinker CLI 的规则四舍五入为整毫米后下发。
 
-### 5.3 左夹爪
+### 5.3 腰部 Pitch
+
+```text
+POST /api/v1/waist
+```
+
+至少提供一个字段：
+
+```json
+{"pitch_deg": 1.0}
+```
+
+可用字段为 `enable`、`pitch_deg`；角度单位 deg。仅当前机型启用腰部能力时可用；使用
+`--no-qmlinker-waist` 启动的服务会返回 `503`，且不会创建腰部客户端。
+
+### 5.4 左夹爪
 
 ```text
 POST /api/v1/gripper
@@ -442,7 +458,7 @@ POST /api/v1/agv/stop
 请求 qmlinker 停止当前导航或实时平移。它是软件停止语义，不等同于硬件急停；现场仍须
 按照设备安全规程处理急停。
 
-腰部只提供前述 `qmlinker_waist` 只读状态，不提供腰部使能或角度控制接口。
+腰部控制接口与状态仅在启用腰部能力的机型上可用；所有腰部控制请求都只能由现场人员手动发起。
 
 ## 6. AR5 控制接口
 

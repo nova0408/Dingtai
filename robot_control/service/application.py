@@ -83,6 +83,16 @@ class RobotControlApplication:
         self._gateway.qmlinker_set_lift(enable=enable, height_mm=height_mm)
         return self._accepted("qmlinker_set_lift", "lift")
 
+    def qmlinker_set_waist(
+        self, enable: bool | None, pitch_deg: float | None
+    ) -> ActionResponse:
+        """转发 qmlinker 腰部使能或 Pitch 目标角度控制请求。"""
+
+        if enable is None and pitch_deg is None:
+            raise ValueError("waist 请求至少需要一个控制字段")
+        self._gateway.qmlinker_set_waist(enable=enable, pitch_deg=pitch_deg)
+        return self._accepted("qmlinker_set_waist", "waist")
+
     def qmlinker_set_gripper_position(self, position: int) -> ActionResponse:
         """转发左夹爪控制请求。"""
 

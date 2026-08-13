@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: RobotControl HTTP API
-  version: 0.16.1
+  version: 0.17.1
   description: >-
     qmlinker 与 AR5 xCoreSDK 统一服务。GET 状态接口可用于只读诊断；POST 控制接口可能
     使真实设备动作，只能由现场人员手动发起。
@@ -354,6 +354,19 @@ paths:
             schema: {$ref: '#/components/schemas/Ar5MoveElbowRequest'}
       responses:
         '202': {description: Control request accepted}
+  /api/v1/waist:
+    post:
+      operationId: set_qmlinker_waist
+      description: 现场人工控制接口，可能使腰部 Pitch 机构动作；未启用腰部能力的机型返回 503。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/QmlinkerWaistRequest'}
+      responses:
+        '202': {description: Control request accepted}
+        '400': {description: Request validation failure}
+        '503': {description: Waist capability unavailable or hardware control failure}
   /api/v1/ar5/{side}/robot-info:
     $ref: '#/components/pathItems/Ar5SdkRead'
   /api/v1/ar5/{side}/operation-state:
@@ -595,6 +608,12 @@ components:
       properties:
         enable: {type: boolean}
         height_mm: {type: number}
+    QmlinkerWaistRequest:
+      type: object
+      minProperties: 1
+      properties:
+        enable: {type: boolean}
+        pitch_deg: {type: number}
     QmlinkerGripperRequest:
       type: object
       required: [position]

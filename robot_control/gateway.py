@@ -117,7 +117,7 @@ class RobotControlGateway:
         return {"enabled": bool(lift.get_enable()), "height_mm": height_mm}
 
     def _read_qmlinker_waist(self) -> dict[str, JsonValue]:
-        """读取 qmlinker 腰部 Pitch 状态；不提供腰部控制接口。"""
+        """读取 qmlinker 腰部 Pitch 状态。"""
 
         waist = self._qmlinker_client("body").waist
         pitch_deg = waist.get_waist_pitch()
@@ -319,11 +319,34 @@ class RobotControlGateway:
     ) -> None:
         """显式设置 qmlinker 升降使能或目标高度。"""
 
-        lift = self._qmlinker_client("body").lift
-        if enable is not None:
-            lift.set_enable(enable)
-        if height_mm is not None:
-            lift.set_lift_physical_height(float(height_mm))
+        with self._lock:
+            lift = self._qmlinker_client("body").lift
+            if enable is not None:
+                lift.set_enable(enable)
+                if bool(lift.get_enable()) is not enable:
+                    raise RuntimeError(f"升降使能状态未更新为 {enable}")
+            if height_mm is not None:
+                target_height_mm = int(round(height_mm))
+                set_result = lift.set_lift_physical_height(target_height_mm)
+                if set_result is None or not set_result[0]:
+                    raise RuntimeError(f"升降柱目标高度设置失败: {set_result!r}")
+
+    def qmlinker_set_waist(
+        self, *, enable: bool | None, pitch_deg: float | None
+    ) -> None:
+        """显式设置 qmlinker 腰部使能或 Pitch 目标角度。"""
+
+        if not self._settings.qmlinker_waist_available:
+            raise RuntimeError("当前机型未启用 qmlinker 腰部能力")
+        with self._lock:
+            waist = self._qmlinker_client("body").waist
+            if enable is not None:
+                waist.set_enable(enable)
+                if bool(waist.get_enable()) is not enable:
+                    raise RuntimeError(f"腰部使能状态未更新为 {enable}")
+            if pitch_deg is not None:
+                if not waist.set_waist_pitch(pitch_deg):
+                    raise RuntimeError("腰部目标俯仰角设置失败")
 
     def qmlinker_set_gripper_position(self, position: int) -> None:
         """下发左夹爪位置。"""

@@ -134,6 +134,23 @@ class RobotControlClient:
             raise ValueError("lift request requires at least one field")
         return self._request("POST", "/api/v1/lift", body)
 
+    def qmlinker_set_waist(
+        self,
+        *,
+        enable: bool | None = None,
+        pitch_deg: float | None = None,
+    ) -> dict[str, Any]:
+        """显式设置腰部使能或 Pitch 目标角度。"""
+
+        body: dict[str, object] = {}
+        if enable is not None:
+            body["enable"] = enable
+        if pitch_deg is not None:
+            body["pitch_deg"] = pitch_deg
+        if not body:
+            raise ValueError("waist request requires at least one field")
+        return self._request("POST", "/api/v1/waist", body)
+
     def qmlinker_set_gripper_position(self, position: int) -> dict[str, Any]:
         """设置 qmlinker 夹爪位置。"""
 

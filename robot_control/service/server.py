@@ -314,6 +314,11 @@ class RobotControlServer:
                         _optional_bool(payload, "enable"),
                         _optional_number(payload, "height_mm"),
                     )
+                if parts == ["waist"]:
+                    return application.qmlinker_set_waist(
+                        _optional_bool(payload, "enable"),
+                        _optional_number(payload, "pitch_deg"),
+                    )
                 if parts == ["gripper"]:
                     return application.qmlinker_set_gripper_position(
                         _int_field(payload, "position")

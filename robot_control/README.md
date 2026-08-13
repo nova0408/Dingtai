@@ -9,7 +9,7 @@
 
 ## 当前边界
 
-- qmlinker：head、lift、可选的腰部 Pitch 只读状态、左夹爪、右手和 AGV；不再提供 qmlinker 左右臂部件。
+- qmlinker：head、lift、可选的腰部 Pitch 控制与状态、左夹爪、右手和 AGV；不再提供 qmlinker 左右臂部件。
 - AR5：左右控制器状态、上下电、工作模式、急停恢复、伺服报警清除、NRT waypoint/碰撞进度、拖动、Jog、MoveAbsJ、MoveL、elbow 和 stop。
 - HTTP：默认监听 `127.0.0.1:6500`，适合由 SSH 隧道或现场人工配置的内网访问。
 - 硬件客户端：第一次 GET 或人工控制请求到达时才延迟创建。
@@ -120,8 +120,9 @@ for snapshot in client.subscribe_status(interval_s=0.2):
 控制接口；新增的夹爪、右手、
 AGV、AR5 急停恢复、拖动和 Jog 路径及字段见 `openapi.yaml` 与 `API Reference.md`。
 
-腰部不提供任何控制接口；支持该能力时，`qmlinker_waist` 报告 `enabled` 和 `pitch_deg`。
-不支持时完全省略 `qmlinker_waist` 设备，因为设计上将取消腰部这个自由度。AGV
+腰部控制接口为 `POST /api/v1/waist`；支持该能力时，`qmlinker_waist` 报告 `enabled` 和
+`pitch_deg`。升降 `height_mm` 会按 qmlinker CLI 的规则四舍五入为整毫米目标。不支持时完全省略
+`qmlinker_waist` 设备，腰部控制请求返回 `503`。AGV
 `translate` 是持续实时平移请求，必须由现场人员显式调用
 `/api/v1/agv/stop` 停止；该停止语义是软件停止，不等同于硬件急停。
 

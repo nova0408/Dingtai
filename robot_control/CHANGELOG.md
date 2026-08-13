@@ -1,6 +1,24 @@
 # RobotControl 版本日志
 
-当前版本：`0.16.1`
+当前版本：`0.17.1`
+
+## 0.17.1 - 2026-08-13
+
+### 修复
+
+- 升降目标 `height_mm` 改为按 qmlinker CLI 的规则通过 `int(round(...))` 转换为整数毫米，并校验
+  qmlinker 的执行结果；不再以不兼容的 float 参数调用硬件 SDK。
+- 腰部 Pitch 与升降的使能、目标下发均校验 qmlinker 返回的结果；腰部控制行为与
+  `test/wuji/body_cli.py` 一致。
+- 同步更新 README、API Reference 和 OpenAPI 契约。
+
+## 0.17.0 - 2026-08-13
+
+### 新增
+
+- 新增 `POST /api/v1/waist`，可在启用腰部能力的机型上设置 qmlinker 腰部使能或 Pitch 目标角度；
+  `pitch_deg` 单位为 deg。
+- 未启用腰部能力时，该接口返回 `503` 且不创建腰部客户端；同步更新 README、API Reference 和 OpenAPI 契约。
 
 ## 0.16.1 - 2026-08-13
 
