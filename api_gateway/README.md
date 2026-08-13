@@ -6,6 +6,9 @@
 完整访问契约见 [`API Reference.md`](API%20Reference.md)，机器可读契约见
 [`openapi.yaml`](openapi.yaml)。
 
+Gateway 同时写入 journald 控制台日志和独立的 `logs/api_gateway.log`。文件日志每小时轮转，
+保留最近 7 天（168 个小时归档）；可用 `--log-path` 覆盖路径，不与后端服务日志合并存储。
+
 > **客户端使用前必须安装 CasiaHand Root CA。** Windows、Linux、Android 安装指南和脚本见
 > [`certificates/README.md`](certificates/README.md)。不得用关闭证书校验代替 CA 安装。
 

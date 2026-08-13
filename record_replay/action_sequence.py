@@ -287,7 +287,9 @@ def load_action_sequence(
     left_actions = _bind_items(left_items, assets_by_side["left"], "left", errors)
     right_actions = _bind_items(right_items, assets_by_side["right"], "right", errors)
     _validate_capture_dependencies(left_actions, right_actions, errors)
-    trigger = deployment.offset_settings.calculate_after_action_name
+    offset_settings = deployment.offset_settings
+    _validate_offset_precompile_order(left_actions, right_actions, offset_settings, errors)
+    trigger = offset_settings.calculate_after_action_name
     if trigger is not None and not any(
         action.item.function_name == trigger for action in left_actions
     ):
@@ -309,6 +311,49 @@ def load_action_sequence(
         deployment,
         tuple(preloaded_rows_by_path),
     )
+
+
+def _validate_offset_precompile_order(
+    left_actions: list[NamedActionPlan],
+    right_actions: list[NamedActionPlan],
+    settings: ReplayOffsetSettings,
+    errors: list[str],
+) -> None:
+    """在 start 冻结阶段验证 offset 目标归属和预编译先后关系。"""
+
+    overlap = sorted(
+        settings.target_action_names
+        & (settings.left_charuco_target_action_names | settings.right_charuco_target_action_names)
+    )
+    if overlap:
+        errors.append("命名动作不能同时配置 ChArUco 与三球 offset：" + ", ".join(overlap))
+    right_targets = sorted(
+        {
+            action.item.function_name
+            for action in right_actions
+            if action.item.function_name in settings.target_action_names
+        }
+    )
+    if right_targets:
+        errors.append("三球 offset 目标动作只能配置在左臂：" + ", ".join(right_targets))
+    left_names = [action.item.function_name for action in left_actions]
+    target_positions = [
+        index
+        for index, action_name in enumerate(left_names)
+        if action_name in settings.target_action_names
+    ]
+    if not target_positions:
+        return
+    trigger = settings.calculate_after_action_name
+    if trigger is None or trigger not in left_names:
+        return
+    trigger_position = left_names.index(trigger)
+    first_target_position = min(target_positions)
+    if trigger_position >= first_target_position:
+        errors.append(
+            "三球 offset 必须在首个目标动作前完成："
+            f"trigger={trigger} first_target={left_names[first_target_position]}"
+        )
 
 
 def load_replay_deployment_config(config_path: Path) -> ReplayDeploymentConfig:

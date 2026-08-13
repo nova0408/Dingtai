@@ -93,8 +93,8 @@ OpenAPI 和 AsyncAPI 文档为准。
 ```bash
 /home/wuji-brain/miniconda3/envs/wuji/bin/python -m camera_pipeline.service \
   --log-path logs/camera_pipeline_service.log \
-  --log-rotation "20 MB" \
-  --log-retention "14 days"
+  --log-rotation "1 hour" \
+  --log-retention "7 days"
 ```
 
 ## 日志
@@ -103,7 +103,7 @@ OpenAPI 和 AsyncAPI 文档为准。
 
 - 控制台 sink：写入 stderr，由 systemd/journald 收集；
 - 文件 sink：默认写入 `logs/camera_pipeline_service.log`，UTF-8 编码；
-- 文件达到 `20 MB` 后轮转，轮转文件 ZIP 压缩并保留 `14 days`；
+- 文件每小时轮转，轮转文件 ZIP 压缩并保留 `7 days`；
 - 两个 sink 都使用 `enqueue=True`，避免服务线程直接执行文件写入。
 
 日志覆盖服务启动与停止、信号退出、请求 operation/耗时/结果、API 请求参数与响应摘要、
@@ -147,7 +147,7 @@ systemd 模板位于 `camera-pipeline.service`，进程启动、停止上限分�
 
 ## 协议与安全边界
 
-请求包含 `protocol_version`，当前内部 ZMQ 版本为 `10`。对外 HTTP 使用功能版本 `1.11.0`，
+请求包含 `protocol_version`，当前内部 ZMQ 版本为 `10`。对外 HTTP 使用功能版本 `1.11.1`，
 WebSocket 使用 `CPWS1` 版本 `1`。版本 8 为三球先验增加每球专属
 `hsv_ranges`，并在检测结果中返回 `observed_hsv`。相机相关请求必须显式携带
 `camera_name`；版本 9 在 `CameraStatusResponse` 中增加必填 `service_version`，

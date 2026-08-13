@@ -8,6 +8,13 @@
 执行离线计算并保存结果。它不导入 qmlinker 或 xCoreSDK，也不发送任何设备控制 POST；
 机械臂、头部和其它设备必须由 RobotControl 或现场人工操作接口负责。
 
+服务同时写入 journald 控制台日志和独立的 `logs/calibration_service.log`。文件日志每小时
+轮转、ZIP 压缩并保留 7 天；可用 `--log-path` 覆盖路径，不与其它服务合并存储。
+
+systemd 单元通过 `Requires`、`After` 和 `PartOf` 关联 CameraPipeline 与 RobotControl：依赖
+服务执行 `restart` 时会同步重启 Calibration Service。官方单服务部署脚本在依赖服务就绪后
+还会显式恢复 Calibration Service，并通过本机 `GET /api/v1/status` 确认状态为 `idle`。
+
 结果固定写入同级 RecordReplay 服务目录：
 
 - `record_replay/prior_data/charuco_board_prior.json`：`POST /api/v1/prior/head`；

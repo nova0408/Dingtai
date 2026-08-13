@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import threading
 import time
 from dataclasses import dataclass
 
@@ -20,7 +21,6 @@ from .arm_gateway import (
     move_reset,
     move_start,
     restore_nrt_motion_state_locked,
-    read_cart_posture,
     read_joint_position,
     read_motion_progress,
     read_operate_mode,
@@ -30,7 +30,7 @@ from .arm_gateway import (
     retry_non_motion_call,
 )
 from .contracts import ReplayRow
-from .runtime import ReplayRuntime
+from .runtime import CompiledArmWaypoint, ReplayRuntime
 
 SOFT_LIMIT_CLAMP_MARGIN_RAD = math.radians(1.0)
 "软限位越界时将目标钳制到边界内 1 deg。"
@@ -42,6 +42,9 @@ IK_TCP_REPAIR_DIRECTIONS = (
 )
 "IK 跳变时依次沿基坐标 TCP 的 X、Y、Z 轴微调。"
 
+SYNCHRONIZED_MOVE_START_TIMEOUT_S = 60.0
+"双臂同步动作完成 append 后等待共同 moveStart 的最长时间，单位 s。"
+
 # region 数据结构
 @dataclass(frozen=True, slots=True)
 class ArmMoveTarget:
@@ -49,6 +52,10 @@ class ArmMoveTarget:
 
     row: ReplayRow
     "源 CSV 动作行。"
+    action: NamedActionPlan
+    "源命名动作，用于跨 CSV 合并后保留逐点参数和 offset 语义。"
+    requested_tcp: CartesianPose | None
+    "应用 offset 后请求逆解的最终 TCP；纯 joints 行或 M6 补位时为空。"
     joint_rad: tuple[float, ...]
     "目标关节，单位 rad。"
     source: str
@@ -64,6 +71,7 @@ class ArmMoveTarget:
 def build_arm_target(
     runtime: ReplayRuntime,
     row: ReplayRow,
+    action: NamedActionPlan,
 ) -> ArmMoveTarget:
     """构建 CSV joints 或 pose IK 对应的关节目标。"""
 
@@ -72,37 +80,20 @@ def build_arm_target(
             raise RuntimeError(f"arm joints 未在启动阶段完成预解析 file={row.csv_name} row={row.row_index}")
         return ArmMoveTarget(
             row,
+            action,
+            None,
             tuple(row.arm_joint_rad),
             "csv-joints",
         )
     pose = row.arm_pose
-    current_pose = retry_non_motion_call(
-        f"cartPosture(endInRef:{row.csv_name}:{row.row_index})",
-        lambda: read_cart_posture(runtime.connected_arm),
-        runtime.settings.non_motion_retry_count,
-        runtime.settings.non_motion_retry_delay_s,
-        runtime.stop_event,
-    )
     target_pose = CartesianPose(
         tuple(_mm_to_m(list(pose.xyz_mm))),
         tuple(_deg_to_rad(list(pose.rpy_deg))),
-        current_pose.has_elbow,
-        current_pose.elbow_rad,
-        current_pose.conf_data,
+        pose.has_elbow,
+        math.radians(pose.elbow_deg),
+        pose.conf_data,
     )
-    has_elbow = target_pose.has_elbow
-    elbow_rad = target_pose.elbow_rad
-    conf_data = target_pose.conf_data
-    if pose.has_elbow is not None:
-        has_elbow = pose.has_elbow
-    if pose.elbow_deg is not None:
-        elbow_rad = _deg_to_rad([pose.elbow_deg])[0]
-    if pose.conf_data is not None:
-        conf_data = tuple(pose.conf_data)
-    target_pose = CartesianPose(
-        target_pose.trans_m, target_pose.rpy_rad, has_elbow, elbow_rad, conf_data
-    )
-    offset_matrix, offset_source = _resolve_cartesian_offset(runtime, row.csv_name)
+    offset_matrix, offset_source = _resolve_cartesian_offset(runtime, action)
     applies_offset = offset_matrix is not None
     if offset_matrix is not None:
         target_pose = _apply_global_offset(target_pose, offset_matrix)
@@ -119,10 +110,11 @@ def build_arm_target(
             joint_rad,
             runtime.settings.arm.ik_joint_jump_threshold_deg,
         ):
-            return ArmMoveTarget(row, joint_rad, source)
+            return ArmMoveTarget(row, action, target_pose, joint_rad, source)
         repaired_target = _repair_ik_jump(
             runtime,
             row,
+            action,
             target_pose,
             recorded_joint_rad,
             joint_rad,
@@ -153,12 +145,13 @@ def build_arm_target(
         source = "csv-joints-fallback-ik-jump"
     else:
         source = "csv-joints-fallback" if not applies_offset else "csv-joints-fallback-offset-ik"
-    return ArmMoveTarget(row, tuple(row.arm_joint_rad), source)
+    return ArmMoveTarget(row, action, target_pose, tuple(row.arm_joint_rad), source)
 
 
 def _repair_ik_jump(
     runtime: ReplayRuntime,
     row: ReplayRow,
+    action: NamedActionPlan,
     target_pose: CartesianPose,
     recorded_joint_rad: tuple[float, ...],
     initial_ik_joint_rad: tuple[float, ...],
@@ -223,7 +216,13 @@ def _repair_ik_jump(
             jump_deg,
         )
         if jump_deg <= settings.ik_joint_jump_threshold_deg:
-            return ArmMoveTarget(row, repaired_joint_rad, f"{source}-tcp-repair-{attempt_index}")
+            return ArmMoveTarget(
+                row,
+                action,
+                repaired_pose,
+                repaired_joint_rad,
+                f"{source}-tcp-repair-{attempt_index}",
+            )
     return None
 
 
@@ -282,65 +281,286 @@ def _max_joint_jump_deg(
 # region 连续执行
 
 
+def precompile_available_arm_waypoints(
+    runtime: ReplayRuntime,
+    actions: tuple[NamedActionPlan, ...],
+    *,
+    require_all: bool,
+) -> None:
+    """一次性编译当前 offset 条件已满足的全部 arm waypoint。"""
+
+    candidates: list[tuple[NamedActionPlan, ReplayRow, bool]] = []
+    pending_actions: list[str] = []
+    for action in actions:
+        rows = runtime.preloaded_rows_by_path.get(action.csv_asset.path)
+        if rows is None:
+            raise RuntimeError(f"预编译时缺少冻结 CSV：{action.csv_asset.path.name}")
+        arm_rows = [row for row in rows if row.action_type == "arm"]
+        existing_count = sum(
+            (action, row.row_index) in runtime.compiled_arm_waypoints for row in arm_rows
+        )
+        if existing_count == len(arm_rows):
+            continue
+        if existing_count:
+            raise RuntimeError(
+                f"动作仅部分完成预编译：action={action.item.function_name} "
+                f"compiled={existing_count}/{len(arm_rows)}"
+            )
+        if not _action_offset_is_ready(runtime, action, arm_rows):
+            pending_actions.append(action.item.function_name)
+            continue
+        last_arm_row_index = arm_rows[-1].row_index if arm_rows else None
+        candidates.extend(
+            (action, row, row.row_index == last_arm_row_index) for row in arm_rows
+        )
+
+    if candidates:
+        batch_id = runtime.next_precompile_batch_id
+        runtime.next_precompile_batch_id += 1
+        logger.info(
+            "MoveAbsJ waypoint 批量预编译开始 precompile_batch_id={} arm_side={} "
+            "waypoint_count={} pending_offset_actions={}",
+            batch_id,
+            runtime.connected_arm.arm_side,
+            len(candidates),
+            pending_actions,
+        )
+        _raise_if_stop_requested(runtime)
+        targets = [build_arm_target(runtime, row, action) for action, row, _ in candidates]
+        commands = [
+            (
+                target.joint_rad,
+                _resolve_action_speed(action, is_final),
+                _resolve_action_zone(action, is_final),
+            )
+            for (action, _, is_final), target in zip(candidates, targets, strict=True)
+        ]
+        commands = _clamp_commands_to_soft_limits(
+            runtime,
+            targets,
+            commands,
+            "precompile_batch",
+            batch_id,
+        )
+        for (action, row, is_final), target, command in zip(
+            candidates,
+            targets,
+            commands,
+            strict=True,
+        ):
+            joint_rad, speed_mm_s, zone_mm = command
+            runtime.compiled_arm_waypoints[(action, row.row_index)] = CompiledArmWaypoint(
+                row,
+                action,
+                is_final,
+                target.requested_tcp,
+                joint_rad,
+                speed_mm_s,
+                zone_mm,
+                target.source,
+                batch_id,
+            )
+        logger.info(
+            "MoveAbsJ waypoint 批量预编译完成 precompile_batch_id={} arm_side={} "
+            "compiled_waypoint_count={} total_compiled_waypoint_count={}",
+            batch_id,
+            runtime.connected_arm.arm_side,
+            len(candidates),
+            len(runtime.compiled_arm_waypoints),
+        )
+
+    missing = [
+        f"{action.item.function_name}:{row.csv_name}:{row.row_index}"
+        for action in actions
+        for row in runtime.preloaded_rows_by_path.get(action.csv_asset.path, ())
+        if row.action_type == "arm"
+        and (action, row.row_index) not in runtime.compiled_arm_waypoints
+    ]
+    if require_all and missing:
+        raise RuntimeError("offset 已就绪后仍有 waypoint 未完成预编译：" + ", ".join(missing))
+    logger.info(
+        "MoveAbsJ waypoint 预编译状态 arm_side={} require_all={} compiled={} pending={}",
+        runtime.connected_arm.arm_side,
+        require_all,
+        len(runtime.compiled_arm_waypoints),
+        len(missing),
+    )
+
+
+def append_pending_arm_waypoint(
+    runtime: ReplayRuntime,
+    row: ReplayRow,
+    action: NamedActionPlan,
+) -> None:
+    """把已预编译 arm 点加入当前最大连续轨迹段。"""
+
+    waypoint = runtime.compiled_arm_waypoints.get((action, row.row_index))
+    if waypoint is None:
+        raise RuntimeError(
+            "执行阶段发现未预编译 waypoint："
+            f"action={action.item.function_name} file={row.csv_name} row={row.row_index}"
+        )
+    runtime.pending_arm_waypoints.append(waypoint)
+    logger.info(
+        "MoveAbsJ 已编译 waypoint queued arm_side={} pending_waypoint={} action={} file={} "
+        "row={} precompile_batch_id={} speed_mm_s={} zone_mm={} final_action_arm_point={}",
+        runtime.connected_arm.arm_side,
+        len(runtime.pending_arm_waypoints),
+        action.item.function_name,
+        row.csv_name,
+        row.row_index,
+        waypoint.precompile_batch_id,
+        waypoint.speed_mm_s,
+        waypoint.zone_mm,
+        waypoint.is_final_action_arm_point,
+    )
+
+
 def execute_arm_segment(
     runtime: ReplayRuntime,
-    rows: list[ReplayRow],
-    final_arm_segment: bool = True,
+    waypoints: list[CompiledArmWaypoint],
+    segment_id: int,
+    start_barrier: threading.Barrier | None = None,
+    synchronized_action_name: str | None = None,
 ) -> tuple[float, ...] | None:
-    """将连续 arm 行合并为一次 MoveAbsJ append/start。
+    """将跨动作、跨 CSV 的连续 arm 点合并为一次 MoveAbsJ append/start。"""
 
-    ``final_arm_segment`` 指示本段是否包含该 CSV 最后一条 arm 记录；CSV 中间因夹爪、
-    M6 或升降记录而切开的 arm 段不能因此误用 CaptureAction 的 ``final_speed``。
-    """
-
-    if not rows:
+    if not waypoints:
         return None
+    rows = [waypoint.row for waypoint in waypoints]
+    action_names = tuple(dict.fromkeys(waypoint.action.item.function_name for waypoint in waypoints))
     logger.info(
-        "连续 MoveAbsJ 段开始 arm_side={} file={} rows={}-{} count={} final_arm_segment={}",
+        "连续 MoveAbsJ 已编译轨迹段提交开始 segment_id={} arm_side={} waypoint_count={} "
+        "action_span={} start={}:{} end={}:{}",
+        segment_id,
         runtime.connected_arm.arm_side,
+        len(waypoints),
+        list(action_names),
         rows[0].csv_name,
         rows[0].row_index,
+        rows[-1].csv_name,
         rows[-1].row_index,
-        len(rows),
-        final_arm_segment,
     )
     _raise_if_stop_requested(runtime)
-    targets = [build_arm_target(runtime, row) for row in rows]
-    _raise_if_stop_requested(runtime)
-    commands = []
-    for index, target in enumerate(targets):
-        segment_end = index == len(targets) - 1
-        action = runtime.current_action
-        if action is None:
-            raise RuntimeError("执行 arm 段时缺少当前命名动作")
-        is_final_point = final_arm_segment and segment_end
-        zone = _resolve_action_zone(action, is_final_point)
-        speed = _resolve_action_speed(action, is_final_point)
-        commands.append((target.joint_rad, speed, zone))
-    commands = _clamp_commands_to_soft_limits(runtime, targets, commands)
-    _execute_command_batch_with_collision_recovery(runtime, rows, commands)
+    for waypoint_index, waypoint in enumerate(waypoints, start=1):
+        _log_compiled_waypoint_execution(runtime, waypoint, segment_id, waypoint_index, len(waypoints))
+    commands = [
+        (waypoint.joint_rad, waypoint.speed_mm_s, waypoint.zone_mm) for waypoint in waypoints
+    ]
+    _execute_command_batch_with_collision_recovery(
+        runtime,
+        rows,
+        commands,
+        segment_id,
+        start_barrier,
+        synchronized_action_name,
+    )
     logger.info(
-        "连续 MoveAbsJ 段完成 arm_side={} file={} rows={}-{} count={}",
+        "连续 MoveAbsJ 轨迹段执行完成 segment_id={} arm_side={} waypoint_count={} "
+        "action_span={} start={}:{} end={}:{}",
+        segment_id,
         runtime.connected_arm.arm_side,
+        len(waypoints),
+        list(action_names),
         rows[0].csv_name,
         rows[0].row_index,
+        rows[-1].csv_name,
         rows[-1].row_index,
-        len(rows),
     )
     return commands[-1][0]
 
 
-def flush_pending_arm_segment(
-    runtime: ReplayRuntime,
-    final_arm_segment: bool = True,
-) -> tuple[float, ...] | None:
-    """执行并清空 runtime 中积累的连续 arm 行。"""
+def flush_pending_arm_segment(runtime: ReplayRuntime, reason: str) -> tuple[float, ...] | None:
+    """在真实停顿边界提交并清空积累的已编译 arm 点。"""
 
-    if not runtime.pending_arm_rows:
+    if not runtime.pending_arm_waypoints:
         return None
-    rows = list(runtime.pending_arm_rows)
-    runtime.pending_arm_rows.clear()
-    return execute_arm_segment(runtime, rows, final_arm_segment)
+    waypoints = list(runtime.pending_arm_waypoints)
+    runtime.pending_arm_waypoints.clear()
+    start_barrier = runtime.pending_motion_start_barrier
+    synchronized_action_name = runtime.pending_motion_start_label
+    runtime.pending_motion_start_barrier = None
+    runtime.pending_motion_start_label = None
+    segment_id = runtime.next_motion_segment_id
+    runtime.next_motion_segment_id += 1
+    logger.info(
+        "连续 MoveAbsJ 轨迹段触发 flush segment_id={} arm_side={} reason={} waypoint_count={}",
+        segment_id,
+        runtime.connected_arm.arm_side,
+        reason,
+        len(waypoints),
+    )
+    return execute_arm_segment(
+        runtime,
+        waypoints,
+        segment_id,
+        start_barrier,
+        synchronized_action_name,
+    )
+
+
+def _action_offset_is_ready(
+    runtime: ReplayRuntime,
+    action: NamedActionPlan,
+    arm_rows: list[ReplayRow],
+) -> bool:
+    """判断一个动作中所有 TCP waypoint 的 offset 条件是否已满足。"""
+
+    if not any(row.arm_pose is not None for row in arm_rows):
+        return True
+    action_name = action.item.function_name
+    charuco_actions = (
+        runtime.settings.offset.left_charuco_target_action_names
+        if runtime.connected_arm.arm_side == "left"
+        else runtime.settings.offset.right_charuco_target_action_names
+    )
+    if action_name in charuco_actions:
+        return runtime.charuco_cartesian_offset is not None
+    if action_name in runtime.offset_target_action_names:
+        return runtime.global_cartesian_offset is not None
+    return True
+
+
+def _log_compiled_waypoint_execution(
+    runtime: ReplayRuntime,
+    waypoint: CompiledArmWaypoint,
+    segment_id: int,
+    waypoint_index: int,
+    waypoint_count: int,
+) -> None:
+    """在物理提交阶段再次记录 waypoint 的全部冻结执行参数。"""
+
+    requested_tcp_xyz_mm = (
+        None
+        if waypoint.requested_tcp is None
+        else [value * 1000.0 for value in waypoint.requested_tcp.trans_m]
+    )
+    requested_tcp_rpy_deg = (
+        None
+        if waypoint.requested_tcp is None
+        else [math.degrees(value) for value in waypoint.requested_tcp.rpy_rad]
+    )
+    logger.info(
+        "MoveAbsJ waypoint execution trace segment_id={} waypoint={}/{} arm_side={} "
+        "action={} file={} row={} precompile_batch_id={} source={} "
+        "requested_tcp_xyz_mm={} requested_tcp_rpy_deg={} joints_rad={} joints_deg={} "
+        "speed_mm_s={} zone_mm={}",
+        segment_id,
+        waypoint_index,
+        waypoint_count,
+        runtime.connected_arm.arm_side,
+        waypoint.action.item.function_name,
+        waypoint.row.csv_name,
+        waypoint.row.row_index,
+        waypoint.precompile_batch_id,
+        waypoint.source,
+        requested_tcp_xyz_mm,
+        requested_tcp_rpy_deg,
+        list(waypoint.joint_rad),
+        [math.degrees(value) for value in waypoint.joint_rad],
+        waypoint.speed_mm_s,
+        waypoint.zone_mm,
+    )
 
 
 def ensure_arm_position_before_m6(
@@ -424,18 +644,25 @@ def _execute_single_arm_correction(
     )
     correction_target = ArmMoveTarget(
         correction_rows[0],
+        action,
+        None,
         target_joint_rad,
         "m6-precondition",
     )
+    segment_id = runtime.next_motion_segment_id
+    runtime.next_motion_segment_id += 1
     commands = _clamp_commands_to_soft_limits(
         runtime,
         [correction_target],
         [(target_joint_rad, speed, 0.0)],
+        "segment",
+        segment_id,
     )
     _execute_command_batch_with_collision_recovery(
         runtime,
         correction_rows,
         commands,
+        segment_id,
     )
     logger.info(
         "M6 前单点 MoveAbsJ 补位完成 arm_side={}",
@@ -459,6 +686,8 @@ def _clamp_commands_to_soft_limits(
     runtime: ReplayRuntime,
     targets: list[ArmMoveTarget],
     commands: list[tuple[tuple[float, ...], float, float]],
+    trace_kind: str,
+    trace_id: int,
 ) -> list[tuple[tuple[float, ...], float, float]]:
     """按 RobotControl 缓存软限位钳制越界目标，并记录最终 append 值。"""
 
@@ -472,8 +701,9 @@ def _clamp_commands_to_soft_limits(
         runtime.stop_event,
     )
     clamped_commands: list[tuple[tuple[float, ...], float, float]] = []
-    for target, (joints_rad, speed_mm_s, zone_mm) in zip(
-        targets, commands, strict=True
+    for waypoint_index, (target, (joints_rad, speed_mm_s, zone_mm)) in enumerate(
+        zip(targets, commands, strict=True),
+        start=1,
     ):
         clamped_joints: list[float] = []
         clamped_axes: list[int] = []
@@ -521,14 +751,33 @@ def _clamp_commands_to_soft_limits(
                 )
             clamped_joints.append(clamped_rad)
         actual_joints_rad = tuple(clamped_joints)
+        requested_tcp_xyz_mm = (
+            None
+            if target.requested_tcp is None
+            else [value * 1000.0 for value in target.requested_tcp.trans_m]
+        )
+        requested_tcp_rpy_deg = (
+            None
+            if target.requested_tcp is None
+            else [math.degrees(value) for value in target.requested_tcp.rpy_rad]
+        )
         logger.info(
-            "MoveAbsJ append actual target arm_side={} file={} row={} source={} "
-            "joints_rad={} joints_deg={} speed_mm_s={} zone_mm={} clamped_axes={} "
-            "soft_limit_enabled={}",
+            "MoveAbsJ waypoint finalized trace_kind={} trace_id={} waypoint={}/{} "
+            "arm_side={} action={} "
+            "file={} row={} source={} "
+            "requested_tcp_xyz_mm={} requested_tcp_rpy_deg={} joints_rad={} joints_deg={} "
+            "speed_mm_s={} zone_mm={} clamped_axes={} soft_limit_enabled={}",
+            trace_kind,
+            trace_id,
+            waypoint_index,
+            len(targets),
             runtime.connected_arm.arm_side,
+            target.action.item.function_name,
             target.row.csv_name,
             target.row.row_index,
             target.source,
+            requested_tcp_xyz_mm,
+            requested_tcp_rpy_deg,
             list(actual_joints_rad),
             [math.degrees(value) for value in actual_joints_rad],
             speed_mm_s,
@@ -544,18 +793,26 @@ def _execute_command_batch_with_collision_recovery(
     runtime: ReplayRuntime,
     rows: list[ReplayRow],
     commands: list[tuple[tuple[float, ...], float, float]],
+    segment_id: int,
+    start_barrier: threading.Barrier | None = None,
+    synchronized_action_name: str | None = None,
 ) -> None:
     """执行命令批次；碰撞后清错、恢复状态并重发未完成 waypoint。"""
 
     remaining_rows = rows
     remaining_commands = commands
     recovered_waypoints: set[tuple[str, int]] = set()
+    pending_start_barrier = start_barrier
     while remaining_commands:
         progress = _submit_command_batch(
             runtime,
             remaining_rows,
             remaining_commands,
+            segment_id,
+            pending_start_barrier,
+            synchronized_action_name,
         )
+        pending_start_barrier = None
         command_id = progress.command_id
         if command_id is None:
             raise RuntimeError("RobotControl moveAppend 未返回 command_id")
@@ -612,6 +869,9 @@ def _submit_command_batch(
     runtime: ReplayRuntime,
     rows: list[ReplayRow],
     commands: list[tuple[tuple[float, ...], float, float]],
+    segment_id: int,
+    start_barrier: threading.Barrier | None = None,
+    synchronized_action_name: str | None = None,
 ) -> ArmMotionProgress:
     """重置控制器队列并提交一批 MoveAbsJ waypoint。"""
 
@@ -632,9 +892,84 @@ def _submit_command_batch(
         progress = move_append_abs_j(runtime.connected_arm, commands)
         if progress.command_id is None:
             raise RuntimeError("RobotControl moveAppend 未返回 command_id")
+        logger.info(
+            "MoveAbsJ 轨迹批次已 append segment_id={} arm_side={} command_id={} "
+            "waypoint_count={} start={}:{} end={}:{}",
+            segment_id,
+            runtime.connected_arm.arm_side,
+            progress.command_id,
+            len(commands),
+            rows[0].csv_name,
+            rows[0].row_index,
+            rows[-1].csv_name,
+            rows[-1].row_index,
+        )
+    _raise_if_stop_requested(runtime)
+    _wait_synchronized_move_start(
+        runtime,
+        start_barrier,
+        synchronized_action_name,
+        segment_id,
+        progress.command_id,
+    )
+    with runtime.connected_arm.command_lock:
         _raise_if_stop_requested(runtime)
+        logger.info(
+            "MoveAbsJ moveStart 下发开始 segment_id={} arm_side={} command_id={} "
+            "synchronized_action={}",
+            segment_id,
+            runtime.connected_arm.arm_side,
+            progress.command_id,
+            synchronized_action_name,
+        )
         _start_move_with_retry(runtime, rows)
+        logger.info(
+            "MoveAbsJ 轨迹批次已 start segment_id={} arm_side={} command_id={} waypoint_count={}",
+            segment_id,
+            runtime.connected_arm.arm_side,
+            progress.command_id,
+            len(commands),
+        )
     return progress
+
+
+def _wait_synchronized_move_start(
+    runtime: ReplayRuntime,
+    barrier: threading.Barrier | None,
+    action_name: str | None,
+    segment_id: int,
+    command_id: str,
+) -> None:
+    """确保同步动作两侧都完成 moveAppend 后才共同释放 moveStart。"""
+
+    if barrier is None:
+        return
+    if action_name is None:
+        raise RuntimeError("同步 moveStart 屏障缺少动作名")
+    _raise_if_stop_requested(runtime)
+    logger.info(
+        "同步 MoveAbsJ 已 ready，等待共同 start action={} arm_side={} segment_id={} command_id={}",
+        action_name,
+        runtime.connected_arm.arm_side,
+        segment_id,
+        command_id,
+    )
+    try:
+        barrier.wait(timeout=SYNCHRONIZED_MOVE_START_TIMEOUT_S)
+    except threading.BrokenBarrierError as error:
+        raise RuntimeError(
+            "同步 MoveAbsJ start 屏障失败 "
+            f"action={action_name} arm_side={runtime.connected_arm.arm_side} "
+            f"segment_id={segment_id} command_id={command_id}"
+        ) from error
+    _raise_if_stop_requested(runtime)
+    logger.info(
+        "同步 MoveAbsJ start 屏障已释放 action={} arm_side={} segment_id={} command_id={}",
+        action_name,
+        runtime.connected_arm.arm_side,
+        segment_id,
+        command_id,
+    )
 
 
 def _recover_after_collision(
@@ -997,14 +1332,10 @@ def _deg_to_rad(values: list[float]) -> list[float]:
 
 def _resolve_cartesian_offset(
     runtime: ReplayRuntime,
-    csv_name: str,
+    action: NamedActionPlan,
 ) -> tuple[np.ndarray | None, str]:
-    """按当前命名动作的优先级选择 ChArUco 或三球纠偏。"""
+    """按轨迹点所属命名动作的优先级选择 ChArUco 或三球纠偏。"""
 
-    del csv_name
-    action = runtime.current_action
-    if action is None:
-        raise RuntimeError("构建 arm 目标时缺少当前命名动作")
     action_name = action.item.function_name
     charuco_sequences = (
         runtime.settings.offset.left_charuco_target_action_names
@@ -1027,6 +1358,26 @@ def _resolve_cartesian_offset(
         return np.asarray(runtime.global_cartesian_offset, dtype=np.float64), "three-ball"
     runtime.offset_source = "none"
     return None, "none"
+
+
+def set_active_action_offset_source(
+    runtime: ReplayRuntime,
+    action: NamedActionPlan,
+) -> None:
+    """仅更新当前动作的 offset 可观测状态，不执行任何轨迹计算。"""
+
+    action_name = action.item.function_name
+    charuco_actions = (
+        runtime.settings.offset.left_charuco_target_action_names
+        if runtime.connected_arm.arm_side == "left"
+        else runtime.settings.offset.right_charuco_target_action_names
+    )
+    if action_name in charuco_actions:
+        runtime.offset_source = "head"
+    elif action_name in runtime.offset_target_action_names:
+        runtime.offset_source = "three_ball"
+    else:
+        runtime.offset_source = "none"
 
 
 def _resolve_action_speed(action: NamedActionPlan, is_final_point: bool) -> float:

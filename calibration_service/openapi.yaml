@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Dingtai Calibration Service
-  version: 1.4.1
+  version: 1.4.2
   description: >-
     手眼标定与先验记录服务。只读取 RobotControl 状态，只请求 CameraPipeline
     拍摄和检测，不发送设备控制请求。计算结果先进入临时缓存，二次确认后写入

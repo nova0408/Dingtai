@@ -1,6 +1,57 @@
 # RecordReplay 版本日志
 
-当前版本：`3.16.0`
+当前版本：`3.19.0`
+
+## 3.19.0 - 2026-08-13
+
+- `POST /start` 在创建后台线程和连接设备前完整冻结 CSV；表头、动作类型、有限数、arm joints
+  以及 pose 的 9 元 elbow/confData 契约任一不满足时立即以 `invalid_plan` 拒绝启动。
+- 删除 6 元 pose 兼容和逐 TCP waypoint 的实时 `cartPosture` 读取；所有 pose 必须直接使用
+  CSV 记录的 `has_elbow`、`elbow` 与 8 元 `confData`。
+- ChArUco offset 就绪后一次性预编译全部当前条件已满足的 waypoint；三球 offset 在
+  `calibration` 后得到时立即一次性预编译全部剩余 waypoint。预编译统一完成最终 TCP、IK、
+  跳变门控、软限位、speed 与 zone 冻结，物理 segment 执行期只提交已编译命令。
+- 日志以 `precompile_batch_id` 记录预编译开始、完成、逐点最终参数和待 offset 点数；执行期
+  仍以 `segment_id` 逐点复述最终 TCP/joints/speed/zone，并记录 append、同步 ready、start 与完成。
+
+## 3.18.1 - 2026-08-13
+
+- 修复跨动作轨迹合并后 `open_door`、`close_door` 同步屏障只约束动作调度、未约束真实
+  `moveStart` 的安全问题。
+- 同步动作首段改为两阶段提交：左右臂分别完成目标编译、`moveReset` 和 `moveAppend`，
+  两侧均 ready 后由第二阶段屏障共同释放 `moveStart`；任一侧失败会打破屏障，禁止另一侧启动。
+- 同步动作首段不得跨出该同步动作；等待另一臂 ready 时释放机械臂 command lock，屏障释放后
+  重新加锁并复查 stop，避免同步等待阻塞现场停止。
+- 日志新增同步首段绑定、ready、屏障释放及实际 `moveStart` 下发开始记录，可按 action、
+  arm_side、segment_id 和 command_id 对齐两臂启动时间。
+
+## 3.18.0 - 2026-08-13
+
+- 连续 arm waypoint 不再因命名动作或 CSV 边界强制结束；执行器跨动作聚合最大连续轨迹段，
+  只在 gripper、M6、lift、capture、offset 更新、双臂同步屏障或动作序列结束时 flush。
+- 保持每个 waypoint 原有动作的 speed、zone、capture 最终点和 offset 选择逻辑；整段在
+  `moveAppend` 前一次性完成 TCP offset、IK、跳变门控和软限位处理。
+- 为每条物理轨迹段增加本轮唯一 `segment_id`，日志完整记录 flush 原因、动作跨度、每个
+  waypoint 的 action/CSV/row、offset 后 TCP、最终 joints、speed、zone、目标来源、钳制结果、command_id、
+  append、start 和执行完成阶段。
+
+## 3.17.1 - 2026-08-13
+
+- 修正 acc/jerk 实验的失败语义：读取或设置失败仅记录日志，不能阻止 MoveAbsJ 批次提交。
+- RobotControl 尽力读取并记录设置前后的 acc/jerk 实际值，便于现场比较控制器是否接受设置。
+
+## 3.17.0 - 2026-08-13
+
+- 每批 MoveAbsJ 在 `moveAppend` 前由 RobotControl 固定应用 `acc=0.5`、`jerk=0.5`；
+  普通连续段、M6 前单点补位和碰撞恢复重发使用相同实验参数。
+- 本次参数不加入 `POST /start`、配置更新或动作 JSON，对外契约暂不提供调整入口。
+- README 补充 MoveAbsJ speed、zone、加/减速度倍率和加加速度倍率的 SDK 分段、范围、
+  生效时机、运动影响与现场调参边界。
+
+## 3.16.1 - 2026-08-13
+
+- 增加独立的 `logs/record_replay.log`，每小时轮转、ZIP 压缩并保留 7 天。
+- 日志补充服务版本、启动配置与耗时、未处理异常堆栈和关闭耗时。
 
 ## 3.16.0 - 2026-08-12
 

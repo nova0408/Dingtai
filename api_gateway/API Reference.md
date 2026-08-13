@@ -1,7 +1,7 @@
 # Dingtai API Gateway API Reference
 
 文档版本：`1.7.0`（2026-08-11）
-Gateway 服务版本：`0.5.1`
+Gateway 服务版本：`0.5.2`
 正式客户端入口：`https://<orin-ip>`（标准 HTTPS 端口 `443`）
 
 Gateway 使用 aiohttp 直接终止 TLS 并监听外部客户端；默认绑定 `0.0.0.0:443`，同时在
@@ -76,8 +76,8 @@ GET /api/v1/gateway/health
 
 ```json
 {
-  "service_version": "0.5.1",
-  "gateway_version": "0.5.1",
+  "service_version": "0.5.2",
+  "gateway_version": "0.5.2",
   "backend_ports": {
     "camera_http": 6400,
     "camera_websocket": 6401,

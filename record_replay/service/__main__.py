@@ -13,6 +13,7 @@ from types import FrameType
 from loguru import logger
 from qmlinker import QMGripper, QMHead, QMLift, QMMoveBase, create_channel
 
+from .. import RECORD_REPLAY_VERSION
 from ..action_sequence import ActionSequencePlan
 from ..camera_client import CameraName
 from ..charuco_offset import CharucoOffsetInitializer
@@ -24,6 +25,11 @@ from ..offset_updater import GlobalOffsetUpdater
 from ..settings import ReplayCycleConfig, ReplayDeviceConnection
 from .application import RecordReplayApplication
 from .config_store import RuntimeConfigStore
+from .logging_config import (
+    DEFAULT_LOG_PATH,
+    configure_service_logging,
+    shutdown_service_logging,
+)
 from .prior_store import RecordReplayPriorStore
 from .server import RecordReplayServer
 from .state_store import ReplayStateStore
@@ -89,13 +95,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     faulthandler.enable(all_threads=True)
     startup_started_at = time.perf_counter()
     args = _parse_args(argv)
+    log_path = configure_service_logging(args.log_path)
     logger.info(
-        "record replay service initializing host={} port={} prior_path={} config_path={} "
-        "faulthandler_enabled={}",
+        "record replay service initializing version={} host={} port={} websocket_host={} "
+        "prior_path={} config_path={} log_path={} faulthandler_enabled={}",
+        RECORD_REPLAY_VERSION,
         args.host,
         args.port,
+        args.websocket_host,
         BALL_POSE_PRIOR_PATH,
         RUNTIME_CONFIG_PATH,
+        log_path,
         faulthandler.is_enabled(),
     )
     config_store = RuntimeConfigStore(RUNTIME_CONFIG_PATH)
@@ -183,6 +193,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         server.serve()
     except KeyboardInterrupt:
         logger.info("record replay service stopping")
+    except Exception:
+        logger.exception("record replay service terminated by unhandled error")
+        raise
     finally:
         shutdown_started_at = time.perf_counter()
         websocket_server.close()
@@ -194,6 +207,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "record replay service stopped shutdown_elapsed_ms={:.3f}",
             (time.perf_counter() - shutdown_started_at) * 1000.0,
         )
+        shutdown_service_logging()
     return 0
 
 
@@ -204,6 +218,7 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=6300)
     parser.add_argument("--websocket-host", default="0.0.0.0")
+    parser.add_argument("--log-path", default=DEFAULT_LOG_PATH)
     return parser.parse_args(argv)
 
 

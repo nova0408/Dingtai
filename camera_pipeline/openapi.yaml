@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: CameraPipeline HTTP API
-  version: 1.11.0
+  version: 1.11.1
   description: >-
     CameraPipeline 对外 HTTP/JSON 控制与检测接口。内部 ZMQ CPW1 不通过本 API 暴露。
   license:
@@ -194,7 +194,7 @@ components:
           type: boolean
         service_version:
           type: string
-          example: 1.11.0
+          example: 1.11.1
         zmq_protocol_version:
           type: integer
           const: 10

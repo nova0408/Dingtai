@@ -1,10 +1,13 @@
 # 双臂记录回放服务
 
-当前 RecordReplay 服务业务语义版本：`3.16.0`；对应人工验证入口
+当前 RecordReplay 服务业务语义版本：`3.19.0`；对应人工验证入口
 `test/wuji/record_replay_cli.py` 的版本为 `1.10.1`。两者均使用 M6 右手动作语义。
 
 面向 GUI 和其它项目的完整 HTTP 契约见 [API Reference](API%20Reference.md)，机器可读描述见
 [OpenAPI](openapi.yaml)。
+
+服务同时写入 journald 控制台日志和独立的 `logs/record_replay.log`。文件日志每小时轮转、
+ZIP 压缩并保留 7 天；可用 `--log-path` 覆盖路径，不与其它服务合并存储。
 
 本服务从 `test/wuji/record_replay_cli.py` 拆分而来，位于仓库根目录，和
 `camera_pipeline` 同级。业务代码不导入 `test`；机械臂通过 Orin 本机 RobotControl 服务访问，
@@ -57,6 +60,11 @@ CameraPipeline 已在 6200 端口就绪，同步后校验代码文件清单、SH
 版本；不会同步或重启其它服务，也不会发送 `POST /start`。`prior_data/`、`records/`、
 `runtime_state.json` 等现场数据或运行产物不纳入部署清单。仅重启而不替换文件时可使用
 `-RestartOnly -RecordReplayOnly`，同样只执行只读 `/status` 就绪检查。
+
+CameraPipeline 单服务部署会在停止上游前只读记录 RecordReplay 状态，并拒绝 `busy` 或未知
+状态；CameraPipeline 就绪后，脚本恢复原先已运行的 RecordReplay，保持原有 `rapid_stop`，或把
+因计划内 SIGTERM 产生的锁存恢复为停机前的 `idle`，最后只读校验 `/status`。脚本不会发送
+`POST /start`、`POST /stop` 或 `POST /reset`。
 
 `-RestartOnly` 支持四个服务并按依赖顺序收敛重启：
 
@@ -232,7 +240,10 @@ python test/record_replay/local/record_replay_local_manual.py
 禁止重新声明模块级调试常量。动作 speed/zone 的现场修改直接编辑
 `action_sequence.json`，服务只在 `idle` 状态的下一次 `POST /start` 前重新读取并完整校验；
 进入 `busy` 后使用已冻结的内存计划，运行中修改磁盘文件不会改变当前轮次。
-该计划同时保存 JSON 引用的 CSV 行快照，执行器不会在 busy 期间重新读取这些 CSV。
+该计划同时保存 JSON 引用的 CSV 行快照，执行器不会在 busy 期间重新读取这些 CSV。CSV 必须
+包含 `timestamp,type,joints,pose` 列；带 pose 的 arm 行必须是含 `has_elbow`、`elbow` 和
+8 元 `confData` 的完整 9 元 list。全部字段在创建后台执行线程和连接设备前解析，错误直接以
+`invalid_plan` 拒绝 start；不再接受 6 元 pose，也不在执行期读取实时 `cartPosture` 补字段。
 右手 M6 每次下发目标后固定等待 0.5 s，再按 0.2 s 轮询六轴实际状态，连续 3 次采样中每个轴的最大值与最小值
 差值均不超过 0.1 时认为运动结束；5 s 内未稳定只记录告警并放行后续 CSV，不与下发目标值比较。
 机械臂连续 MoveAbsJ 段默认批量下发；下发后先等待 1 s 观察状态，未看到 moving 时再以 0.1 s 间隔读取实时七轴关节位置，最多确认 5 s。M6 下发前还会检查最后一个 arm 点的实时位置，未到位时使用单点 MoveAbsJ 补位并再次确认，仍未到位则拒绝下发 M6。
@@ -240,14 +251,68 @@ MoveAbsJ 等待同时按本次 `cmdID` 读取 waypoint 到达进度和 `collisio
 每个含 pose 的 CSV 行都以该行记录的原始 joints 为 IK 门控基准；单轴差超过 `45 deg` 时，先沿基坐标 TCP 的 X/Y/Z 轴分别微调 `1 mm` 重算 IK，最多尝试 3 次；仍无法得到相对该行原始 joints 的非跳变解时使用原始 joints，异常 IK 结果不会进入 MoveAbsJ 队列。
 顺序 JSON 的左右数组都必须非空；fast 动作要求非零 zone，precise 动作固定 zone 为 0，
 capture 必须显式提供 `final_speed` 与 `settle_delay`，且普通动作不得携带这些专用字段。
-SDK 原始 speed 边界为 `(0, 4000]` mm/s，服务为现场安全将 JSON speed/final_speed 收紧为 `[5, 4000]` mm/s，
-zone 限制为 `[0, 200]` mm；
-SDK 内部还会把 speed 映射为 5 档（`<100`、`100~200`、`200~500`、`500~800`、`>800` mm/s），
-把 zone 映射为 4 档（`<1`、`1~20`、`20~60`、`>60` mm）；JSON 保留原始数值，允许每个动作独立调整。
-这些是 SDK 运动接口的工程边界和分档规则，不代表现场已经确认每个动作的安全值。
 fast 的每个 arm 点使用动作项 zone，precise 的每个 arm 点固定使用 `zone=0`；capture 的前置 arm 点使用动作项 zone，
 最终拍摄点固定使用 `zone=0` 并使用 `final_speed`。capture 的通用到位和稳定等待已实现；`calibration` 到位后调用已有 CameraPipeline 三球检测，
 `calibration_new_tray` 当前绑定空 CSV 并留空。新增算法入口必须保持显式函数调用，不得改成字符串回调表。
+
+### MoveAbsJ 速度、zone、加速度与 jerk
+
+RecordReplay 将一个连续 arm 段转换为一组 `MoveAbsJCommand(target, speed, zone)`，一次
+`moveAppend` 后调用 `moveStart`。这里的四类参数属于不同层次，不能相互替代：
+
+连续段以真实停顿事件划分，不以命名动作或 CSV 文件边界划分。相邻动作中的连续 arm 点会
+保留各自的 speed、zone、capture 末点和 offset 语义。ChArUco offset 就绪后立即批量预编译
+当前条件已满足的全部 waypoint；`calibration` 得到三球 offset 后立即预编译全部剩余 waypoint。
+预编译冻结最终 TCP、IK、跳变门控结果、软限位结果、speed 和 zone；物理段执行期只组装并提交
+已编译命令。gripper、M6、lift、capture 到位、offset 更新、
+双臂同步起点和动作序列结束会结束当前段。每段使用本轮唯一 `segment_id`；日志逐点记录
+action、CSV、row、offset 后 TCP、最终 joints、speed、zone、来源和软限位结果。预编译日志使用
+`precompile_batch_id`，执行日志使用 `segment_id`，并记录 append/start 的 `command_id` 与最终完成阶段。
+
+`open_door`、`close_door` 使用两阶段物理启动屏障。两侧先各自取出已编译首段、完成 `moveReset` 和
+`moveAppend`，在日志记录 `同步 MoveAbsJ 已 ready` 后等待另一侧；只有两侧都 ready 才共同
+释放 `moveStart`。同步首段不会跨出对应同步动作。任一侧在 ready 前失败都会打破屏障，另一侧
+不得启动。等待屏障期间不持有机械臂 command lock，屏障释放后重新加锁并复查 stop。
+
+| 参数 | 当前来源 | SDK 语义与范围 | 主要观察影响 |
+| --- | --- | --- | --- |
+| `speed` / `final_speed` | `action_sequence.json` 动作项 | 末端线速度，单位 mm/s；SDK 原始范围 `(0, 4000]`，RecordReplay 校验范围 `[5, 4000]` | 决定目标运动速度；不是关节速度百分比 |
+| `zone` | `action_sequence.json` 动作项及动作类别 | 路径转弯区，单位 mm；RecordReplay 校验范围 `[0, 200]` | `0` 要求精确到点并产生明显逐点启停；增大可改善连续性，但会增加路径偏离 |
+| `acc` | RobotControl 固定实验值 | 系统预设加/减速度倍率；SDK 范围 `[0.2, 1.5]` | 越低，加速和减速坡度越缓、启停更柔和，但运动时间更长 |
+| `jerk` | RobotControl 固定实验值 | 系统预设加加速度倍率；SDK 范围 `[0.1, 2.0]` | 越低，加速度变化越缓，冲击和顿挫通常更小，但响应更慢 |
+
+当前每个 `MoveAbsJCommand` 都显式传入 speed 和 zone，因此 NRT 准备阶段设置的默认 speed/zone
+不会替代动作项数值；只有命令使用 SDK 默认值 `-1` 时，默认值才参与计算。SDK 还提供
+`MoveAbsJCommand.jointSpeed` 关节速度百分比，范围 `[0, 1]`，非负时会覆盖由 speed 推导的
+关节速度；当前 RecordReplay 不设置 `jointSpeed`，始终让控制器根据末端线速度计算关节运动。
+
+SDK/控制器会进一步把 speed 映射为 5 档：`<100`、`100~200`、`200~500`、
+`500~800`、`>800 mm/s`；把 zone 映射为 4 档：`<1`、`1~20`、`20~60`、
+`>60 mm`。因此同一档内修改原始数值不一定带来与数值差等比例的观感变化，跨档则可能产生
+明显变化。档位边界沿用 SDK 工程资料的区间写法，实际轨迹规划仍以控制器实现为准。
+
+当前动作 JSON 中多数普通速度为 `1000 mm/s`，属于 `>800 mm/s` 的最高速度档；多数 fast
+动作使用 `zone=10 mm`，左臂开关门使用 `zone=80 mm`，precise 和 capture 最终点使用
+`zone=0`。降低 acc/jerk 可以让这些点的启停更柔和，但不会把 `zone=0` 的精确到点运动变成
+连续过渡。增大 zone 也不能用于替代精确夹取、放置或拍摄末点的到位要求。
+
+本轮实验固定请求 `acc=0.5`、`jerk=0.5`。RobotControl 在持有同一 AR5 SDK 锁时，依次尽力
+执行 `getAcceleration` 前读、`adjustAcceleration(0.5, 0.5)` 和 `getAcceleration` 后读，然后
+无条件继续当前批次的 `moveAppend`。任一步失败只记录告警，不能阻止或改变原有轨迹提交；读取
+成功时记录设置前后的实际倍率，汇总日志记录请求值、前后值和设置是否成功。普通连续段、M6
+前单点补位和碰撞恢复后的未完成 waypoint 重发都会走同一流程。SDK 明确说明：在机器人已经
+运动时调用不会改变当前正在执行的指令，只对后续指令生效；所以设置尝试位于批次提交之前。
+
+`acc` 同时控制加速与减速，没有分别设置加速度和减速度的独立参数；`acc` 和 `jerk` 都是相对
+系统预设值的倍率，不是 mm/s² 或 mm/s³ 的绝对物理量。SDK 对越界值会自动钳制，但服务代码
+不得依赖静默钳制。当前两个倍率是代码内实验默认值，不属于 `POST /start` 请求体、配置更新接口
+或 `action_sequence.json`，运行期间也不能通过 HTTP 修改。SDK 另有 `getAcceleration` 可读取
+控制器当前倍率，但当前服务没有将其开放为 HTTP 接口。
+
+现场比较参数时应先固定相同轨迹、负载、speed 和 zone，仅逐项改变 acc 或 jerk；降低 jerk
+通常优先改善加速度突变的观感，降低 acc 则进一步延长启停坡度。过低的倍率会增加周期时间，
+并可能使短路径长期处于加减速阶段。上述范围和影响来自 xCoreSDK v0.7.1 示例与类型声明，
+不是本回合的硬件实测结论。
 
 ## Orin 服务 API
 

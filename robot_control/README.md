@@ -22,6 +22,9 @@
 python -m robot_control.service --host 127.0.0.1 --port 6500
 ```
 
+服务同时写入 journald 控制台日志和独立的 `logs/robot_control.log`。文件日志每小时轮转、
+ZIP 压缩并保留 7 天；可用 `--log-path` 覆盖路径，不与其它服务合并存储。
+
 当前机型支持腰部时使用默认配置；不支持腰部的后续机型启动时使用：
 
 ```text
@@ -71,6 +74,12 @@ GET /api/v1/status/stream?interval_s=0.2
 
 `/status` 和 `/devices` 会读取现场设备状态；它们不是离线接口。只有用户明确授权现场只读检查时，才可调用这些 GET 接口；本回合未连接现场服务。
 
+AGV 聚合状态使用 qmlinker `1.0.16` 的 `GetBaseState` 与 `GetBaseBattery`，在
+`qmlinker_agv.data` 中返回 `robot_state`、三态 `initialized`、`power` 和 `charge_state`。
+`initialized=null` 表示底层状态未知，`false` 表示未初始化，`true` 表示已完成初始化；
+`charge_state` 的 `0`、`1`、`2`、`3` 分别表示未知、未充电、手动充电和自动充电。
+连接成功不等于初始化完成，充电状态也不能由可能同时保持空闲的 `robot_state` 推断。
+
 `qmlinker_right_hand` 的 `actuator_count` 来自运行时手部规格，`positions` 必须完整包含对应的
 `right_hand_a0` 到 `right_hand_aN`。如果 qmlinker 返回的实际执行器集合不完整或包含未知轴，
 该设备会以 `connected=false`、`error` 带有 expected/actual/missing/unexpected 详情、空 `data`
@@ -119,6 +128,13 @@ AGV、AR5 急停恢复、拖动和 Jog 路径及字段见 `openapi.yaml` 与 `AP
 RecordReplay 通过 `motion-progress` 将 `moveExecution` 的 `cmdID`、最后到达 waypoint 与
 `30400.collision_fc` 锁存关联起来；碰撞恢复使用 `clear-servo-alarm` 一对一调用
 xCoreSDK `clearServoAlarm()`。该 POST 可能改变真实控制器故障状态，只能由明确的现场回放流程调用。
+
+RecordReplay 专用的批量 `move-append` 当前使用固定实验运动倍率。AR5 设备适配器在同一 SDK
+锁内尽力执行 `getAcceleration` 前读、`adjustAcceleration(0.5, 0.5)` 和后读；第一个设置参数
+是系统预设加/减速度倍率，第二个是系统预设加加速度（jerk）倍率。每一步失败都只记录告警，
+原批次 `moveAppend` 始终继续，实验能力不能干扰既有回放。读取成功时日志记录设置前后值，
+汇总日志同时记录请求值、前后实际值与设置是否成功。两个值均不来自 HTTP 请求，当前也没有
+读写倍率的公开路由。普通批次、M6 前补位与碰撞恢复重发均会重新尝试应用固定值。
 
 这些接口可能使机械臂、AGV、夹爪、头部或升降机构动作。禁止 Codex、CI、hook 或自动化脚本发送控制 POST；只能由现场人员手动发起和验证。
 

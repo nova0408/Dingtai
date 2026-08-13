@@ -160,6 +160,12 @@ AR5_DEFAULT_TOOL_NAME = "g_tool_0"
 AR5_DEFAULT_WOBJ_NAME = "g_wobj_0"
 "AR5 已验证默认工件坐标系名称。"
 
+RECORD_REPLAY_MOVE_ACCELERATION_SCALE = 0.5
+"RecordReplay 批量 MoveAbsJ 实验使用的系统预设加/减速度倍率。"
+
+RECORD_REPLAY_MOVE_JERK_SCALE = 0.5
+"RecordReplay 批量 MoveAbsJ 实验使用的系统预设加加速度倍率。"
+
 
 # endregion
 
@@ -497,11 +503,15 @@ class Ar5Client:
                 }
             )
         with self._lock:
+            self._try_apply_record_replay_motion_scales_locked()
             command_id = xCoreSDK_python.PyString()
             logger.info(
-                "AR5 SDK moveAppend actual targets: side={} robot_ip={} targets={}",
+                "AR5 SDK moveAppend actual targets: side={} robot_ip={} "
+                "acceleration_scale={} jerk_scale={} targets={}",
                 self._config.side,
                 self._config.robot_ip,
+                RECORD_REPLAY_MOVE_ACCELERATION_SCALE,
+                RECORD_REPLAY_MOVE_JERK_SCALE,
                 append_log,
             )
             self._call_none(
@@ -1099,6 +1109,72 @@ class Ar5Client:
         target_pose.hasElbow = True
         target_pose.elbow = math.radians(elbow_deg)
         return target_pose
+
+    def _try_apply_record_replay_motion_scales_locked(self) -> None:
+        """尽力设置回放加速度倍率，任何失败均不得阻止后续轨迹提交。"""
+
+        before = self._try_read_motion_scales_locked("before")
+        applied = False
+        try:
+            self._call_none(
+                "adjustAcceleration("
+                f"acc={RECORD_REPLAY_MOVE_ACCELERATION_SCALE},"
+                f"jerk={RECORD_REPLAY_MOVE_JERK_SCALE})",
+                lambda ec: self._robot.adjustAcceleration(
+                    RECORD_REPLAY_MOVE_ACCELERATION_SCALE,
+                    RECORD_REPLAY_MOVE_JERK_SCALE,
+                    ec,
+                ),
+            )
+            applied = True
+        except Exception as error:
+            logger.warning(
+                "AR5 SDK acceleration experiment ignored; moveAppend will continue: "
+                "side={} robot_ip={} error_type={} message={}",
+                self._config.side,
+                self._config.robot_ip,
+                type(error).__name__,
+                str(error),
+            )
+        after = self._try_read_motion_scales_locked("after")
+        logger.info(
+            "AR5 SDK acceleration experiment result: side={} robot_ip={} "
+            "requested_acceleration_scale={} requested_jerk_scale={} "
+            "before={} after={} applied={} move_append_continues=true",
+            self._config.side,
+            self._config.robot_ip,
+            RECORD_REPLAY_MOVE_ACCELERATION_SCALE,
+            RECORD_REPLAY_MOVE_JERK_SCALE,
+            before,
+            after,
+            applied,
+        )
+
+    def _try_read_motion_scales_locked(
+        self,
+        phase: str,
+    ) -> tuple[float, float] | None:
+        """尽力读取当前加/减速度与 jerk 倍率，读取失败时返回 ``None``。"""
+
+        acceleration = xCoreSDK_python.PyTypeDouble()
+        jerk = xCoreSDK_python.PyTypeDouble()
+        try:
+            self._call_none(
+                f"getAcceleration({phase})",
+                lambda ec: self._robot.getAcceleration(acceleration, jerk, ec),
+            )
+            return acceleration.content(), jerk.content()
+        except Exception as error:
+            logger.warning(
+                "AR5 SDK acceleration read ignored: side={} robot_ip={} "
+                "phase={} error_type={} message={}",
+                self._config.side,
+                self._config.robot_ip,
+                phase,
+                type(error).__name__,
+                str(error),
+            )
+            return None
 
     def _call_none(self, action: str, callback) -> None:  # noqa: ANN001
         """调用无返回值 SDK 方法，并记录目标臂、耗时和完整错误码。"""

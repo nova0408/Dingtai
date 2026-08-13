@@ -152,8 +152,8 @@ left_color_frames = client.subscribe_camera_color_frames(CameraName.LEFT_ARM)
 `camera_pipeline/config.json`，不再由服务命令行重复覆盖。
 
 服务默认同时写入 systemd/journald 控制台日志和
-`logs/camera_pipeline_service.log` 文件日志。文件按 `20 MB` 轮转、ZIP 压缩并保留
-`14 days`；可通过 `--log-path`、`--log-rotation`、`--log-retention` 覆盖。
+`logs/camera_pipeline_service.log` 文件日志。文件每小时轮转、ZIP 压缩并保留
+`7 days`；可通过 `--log-path`、`--log-rotation`、`--log-retention` 覆盖。
 当前最低日志级别为 `INFO`，不输出 `DEBUG`。
 
 仓库脚本：
@@ -201,7 +201,7 @@ After=camera-pipeline.service
 ## 协议与安全
 
 统一请求包含 `protocol_version`。当前内部 ZMQ 线协议版本为 `10`；对外 HTTP API 使用
-`service_version=1.11.0`，WebSocket `CPWS1` 帧协议版本为 `1`。版本 8 为三球先验增加每球专属
+`service_version=1.11.1`，WebSocket `CPWS1` 帧协议版本为 `1`。版本 8 为三球先验增加每球专属
 `hsv_ranges`，并在检测结果中返回 `observed_hsv`；所有相机查询、订阅和算法请求
 必须显式携带 `camera_name`。
 网络数据采用白名单协议 dataclass 的 JSON 元数据与 NumPy 原始字节块，不使用

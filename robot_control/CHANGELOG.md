@@ -1,6 +1,47 @@
 # RobotControl 版本日志
 
-当前版本：`0.14.0`
+当前版本：`0.16.1`
+
+## 0.16.1 - 2026-08-13
+
+### 修复
+
+- `getAcceleration` 前读、`adjustAcceleration(0.5, 0.5)` 和后读均改为尽力执行；任一步失败
+  只记录告警，原批次 `moveAppend` 始终继续，避免实验参数干扰既有回放。
+- 成功读取时记录设置前后的 acc/jerk 倍率，并统一记录请求值、实际前后值和设置是否成功。
+
+## 0.16.0 - 2026-08-13
+
+### 变更
+
+- RecordReplay 使用的批量 AR5 `move-append` 在持有同一 SDK 锁期间，先固定调用
+  `adjustAcceleration(0.5, 0.5)`，成功后再提交 `MoveAbsJCommand` 队列。
+- 加/减速度与加加速度倍率暂不增加 HTTP 请求字段；普通回放、M6 前单点补位和碰撞恢复重发
+  统一使用本次实验默认值，并在实际 `moveAppend` 日志中记录。
+
+## 0.15.1 - 2026-08-13
+
+### 修复
+
+- `GET /api/v1/status`、`GET /api/v1/devices` 和 SSE 状态流的
+  `qmlinker_agv.data` 聚合 `GetBaseBattery` 返回的 `power` 与 `charge_state`。
+- 明确 Woosh `charge_state` 枚举：`0` 未知、`1` 未充电、`2` 手动充电、`3` 自动充电；
+  充电状态不再依赖可能同时保持 `idle` 的 `robot_state` 推断。
+
+## 0.15.0 - 2026-08-13
+
+### 变更
+
+- 本机开发环境和 AGV 适配基线升级到 qmlinker `1.0.16`，使用最新 `GetBaseState` 等只读 RPC。
+- `qmlinker_agv.data` 增加 Woosh 原始 `robot_state` 和三态 `initialized`；`0` 映射为未知、`1` 映射为未初始化、其它当前 Woosh 状态映射为已初始化。
+- 独立 `GET /api/v1/agv/base-state` 同步返回 `robot_state` 与 `initialized`，不再要求客户端用连接状态猜测初始化状态。
+
+## 0.14.1 - 2026-08-13
+
+### 优化
+
+- 增加独立的 `logs/robot_control.log`，每小时轮转、ZIP 压缩并保留 7 天。
+- 日志补充服务版本、启动配置与耗时、未处理异常堆栈、关闭耗时，以及 HTTP 请求关联标识、客户端、状态和耗时；设备控制语义不变。
 
 ## 0.14.0 - 2026-08-12
 

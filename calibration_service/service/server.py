@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import json
+import time
+import uuid
 from dataclasses import asdict
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import cast
 from urllib.parse import urlsplit
+
+from loguru import logger
 
 from .application import CalibrationApplication, CalibrationKind
 from .protocol import CalibrationResponse
@@ -37,9 +41,29 @@ class CalibrationServer:
             """标定服务固定路由处理器。"""
 
             protocol_version = "HTTP/1.1"
+            request_id = ""
+            request_started_at = 0.0
 
             def do_GET(self) -> None:
+                self._begin_request()
                 path = urlsplit(self.path).path
+                try:
+                    self._dispatch_get(path)
+                except Exception as error:
+                    logger.exception(
+                        "Calibration HTTP GET failed request_id={} path={} error_type={}",
+                        self.request_id,
+                        path,
+                        type(error).__name__,
+                    )
+                    self._send_error(
+                        HTTPStatus.BAD_REQUEST,
+                        f"{type(error).__name__}: {error}",
+                    )
+
+            def _dispatch_get(self, path: str) -> None:
+                """分发只读请求，不改变既有路由与响应语义。"""
+
                 if path == "/api/v1/health":
                     self._send(HTTPStatus.OK, application.health())
                     return
@@ -67,6 +91,7 @@ class CalibrationServer:
                 self._send_error(HTTPStatus.NOT_FOUND, "unsupported path")
 
             def do_POST(self) -> None:
+                self._begin_request()
                 path = urlsplit(self.path).path
                 try:
                     payload = self._read_json_object()
@@ -104,10 +129,26 @@ class CalibrationServer:
                         return
                     status = HTTPStatus.OK if response.accepted else HTTPStatus.CONFLICT
                     self._send(status, response)
+                except ValueError as error:
+                    logger.warning(
+                        "Calibration HTTP POST rejected request_id={} path={} error_type={} message={}",
+                        self.request_id,
+                        path,
+                        type(error).__name__,
+                        str(error),
+                    )
+                    self._send_error(HTTPStatus.BAD_REQUEST, f"{type(error).__name__}: {error}")
                 except Exception as error:
+                    logger.exception(
+                        "Calibration HTTP POST failed request_id={} path={} error_type={}",
+                        self.request_id,
+                        path,
+                        type(error).__name__,
+                    )
                     self._send_error(HTTPStatus.BAD_REQUEST, f"{type(error).__name__}: {error}")
 
             def do_PATCH(self) -> None:
+                self._begin_request()
                 path = urlsplit(self.path).path
                 if path != "/api/v1/hand-eye/config":
                     self._send_error(HTTPStatus.NOT_FOUND, "unsupported path")
@@ -116,11 +157,39 @@ class CalibrationServer:
                     response = application.update_hand_eye_config(self._read_json_object())
                     status = HTTPStatus.OK if response.accepted else HTTPStatus.CONFLICT
                     self._send(status, response)
+                except ValueError as error:
+                    logger.warning(
+                        "Calibration HTTP PATCH rejected request_id={} path={} error_type={} message={}",
+                        self.request_id,
+                        path,
+                        type(error).__name__,
+                        str(error),
+                    )
+                    self._send_error(HTTPStatus.BAD_REQUEST, f"{type(error).__name__}: {error}")
                 except Exception as error:
+                    logger.exception(
+                        "Calibration HTTP PATCH failed request_id={} path={} error_type={}",
+                        self.request_id,
+                        path,
+                        type(error).__name__,
+                    )
                     self._send_error(HTTPStatus.BAD_REQUEST, f"{type(error).__name__}: {error}")
 
             def log_message(self, format: str, *args: object) -> None:
                 del format, args
+
+            def _begin_request(self) -> None:
+                """记录请求入口并生成服务内关联标识。"""
+
+                self.request_id = uuid.uuid4().hex[:12]
+                self.request_started_at = time.perf_counter()
+                logger.info(
+                    "Calibration HTTP request started request_id={} method={} path={} client={}",
+                    self.request_id,
+                    self.command,
+                    self.path,
+                    self.client_address[0],
+                )
 
             def _read_json_object(self) -> dict[str, object]:
                 length = int(self.headers.get("Content-Length", "0"))
@@ -138,6 +207,14 @@ class CalibrationServer:
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
+                logger.info(
+                    "Calibration HTTP request finished request_id={} method={} path={} status={} elapsed_ms={:.3f}",
+                    self.request_id,
+                    self.command,
+                    self.path,
+                    status.value,
+                    (time.perf_counter() - self.request_started_at) * 1000.0,
+                )
 
             def _send_error(self, status: HTTPStatus, message: str) -> None:
                 self._send(status, CalibrationResponse(accepted=False, error=message))

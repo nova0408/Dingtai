@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Dingtai API Gateway
-  version: 0.5.1
+  version: 0.5.2
   description: >-
     统一客户端入口。业务请求按 URL 前缀转发到 CameraPipeline、RecordReplay、RobotControl 或
     Calibration Service；Gateway 由 aiohttp 直接提供 TLS，并默认同时监听 IPv4

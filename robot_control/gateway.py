@@ -167,8 +167,14 @@ class RobotControlGateway:
 
         client = self._qmlinker_client("agv")
         runtime_info = client.get_runtime_info()
+        base_state = client.read_base_state()
+        base_battery = cast(dict[str, JsonValue], client.get_base_battery())
         return {
             "enabled": client.try_get_enable(),
+            "robot_state": base_state.robot_state,
+            "initialized": base_state.initialized,
+            "power": base_battery["power"],
+            "charge_state": base_battery["charge_state"],
             "runtime": {
                 key: cast(JsonValue, value) for key, value in runtime_info.items()
             },
@@ -201,10 +207,11 @@ class RobotControlGateway:
         """读取 qmlinker AGV 底盘状态。"""
 
         with self._lock:
-            return cast(
-                dict[str, JsonValue],
-                self._qmlinker_client("agv").get_base_state(),
-            )
+            base_state = self._qmlinker_client("agv").read_base_state()
+        return {
+            "robot_state": base_state.robot_state,
+            "initialized": base_state.initialized,
+        }
 
     def read_qmlinker_agv_base_mode(self) -> dict[str, JsonValue]:
         """读取 qmlinker AGV 底盘控制模式和工作模式。"""

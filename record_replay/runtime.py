@@ -9,6 +9,7 @@ from pathlib import Path
 from loguru import logger
 
 from .arm_gateway import (
+    CartesianPose,
     ConnectedArm,
     close_arm,
     connect_arm,
@@ -27,6 +28,30 @@ from .settings import ReplayDeviceConnection, ReplayServiceSettings
 # region 数据结构
 
 
+@dataclass(frozen=True, slots=True)
+class CompiledArmWaypoint:
+    """offset 条件满足后冻结的一条 MoveAbsJ 轨迹点。"""
+
+    row: ReplayRow
+    "源 CSV 中已经预解析的 arm 行。"
+    action: NamedActionPlan
+    "轨迹点所属命名动作，用于保留该点的 offset、speed 和 zone 语义。"
+    is_final_action_arm_point: bool
+    "是否为所属动作 CSV 的最后一个 arm 点，用于保持 capture 末点参数语义。"
+    requested_tcp: CartesianPose | None
+    "应用 offset 后用于逆解的最终 TCP；纯 joints 行为空。"
+    joint_rad: tuple[float, ...]
+    "软限位处理后的最终关节目标，单位 rad。"
+    speed_mm_s: float
+    "该 waypoint 最终提交的速度，单位 mm/s。"
+    zone_mm: float
+    "该 waypoint 最终提交的 zone，单位 mm。"
+    source: str
+    "最终关节目标来源。"
+    precompile_batch_id: int
+    "本轮预编译批次编号，仅用于日志追踪。"
+
+
 @dataclass(slots=True)
 class ReplayRuntime:
     """一侧机械臂完成一轮回放所需的全部运行资源。"""
@@ -41,8 +66,20 @@ class ReplayRuntime:
     "服务运行参数，由总配置页统一提供。"
     auto_execute_remaining: bool = True
     "自动服务固定为 True，保留执行期语义。"
-    pending_arm_rows: list[ReplayRow] = field(default_factory=list)
-    "尚未 flush 的连续 arm 行，具体类型由 motion 层约束。"
+    compiled_arm_waypoints: dict[tuple[NamedActionPlan, int], CompiledArmWaypoint] = field(
+        default_factory=dict
+    )
+    "按命名动作和 CSV 行号保存的已编译 arm 点。"
+    pending_arm_waypoints: list[CompiledArmWaypoint] = field(default_factory=list)
+    "尚未 flush 的连续已编译 arm 点；允许跨命名动作和 CSV 合并。"
+    next_precompile_batch_id: int = 1
+    "下一批 waypoint 预编译编号，从 1 开始，仅用于日志追踪。"
+    next_motion_segment_id: int = 1
+    "下一条 MoveAbsJ 物理轨迹段编号，从 1 开始，仅用于本轮日志追踪。"
+    pending_motion_start_barrier: threading.Barrier | None = None
+    "下一个物理轨迹段的双臂 moveStart 屏障；只允许同步动作首段消费一次。"
+    pending_motion_start_label: str | None = None
+    "待同步启动的命名动作标签，用于安全校验和日志关联。"
     global_cartesian_offset: object | None = None
     "当前轮次的全局笛卡尔纠偏矩阵。"
     charuco_cartesian_offset: object | None = None

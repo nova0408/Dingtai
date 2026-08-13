@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import math
 from dataclasses import dataclass
 
 # region 数据结构
@@ -16,11 +17,11 @@ class ParsedArmPose:
     "平移坐标，单位 mm。"
     rpy_deg: tuple[float, float, float]
     "SciPy 小写外禀 xyz 欧拉角，单位 deg。"
-    has_elbow: bool | None
-    "肘部约束开关；None 表示复用当前上下文。"
-    elbow_deg: float | None
+    has_elbow: bool
+    "肘部约束开关。"
+    elbow_deg: float
     "肘部角度，单位 deg。"
-    conf_data: tuple[int, ...] | None
+    conf_data: tuple[int, ...]
     "控制器构型数据。"
 
 
@@ -38,41 +39,49 @@ def parse_joint_values(joints_text: str, expected_len: int = 7) -> list[float]:
     parsed = ast.literal_eval(joints_text)
     if not isinstance(parsed, list) or len(parsed) != expected_len:
         raise ValueError(f"关节列长度无效：{joints_text}")
-    return [float(value) for value in parsed]
+    return [_finite_float(value, "关节列") for value in parsed]
 
 
 def parse_pose_values(pose_text: str) -> ParsedArmPose:
-    """解析 CSV pose 单元格的 6 或 9 元格式。"""
+    """解析包含 elbow 与 confData 的完整 9 元 CSV pose。"""
 
     if pose_text.strip().lower() == "nan":
         raise ValueError("pose 列为 NaN，不能解析为笛卡尔目标")
-    stripped_text = pose_text.strip()
-    if "[" not in stripped_text and "]" not in stripped_text:
-        values = [float(token) for token in stripped_text.replace(",", " ").split() if token]
-        if len(values) != 6:
-            raise ValueError("笛卡尔目标必须包含 6 个数值")
-        parsed = values
-    else:
-        parsed = ast.literal_eval(stripped_text)
-    if not isinstance(parsed, list):
-        raise ValueError("笛卡尔目标必须是 list 格式")
-    if len(parsed) == 6:
-        return ParsedArmPose(
-            (float(parsed[0]), float(parsed[1]), float(parsed[2])),
-            (float(parsed[3]), float(parsed[4]), float(parsed[5])),
-            None,
-            None,
-            None,
-        )
-    if len(parsed) != 9 or not isinstance(parsed[8], list):
-        raise ValueError("笛卡尔目标必须为 6 元或含 confData 的 9 元 list")
+    parsed = ast.literal_eval(pose_text.strip())
+    if not isinstance(parsed, list) or len(parsed) != 9:
+        raise ValueError("笛卡尔目标必须是包含 elbow/confData 的 9 元 list")
+    if not isinstance(parsed[6], bool):
+        raise ValueError("笛卡尔目标 has_elbow 必须是 bool")
+    if not isinstance(parsed[8], list) or len(parsed[8]) != 8:
+        raise ValueError("笛卡尔目标 confData 必须是 8 元 int list")
+    if any(isinstance(value, bool) or not isinstance(value, int) for value in parsed[8]):
+        raise ValueError("笛卡尔目标 confData 必须全部为 int")
     return ParsedArmPose(
-        (float(parsed[0]), float(parsed[1]), float(parsed[2])),
-        (float(parsed[3]), float(parsed[4]), float(parsed[5])),
-        bool(parsed[6]),
-        float(parsed[7]),
-        tuple(int(value) for value in parsed[8]),
+        (
+            _finite_float(parsed[0], "笛卡尔目标 xyz"),
+            _finite_float(parsed[1], "笛卡尔目标 xyz"),
+            _finite_float(parsed[2], "笛卡尔目标 xyz"),
+        ),
+        (
+            _finite_float(parsed[3], "笛卡尔目标 rpy"),
+            _finite_float(parsed[4], "笛卡尔目标 rpy"),
+            _finite_float(parsed[5], "笛卡尔目标 rpy"),
+        ),
+        parsed[6],
+        _finite_float(parsed[7], "笛卡尔目标 elbow"),
+        tuple(parsed[8]),
     )
+
+
+def _finite_float(value: object, label: str) -> float:
+    """把 CSV 数值收紧为有限的非 bool 浮点数。"""
+
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{label} 必须是数字：{value!r}")
+    result = float(value)
+    if not math.isfinite(result):
+        raise ValueError(f"{label} 必须是有限数：{value!r}")
+    return result
 
 
 # endregion

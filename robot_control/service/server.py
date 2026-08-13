@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import threading
+import time
+import uuid
 from dataclasses import asdict
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -60,10 +62,13 @@ class RobotControlServer:
             """RobotControl 固定路由处理器。"""
 
             protocol_version = "HTTP/1.1"
+            request_id = ""
+            request_started_at = 0.0
 
             def do_GET(self) -> None:
                 """处理健康检查与只读状态请求。"""
 
+                self._begin_request()
                 path = urlsplit(self.path).path
                 try:
                     if path == "/api/v1/health":
@@ -150,7 +155,8 @@ class RobotControlServer:
                     )
                 except ValueError as exc:
                     logger.warning(
-                        "RobotControl GET rejected: path={} error_type={} message={}",
+                        "RobotControl GET rejected request_id={} path={} error_type={} message={}",
+                        self.request_id,
                         path,
                         type(exc).__name__,
                         str(exc),
@@ -164,7 +170,8 @@ class RobotControlServer:
                     )
                 except Exception as exc:
                     logger.exception(
-                        "RobotControl GET failed: path={} stage=hardware_read",
+                        "RobotControl GET failed request_id={} path={} stage=hardware_read",
+                        self.request_id,
                         path,
                     )
                     self._send_error(
@@ -181,6 +188,7 @@ class RobotControlServer:
                 Codex 不调用本方法对应的接口；本机验证只允许 GET。
                 """
 
+                self._begin_request()
                 path = urlsplit(self.path).path
                 try:
                     payload = self._read_json_object()
@@ -191,7 +199,8 @@ class RobotControlServer:
                         self._send(HTTPStatus.ACCEPTED, asdict(response))
                 except ValueError as exc:
                     logger.warning(
-                        "RobotControl POST rejected: path={} error_type={} message={}",
+                        "RobotControl POST rejected request_id={} path={} error_type={} message={}",
+                        self.request_id,
                         path,
                         type(exc).__name__,
                         str(exc),
@@ -205,7 +214,8 @@ class RobotControlServer:
                     )
                 except Exception as exc:
                     logger.exception(
-                        "RobotControl POST failed: path={} stage=hardware_control",
+                        "RobotControl POST failed request_id={} path={} stage=hardware_control",
+                        self.request_id,
                         path,
                     )
                     self._send_error(
@@ -221,6 +231,19 @@ class RobotControlServer:
 
                 del format, args
 
+            def _begin_request(self) -> None:
+                """记录请求入口并生成服务内关联标识。"""
+
+                self.request_id = uuid.uuid4().hex[:12]
+                self.request_started_at = time.perf_counter()
+                logger.info(
+                    "RobotControl HTTP request started request_id={} method={} path={} client={}",
+                    self.request_id,
+                    self.command,
+                    self.path,
+                    self.client_address[0],
+                )
+
             def _stream_status(self) -> None:
                 """以 SSE 推送完整设备状态快照。"""
 
@@ -235,21 +258,35 @@ class RobotControlServer:
                 self.send_header("X-Accel-Buffering", "no")
                 self.end_headers()
                 sequence = 0
-                while not stop_event.is_set():
-                    payload = asdict(application.status())
-                    event = (
-                        "event: robot_status\n"
-                        f"id: {sequence}\n"
-                        f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
-                    )
-                    try:
+                logger.info(
+                    "RobotControl SSE stream opened request_id={} path={} interval_s={}",
+                    self.request_id,
+                    self.path,
+                    interval_s,
+                )
+                try:
+                    while not stop_event.is_set():
+                        payload = asdict(application.status())
+                        event = (
+                            "event: robot_status\n"
+                            f"id: {sequence}\n"
+                            f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+                        )
                         self.wfile.write(event.encode("utf-8"))
                         self.wfile.flush()
-                    except (BrokenPipeError, ConnectionResetError, OSError):
-                        return
-                    sequence += 1
-                    if stop_event.wait(interval_s):
-                        return
+                        sequence += 1
+                        if stop_event.wait(interval_s):
+                            return
+                except (BrokenPipeError, ConnectionResetError, OSError):
+                    return
+                finally:
+                    logger.info(
+                        "RobotControl SSE stream closed request_id={} path={} events={} elapsed_ms={:.3f}",
+                        self.request_id,
+                        self.path,
+                        sequence,
+                        (time.perf_counter() - self.request_started_at) * 1000.0,
+                    )
 
             def _dispatch_control(self, path: str, payload: dict[str, object]) -> Any:
                 """按显式路径分发控制请求，不使用动态方法名调用。"""
@@ -437,6 +474,14 @@ class RobotControlServer:
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
+                logger.info(
+                    "RobotControl HTTP request finished request_id={} method={} path={} status={} elapsed_ms={:.3f}",
+                    self.request_id,
+                    self.command,
+                    self.path,
+                    status.value,
+                    (time.perf_counter() - self.request_started_at) * 1000.0,
+                )
 
             def _send_error(
                 self,

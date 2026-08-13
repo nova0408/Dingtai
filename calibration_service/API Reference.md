@@ -1,6 +1,6 @@
 # Calibration Service API Reference
 
-文档版本：`1.4.1`（2026-08-11）
+文档版本：`1.4.2`（2026-08-13）
 默认内部地址：`http://127.0.0.1:6600`  
 正式外部前缀：`https://<orin-host>/api/v1/calibration`
 

@@ -33,6 +33,33 @@ class WujiAgvNavigationMap:
     targets: tuple[WujiAgvNavigationTarget, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class WujiAgvBaseState:
+    """Woosh 底盘状态及其初始化语义。"""
+
+    robot_state: int
+    "Woosh 原始机器人状态枚举值。"
+    initialized: bool | None
+    "是否完成初始化；底层状态未知时为 ``None``。"
+
+
+_WOOSH_STATE_UNDEFINED = 0
+_WOOSH_STATE_UNINITIALIZED = 1
+_WOOSH_STATE_LAST_KNOWN = 9
+
+
+def _initialized_from_robot_state(robot_state: int) -> bool | None:
+    """把 qmlinker 1.0.16 的 Woosh 状态映射为初始化三态。"""
+
+    if robot_state == _WOOSH_STATE_UNDEFINED:
+        return None
+    if robot_state == _WOOSH_STATE_UNINITIALIZED:
+        return False
+    if _WOOSH_STATE_UNINITIALIZED < robot_state <= _WOOSH_STATE_LAST_KNOWN:
+        return True
+    raise RuntimeError(f"unsupported Woosh robot state: {robot_state}")
+
+
 class WujiAgvClient(QMMoveBase):
     """无际 AGV 客户端。
 
@@ -123,8 +150,8 @@ class WujiAgvClient(QMMoveBase):
             return None
         return bool(response.status.success and response.current_state)
 
-    def get_base_state(self) -> dict[str, object]:
-        """读取 Woosh 底盘机器人状态枚举。"""
+    def read_base_state(self) -> WujiAgvBaseState:
+        """读取 Woosh 底盘机器人状态及初始化语义。"""
 
         response = self.stub.GetBaseState(
             empty_pb2.Empty(),
@@ -132,7 +159,11 @@ class WujiAgvClient(QMMoveBase):
         )
         if not response.success:
             raise RuntimeError(response.message or "base state request failed")
-        return {"robot_state": int(response.robot_state)}
+        robot_state = int(response.robot_state)
+        return WujiAgvBaseState(
+            robot_state=robot_state,
+            initialized=_initialized_from_robot_state(robot_state),
+        )
 
     def get_base_mode(self) -> dict[str, object]:
         """读取 Woosh 底盘控制模式和工作模式。"""

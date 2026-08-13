@@ -1,7 +1,7 @@
 # RecordReplay API Reference
 
-文档版本：`3.16.0`（2026-08-12）
-服务业务版本：`3.16.0`
+文档版本：`3.19.0`（2026-08-13）
+服务业务版本：`3.19.0`
 默认监听：`http://<orin>:6300`
 
 机器可读文件：[OpenAPI 3.1](openapi.yaml)。
@@ -19,7 +19,7 @@ RecordReplay 通过本服务内的 `camera_client.py` 调用 CameraPipeline 的 
 ## 2. 通用约定
 
 - Content-Type：`application/json; charset=utf-8`。
-- 当前服务版本：`3.16.0`，与 `record_replay/CHANGELOG.md` 一致。
+- 当前服务版本：`3.19.0`，与 `record_replay/CHANGELOG.md` 一致。
 - 根目录同步脚本支持 `-RecordReplayOnly`，只替换并重启 RecordReplay；替换前检查 RecordReplay
   为 `idle`/`waiting` 且 CameraPipeline 在 6200 端口就绪，替换后校验文件清单、SHA-256、只读
   `/status` 和版本，不发送 `/start`；`runtime_state.json` 等运行产物不纳入清单。
@@ -83,7 +83,7 @@ GET /health
 
 ```json
 {
-  "service_version": "3.16.0",
+  "service_version": "3.19.0",
   "api_version": "1",
   "state": "idle",
   "hardware_access": "lazy"
@@ -153,6 +153,15 @@ GET /status
 
 连续轨迹会批量提交给控制器，`current_*_row` 表示服务正在调度或处理的 CSV 源数据行，
 不表示控制器已经物理到达该点。
+连续 arm waypoint 可以跨命名动作和 CSV 合并；业务任务切换只更新调度进度，不自动形成
+物理停顿。gripper、M6、lift、capture、offset 更新、双臂同步屏障和序列结束才会 flush。
+start 会在后台线程和设备连接前验证全部 CSV；带 pose 的 arm 行必须提供完整 9 元
+`[x,y,z,rx,ry,rz,has_elbow,elbow,confData]`，其中 `confData` 固定为 8 元 int list。
+ChArUco offset 就绪后预编译当前全部可计算点，三球 offset 就绪后预编译全部剩余点；执行阶段
+不再逐段计算 TCP/IK。服务日志通过 `precompile_batch_id` 和 `segment_id` 关联逐点最终参数、
+RobotControl `command_id` 和物理执行阶段。
+`open_door`、`close_door` 的首段使用两阶段同步：两侧各自完成 `moveAppend` 后等待第二阶段
+屏障，两侧均 ready 才共同释放 `moveStart`；任一侧失败会中止另一侧启动。
 
 每批 MoveAbsJ 使用 RobotControl 返回的 `cmdID` 读取 `moveExecution` waypoint 进度。
 收到 `30400.collision_fc` 后固定等待 1 s，调用 `clearServoAlarm()`，恢复 NRT、自动模式和
@@ -290,6 +299,10 @@ CameraPipeline 三球检测并更新三球 offset，`calibration_new_tray` 暂�
 不会调用算法。
 SDK 会将 speed 按 `<100`、`100~200`、`200~500`、`500~800`、`>800` mm/s 分为 5 档，
 将 zone 按 `<1`、`1~20`、`20~60`、`>60` mm 分为 4 档；JSON 仍保存动作级原始数值。
+每批 MoveAbsJ 在 `moveAppend` 前尽力应用系统预设加/减速度倍率 `acc=0.5` 和加加速度倍率
+`jerk=0.5`，并尽力记录设置前后的实际值；读取或设置失败只记录告警，批次提交始终继续。
+两个值是本轮代码内实验默认值，不属于 `POST /start`、配置更新请求或动作 JSON，当前没有
+HTTP 调整入口；完整参数语义、影响和调参边界见 README。
 
 动作名是封闭白名单，当前包括 `go_out`、`open_door`、`before_calibration`、`calibration`、
 `get_tray`、`after_get_tray`、`put_tray`、`before_get_new_tray`、`get_new_tray`、
@@ -433,6 +446,12 @@ print(client.get_config())
 
 | 文档版本 | 日期 | 内容 |
 | --- | --- | --- |
+| `3.19.0` | 2026-08-13 | start 前收紧 CSV 完整性；按 offset 可用时机批量预编译全部 waypoint。 |
+| `3.18.1` | 2026-08-13 | 同步动作改为两侧 append ready 后共同释放物理 moveStart。 |
+| `3.18.0` | 2026-08-13 | 连续 arm 轨迹跨动作和 CSV 合并，并增加逐段逐点执行日志。 |
+| `3.17.1` | 2026-08-13 | acc/jerk 读取或设置失败不再阻止轨迹，并记录设置前后值。 |
+| `3.17.0` | 2026-08-13 | MoveAppend 前固定应用 acc=0.5、jerk=0.5，并补充运动参数说明。 |
+| `3.16.1` | 2026-08-13 | 增加独立的按小时轮转日志，保留 7 天，并补充启动、异常与关闭上下文。 |
 | `3.16.0` | 2026-08-12 | collision_fc 后等待 1 s 清除伺服报警并恢复状态；按 cmdID 重发未完成 waypoint，每个位置最多恢复一次。 |
 | `3.15.0` | 2026-08-12 | IK 跳变门控以当前 CSV 行原始 joints 为基准；TCP 微调候选也按该基准判断，失败后回退原始 joints。 |
 | `3.14.0` | 2026-08-12 | 增加 IK 跳变门控；异常时沿 TCP X/Y/Z 轴分别微调 1 mm，最多重算 3 次，失败后回退 CSV 原始 joints。 |

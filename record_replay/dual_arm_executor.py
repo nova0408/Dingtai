@@ -12,7 +12,13 @@ from .action_sequence import (
     NamedActionPlan,
     SYNC_ACTION_ORDER,
 )
-from .arm_actions import ensure_arm_position_before_m6, flush_pending_arm_segment
+from .arm_actions import (
+    append_pending_arm_waypoint,
+    ensure_arm_position_before_m6,
+    flush_pending_arm_segment,
+    precompile_available_arm_waypoints,
+    set_active_action_offset_source,
+)
 from .charuco_offset import CharucoOffsetInitializer
 from .context import ReplayContext
 from .contracts import ReplayExecutionPhase, ReplayServiceState, ReplayRow
@@ -68,6 +74,12 @@ class DualArmExecutor:
         stop_event = context.stop_event
         settings = context.config.settings
         _validate_offset_target_exclusivity(settings)
+        _validate_precompile_dependencies(
+            plan,
+            settings,
+            offset_updater,
+            charuco_initializer,
+        )
         preloaded_rows_by_path = _preload_action_rows(plan)
         left_runtime: ReplayRuntime | None = None
         right_runtime: ReplayRuntime | None = None
@@ -133,6 +145,17 @@ class DualArmExecutor:
                     execution_phase=ReplayExecutionPhase.PREPARING_DEVICES,
                 )
                 logger.info("头部 ChArUco offset 初始化完成，准备执行左右臂 CSV")
+            precompile_available_arm_waypoints(
+                left_runtime,
+                plan.left_actions,
+                require_all=not _side_requires_global_offset(plan.left_actions, settings),
+            )
+            if right_runtime is not None:
+                precompile_available_arm_waypoints(
+                    right_runtime,
+                    plan.right_actions,
+                    require_all=not _side_requires_global_offset(plan.right_actions, settings),
+                )
             if right_runtime is not None:
                 open_door_start_barrier = _barrier_for_action(plan, "open_door")
                 close_door_start_barrier = _barrier_for_action(plan, "close_door")
@@ -156,9 +179,9 @@ class DualArmExecutor:
                     None,
                     None,
                 )
-            flush_pending_arm_segment(left_runtime)
+            flush_pending_arm_segment(left_runtime, "left-action-sequence-complete")
             if right_runtime is not None:
-                flush_pending_arm_segment(right_runtime)
+                flush_pending_arm_segment(right_runtime, "right-action-sequence-complete")
         finally:
             if context.snapshot().state is not ReplayServiceState.RAPID_STOP:
                 context.set_state(
@@ -257,7 +280,7 @@ class DualArmExecutor:
         for action_position, action in enumerate(actions):
             if runtime.stop_event.is_set():
                 raise RuntimeError("检测到停止请求，终止后续命名动作")
-            runtime.offset_source = "none"
+            set_active_action_offset_source(runtime, action)
             context.refresh_offset_statuses()
             if runtime.connected_arm.arm_side == "left":
                 context.advance_execution_task(
@@ -279,6 +302,11 @@ class DualArmExecutor:
                 open_door_start_barrier,
                 close_door_start_barrier,
             )
+            if barrier is not None:
+                flush_pending_arm_segment(
+                    runtime,
+                    f"before-synchronized-action:{action.item.function_name}",
+                )
             logger.info(
                 "命名动作开始 arm_side={} sequence={}/{} action={} csv={} rows={} "
                 "speed={} zone={} index={}",
@@ -295,12 +323,33 @@ class DualArmExecutor:
             stage = "start_barrier"
             try:
                 _wait_action_start(barrier, action.item.function_name, runtime)
+                _arm_next_synchronized_motion_start(
+                    runtime,
+                    barrier,
+                    action.item.function_name,
+                )
                 context.set_state(
                     ReplayServiceState.BUSY,
                     execution_phase=ReplayExecutionPhase.EXECUTING_ACTION,
                 )
                 stage = "execute_action"
                 self._execute_action(context, runtime, action, offset_updater)
+                if (
+                    runtime.connected_arm.arm_side == "left"
+                    and runtime.settings.offset.calculate_after_action_name
+                    == action.item.function_name
+                ):
+                    precompile_available_arm_waypoints(runtime, actions, require_all=True)
+                if barrier is not None and runtime.pending_motion_start_barrier is barrier:
+                    if not runtime.pending_arm_waypoints:
+                        raise RuntimeError(
+                            "同步动作没有可用于共同 moveStart 的 arm waypoint："
+                            f"{action.item.function_name}"
+                        )
+                    flush_pending_arm_segment(
+                        runtime,
+                        f"synchronized-action-start:{action.item.function_name}",
+                    )
             except BaseException as error:
                 logger.exception(
                     "命名动作失败 arm_side={} sequence={}/{} action={} csv={} stage={} "
@@ -322,13 +371,19 @@ class DualArmExecutor:
                     stage=stage,
                     cause=error,
                 ) from error
+            pending_waypoint_count = sum(
+                waypoint.action == action for waypoint in runtime.pending_arm_waypoints
+            )
             logger.info(
-                "命名动作完成 arm_side={} sequence={}/{} action={} csv={}",
+                "命名动作调度完成 arm_side={} sequence={}/{} action={} csv={} "
+                "pending_merged_waypoints={} physical_completion_deferred={}",
                 runtime.connected_arm.arm_side,
                 action_position + 1,
                 len(actions),
                 action.item.function_name,
                 action.csv_asset.path.name,
+                pending_waypoint_count,
+                pending_waypoint_count > 0,
             )
             context.refresh_offset_statuses()
             if runtime.connected_arm.arm_side == "left":
@@ -379,6 +434,11 @@ class DualArmExecutor:
                 raise RuntimeError(f"未实现的命名动作：{action.item.function_name}")
         if not runtime.preloaded_rows_by_path.get(action.csv_asset.path):
             return
+        if runtime.settings.offset.calculate_after_action_name == action.item.function_name:
+            flush_pending_arm_segment(
+                runtime,
+                f"before-offset-update:{action.item.function_name}",
+            )
         self._update_offset_after_configured_action(context, runtime, action, offset_updater)
 
     def _execute_capture_action(
@@ -394,6 +454,7 @@ class DualArmExecutor:
         if not runtime.preloaded_rows_by_path.get(action.csv_asset.path):
             logger.info("拍摄动作 {} CSV 为空，按未实现动作留空", action.item.function_name)
             return
+        flush_pending_arm_segment(runtime, f"capture-stop:{action.item.function_name}")
         _wait_settle_delay(runtime, action.item.settle_delay)
 
     def _execute_fast_action(
@@ -534,11 +595,7 @@ class DualArmExecutor:
         if not rows:
             logger.warning("CSV 无数据，跳过命名动作 file={}", csv_path.name)
             return
-        last_arm_position = max(
-            (position for position, row in enumerate(rows) if row.action_type == "arm"),
-            default=-1,
-        )
-        for position, row in enumerate(rows):
+        for row in rows:
             context.set_csv_progress(
                 runtime.connected_arm.arm_side,
                 csv_path.name,
@@ -547,24 +604,34 @@ class DualArmExecutor:
                 action.item.function_name,
                 action.item.index,
             )
-            self._execute_row(runtime, row, position > last_arm_position)
-        flush_pending_arm_segment(runtime)
+            self._execute_row(
+                runtime,
+                row,
+                action,
+            )
         context.clear_csv_progress(runtime.connected_arm.arm_side)
 
     def _execute_row(
         self,
         runtime: ReplayRuntime,
         row: ReplayRow,
-        final_arm_segment: bool,
+        action: NamedActionPlan,
     ) -> None:
         """执行一条 CSV 数据行。"""
 
         if runtime.stop_event.is_set():
             raise RuntimeError("检测到停止请求")
         if row.action_type == "arm":
-            runtime.pending_arm_rows.append(row)
+            append_pending_arm_waypoint(
+                runtime,
+                row,
+                action,
+            )
             return
-        final_arm_target = flush_pending_arm_segment(runtime, final_arm_segment)
+        final_arm_target = flush_pending_arm_segment(
+            runtime,
+            f"before-non-arm:{row.action_type}:{row.csv_name}:{row.row_index}",
+        )
         if row.action_type == "gripper":
             execute_gripper_row(runtime, row)
             return
@@ -615,6 +682,71 @@ def _plan_requires_charuco(plan: ActionSequencePlan, settings: ReplayServiceSett
             for action in plan.right_actions
         )
     )
+
+
+def _plan_requires_global_offset(
+    plan: ActionSequencePlan,
+    settings: ReplayServiceSettings,
+) -> bool:
+    """检查计划是否包含三球 offset 目标动作。"""
+
+    return any(
+        action.item.function_name in settings.offset.target_action_names
+        for action in plan.all_actions()
+    )
+
+
+def _side_requires_global_offset(
+    actions: tuple[NamedActionPlan, ...],
+    settings: ReplayServiceSettings,
+) -> bool:
+    """检查一侧动作是否需要等待三球 offset。"""
+
+    return any(
+        action.item.function_name in settings.offset.target_action_names for action in actions
+    )
+
+
+def _validate_precompile_dependencies(
+    plan: ActionSequencePlan,
+    settings: ReplayServiceSettings,
+    offset_updater: GlobalOffsetUpdater | None,
+    charuco_initializer: CharucoOffsetInitializer | None,
+) -> None:
+    """在连接设备前验证全部 waypoint 预编译依赖。"""
+
+    if _plan_requires_charuco(plan, settings) and charuco_initializer is None:
+        raise RuntimeError("计划包含 ChArUco offset waypoint，但未提供 ChArUco 初始化器")
+    if _plan_requires_global_offset(plan, settings):
+        if offset_updater is None:
+            raise RuntimeError("计划包含三球 offset waypoint，但未提供三球 offset 更新器")
+        trigger = settings.offset.calculate_after_action_name
+        if trigger is None:
+            raise RuntimeError("计划包含三球 offset waypoint，但未配置 offset 计算触发动作")
+        left_names = [action.item.function_name for action in plan.left_actions]
+        right_global_targets = sorted(
+            {
+                action.item.function_name
+                for action in plan.right_actions
+                if action.item.function_name in settings.offset.target_action_names
+            }
+        )
+        if right_global_targets:
+            raise RuntimeError(
+                "三球 offset 由左臂拍摄并仅写入左臂 runtime，目标动作不能配置在右臂："
+                + ", ".join(right_global_targets)
+            )
+        trigger_position = left_names.index(trigger)
+        first_target_position = min(
+            index
+            for index, action_name in enumerate(left_names)
+            if action_name in settings.offset.target_action_names
+        )
+        if trigger_position >= first_target_position:
+            raise RuntimeError(
+                "三球 offset 必须在首个目标动作前完成："
+                f"trigger={trigger} first_target={left_names[first_target_position]}"
+            )
 
 
 def _barrier_for_action(plan: ActionSequencePlan, action_name: str) -> threading.Barrier | None:
@@ -677,6 +809,29 @@ def _wait_action_start(
         raise RuntimeError(f"{action_name} 起点同步失败") from error
     if runtime.stop_event.is_set():
         raise RuntimeError(f"{action_name} 起点同步后收到停止请求")
+
+
+def _arm_next_synchronized_motion_start(
+    runtime: ReplayRuntime,
+    barrier: threading.Barrier | None,
+    action_name: str,
+) -> None:
+    """把同步动作的首个物理轨迹段绑定到第二阶段 moveStart 屏障。"""
+
+    if barrier is None:
+        return
+    if runtime.pending_motion_start_barrier is not None:
+        raise RuntimeError(
+            "上一同步 moveStart 屏障尚未消费 "
+            f"previous={runtime.pending_motion_start_label} current={action_name}"
+        )
+    runtime.pending_motion_start_barrier = barrier
+    runtime.pending_motion_start_label = action_name
+    logger.info(
+        "同步动作首轨迹段已绑定 moveStart 屏障 action={} arm_side={}",
+        action_name,
+        runtime.connected_arm.arm_side,
+    )
 
 
 def _break_barrier(barrier: threading.Barrier | None) -> None:

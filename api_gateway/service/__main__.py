@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import logging
 import ssl
+import time
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -13,6 +14,11 @@ from aiohttp import web
 from .. import API_GATEWAY_VERSION
 from ..config import GatewaySettings
 from ..server import create_app, on_cleanup, on_startup
+from .logging_config import (
+    DEFAULT_LOG_PATH,
+    configure_service_logging,
+    shutdown_service_logging,
+)
 
 DEFAULT_TLS_CERT_PATH = Path(
     "/etc/dingtai/api-gateway/tls/api-gateway.fullchain.pem"
@@ -24,11 +30,9 @@ _DEFAULT_LISTEN_HOSTS = ("0.0.0.0", "::")
 def main(argv: Sequence[str] | None = None) -> int:
     """启动统一入口，不主动连接任意后端。"""
 
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
-    )
+    startup_started_at = time.perf_counter()
     args = _parse_args(argv)
+    log_path = configure_service_logging(args.log_path)
     settings = GatewaySettings(host=args.host, port=args.port)
     ssl_context = _create_ssl_context(args.tls_cert, args.tls_key)
     app = create_app(settings)
@@ -38,19 +42,30 @@ def main(argv: Sequence[str] | None = None) -> int:
     if settings.host == "0.0.0.0":
         listen_host = _DEFAULT_LISTEN_HOSTS
     logging.getLogger(__name__).info(
-        "API Gateway 启动 version=%s host=%s port=%s tls_cert=%s",
+        "API Gateway 启动 version=%s host=%s port=%s tls_cert=%s log_path=%s startup_elapsed_ms=%.3f",
         API_GATEWAY_VERSION,
         listen_host,
         settings.port,
         args.tls_cert,
+        log_path,
+        (time.perf_counter() - startup_started_at) * 1000.0,
     )
-    web.run_app(
-        app,
-        host=listen_host,
-        port=settings.port,
-        handle_signals=True,
-        ssl_context=ssl_context,
-    )
+    try:
+        web.run_app(
+            app,
+            host=listen_host,
+            port=settings.port,
+            handle_signals=True,
+            ssl_context=ssl_context,
+        )
+    except Exception:
+        logging.getLogger(__name__).exception(
+            "API Gateway 因未处理异常终止 version=%s", API_GATEWAY_VERSION
+        )
+        raise
+    finally:
+        logging.getLogger(__name__).info("API Gateway 已停止")
+        shutdown_service_logging()
     return 0
 
 
@@ -62,6 +77,7 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser.add_argument("--port", type=int, default=443)
     parser.add_argument("--tls-cert", type=Path, default=DEFAULT_TLS_CERT_PATH)
     parser.add_argument("--tls-key", type=Path, default=DEFAULT_TLS_KEY_PATH)
+    parser.add_argument("--log-path", default=DEFAULT_LOG_PATH)
     return parser.parse_args(argv)
 
 

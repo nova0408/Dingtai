@@ -10,7 +10,7 @@
 - `session` 只负责 `channel`、连接与必要的 SSH 转发
 - 机械臂、头部、底盘、右手、左手夹爪、相机分别独立代码页实现
 - GUI 与 smoke 只依赖当前真实链路
-- 远端 Orin 若缺少新版 `qmlinker`，会先同步本地 `env/qmlinker-1.0.15-py3-none-any.whl` 再执行
+- 远端 Orin 若缺少新版 `qmlinker`，会先同步本地 `env/qmlinker-1.0.16-py3-none-any.whl` 再执行
 
 ## 当前设备语义
 
@@ -83,4 +83,3 @@ AGV 当前可稳定完成：
 - `dahuan_gripper_client.py`
 - `agv_client.py`
 - `zmq_camera_client.py`
-

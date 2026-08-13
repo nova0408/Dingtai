@@ -9,6 +9,12 @@ from pathlib import Path
 from .contracts import ReplayRow
 from .motion_parsing import parse_joint_values, parse_pose_values
 
+REQUIRED_COLUMNS = frozenset({"timestamp", "type", "joints", "pose"})
+"回放 CSV 必须在 start 冻结阶段提供的完整列集合。"
+
+SUPPORTED_ACTION_TYPES = frozenset({"arm", "m6", "gripper", "lift"})
+"执行器显式支持的 CSV 动作类型。"
+
 
 def discover_csv_paths(record_dir: Path, max_files: int | None = None) -> list[Path]:
     """发现新命名 CSV；执行顺序由 action_sequence.json 决定。"""
@@ -31,11 +37,19 @@ def load_replay_rows(csv_path: Path) -> list[ReplayRow]:
 
     with csv_path.open("r", encoding="utf-8-sig", newline="") as handle:
         reader = csv.DictReader(handle)
+        fieldnames = set(reader.fieldnames or ())
+        missing_columns = sorted(REQUIRED_COLUMNS - fieldnames)
+        if missing_columns:
+            raise ValueError(f"CSV 缺少必要列 {missing_columns}: file={csv_path}")
         rows: list[ReplayRow] = []
         for row_index, row in enumerate(reader, start=1):
             action_type = str(row.get("type", "")).strip().lower()
             if not action_type:
                 raise ValueError(f"CSV 缺少 type: file={csv_path}, row={row_index}")
+            if action_type not in SUPPORTED_ACTION_TYPES:
+                raise ValueError(
+                    f"CSV 包含不支持的 type={action_type!r}: file={csv_path}, row={row_index}"
+                )
             joints_text = str(row.get("joints", "")).strip()
             pose_text = str(row.get("pose", "")).strip()
             joint_values: tuple[float, ...] | None = None
@@ -51,6 +65,10 @@ def load_replay_rows(csv_path: Path) -> list[ReplayRow]:
                 joint_values = tuple(parse_joint_values(joints_text, expected_len=6))
             elif action_type in ("gripper", "lift"):
                 pose_value = float(pose_text)
+                if not math.isfinite(pose_value):
+                    raise ValueError(
+                        f"CSV {action_type} pose 必须是有限数: file={csv_path}, row={row_index}"
+                    )
             rows.append(
                 ReplayRow(
                     csv_path.name,

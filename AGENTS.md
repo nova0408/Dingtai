@@ -38,19 +38,28 @@
 
 ---
 
+## PowerShell 执行环境
+
+- Windows 下所有 PowerShell 命令统一使用 PowerShell 7 的 `pwsh`，默认添加 `-NoProfile`，避免用户配置影响自动化结果。
+- 禁止调用 `powershell`、`powershell.exe` 或任何 Windows PowerShell 5.1 进程；不得在 `pwsh` 不可用时静默回退到 Windows PowerShell 5.1。
+- 执行脚本统一使用 `pwsh -NoProfile -File <script.ps1>`；执行内联命令统一使用 `pwsh -NoProfile -Command <command>`。
+- 如果 `pwsh` 不可用，应停止相关 PowerShell 操作并明确报告环境缺失，而不是使用 Windows PowerShell 5.1 继续执行。
+
+---
+
 ## 标准命令
 
 全仓静态检查：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\.agents\skills\dingtai-static-check-workflow\scripts\check\run_all_checks.ps1 -Target .
+pwsh -NoProfile -File .\.agents\skills\dingtai-static-check-workflow\scripts\check\run_all_checks.ps1 -Target .
 ```
 
 按目录或文件检查：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\.agents\skills\dingtai-static-check-workflow\scripts\check\run_ruff.ps1 -Target .\src
-powershell -ExecutionPolicy Bypass -File .\.agents\skills\dingtai-static-check-workflow\scripts\check\run_pyright.ps1 -Target .\test
+pwsh -NoProfile -File .\.agents\skills\dingtai-static-check-workflow\scripts\check\run_ruff.ps1 -Target .\src
+pwsh -NoProfile -File .\.agents\skills\dingtai-static-check-workflow\scripts\check\run_pyright.ps1 -Target .\test
 ```
 
 Git 变更检查：

@@ -46,6 +46,24 @@ json_field() {
     'import json, sys; print(json.load(sys.stdin)[sys.argv[1]])' "${field}"
 }
 
+record_replay_was_active=false
+record_replay_state="not_running"
+if [[ "${readiness_mode}" == "camera" ]] &&
+   systemctl is-active --quiet record-replay.service &&
+   ss -ltn '( sport = :6300 )' | grep -q LISTEN; then
+  record_replay_payload="$(curl -fsS --max-time 5 http://127.0.0.1:6300/status)"
+  record_replay_state="$(printf '%s' "${record_replay_payload}" | json_field state)"
+  case "${record_replay_state}" in
+    idle|waiting|rapid_stop) ;;
+    *)
+      echo "[deploy] refused: RecordReplay current state is ${record_replay_state}"
+      exit 1
+      ;;
+  esac
+  record_replay_was_active=true
+  echo "[deploy] captured RecordReplay pre-deploy state=${record_replay_state}"
+fi
+
 echo "[deploy] stopping ${service_unit}"
 systemctl stop --no-block "${service_unit}" || true
 for attempt in $(seq 1 15); do
@@ -92,6 +110,66 @@ if [[ "${readiness_mode}" == "camera" ]]; then
     exit 1
   fi
   echo "[deploy] CameraPipeline updated and restarted; version=${camera_version}; read-only camera status passed"
+
+  if [[ "${record_replay_was_active}" == "true" ]]; then
+    echo "[deploy] restoring record-replay.service after CameraPipeline deployment"
+    for attempt in $(seq 1 15); do
+      record_active_state="$(systemctl show record-replay.service -p ActiveState --value 2>/dev/null || true)"
+      if [[ -z "${record_active_state}" || "${record_active_state}" == "inactive" || "${record_active_state}" == "failed" ]]; then
+        break
+      fi
+      sleep 1
+    done
+    if [[ "${record_replay_state}" == "idle" || "${record_replay_state}" == "waiting" ]]; then
+      printf '{\n  "state": "idle"\n}\n' > "${workspace}/record_replay/runtime_state.json"
+    fi
+    systemctl reset-failed record-replay.service || true
+    systemctl start --no-block record-replay.service
+    record_replay_ready=false
+    for attempt in $(seq 1 20); do
+      if systemctl is-active --quiet record-replay.service &&
+         ss -ltn '( sport = :6300 )' | grep -q LISTEN &&
+         record_replay_payload="$(curl -fsS --max-time 5 http://127.0.0.1:6300/status)"; then
+        restored_record_replay_state="$(printf '%s' "${record_replay_payload}" | json_field state)"
+        if [[ "${record_replay_state}" == "rapid_stop" && "${restored_record_replay_state}" == "rapid_stop" ]] ||
+           [[ "${record_replay_state}" != "rapid_stop" && "${restored_record_replay_state}" == "idle" ]]; then
+          record_replay_ready=true
+          break
+        fi
+      fi
+      sleep 1
+    done
+    if [[ "${record_replay_ready}" != "true" ]]; then
+      echo "[deploy] RecordReplay was not restored after CameraPipeline deployment"
+      systemctl status record-replay.service --no-pager -l || true
+      journalctl -u record-replay.service --since "${deploy_log_since}" --no-pager -o short-precise || true
+      exit 1
+    fi
+    echo "[deploy] RecordReplay restored; GET /status state=${restored_record_replay_state}"
+  fi
+
+  echo "[deploy] restoring calibration.service after CameraPipeline deployment"
+  systemctl start --no-block calibration.service
+  calibration_ready=false
+  for attempt in $(seq 1 10); do
+    if systemctl is-active --quiet calibration.service &&
+       ss -ltn '( sport = :6600 )' | grep -q LISTEN &&
+       calibration_payload="$(curl -fsS --max-time 5 http://127.0.0.1:6600/api/v1/status)"; then
+      calibration_state="$(printf '%s' "${calibration_payload}" | json_field state)"
+      if [[ "${calibration_state}" == "idle" ]]; then
+        calibration_ready=true
+        break
+      fi
+    fi
+    sleep 1
+  done
+  if [[ "${calibration_ready}" != "true" ]]; then
+    echo "[deploy] Calibration Service was not restored after CameraPipeline deployment"
+    systemctl status calibration.service --no-pager -l || true
+    journalctl -u calibration.service --since "${deploy_log_since}" --no-pager -o short-precise || true
+    exit 1
+  fi
+  echo "[deploy] Calibration Service restored; GET /api/v1/status state=idle"
 else
   ready=false
   calibration_version=""

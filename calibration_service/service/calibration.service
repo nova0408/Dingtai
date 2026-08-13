@@ -3,6 +3,7 @@ Description=Dingtai Hand-Eye Calibration and Prior Recording Service
 After=network-online.target camera-pipeline.service robot-control.service
 Wants=network-online.target
 Requires=camera-pipeline.service robot-control.service
+PartOf=camera-pipeline.service robot-control.service
 
 [Service]
 Type=simple

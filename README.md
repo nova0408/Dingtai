@@ -44,9 +44,9 @@
   固定 `0.19.0`
   `pip install open3d==0.19.0`
 
-- qmlinker 1.0.8
+- qmlinker 1.0.16
   用于 无际二次开发接口和本仓库的设备适配/人工脚本；正式 GUI 由独立项目维护。
-  `pip install env\qmlinker-1.0.8-py3-none-any.whl`
+  `pip install env\qmlinker-1.0.16-py3-none-any.whl`
 
 - protobuf 6.33.6
   qmlinker 与本项目静态工具链共用的 Protocol Buffers 运行库。

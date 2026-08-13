@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: RobotControl HTTP API
-  version: 0.14.0
+  version: 0.16.1
   description: >-
     qmlinker 与 AR5 xCoreSDK 统一服务。GET 状态接口可用于只读诊断；POST 控制接口可能
     使真实设备动作，只能由现场人员手动发起。
@@ -413,7 +413,10 @@ components:
           '200': {description: SDK value returned}
     Ar5SdkWrite:
       post:
-        description: RecordReplay 使用的 xCoreSDK 显式控制封装；请求字段按具体操作定义。
+        description: >-
+          RecordReplay 使用的 xCoreSDK 显式控制封装；请求字段按具体操作定义。
+          move-append 内部在同一 SDK 锁内尽力应用 acceleration=0.5、jerk=0.5，
+          读取或设置失败不阻止轨迹提交；当前不接受这两个倍率的请求字段。
         parameters:
           - {$ref: '#/components/parameters/Ar5Side'}
         requestBody:
@@ -447,6 +450,9 @@ components:
             设备专属只读字段。qmlinker_waist 为可选能力；未启用时不会出现在 devices 数组中，
             也不会创建腰部客户端。qmlinker_right_hand 的 positions 必须与 actuator_count 的
             运行时执行器集合完整一致；不完整时设备返回 connected=false、error 详情和空 data。
+            qmlinker_agv 额外返回 robot_state、三态 initialized、power 与 charge_state；
+            initialized 为 null 表示 Woosh 状态未知，false 表示未初始化，true 表示已初始化；
+            charge_state 的 0、1、2、3 分别表示未知、未充电、手动充电和自动充电。
             ar5_* 的 data 按 identity、joints、tcp、elbow 和 status 分组。
     StatusResponse:
       type: object
@@ -483,9 +489,17 @@ components:
           items: {$ref: '#/components/schemas/AgvNavigationTarget'}
     AgvBaseStateResponse:
       type: object
-      required: [robot_state]
+      required: [robot_state, initialized]
       properties:
-        robot_state: {type: integer, description: Woosh robot state enum}
+        robot_state:
+          type: integer
+          minimum: 0
+          description: >-
+            Woosh robot state enum: 0 undefined, 1 uninitialized, 2 idle,
+            3 parking, 4 task, 5 warning, 6 fault, 7 following, 8 charging, 9 mapping.
+        initialized:
+          type: [boolean, 'null']
+          description: null when robot_state is undefined, false when uninitialized, otherwise true
     AgvBaseModeResponse:
       type: object
       required: [robot_mode, work_mode]
@@ -515,8 +529,11 @@ components:
       type: object
       required: [power, charge_state]
       properties:
-        power: {type: integer}
-        charge_state: {type: integer}
+        power: {type: integer, minimum: 0, maximum: 100}
+        charge_state:
+          type: integer
+          enum: [0, 1, 2, 3]
+          description: 0 undefined, 1 not charging, 2 manual charging, 3 automatic charging
     ActionResponse:
       type: object
       required: [service_version, api_version, accepted, data]

@@ -636,6 +636,29 @@ if [[ "${robot_version}" != "${expected_robot_version}" ]]; then
   exit 1
 fi
 echo "[deploy] RobotControl updated and restarted; version=${robot_version}; GET /api/v1/health passed"
+
+echo "[deploy] restoring calibration.service after RobotControl deployment"
+systemctl start --no-block calibration.service
+calibration_ready=false
+for attempt in $(seq 1 10); do
+  if systemctl is-active --quiet calibration.service &&
+     ss -ltn '( sport = :6600 )' | grep -q LISTEN &&
+     calibration_payload="$(curl -fsS --max-time 5 http://127.0.0.1:6600/api/v1/status)"; then
+    calibration_state="$(printf '%s' "${calibration_payload}" | json_field state)"
+    if [[ "${calibration_state}" == "idle" ]]; then
+      calibration_ready=true
+      break
+    fi
+  fi
+  sleep 1
+done
+if [[ "${calibration_ready}" != "true" ]]; then
+  echo "[deploy] Calibration Service was not restored after RobotControl deployment"
+  systemctl status calibration.service --no-pager -l || true
+  journalctl -u calibration.service --since "${deploy_log_since}" --no-pager -o short-precise || true
+  exit 1
+fi
+echo "[deploy] Calibration Service restored; GET /api/v1/status state=idle"
 '@
 
         [System.IO.File]::WriteAllText(

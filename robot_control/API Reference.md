@@ -1,6 +1,6 @@
 # RobotControl API Reference
 
-当前契约版本：`0.14.0`
+当前契约版本：`0.16.1`
 HTTP API 主版本：`1`
 
 本文档描述 `robot_control` 对外 HTTP API 的实际调用方式、状态字段、单位和安全边界。
@@ -36,7 +36,7 @@ Gateway 只移除 `/api/v1/robot-control` 前缀后转发到 RobotControl 的
 
 ```json
 {
-  "service_version": "0.14.0",
+  "service_version": "0.16.1",
   "api_version": "1",
   "hardware_access": "lazy"
 }
@@ -48,7 +48,7 @@ Gateway 只移除 `/api/v1/robot-control` 前缀后转发到 RobotControl 的
 
 ```json
 {
-  "service_version": "0.14.0",
+  "service_version": "0.16.1",
   "api_version": "1",
   "devices": [
     {
@@ -138,7 +138,9 @@ m；`yaw_rad` 单位为 rad；`resolution` 保留 Woosh 地图接口的原始值
 
 ### 3.5 `GET /api/v1/agv/base-state`
 
-读取 Woosh SDK 的底盘状态枚举，返回字段 `robot_state`。状态枚举值沿用 Woosh 协议，查询失败返回 `503`。
+读取 Woosh SDK 的底盘状态枚举，返回 `robot_state` 和三态 `initialized`。`robot_state=0`
+表示状态未知，此时 `initialized=null`；`robot_state=1` 表示未初始化，此时为 `false`；
+当前其它 Woosh 状态 `2`–`9` 均表示已经完成初始化，此时为 `true`。查询失败返回 `503`。
 
 ### 3.6 `GET /api/v1/agv/base-mode`
 
@@ -155,7 +157,8 @@ m；`yaw_rad` 单位为 rad；`resolution` 保留 Woosh 地图接口的原始值
 
 ### 3.9 `GET /api/v1/agv/base-battery`
 
-读取底盘电量和充电状态，返回 `power`、`charge_state`。
+读取底盘电量和充电状态，返回 `power`、`charge_state`。Woosh `charge_state=0` 表示未知、
+`1` 表示未充电、`2` 表示手动充电、`3` 表示自动充电。
 
 以上接口均为独立只读 GET，按需调用，不发送导航、停止、使能或速度控制请求。
 
@@ -182,7 +185,7 @@ Accept: text/event-stream
 ```text
 event: robot_status
 id: 0
-data: {"service_version":"0.14.0","api_version":"1","devices":[]}
+data: {"service_version":"0.16.1","api_version":"1","devices":[]}
 
 ```
 
@@ -251,7 +254,7 @@ limits = client.get_ar5_soft_limits("right")
 | `qmlinker_waist` | `qmlinker` | `enabled`、`pitch_deg`（仅启用腰部能力时出现） |
 | `qmlinker_gripper` | `qmlinker` | `online`、`calibrated`、`enabled`、`position`、`state` |
 | `qmlinker_right_hand` | `qmlinker` | `actuator_count`、`enabled`、`positions` |
-| `qmlinker_agv` | `qmlinker` | `enabled`、`runtime` |
+| `qmlinker_agv` | `qmlinker` | `enabled`、`robot_state`、`initialized`、`power`、`charge_state`、`runtime` |
 | `ar5_left` | `xcoresdk` | `identity`、`joints`、`tcp`、`elbow`、`status` |
 | `ar5_right` | `xcoresdk` | `identity`、`joints`、`tcp`、`elbow`、`status` |
 
@@ -259,6 +262,15 @@ limits = client.get_ar5_soft_limits("right")
 对应的 `right_hand_a0` 到 `right_hand_aN`。如果 qmlinker 返回的执行器集合不完整或包含未知轴，
 该设备会返回 `connected=false`、带有 `expected`、`actual`、`missing`、`unexpected` 详情的
 `error`，并将 `data` 置为空对象；客户端不得继续使用部分位置数据。
+
+`qmlinker_agv.data.robot_state` 直接来自 qmlinker `1.0.16` 的 `GetBaseState`：`0` 为
+undefined、`1` 为 uninitialized、`2` 为 idle、`3` 为 parking、`4` 为 task、`5` 为 warning、
+`6` 为 fault、`7` 为 following、`8` 为 charging、`9` 为 mapping。客户端必须使用同级
+`initialized` 展示初始化三态，不得把设备 `connected` 当作已初始化。
+
+`qmlinker_agv.data.power` 与 `charge_state` 直接来自 `GetBaseBattery`。充电状态必须使用
+`charge_state`：`0` 为未知、`1` 为未充电、`2` 为手动充电、`3` 为自动充电；不能根据
+`robot_state` 推断，因为底盘充电时机器人状态可能仍为 `idle`。
 
 ### 4.1 AR5
 
@@ -568,6 +580,13 @@ RobotControl 是唯一 xCoreSDK 对象所有者。RecordReplay 只访问以下�
 接收 `targets[]`，每项包含七维 `joints_rad`、`speed_mm_s` 和 `zone_mm`。这些接口是
 底层 SDK 操作的一对一显式封装，不包含 RecordReplay 动作顺序或 CSV 业务逻辑。
 
+`move-append` 当前在同一 AR5 SDK 锁内尽力执行 `getAcceleration` 前读、
+`adjustAcceleration(0.5, 0.5)` 和后读，然后无条件提交 `MoveAbsJCommand` 队列。读取或设置
+失败只记录告警，不能让实验能力阻止既有轨迹；读取成功时记录设置前后值。`0.5` 分别表示系统
+预设加/减速度与加加速度的倍率，不是绝对物理单位；请求体不接受倍率字段，客户端也不能通过
+本接口覆盖实验默认值。SDK 声明的 acc 范围是 `[0.2, 1.5]`、jerk 范围是 `[0.1, 2.0]`，
+运动中修改只对后续指令生效。
+
 `move-append` 成功响应的 `data` 与 `motion-progress` 结构一致：
 
 ```json
@@ -590,7 +609,7 @@ RobotControl 是唯一 xCoreSDK 对象所有者。RecordReplay 只访问以下�
 
 ```json
 {
-  "service_version": "0.14.0",
+  "service_version": "0.16.1",
   "api_version": "1",
   "accepted": true,
   "data": {
